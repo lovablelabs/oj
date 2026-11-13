@@ -815,9 +815,9 @@ async fn ssr_query_asset(
             }
         }
     }
-    // A plain svg a transform plugin may componentize (svgr) goes through
-    // the transforms, as the client's does; left as markup, it is a URL.
-    let plain_svg = !id.contains('?') && ext == "svg" && state.plugins_have_transform;
+    // A plain svg a load or transform plugin may componentize (svgr) goes
+    // through the hooks, as the client's does; left as markup, it is a URL.
+    let plain_svg = !id.contains('?') && ext == "svg" && state.svg_may_be_componentized(path);
     if plain_svg {
         if let Some(code) = ssr_svg_component(state, id, path, runner).await? {
             return Ok(Some(code));
@@ -889,7 +889,7 @@ async fn ssr_svg_component(
         .await
         .map_err(|e| SsrModuleError::Failed(format!("oj: plugin transform error for {id}:\n{e}")))?
         .code;
-    if code.trim_start().starts_with('<') {
+    if crate::svgr::is_svg_markup(&code) {
         return Ok(None);
     }
     ssr_compile_source(state, id, code, true, runner).map(Some)

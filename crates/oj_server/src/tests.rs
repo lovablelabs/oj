@@ -1179,6 +1179,25 @@ fn ws_token_is_demanded_only_from_browser_upgrades() {
 }
 
 #[test]
+fn file_of_url_inverts_url_of() {
+    let root = Path::new("/app");
+    for file in [
+        "/app/src/logo.svg",
+        "/app/src/a b/x.svg",
+        "/elsewhere/lib/icon.svg",
+    ] {
+        let file = Path::new(file);
+        let url = rewrite::url_of(root, file);
+        assert_eq!(rewrite::file_of_url(root, &url), file, "{url}");
+        assert_eq!(
+            rewrite::file_of_url(root, &format!("{url}?t=5#frag")),
+            file,
+            "the query and fragment are dropped"
+        );
+    }
+}
+
+#[test]
 fn stamp_import_url_marks_only_compilable_module_urls() {
     assert_eq!(
         stamp_import_url(Path::new("/app"), "/src/utils.ts", 5),

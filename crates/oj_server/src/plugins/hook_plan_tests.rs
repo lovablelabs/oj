@@ -184,3 +184,51 @@ fn js_regex_syntax_rust_cannot_carry_fails_open() {
         "an uncompilable regex matches everything"
     );
 }
+
+// Vite's container runs a `load` with `order: "pre"`, then the plugins in
+// enforce order with vite:asset between the pre and the normal ones: a
+// module vite:asset answers (a plain svg) is only ever claimed by a hook
+// that runs before it. The host flags those; the rest are not asked for one.
+#[test]
+fn a_module_vite_asset_answers_is_only_offered_to_the_hooks_before_it() {
+    // An always-offered plugin after vite:asset (a normal plugin's
+    // function-form load): offered modules in general, not an asset's.
+    let p =
+        plan(r#"{"present":true,"unfiltered":true,"unfilteredBeforeAsset":false,"plugins":[]}"#);
+    assert!(p.wants("/app/src/logo.svg", None));
+    assert!(!p.wants_before_asset("/app/src/logo.svg"));
+    // The same shape on a pre plugin (lovable-tagger): offered the asset too.
+    let p = plan(r#"{"present":true,"unfiltered":true,"unfilteredBeforeAsset":true,"plugins":[]}"#);
+    assert!(p.wants_before_asset("/app/src/logo.svg"));
+    // Filtered plugins: only one that runs before vite:asset and whose
+    // filter matches the id is asked for the asset.
+    let p = plan(
+        r#"{"present":true,"unfiltered":false,"unfilteredBeforeAsset":false,"plugins":[
+            {"id":[{"source":"\\.svg$","flags":""}],"code":[],"beforeAsset":false},
+            {"id":[{"source":"^virtual:","flags":""}],"code":[],"beforeAsset":true}
+        ]}"#,
+    );
+    assert!(p.wants("/app/src/logo.svg", None));
+    assert!(!p.wants_before_asset("/app/src/logo.svg"));
+    assert!(p.wants_before_asset("virtual:answer"));
+    let p = plan(
+        r#"{"present":true,"unfiltered":false,"unfilteredBeforeAsset":false,"plugins":[
+            {"id":[{"source":"\\.svg$","flags":""}],"code":[],"beforeAsset":true}
+        ]}"#,
+    );
+    assert!(p.wants_before_asset("/app/src/logo.svg"));
+    assert!(!p.wants_before_asset("/app/src/main.tsx"));
+}
+
+// A host without the order flags (an older one) is read as the open side:
+// the gate may over-ask, never skip a plugin Vite would run.
+#[test]
+fn a_plan_without_order_flags_is_open_on_the_asset_side() {
+    let p = plan(r#"{"present":true,"unfiltered":true,"plugins":[]}"#);
+    assert!(p.wants_before_asset("/app/src/logo.svg"));
+    let p = plan(
+        r#"{"present":true,"unfiltered":false,"plugins":[{"id":[{"source":"\\.svg$","flags":""}],"code":[]}]}"#,
+    );
+    assert!(p.wants_before_asset("/app/src/logo.svg"));
+    assert!(!p.wants_before_asset("/app/src/main.tsx"));
+}
