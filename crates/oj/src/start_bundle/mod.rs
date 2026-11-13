@@ -460,13 +460,6 @@ pub(crate) const SERVER_FN_ASKED: &str = "?";
 /// specifier.
 pub(crate) const SERVER_FN_UNRESOLVED: &str = "!";
 
-/// What a line of the reads file starts with when it names a tsconfig file
-/// the imports resolved through (app-relative, or absolute outside the
-/// app): added beside the scan's lines, for the dev resolver and the
-/// build's alike, so the removal of one is told from the removal of any
-/// other JSON file.
-pub(crate) const SERVER_FN_CONFIG: &str = "=";
-
 /// Beside the resolver, the app-relative paths of the modules its scan read
 /// for an imported builder or factory, one per line; then, each after
 /// [`SERVER_FN_ASKED`], the relative imports it asked for, which another

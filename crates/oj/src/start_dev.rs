@@ -2446,36 +2446,9 @@ fn codegen_store(
     marker: Option<&str>,
     env: &[(String, String)],
 ) -> oj_cache::start_codegen::StartCodegenStore {
-    let scan_format: &[u8] = if kind.starts_with("server-fn") {
-        SERVER_FN_SCAN_FORMAT
-    } else {
-        b""
-    };
-    codegen_store_with(root, cache, kind, script, marker, env, scan_format)
-}
-
-/// What the server-fn resolver's reads file holds, as part of its cache
-/// key: a resolver kept before the file listed the tsconfig files (the `=`
-/// lines) is under another key, so it is made again and not restored with
-/// a file that tells the removal of a tsconfig from nothing. The version
-/// alone does not tell them apart: builds of one version wrote both.
-const SERVER_FN_SCAN_FORMAT: &[u8] = b"scan:2\0";
-
-/// [`codegen_store`] with the reads file's format given (`b""`: none, the
-/// key of a resolver kept before the format was part of it).
-fn codegen_store_with(
-    root: &Path,
-    cache: &Path,
-    kind: &str,
-    script: Option<&str>,
-    marker: Option<&str>,
-    env: &[(String, String)],
-    scan_format: &[u8],
-) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = script
         .and_then(|s| std::fs::read(cache.join(s)).ok())
         .unwrap_or_default();
-    extra.extend_from_slice(scan_format);
     // The route tree's footer names the start entry, so which file (if any)
     // resolves keys the output; its content does not.
     if kind == "route-tree" {
@@ -2662,24 +2635,6 @@ fn server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<bo
         "{}: server-fn resolver ({count} function(s))",
         oj_server::oj_brand()
     );
-    // The tsconfig files the imports resolved through, beside the modules
-    // the scan read: one of them removed is then known for what it was.
-    let configs: String = resolution_configs(root)
-        .iter()
-        .map(|config| {
-            format!(
-                "\n{}{}",
-                crate::start_bundle::SERVER_FN_CONFIG,
-                app_relative(root, config)
-            )
-        })
-        .collect();
-    if !configs.is_empty() {
-        let scan = std::fs::read_to_string(&reads_dest).unwrap_or_default();
-        let scan = format!("{scan}{configs}");
-        std::fs::write(&reads_dest, scan.trim_start_matches('\n'))
-            .map_err(|e| anyhow::anyhow!("server-fn resolver: {e}"))?;
-    }
     // The scan just written names the modules this resolver depends on.
     store.persist(&server_fn_inputs(root, &reads_dest), &outputs);
     Ok(false)
@@ -2703,8 +2658,6 @@ enum ScanLine<'a> {
     Asked(&'a str),
     /// An import that is not relative and that nothing answered.
     Unresolved { from: &'a str, specifier: &'a str },
-    /// A tsconfig file the imports resolved through.
-    Config(&'a str),
 }
 
 fn scan_lines(reads: &str) -> impl Iterator<Item = ScanLine<'_>> {
@@ -2714,8 +2667,6 @@ fn scan_lines(reads: &str) -> impl Iterator<Item = ScanLine<'_>> {
         } else if let Some(import) = line.strip_prefix(crate::start_bundle::SERVER_FN_UNRESOLVED) {
             let (from, specifier) = import.split_once('\t')?;
             Some(ScanLine::Unresolved { from, specifier })
-        } else if let Some(config) = line.strip_prefix(crate::start_bundle::SERVER_FN_CONFIG) {
-            Some(ScanLine::Config(config))
         } else {
             Some(ScanLine::Read(line))
         }
@@ -2739,8 +2690,6 @@ fn server_fn_inputs(root: &Path, reads_file: &Path) -> Vec<PathBuf> {
             ScanLine::Read(rel) => Some(rel.to_string()),
             ScanLine::Asked(base) => oj_compiler::server_fns::resolve_relative(root, base),
             ScanLine::Unresolved { from, specifier } => modules.resolve(from, specifier),
-            // Keyed by content already (`codegen_store`'s salt).
-            ScanLine::Config(_) => None,
         };
         if let Some(file) = rel.map(|rel| root.join(rel)).filter(|f| f.is_file()) {
             inputs.push(file);
@@ -2797,26 +2746,25 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
             continue;
         }
         let rel = app_relative(root, p);
-        // A JSON file a tsconfig extends, there now or listed by the last
-        // scan (one removed since). Any other JSON file, removed or not, is
+        // A JSON file a config names, present or deleted (one it extended):
+        // a temp an editor's safe-write or GNU sed put beside the sources
+        // and removed before the batch settled is named by nothing, and is
         // none of the resolver's.
         let config = is_resolution_config(name)
             || (ext == "json"
-                && (scan_lines(&reads)
-                    .any(|line| matches!(line, ScanLine::Config(c) if c == rel))
-                    || configs
-                        .get_or_init(|| {
-                            resolution_configs(root)
-                                .iter()
-                                .map(|config| app_relative(root, config))
-                                .collect::<Vec<_>>()
-                        })
-                        .contains(&rel)));
+                && configs
+                    .get_or_init(|| {
+                        named_resolution_configs(root)
+                            .iter()
+                            .map(|config| app_relative(root, config))
+                            .collect::<Vec<_>>()
+                    })
+                    .contains(&rel));
         let read = || {
             scan_lines(&reads).any(|line| match line {
                 ScanLine::Read(read) => read == rel,
                 ScanLine::Asked(base) => answers_import(base, &rel),
-                ScanLine::Unresolved { .. } | ScanLine::Config(_) => false,
+                ScanLine::Unresolved { .. } => false,
             })
         };
         let resolves = || {
@@ -2908,6 +2856,19 @@ fn is_resolution_config(name: &str) -> bool {
 /// path, whatever they are called and wherever they are. A config extended
 /// from a package is keyed by the lockfile.
 fn resolution_configs(root: &Path) -> Vec<PathBuf> {
+    resolution_configs_with(root, false)
+}
+
+/// [`resolution_configs`] and, besides, every file a config names by a
+/// relative `extends` or `references` path whether or not it exists (as the
+/// file itself, as `<name>.json`, as `<dir>/tsconfig.json`): the set a
+/// deleted JSON file is checked against, since the file a config extended is
+/// gone by then.
+fn named_resolution_configs(root: &Path) -> Vec<PathBuf> {
+    resolution_configs_with(root, true)
+}
+
+fn resolution_configs_with(root: &Path, with_missing: bool) -> Vec<PathBuf> {
     fn named(dir: &Path, deep: bool, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let p = e.path();
@@ -2923,6 +2884,7 @@ fn resolution_configs(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut pending = Vec::new();
+    let mut missing = Vec::new();
     named(root, false, &mut pending);
     named(&root.join("src"), true, &mut pending);
     static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -2945,14 +2907,23 @@ fn resolution_configs(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 let path = crate::ssr_dev::normalize_path(&dir.join(target));
-                let found = [
+                let candidates = [
                     path.clone(),
                     PathBuf::from(format!("{}.json", path.display())),
                     path.join("tsconfig.json"),
-                ]
-                .into_iter()
-                .find(|candidate| candidate.is_file());
-                pending.extend(found);
+                ];
+                let found = candidates.iter().find(|candidate| candidate.is_file());
+                if with_missing {
+                    missing.extend(candidates.iter().filter(|c| !c.is_file()).cloned());
+                }
+                pending.extend(found.cloned());
+            }
+        }
+    }
+    if with_missing {
+        for path in missing {
+            if !out.contains(&path) {
+                out.push(path);
             }
         }
     }
@@ -6921,6 +6892,17 @@ mod tests {
         // An existing JSON file no tsconfig names.
         std::fs::write(root.join("config/other.json"), "{}\n").unwrap();
         assert!(!changed("config/other.json"));
+        // A JSON file that came and went inside the batch (an editor's
+        // safe-write temp, GNU sed's), gone once the batch settles: named by
+        // no config, it is no input, wherever it was. It turned every edit
+        // batched with such a temp into a resolver regeneration, and the hot
+        // update into a rebuild.
+        assert!(!changed("src/content/sedf1aa6r.json"));
+        assert!(!changed("config/draft.json"));
+        // The extended file deleted: an input still, the tsconfig names it.
+        std::fs::remove_file(root.join("config/base.json")).unwrap();
+        assert!(changed("config/base.json"));
+        std::fs::write(root.join("config/base.json"), base).unwrap();
 
         // The module stops exporting a builder.
         std::fs::write(
@@ -7084,9 +7066,7 @@ mod tests {
             [
                 "src/lib/authed.ts",
                 "?src/lib/authed",
-                "!src/lib/fns.ts\t@shared/authed",
-                "=config/base.json",
-                "=tsconfig.json"
+                "!src/lib/fns.ts\t@shared/authed"
             ]
         );
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
@@ -7094,19 +7074,15 @@ mod tests {
         assert!(!changed("shared/authed.js"));
         assert!(!changed("shared/other.js"));
         assert!(changed("src/lib/authed.js"));
-        // A JSON file that is gone and was no tsconfig's is nobody's: a data
-        // file a glob matched, created and removed inside one batch, turned
-        // the batch's hot update into a reload when any removed JSON file
-        // regenerated the resolver.
+        // The extended file, deleted: the tsconfig names it. A deleted JSON
+        // nothing names (a temp an editor wrote and removed) is no input.
+        let extended = std::fs::read(root.join("config/base.json")).unwrap();
+        std::fs::remove_file(root.join("config/base.json")).unwrap();
+        assert!(changed("config/base.json"));
+        std::fs::write(root.join("config/base.json"), extended).unwrap();
         assert!(!changed("config/gone.json"));
         assert!(!changed("src/content/sed1a2b3c.json"));
         assert!(!changed("config/base.json.bak"));
-        // The extended file, there or removed since the scan listed it.
-        assert!(changed("config/base.json"));
-        let base = std::fs::read(root.join("config/base.json")).unwrap();
-        std::fs::remove_file(root.join("config/base.json")).unwrap();
-        assert!(changed("config/base.json"));
-        std::fs::write(root.join("config/base.json"), base).unwrap();
 
         // The alias's target is created.
         std::fs::create_dir_all(root.join("shared")).unwrap();
@@ -7231,57 +7207,6 @@ mod tests {
         assert!(!answers_import("src/lib/authed.js", "src/lib/authed.json"));
     }
 
-    // A resolver kept before its reads file listed the tsconfig files is
-    // not restored: builds of one version wrote both, so the version in the
-    // key does not tell them apart, and restored, its reads file told the
-    // removal of a tsconfig from nothing until something else regenerated
-    // it. What is restored from here on lists them.
-    #[test]
-    fn a_resolver_kept_without_its_tsconfig_list_is_made_again() {
-        let (root, cache) = aliased_builder_app("resolver-old-scan");
-        let file = crate::start_bundle::server_fn_resolver_file(true);
-        let reads_file = crate::start_bundle::server_fn_reads_file(true);
-        let (dest, reads_dest) = (cache.join(file), cache.join(reads_file));
-        let outputs = [(file, dest.as_path()), (reads_file, reads_dest.as_path())];
-        let reads = || std::fs::read_to_string(&reads_dest).unwrap();
-
-        // As kept before: the scan's own lines, under the key without the
-        // format.
-        crate::start_bundle::write_server_fn_resolver(&root, &cache, true).unwrap();
-        assert_eq!(
-            reads().lines().collect::<Vec<_>>(),
-            ["src/lib/authed.ts", "src/lib/barrel.ts"]
-        );
-        let old = codegen_store_with(&root, &cache, "server-fn", None, None, &[], b"");
-        let inputs = server_fn_inputs(&root, &reads_dest);
-        assert!(old.persist(&inputs, &outputs).is_some());
-        assert!(
-            old.restore(&inputs, &outputs).is_ok(),
-            "kept under the old key"
-        );
-
-        assert!(
-            !server_fn_resolver(&root, &cache, true).unwrap(),
-            "the old one was restored"
-        );
-        let listed = ["src/lib/authed.ts", "src/lib/barrel.ts", "=tsconfig.json"];
-        assert_eq!(reads().lines().collect::<Vec<_>>(), listed);
-
-        // Restored, the reads file is the one kept: the list is in it.
-        std::fs::remove_file(&reads_dest).unwrap();
-        std::fs::remove_file(&dest).unwrap();
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
-        assert_eq!(reads().lines().collect::<Vec<_>>(), listed);
-        assert!(resolver_maps(&cache, "first"));
-        // And says what a removed tsconfig was.
-        std::fs::remove_file(root.join("tsconfig.json")).unwrap();
-        assert_eq!(
-            server_fn_trigger(&root, &cache, &[root.join("tsconfig.json")]),
-            ServerFnTrigger::Scan
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     // A changed path is matched with what the reads file lists however the
     // watcher spells it: the root reached through a symlink (macOS names a
     // temp dir `/var/..` and `/private/var/..`), either way round, and a
@@ -7354,7 +7279,7 @@ mod tests {
         assert_eq!(
             through_link("config/base.json"),
             ServerFnTrigger::Scan,
-            "removed, and listed by the scan"
+            "removed, and named by the tsconfig"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7373,7 +7298,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             reads.lines().collect::<Vec<_>>(),
-            ["src/lib/authed.ts", "src/lib/barrel.ts", "=tsconfig.json"]
+            ["src/lib/authed.ts", "src/lib/barrel.ts"]
         );
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
         assert!(changed("src/lib/aliased.functions.ts"));
