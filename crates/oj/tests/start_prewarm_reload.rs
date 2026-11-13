@@ -31,8 +31,16 @@ use tokio_tungstenite::tungstenite::Message;
 const GATE: &[(&str, &str)] = &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")];
 const SLOW_BOOT: &[(&str, &str)] = &[
     ("OJ_START_PREWARM_DELAY_MS", "2000"),
-    ("OJ_WATCH_SCAN_DELAY_MS", "6000"),
+    ("OJ_WATCH_SCAN_DELAY_MS", "15000"),
+    // The boot phases name the revalidation's decision.
+    ("DEBUG", "oj:boot"),
 ];
+
+/// The boot phase the revalidation logs when it found the edit's module
+/// stale and left its reload to the watcher: the path under test. Without
+/// it the test proves nothing (a slow warm render could let the watcher
+/// rebuild the edit before the revalidation ever ran).
+const LEFT_TO_THE_WATCHER: &str = "revalidate: stale modules, reload left to the watcher's run";
 
 /// The frames that reload a page, counted off the Start live-reload socket.
 struct Reloads {
@@ -97,6 +105,11 @@ async fn an_edit_during_the_warm_up_reloads_once_at_the_flush() {
     );
     // The boot's revalidation found the edit's module stale meanwhile, and
     // sent nothing: the reload is the rebuild's, held for the flush.
+    assert!(
+        output_has(&dev, LEFT_TO_THE_WATCHER, WAIT),
+        "the revalidation did not find the edit's module stale, or did not leave its reload to the watcher\n{}",
+        dev.output()
+    );
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(
         reloads.count.load(SeqCst),

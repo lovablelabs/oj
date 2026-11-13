@@ -305,11 +305,14 @@ const PREWARM_RELOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(
 async fn watcher_covers(timing: &crate::start_reloads::FlushTiming) -> bool {
     let deadline = tokio::time::Instant::now() + PREWARM_RELOAD_WAIT;
     loop {
-        while !timing.watcher_caught_up() {
-            if tokio::time::Instant::now() >= deadline {
-                return timing.runs_cover_reloads();
-            }
+        // Checked every turn: a feed that goes busy within each grace would
+        // otherwise cycle here past the deadline.
+        if tokio::time::Instant::now() >= deadline {
+            return timing.runs_cover_reloads();
+        }
+        if !timing.watcher_caught_up() {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            continue;
         }
         tokio::time::sleep(PREWARM_RELOAD_GRACE).await;
         if timing.watcher_caught_up() {
@@ -622,8 +625,15 @@ pub async fn start_dev(
             // ahead of the run), reloaded the pages a second time, or onto
             // the bundle from before the edit. The watcher may not have
             // read that edit yet (`watcher_covers` waits for it to).
-            if engine.revalidate().await && !watcher_covers(&flush_timing).await {
-                reloads.bump();
+            if engine.revalidate().await {
+                if watcher_covers(&flush_timing).await {
+                    oj_server::boot_phase(
+                        "revalidate: stale modules, reload left to the watcher's run",
+                    );
+                } else {
+                    oj_server::boot_phase("revalidate: stale modules, reloading");
+                    reloads.bump();
+                }
             }
             oj_server::boot_phase("revalidate complete");
         });
