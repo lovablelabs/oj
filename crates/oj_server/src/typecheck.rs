@@ -422,7 +422,7 @@ pub(crate) async fn serve_typecheck(
     State(state): State<Arc<ServerState>>,
     body: Bytes,
 ) -> Response {
-    if headers.contains_key(header::ORIGIN) || headers.contains_key("x-forwarded-host") {
+    if !crate::runtime_env::local_caller(&headers) {
         return (StatusCode::FORBIDDEN, "").into_response();
     }
     let Some(typecheck) = &state.typecheck else {
@@ -514,12 +514,51 @@ pub async fn check_via_server(
     serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}"))
 }
 
-const NO_SERVER: &str = "no dev server found";
+pub(crate) const NO_SERVER: &str = "no dev server found";
 const NO_TYPECHECK: &str = "dev server was started without --typecheck";
 
 /// The typecheck URL of the live, plain-http dev server the address file
 /// names for `root`.
 fn server_url(root: &Path) -> Result<String, String> {
+    let server = advertised(root)?;
+    // Before every dev server wrote the file, only `--typecheck` ones did,
+    // without the field.
+    if !server.typecheck {
+        return Err(NO_TYPECHECK.to_string());
+    }
+    server.http_url("/@oj/typecheck", "oj dev-typecheck")
+}
+
+/// The address a live dev server advertised for `root` (what
+/// [`advertise`] wrote), for the commands that ask a running server.
+pub(crate) struct Advertised {
+    host: std::net::IpAddr,
+    port: u16,
+    https: bool,
+    /// False only when the server said it runs without `--typecheck`.
+    typecheck: bool,
+}
+
+impl Advertised {
+    /// `http://host:port<path>`, or why `command` cannot reach the server
+    /// that way (it serves https).
+    pub(crate) fn http_url(&self, path: &str, command: &str) -> Result<String, String> {
+        if self.https {
+            return Err(format!(
+                "the dev server runs over https, which {command} cannot reach"
+            ));
+        }
+        Ok(format!(
+            "http://{}{path}",
+            std::net::SocketAddr::new(self.host, self.port)
+        ))
+    }
+}
+
+/// Reads the address of the live dev server serving `root`; `Err` says no
+/// such server runs (a server for another root sharing the cache dir, or a
+/// dead one's file, is none).
+pub(crate) fn advertised(root: &Path) -> Result<Advertised, String> {
     let address = root.canonicalize().ok().and_then(|root| {
         read_live(&oj_cache::cache_root(&root))
             .filter(|address| address["root"].as_str().map(Path::new) == Some(root.as_path()))
@@ -527,14 +566,6 @@ fn server_url(root: &Path) -> Result<String, String> {
     let Some(address) = address else {
         return Err(NO_SERVER.to_string());
     };
-    // Before every dev server wrote the file, only `--typecheck` ones did,
-    // without the field.
-    if address["typecheck"] == false {
-        return Err(NO_TYPECHECK.to_string());
-    }
-    if address["https"].as_bool() == Some(true) {
-        return Err("the dev server runs over https, which oj dev-typecheck cannot reach".into());
-    }
     let malformed = || "the dev server's address file is malformed".to_string();
     let host: std::net::IpAddr = address["host"]
         .as_str()
@@ -544,10 +575,12 @@ fn server_url(root: &Path) -> Result<String, String> {
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
         .ok_or_else(malformed)?;
-    Ok(format!(
-        "http://{}/@oj/typecheck",
-        std::net::SocketAddr::new(host, port)
-    ))
+    Ok(Advertised {
+        host,
+        port,
+        https: address["https"].as_bool() == Some(true),
+        typecheck: address["typecheck"] != false,
+    })
 }
 
 /// The address file in `dir`, when the process that wrote it still runs.

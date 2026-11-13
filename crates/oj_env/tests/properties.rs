@@ -177,3 +177,26 @@ proptest! {
         prop_assert_eq!(replace_html_env(&html, &env), html.clone());
     }
 }
+
+proptest! {
+    /// The runtime key spec parser is total, and every key it accepts is an
+    /// identifier name with a non-empty field.
+    #[test]
+    fn runtime_key_specs_parse_totally(spec in "[A-Za-z0-9_$=, \\t.-]{0,64}") {
+        match oj_env::parse_runtime_env_keys(&spec) {
+            Ok(keys) => {
+                let mut seen = std::collections::HashSet::new();
+                for key in keys {
+                    prop_assert!(!key.key.is_empty() && !key.field.is_empty());
+                    prop_assert!(key.key != "__proto__");
+                    let mut chars = key.key.chars();
+                    let first = chars.next().unwrap();
+                    prop_assert!(first == '$' || first == '_' || first.is_alphabetic());
+                    prop_assert!(chars.all(|c| c == '$' || c == '_' || c.is_alphanumeric()));
+                    prop_assert!(seen.insert(key.key.clone()), "a key appears once");
+                }
+            }
+            Err(message) => prop_assert!(message.starts_with("OJ_RUNTIME_ENV_KEYS:")),
+        }
+    }
+}

@@ -99,6 +99,7 @@ mod redirect_passthrough;
 mod refresh_harness;
 mod resolve_created_files;
 mod restart_check;
+mod runtime_env;
 mod silent_proxy;
 mod spa_socket_keepalive;
 mod ssr_externalize;
@@ -191,6 +192,7 @@ impl App {
             lazy: false,
             typecheck: false,
             mode: None,
+            runtime_env: None,
             // The test's own runtime.
             rolldown: tokio::runtime::Handle::current(),
         }

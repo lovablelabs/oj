@@ -562,6 +562,12 @@ fn compile_key(
         mode_key.push_str("+stylex");
         mode_key.push_str(stylex.fingerprint());
     }
+    // Redirected keys change the output: a compile from before they were
+    // configured (or with another list) must miss.
+    if let Some(env) = &state.runtime_env {
+        mode_key.push_str("+rtenv");
+        mode_key.push_str(&env.cache_salt());
+    }
     let key = oj_cache::module_key(source, url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state

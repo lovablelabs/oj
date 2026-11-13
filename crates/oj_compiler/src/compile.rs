@@ -5,7 +5,7 @@ use crate::scan::{export_names, scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
 use crate::sourcemap::{compose_input_maps_json, map_json_to_data_url};
 use crate::{glob, tsconfig};
 use oxc_allocator::Allocator;
-use oxc_ast::ast::Program;
+use oxc_ast::ast::{Program, Statement};
 use oxc_codegen::{Codegen, CodegenOptions, CodegenReturn};
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
@@ -245,7 +245,7 @@ pub fn compile_module_with_maps(
         _ => Vec::new(),
     };
     transform(&allocator, path, source_text, opts, &mut program)?;
-    apply_defines(&allocator, source_text, opts, &mut program);
+    let runtime_import = apply_defines(&allocator, source_text, opts, &mut program);
     let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
 
     // A compile a dev loader imports: the browser (a rewriter maps its
@@ -258,6 +258,11 @@ pub fn compile_module_with_maps(
         promote_full_export_accept(h, &program);
     }
     let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
+    // After the specifier pass: the served module is a route, not a graph
+    // node, so it stays out of `imports`.
+    if let Some(url) = runtime_import {
+        prepend_side_effect_import(&allocator, &mut program, &url);
+    }
 
     let (code, map_json) = codegen(&program, path, opts, synthesized, input_maps);
     validate_emitted(path, &code, source_type)?;
@@ -454,16 +459,18 @@ fn refresh_applies(path: &Path, source_text: &str, jsx: &JsxConfig) -> bool {
 
 /// `import.meta.env` / `define` replacement. Runs after the transform, so
 /// scoping is rebuilt: the JSX/TS passes add references without reference ids,
-/// which the replacer would panic on.
+/// which the replacer would panic on. Returns the runtime env module the
+/// output must import, when the source reads a redirected key
+/// ([`RuntimeDefines`](crate::RuntimeDefines)).
 fn apply_defines<'a>(
     allocator: &'a Allocator,
     source_text: &str,
     opts: &CompileOptions,
     program: &mut Program<'a>,
-) {
+) -> Option<String> {
     let defines = defines_for(opts.env.as_deref(), opts.dev, opts.ssr);
     if !defines.needed_by(source_text) {
-        return;
+        return None;
     }
     if let Some(config) = defines.config() {
         let scoping = SemanticBuilder::new()
@@ -471,6 +478,25 @@ fn apply_defines<'a>(
             .semantic
             .into_scoping();
         let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, program);
+    }
+    defines.runtime_import(source_text).map(str::to_owned)
+}
+
+/// Puts `import "<url>";` first in `program`. Its spans are emptied: the
+/// statement has no origin in the source, and a span past the source's end
+/// would fail the sourcemap builder.
+fn prepend_side_effect_import<'a>(allocator: &'a Allocator, program: &mut Program<'a>, url: &str) {
+    let src: &'a str = allocator.alloc_str(&format!(
+        "import {};",
+        serde_json::Value::String(url.into())
+    ));
+    let parsed = Parser::new(allocator, src, SourceType::mjs()).parse();
+    for mut stmt in parsed.program.body.into_iter().rev() {
+        if let Statement::ImportDeclaration(decl) = &mut stmt {
+            decl.span = oxc_span::SPAN;
+            decl.source.span = oxc_span::SPAN;
+        }
+        program.body.insert(0, stmt);
     }
 }
 

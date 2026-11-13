@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 mod build;
+mod env_cmd;
 mod lint;
 mod ssr_dev;
 mod ssr_host;
@@ -225,6 +226,14 @@ enum Command {
         /// Print the JSON report instead of tsc-style lines.
         #[arg(long)]
         json: bool,
+    },
+    /// Read or set the runtime env keys (`OJ_RUNTIME_ENV_KEYS`) of the
+    /// app's running `oj dev` server, over its `/@oj/env`. Exits 0 when it
+    /// answered, 1 when no such server runs or it refused the request, 2 on
+    /// a usage error, 3 when `--wait` ran out of time.
+    Env {
+        #[command(subcommand)]
+        command: env_cmd::EnvCommand,
     },
     /// Internal: the dev server's `--typecheck` checker, in a process of its
     /// own so nothing the checker does can take the server down. Speaks JSON
@@ -654,9 +663,17 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             typecheck,
         } => {
             let root = root.unwrap_or_else(default_dev_root);
+            let runtime_env = oj_server::RuntimeEnvConfig::from_knobs(&oj_env::get().knobs)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(entry) = ssr {
+                if runtime_env.is_some() {
+                    eprintln!("oj: OJ_RUNTIME_ENV_KEYS is not applied by `oj dev --ssr` yet; the keys keep their literals");
+                }
                 ssr_dev::ssr_dev(root, entry, port, host, typecheck, rolldown).await
             } else if oj_server::is_tanstack_start_app(&root) {
+                if runtime_env.is_some() {
+                    eprintln!("oj: OJ_RUNTIME_ENV_KEYS is not applied to a TanStack Start app yet; the keys keep their literals");
+                }
                 start_dev::start_dev(root, port, host, config, mode, typecheck, rolldown).await
             } else {
                 oj_server::DevServer {
@@ -667,6 +684,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                     lazy,
                     typecheck,
                     mode,
+                    runtime_env,
                     rolldown,
                 }
                 .run()
@@ -786,6 +804,9 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             };
             let _ = stdout.flush();
             std::process::exit(code)
+        }
+        Command::Env { command } => {
+            std::process::exit(env_cmd::run(command, default_dev_root).await)
         }
         Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
         Command::TypecheckWorker { .. } => {
@@ -994,6 +1015,93 @@ mod preview_tests {
         assert!(!o.strict_port, "an explicit preview.strictPort wins");
         assert!(o.spa_fallback);
         assert_eq!(o.base, "/");
+    }
+}
+
+#[cfg(test)]
+mod env_command_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> env_cmd::EnvCommand {
+        match Cli::try_parse_from(args).unwrap().command {
+            Command::Env { command } => command,
+            _ => panic!("not `oj env`"),
+        }
+    }
+
+    #[test]
+    fn env_set_takes_pairs_in_both_forms_and_the_shared_flags() {
+        let env_cmd::EnvCommand::Set { opts, pairs } = parse(&[
+            "oj",
+            "env",
+            "set",
+            "--root",
+            "web",
+            "--wait",
+            "--timeout",
+            "2.5",
+            "A=1",
+            "B",
+            "2",
+        ]) else {
+            panic!("not set");
+        };
+        assert_eq!(pairs, ["A=1", "B", "2"]);
+        assert_eq!(opts.root.as_deref(), Some(std::path::Path::new("web")));
+        assert!(opts.wait && !opts.json);
+        assert_eq!(opts.timeout, 2.5);
+    }
+
+    #[test]
+    fn env_set_takes_a_value_that_starts_with_a_hyphen_and_an_unbounded_timeout() {
+        // As `KEY=-value`, the flags wherever they are; or after `--`.
+        let env_cmd::EnvCommand::Set { opts, pairs } = parse(&[
+            "oj",
+            "env",
+            "set",
+            "A=-1",
+            "B=--x",
+            "--timeout",
+            "inf",
+            "--wait",
+        ]) else {
+            panic!("not set");
+        };
+        assert_eq!(pairs, ["A=-1", "B=--x"]);
+        assert!(opts.timeout.is_infinite() && opts.wait);
+        let env_cmd::EnvCommand::Set { opts, pairs } =
+            parse(&["oj", "env", "set", "--json", "--", "A", "-1", "B", "--wait"])
+        else {
+            panic!("not set");
+        };
+        assert_eq!(pairs, ["A", "-1", "B", "--wait"]);
+        assert!(opts.json && !opts.wait);
+        // Bare, it reads as a flag: refused, not taken for another key.
+        assert!(Cli::try_parse_from(["oj", "env", "set", "A", "-1"]).is_err());
+    }
+
+    #[test]
+    fn env_get_takes_optional_keys_and_defaults_the_wait() {
+        let env_cmd::EnvCommand::Get { opts, keys } = parse(&["oj", "env", "get", "--json"]) else {
+            panic!("not get");
+        };
+        assert!(keys.is_empty() && opts.json && !opts.wait && opts.root.is_none());
+        assert_eq!(opts.timeout, 30.0);
+        let env_cmd::EnvCommand::Get { keys, .. } = parse(&["oj", "env", "get", "A", "B"]) else {
+            panic!("not get");
+        };
+        assert_eq!(keys, ["A", "B"]);
+    }
+
+    #[test]
+    fn env_set_and_unset_need_at_least_one_argument() {
+        assert!(Cli::try_parse_from(["oj", "env", "set"]).is_err());
+        assert!(Cli::try_parse_from(["oj", "env", "unset"]).is_err());
+        assert!(Cli::try_parse_from(["oj", "env"]).is_err());
+        let env_cmd::EnvCommand::Unset { keys, .. } = parse(&["oj", "env", "unset", "A"]) else {
+            panic!("not unset");
+        };
+        assert_eq!(keys, ["A"]);
     }
 }
 

@@ -14,7 +14,11 @@ pub(crate) async fn serve_html(
     original_url: &str,
     file: &Path,
 ) -> Response {
+    if let Some(hold) = state.runtime_env_hold() {
+        return hold;
+    }
     let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let html_env = state.html_env_now();
     let transformed = match state
         .plugins
         .as_ref()
@@ -25,7 +29,7 @@ pub(crate) async fn serve_html(
                 "path": url,
                 "filename": file.display().to_string(),
                 "originalUrl": original_url,
-                "ojHtmlEnv": state.html_env,
+                "ojHtmlEnv": *html_env,
                 "ojCspNonce": state.csp_nonce,
             })
             .to_string();
@@ -33,7 +37,7 @@ pub(crate) async fn serve_html(
         }
         // The host's transform runs the StyleX plugin's hook itself; here its
         // tags follow the page's own transform (an ordinary, unordered hook).
-        None => native_dev_html(state, &raw, url, original_url, file)
+        None => native_dev_html(state, &html_env, &raw, url, original_url, file)
             .await
             .map(|out| {
                 let base = state.base.as_deref().unwrap_or("/");
@@ -62,6 +66,7 @@ pub(crate) async fn serve_html(
 /// server's html-proxy cache.
 async fn native_dev_html(
     state: &Arc<ServerState>,
+    html_env: &std::collections::BTreeMap<String, String>,
     raw: &str,
     url: &str,
     original_url: &str,
@@ -72,7 +77,7 @@ async fn native_dev_html(
     let cfg = dev_html::DevHtmlConfig {
         root: &state.root,
         base,
-        env: &state.html_env,
+        env: html_env,
         env_prefixes: &state.env_prefixes,
         nonce: state.csp_nonce.as_deref(),
         client_srcs: &client_srcs,
