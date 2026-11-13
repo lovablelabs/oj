@@ -66,6 +66,86 @@ impl Plugin for AppAliasPlugin {
     }
 }
 
+/// The Start manifest of a production server bundle.
+///
+/// `tanstack-start-manifest:v` is answered by the app's own Start, whose
+/// manifest plugins a build hosts: the routes' preloads and scripts built
+/// from the client bundle, under Vite's id (`\0tanstack-start-manifest:v`),
+/// so a plugin's `transform` sees the module it sees under `vite build`. That
+/// manifest names no stylesheet: oj links the client's sheets itself and
+/// settles their URLs after the client bundle is written (a plugin's late CSS
+/// replaces a sheet). So the framework's import goes to a wrapper oj writes
+/// (`manifest-sheets.ts`), which imports the manifest by the same specifier
+/// and adds the sheets to the root route. With no Start plugin answering,
+/// the wrapper's import ends at oj's own manifest through the alias.
+#[derive(Debug)]
+pub(crate) struct StartManifestSheets {
+    pub wrapper: std::path::PathBuf,
+}
+
+pub(crate) const START_MANIFEST: &str = "tanstack-start-manifest:v";
+
+impl StartManifestSheets {
+    /// The wrapper module: `sheets` in link order, `client_entry` for the
+    /// Start versions that read it at the top level (1.167 and earlier).
+    pub fn module(sheets: &[String], client_entry: &str) -> String {
+        format!(
+            r#"import {{ tsrStartManifest as startManifest }} from "{START_MANIFEST}";
+const sheets = {sheets};
+const clientEntry = {entry};
+const hrefOf = (sheet) => (typeof sheet === "string" ? sheet : sheet?.href);
+export const tsrStartManifest = () => {{
+  const manifest = startManifest();
+  const routes = (manifest.routes ??= {{}});
+  const root = (routes.__root__ ??= {{}});
+  const css = root.css ?? [];
+  const linked = new Set(css.map(hrefOf));
+  root.css = [...css, ...sheets.filter((href) => !linked.has(href))];
+  const assets = root.assets ?? [];
+  const tagged = new Set(assets.map((asset) => asset?.attrs?.href));
+  root.assets = [
+    ...assets,
+    ...sheets
+      .filter((href) => !tagged.has(href))
+      .map((href) => ({{ tag: "link", attrs: {{ rel: "stylesheet", href }} }})),
+  ];
+  manifest.clientEntry ??= clientEntry;
+  return manifest;
+}};
+"#,
+            sheets = serde_json::json!(sheets),
+            entry = serde_json::json!(client_entry),
+        )
+    }
+}
+
+impl Plugin for StartManifestSheets {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:start-manifest-sheets")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        if args.specifier != START_MANIFEST
+            || args
+                .importer
+                .is_some_and(|from| Path::new(from) == self.wrapper)
+        {
+            return Ok(None);
+        }
+        Ok(Some(HookResolveIdOutput::from_id(
+            self.wrapper.to_string_lossy().into_owned(),
+        )))
+    }
+}
+
 /// tsconfig `paths` as the app's Vite applies them, where vite:resolve
 /// sits, ahead of rolldown's own resolver, which applies them natively
 /// (oxc's order, ahead of packages):

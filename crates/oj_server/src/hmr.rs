@@ -480,6 +480,26 @@ pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String
     }
 }
 
+/// [`stamp_import_url`] for an import a served module makes: a file of an
+/// extension oj does not compile is a module too when a plugin claims it
+/// (`serve_file` routes its request through the plugin pipeline), so its
+/// importer must name its new version as it names any stamped module's.
+pub(crate) fn stamp_module_import(state: &ServerState, url: &str, timestamp: u64) -> String {
+    let stamped = stamp_import_url(&state.root, url, timestamp);
+    if stamped != url || timestamp == 0 || !plugin_claims_url(state, url) {
+        return stamped;
+    }
+    let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    if query.split('&').any(|kv| kv.starts_with("t=")) {
+        return url.to_string();
+    }
+    if query.is_empty() {
+        format!("{path}?t={timestamp}")
+    } else {
+        format!("{url}&t={timestamp}")
+    }
+}
+
 /// `ctx_predefined`: the body already carries the hot-context banner; the glue must
 /// then REUSE `import.meta.hot`, never re-import: a second createHotContext import in one module scope is a SyntaxError.
 pub(crate) fn hot_glue(
@@ -1602,12 +1622,16 @@ fn decide_file(
             })
     };
     // An imported asset is a URL module: its importers re-import it under a new
-    // `?t=` and get a url its `<img>` refetches, as in Vite.
+    // `?t=` and get a url its `<img>` refetches, as in Vite. A file a plugin
+    // makes a module of (`.mdx`) is in the graph like any module and updates
+    // like one: Vite's `handleHMRUpdate` walks the graph for every changed
+    // file, whatever its extension.
     if !(COMPILABLE.contains(&ext)
         || is_style_ext(ext)
         || ext == "json"
         || is_asset_ext(ext)
         || oj_compiler::assets::is_included_asset(&state.root, &path.to_string_lossy())
+        || plugin_claims_url(state, &url)
         || css_dep())
     {
         return Flow::Done;

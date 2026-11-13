@@ -1,4 +1,4 @@
-use super::{HookFilter, HookFilterPlan};
+use super::{BuildHookPlan, HookFilter, HookFilterPlan};
 
 fn plan(json: &str) -> HookFilterPlan {
     let v: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -231,4 +231,99 @@ fn a_plan_without_order_flags_is_open_on_the_asset_side() {
     );
     assert!(p.wants_before_asset("/app/src/logo.svg"));
     assert!(!p.wants_before_asset("/app/src/main.tsx"));
+}
+
+/// The routing predicate for a request of a file oj does not compile: a
+/// `load` or `transform` filter that could match the id, query included,
+/// claims it; an id no hook's filter matches is served as the file.
+#[test]
+fn a_load_or_transform_filter_claims_a_module_by_its_id_and_query() {
+    let both = BuildHookPlan {
+        transform: plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[{"source":"\\.mdx$","flags":""}],"code":[]}]}"#,
+        ),
+        load: plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[{"source":"\\?w=\\d+","flags":""}],"code":[]}]}"#,
+        ),
+        resolve_id: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+    };
+    assert!(
+        both.claims_module("/app/src/content/blog/a.mdx"),
+        "the transform's id filter"
+    );
+    assert!(
+        both.claims_module("/app/src/hero.jpg?w=72&format=webp"),
+        "the load's id filter, on the query"
+    );
+    assert!(
+        !both.claims_module("/app/src/hero.jpg"),
+        "the same image without the query"
+    );
+    assert!(
+        !both.claims_module("/app/src/notes.txt"),
+        "a file no filter names"
+    );
+
+    // A code filter alone cannot decide before the source exists: it passes.
+    let code_only = BuildHookPlan {
+        transform: plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":[{"literal":"frontmatter"}]}]}"#,
+        ),
+        load: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        resolve_id: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+    };
+    assert!(code_only.claims_module("/app/src/a.mdx"));
+
+    // Neither hook present: nothing is claimed.
+    let none = BuildHookPlan {
+        transform: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        load: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        resolve_id: plan(r#"{"present":true,"unfiltered":true,"plugins":[]}"#),
+    };
+    assert!(
+        !none.claims_module("/app/src/a.mdx"),
+        "resolveId alone serves no module"
+    );
+}
+
+/// What a plain asset import consults: a filter that names the id, never a
+/// function-form hook that is offered everything.
+#[test]
+fn only_an_id_filter_names_a_module_outright() {
+    let filtered = BuildHookPlan {
+        transform: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        load: plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[{"source":"\\.png$","flags":""}],"code":[]}]}"#,
+        ),
+        resolve_id: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+    };
+    assert!(filtered.names_module("/app/src/logo.png"));
+    assert!(!filtered.names_module("/app/src/logo.jpg"));
+    assert!(filtered.claims_module("/app/src/logo.png"));
+
+    let unfiltered = BuildHookPlan {
+        transform: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        load: plan(r#"{"present":true,"unfiltered":true,"plugins":[]}"#),
+        resolve_id: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+    };
+    assert!(
+        !unfiltered.names_module("/app/src/logo.png"),
+        "a hook offered everything names nothing"
+    );
+    assert!(
+        unfiltered.claims_module("/app/src/logo.png"),
+        "but it could claim anything"
+    );
+
+    let code_only = BuildHookPlan {
+        transform: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+        load: plan(
+            r#"{"present":true,"unfiltered":false,"plugins":[{"id":[],"code":[{"literal":"x"}]}]}"#,
+        ),
+        resolve_id: plan(r#"{"present":false,"unfiltered":false,"plugins":[]}"#),
+    };
+    assert!(
+        !code_only.names_module("/app/src/logo.png"),
+        "a code filter names no id"
+    );
 }

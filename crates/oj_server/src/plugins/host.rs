@@ -1717,6 +1717,20 @@ impl PluginHost {
         self.hook_plan.read().unwrap().load.wants_before_asset(id)
     }
 
+    /// Whether a `load` or `transform` filter could claim `id`, its source
+    /// unknown (see [`BuildHookPlan::claims_module`]).
+    #[inline]
+    pub fn hook_claims_module(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().claims_module(id)
+    }
+
+    /// Whether a `load` or `transform` id filter names `id` outright (see
+    /// [`BuildHookPlan::names_module`]).
+    #[inline]
+    pub fn hook_names_module(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().names_module(id)
+    }
+
     /// The hooks the host is running right now, oldest first (what a probe
     /// reports; see [`RunningHook`]). Empty when the host is gone.
     pub async fn running_hooks(&self) -> Vec<RunningHook> {
