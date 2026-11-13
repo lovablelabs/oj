@@ -44,6 +44,7 @@ mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
+mod compress;
 mod deps;
 use deps::*;
 mod module_pipeline;
@@ -1760,7 +1761,14 @@ fn build_router(
             cors_middleware,
         ));
     }
-    (app.with_state(state), route_hook, extra_headers)
+    // Outermost: every text response, a proxy's or a plugin middleware's
+    // included, leaves compressed when the client accepts it (one it sends
+    // already encoded passes as is).
+    (
+        app.with_state(state).layer(compress::layer()),
+        route_hook,
+        extra_headers,
+    )
 }
 
 /// Load the serve config and adopt the vite.config's values.

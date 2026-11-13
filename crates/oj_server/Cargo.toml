@@ -20,6 +20,7 @@ oj_js.workspace = true
 oj_typecheck.workspace = true
 anyhow.workspace = true
 axum.workspace = true
+tower-http.workspace = true
 oxc_sourcemap.workspace = true
 tokio.workspace = true
 notify.workspace = true
@@ -73,6 +74,8 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
 serde.workspace = true
+# Reads the gzip bodies the compression tests get back.
+flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

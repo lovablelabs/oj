@@ -6667,6 +6667,7 @@ dependencies = [
  "axum",
  "blake3",
  "deno_signals",
+ "flate2",
  "futures-util",
  "glob",
  "globset",
@@ -6717,6 +6718,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tower",
+ "tower-http",
 ]
 
 [[package]]
@@ -11561,12 +11563,16 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
+ "async-compression",
  "bitflags 2.13.2",
  "bytes",
+ "futures-core",
  "futures-util",
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
