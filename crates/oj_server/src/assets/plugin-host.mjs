@@ -6114,7 +6114,10 @@ async function startFacts(c) {
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
   const names = c.rawPlugins.map((p) => p && p.name);
+  const fileNames = await outputFileNames(c, cfg, output);
   return JSON.stringify({
+    entryFileNames: fileNames.entry === undefined ? null : factValue(fileNames.entry, fns),
+    chunkFileNames: fileNames.chunk === undefined ? null : factValue(fileNames.chunk, fns),
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
     codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting, fns),
@@ -6134,6 +6137,28 @@ async function startFacts(c) {
       { pre: 0, post: 0 },
     ),
   });
+}
+// A build's `output.entryFileNames` and `output.chunkFileNames` as rolldown
+// gets them under Vite: the environment's own (a string or a function of the
+// chunk) over Vite's `<assetsDir>/[name]-[hash].js`, then every plugin's
+// `outputOptions` hook in turn, each taking the options the last one
+// returned (a plugin wrapping `chunkFileNames` to place some chunks in a
+// directory of their own). Undefined where nothing names them: the bundle
+// keeps its own pattern.
+async function outputFileNames(c, cfg, output) {
+  if (command !== "build") return {};
+  const hooks = pluginsWithHook(c, "outputOptions");
+  if (output.entryFileNames === undefined && output.chunkFileNames === undefined && hooks.length === 0) return {};
+  const assetsDir = cfg.environments?.[c.environment.name]?.build?.assetsDir ?? cfg.build?.assetsDir ?? "assets";
+  const pattern = [assetsDir, "[name]-[hash].js"].filter(Boolean).join("/");
+  let options = { ...output };
+  options.entryFileNames ??= pattern;
+  options.chunkFileNames ??= pattern;
+  for (const { p, fn } of hooks) {
+    const next = await fn.call(ctxFor(c, p), options);
+    if (next != null) options = next;
+  }
+  return { entry: options.entryFileNames, chunk: options.chunkFileNames };
 }
 const stringOr = (v) => (typeof v === "string" ? v : null);
 // Vite's resolved worker options: `format` (iife by default) and
