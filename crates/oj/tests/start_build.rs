@@ -232,3 +232,135 @@ fn a_plugin_transforms_starts_manifest_in_the_server_bundle() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The fixture as a Cloudflare app: inside a directory whose node_modules
+/// holds @cloudflare/vite-plugin (e2e/fixtures/cloudflare-deps), with the
+/// plugin ahead of Start's and the Worker environment named `ssr`, as
+/// Cloudflare's Start guide sets it up. Returns (the directory, the app).
+fn cloudflare_app(name: &str) -> Option<(PathBuf, PathBuf)> {
+    let deps = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/cloudflare-deps")
+        .canonicalize()
+        .unwrap();
+    if !deps.join("node_modules/@cloudflare/vite-plugin").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but the cloudflare-deps fixture is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/cloudflare-deps");
+        return None;
+    }
+    let source = app(name)?;
+    let parent = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("oj-start-build-cf-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&parent).unwrap();
+    std::os::unix::fs::symlink(deps.join("node_modules"), parent.join("node_modules")).unwrap();
+    let root = parent.join("app");
+    std::fs::rename(&source, &root).unwrap();
+    std::fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{"name":"oj-start-fixture","main":"@tanstack/react-start/server-entry","compatibility_date":"2025-09-01","compatibility_flags":["nodejs_compat"]}"#,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let config = config
+        .replacen(
+            "import { defineConfig } from \"vite\";",
+            "import { defineConfig } from \"vite\";\nimport { cloudflare } from \"@cloudflare/vite-plugin\";",
+            1,
+        )
+        .replacen(
+            "    tanstackStart(",
+            "    cloudflare({ viteEnvironment: { name: \"ssr\" } }),\n    tanstackStart(",
+            1,
+        );
+    assert!(
+        config.contains("cloudflare("),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(root.join("vite.config.ts"), config).unwrap();
+    Some((parent, root))
+}
+
+/// Start's config hook declares its server environment's output directory,
+/// `<build.outDir>/server`, and @cloudflare/vite-plugin (which would name the
+/// directory after the environment, `ssr`) keeps a declared one: the Worker
+/// is written to `dist/server`, where `vite build` puts it, the plugins see
+/// that directory in the resolved config, and the deploy config points at it.
+#[test]
+fn a_cloudflare_worker_is_written_to_starts_server_directory() {
+    let Some((parent, root)) = cloudflare_app("worker-dir") else {
+        return;
+    };
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let config = config.replacen(
+        "    cloudflare(",
+        "    { name: \"reads-out-dirs\", configResolved(c) { process.getBuiltinModule(\"node:fs\").writeFileSync(\"out-dirs.json\", JSON.stringify([c.environments.client.build.outDir, c.environments.ssr.build.outDir])); } },\n    cloudflare(",
+        1,
+    );
+    std::fs::write(root.join("vite.config.ts"), config).unwrap();
+    build(&root);
+
+    for file in ["index.js", "wrangler.json"] {
+        assert!(
+            root.join("dist/server").join(file).is_file(),
+            "dist/server/{file} is written"
+        );
+    }
+    assert!(
+        !root.join("dist/ssr").exists(),
+        "nothing is written under the environment's name"
+    );
+    assert!(
+        root.join("dist/client/assets").is_dir(),
+        "the client stays in dist/client"
+    );
+    let deploy = std::fs::read_to_string(root.join(".wrangler/deploy/config.json")).unwrap();
+    assert!(
+        deploy.contains("dist/server/wrangler.json"),
+        "wrangler deploys the Worker from dist/server: {deploy}"
+    );
+    let worker: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("dist/server/wrangler.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        worker["assets"]["directory"], "../client",
+        "the Worker serves the client's files"
+    );
+    let seen = std::fs::read_to_string(root.join("out-dirs.json")).unwrap();
+    assert_eq!(
+        seen, r#"["dist/client","dist/server"]"#,
+        "the resolved config names both directories"
+    );
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+/// The top-level `build.outDir` moves Start's default along.
+#[test]
+fn a_cloudflare_worker_follows_the_top_level_out_dir() {
+    let Some((parent, root)) = cloudflare_app("worker-out-dir") else {
+        return;
+    };
+    let original = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let moved = original.replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  build: { outDir: \"out\" },",
+        1,
+    );
+    assert_ne!(
+        moved, original,
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(root.join("vite.config.ts"), moved).unwrap();
+    build(&root);
+    assert!(
+        root.join("out/server/index.js").is_file() && root.join("out/client/assets").is_dir(),
+        "build.outDir holds both environments"
+    );
+    assert!(!root.join("dist").exists(), "nothing lands in dist");
+    let _ = std::fs::remove_dir_all(&parent);
+}
