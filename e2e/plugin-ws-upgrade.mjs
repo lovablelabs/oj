@@ -244,6 +244,8 @@ try {
   srv.kill();
   upstream.close();
   httpUpstream.close();
-  fs.rmSync(app, { recursive: true, force: true });
+  // The server and its plugin host may still be writing the cache as they
+  // go down: retried, as the other scripts remove their apps.
+  fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 process.exit(failed ? 1 : 0);
