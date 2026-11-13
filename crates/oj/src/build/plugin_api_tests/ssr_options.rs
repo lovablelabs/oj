@@ -370,6 +370,41 @@ async fn advanced_chunks_groups_are_emitted() {
     );
 }
 
+/// A group's `tags` reach rolldown: `$initial` with no `test` takes the
+/// modules the entry reaches by static imports (rolldown then folds so small
+/// a group into the entry chunk) and leaves the lazy ones in their own
+/// chunks. Dropped, the group takes every module.
+#[tokio::test]
+async fn an_initial_tagged_group_leaves_lazy_modules_out() {
+    let root = ssr_app("ssropts-initial-tags");
+    build_with(
+        &root,
+        "oj.config.json",
+        r#"{"build":{"rolldownOptions":{"output":{"advancedChunks":{"groups":[{"name":"boot","tags":["$initial"]}]}}}}}"#,
+    )
+    .await;
+    let chunks: Vec<(String, String)> = files_under(&root.join("dist/assets"))
+        .into_iter()
+        .filter(|(f, _)| f.ends_with(".js"))
+        .collect();
+    let holding = |marker: &str| -> Vec<&str> {
+        chunks
+            .iter()
+            .filter(|(_, code)| code.contains(marker))
+            .map(|(f, _)| f.as_str())
+            .collect()
+    };
+    let (eager, lazy) = (holding("UTIL_MARKER"), holding("LAZY_MARKER"));
+    assert!(
+        eager.len() == 1 && eager == holding("DEP_EXT_MARKER"),
+        "one chunk holds the entry's static imports: {eager:?}"
+    );
+    assert!(
+        lazy.len() == 1 && lazy != eager,
+        "the lazy module keeps its own chunk: {lazy:?} beside {eager:?}"
+    );
+}
+
 /// A function-valued rollup option cannot cross the config's JSON boundary;
 /// it is warned about and ignored, and the build still succeeds, from an
 /// oj.config.mjs and from a vite.config.
