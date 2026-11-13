@@ -4,6 +4,10 @@
 pub struct HookFilterPlan {
     pub present: bool,
     pub unfiltered: bool,
+    /// An always-offered plugin Vite's container runs before `vite:asset`
+    /// (a hook with `order: "pre"`, else an `enforce: "pre"` plugin): the
+    /// ones whose `load` can claim a module vite:asset would answer.
+    pub unfiltered_before_asset: bool,
     pub plugins: Vec<PluginFilter>,
 }
 
@@ -11,6 +15,8 @@ pub struct HookFilterPlan {
 pub struct PluginFilter {
     pub id: Vec<HookFilter>,
     pub code: Vec<HookFilter>,
+    /// See [`HookFilterPlan::unfiltered_before_asset`].
+    pub before_asset: bool,
 }
 
 /// One `filter` pattern as the host's gatePatterns hands it over: a RegExp's
@@ -73,6 +79,7 @@ impl HookFilterPlan {
         Self {
             present: true,
             unfiltered: true,
+            unfiltered_before_asset: true,
             plugins: Vec::new(),
         }
     }
@@ -86,6 +93,11 @@ impl HookFilterPlan {
             .get("unfiltered")
             .and_then(|b| b.as_bool())
             .unwrap_or(true);
+        // A host without the order flags (older) is read as the open side.
+        let mut unfiltered_before_asset = v
+            .get("unfilteredBeforeAsset")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(unfiltered);
         let mut plugins = Vec::new();
         for entry in v
             .get("plugins")
@@ -97,18 +109,49 @@ impl HookFilterPlan {
                 let items = entry.get(key).and_then(|x| x.as_array())?;
                 Some(items.iter().map(HookFilter::from_json).collect())
             };
+            let before_asset = entry
+                .get("beforeAsset")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(true);
             match (compile("id"), compile("code")) {
                 (Some(id), Some(code)) if !id.is_empty() || !code.is_empty() => {
-                    plugins.push(PluginFilter { id, code });
+                    plugins.push(PluginFilter {
+                        id,
+                        code,
+                        before_asset,
+                    });
                 }
-                _ => unfiltered = true,
+                _ => {
+                    unfiltered = true;
+                    if before_asset {
+                        unfiltered_before_asset = true;
+                    }
+                }
             }
         }
         Self {
             present,
             unfiltered,
+            unfiltered_before_asset,
             plugins,
         }
+    }
+
+    /// [`Self::wants`] for a module `vite:asset` would answer (a plain svg):
+    /// only a plugin Vite's container runs before it can claim one, so only
+    /// those are asked.
+    pub fn wants_before_asset(&self, id: &str) -> bool {
+        if !self.present {
+            return false;
+        }
+        if self.unfiltered_before_asset {
+            return true;
+        }
+        let id = normalized_id(id);
+        self.plugins
+            .iter()
+            .filter(|p| p.before_asset)
+            .any(|p| p.matches(&id, None))
     }
 
     /// Whether any plugin's filter could claim this module; a code filter with
@@ -120,23 +163,32 @@ impl HookFilterPlan {
         if self.unfiltered {
             return true;
         }
-        // The host matches slash-normalized ids, so normalize Windows paths
-        // the same way or the gate under-matches.
-        let id = if id.contains('\\') {
-            std::borrow::Cow::Owned(id.replace('\\', "/"))
-        } else {
-            std::borrow::Cow::Borrowed(id)
-        };
-        let id = id.as_ref();
-        self.plugins.iter().any(|p| {
-            let id_ok = p.id.is_empty() || p.id.iter().any(|f| f.is_match(id));
-            let code_ok = p.code.is_empty()
-                || match code {
-                    Some(c) => p.code.iter().any(|f| f.is_match(c)),
-                    None => true,
-                };
-            id_ok && code_ok
-        })
+        let id = normalized_id(id);
+        self.plugins.iter().any(|p| p.matches(&id, code))
+    }
+}
+
+impl PluginFilter {
+    /// Whether this plugin's filter could claim the module; a code filter
+    /// with no code available passes (an over-approximation).
+    fn matches(&self, id: &str, code: Option<&str>) -> bool {
+        let id_ok = self.id.is_empty() || self.id.iter().any(|f| f.is_match(id));
+        let code_ok = self.code.is_empty()
+            || match code {
+                Some(c) => self.code.iter().any(|f| f.is_match(c)),
+                None => true,
+            };
+        id_ok && code_ok
+    }
+}
+
+/// The host matches slash-normalized ids, so a Windows path is normalized
+/// the same way or the gate under-matches.
+fn normalized_id(id: &str) -> std::borrow::Cow<'_, str> {
+    if id.contains('\\') {
+        std::borrow::Cow::Owned(id.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(id)
     }
 }
 
