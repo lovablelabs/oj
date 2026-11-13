@@ -1468,9 +1468,12 @@ impl ImportRewrite<'_> {
         ) {
             // An `.svg` a load or transform plugin may componentize stays
             // unmarked (not `?url`), so it routes through the compile path
-            // where svgr can claim it (Vite parity).
+            // where svgr can claim it (Vite parity). Only the mark oj added
+            // comes off: an import that asked for the URL itself
+            // (`./logo.svg?url`) keeps it, as under Vite, where the plugin's
+            // filter does not match the query form and vite:asset answers.
             let url = match url.strip_suffix(".svg?url") {
-                Some(base) => {
+                Some(base) if !spec.contains('?') => {
                     let plain = format!("{base}.svg");
                     if state.svg_url_may_be_componentized(&plain) {
                         plain
@@ -1478,7 +1481,7 @@ impl ImportRewrite<'_> {
                         url
                     }
                 }
-                None => url,
+                _ => url,
             };
             // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to imports of
             // HMR-invalidated modules so the importer loads the new version
