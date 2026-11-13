@@ -341,6 +341,58 @@ async fn a_noop_rename_alone_is_dropped() {
     );
 }
 
+/// A known file deleted under the gate is held: its importers need the
+/// reload. Gone at batch time like an atomic save's temporary file, but not
+/// born in the batch, which is what tells the two apart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_module_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    std::fs::remove_file(app.root.join(COLOR)).unwrap();
+    wait_pending(&server, 1, "the deletion of the module").await;
+    assert_eq!(flush(&server).await, 1, "the flush released the deletion");
+}
+
+/// A file created under the gate and still there at batch time is held: an
+/// import that failed to resolve may find it now. Born in the batch like an
+/// atomic save's temporary file, but not gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_created_module_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    app.write(&[("src/new.js", "export const fresh = true;\n")]);
+    wait_pending(&server, 1, "the new module").await;
+    assert_eq!(flush(&server).await, 1, "the flush released the new module");
+}
+
+/// An atomic save with new content holds the target alone, not the
+/// temporary file renamed away beside it, and the flush releases the new
+/// bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_atomic_save_of_new_content_holds_the_target_alone() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    rename_over(&app, "Y");
+    tokio::time::sleep(SETTLED).await;
+    let status: serde_json::Value =
+        serde_json::from_str(&server.text("/__hmr_gate").await).unwrap();
+    let held: Vec<&String> = status["pending"].as_object().unwrap().keys().collect();
+    // The watcher spells the root as the file system does (`/private/var`
+    // for `/var`): the file name is what the paths share.
+    assert!(
+        held.len() == 1 && held[0].ends_with("/src/color.js"),
+        "the save held the target alone: {status}"
+    );
+    assert_eq!(flush(&server).await, 1, "the flush released the save");
+    assert!(
+        page_fetch(&server, 2).await.contains("\"Y\""),
+        "the page shows Y"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
     let (app, server) = gated_app().await;
