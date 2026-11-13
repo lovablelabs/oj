@@ -565,9 +565,9 @@ struct Module {
     re_exports: HashMap<String, (String, String)>,
     /// `export * from "./x"` specifiers, in order.
     export_all: Vec<String>,
-    /// The kinds resolved so far; a name being resolved is marked so, and
+    /// The kinds resolved so far, `None` while a name is being resolved so
     /// a cycle through it ends there (the compiler's `visited`).
-    kinds: RefCell<HashMap<String, Memo>>,
+    kinds: RefCell<HashMap<String, Kind>>,
 }
 
 impl Module {
@@ -678,15 +678,19 @@ impl Module {
         if name == FACTORY {
             return Kind::Factory;
         }
-        resolver.memoized(&self.kinds, name.to_string(), || {
-            if let Some((source, imported)) = self.imports.get(name) {
-                resolver.exported_kind(&self.path, source, imported)
-            } else if let Some(init) = self.variables.get(name) {
-                self.kind_of_shape(resolver, init)
-            } else {
-                Kind::None
-            }
-        })
+        if let Some(kind) = self.kinds.borrow().get(name) {
+            return *kind;
+        }
+        self.kinds.borrow_mut().insert(name.to_string(), Kind::None);
+        let kind = if let Some((source, imported)) = self.imports.get(name) {
+            resolver.exported_kind(&self.path, source, imported)
+        } else if let Some(init) = self.variables.get(name) {
+            self.kind_of_shape(resolver, init)
+        } else {
+            Kind::None
+        };
+        self.kinds.borrow_mut().insert(name.to_string(), kind);
+        kind
     }
 
     /// What a variable's initializer makes it: the factory under another
@@ -779,59 +783,40 @@ impl Module {
         }
     }
 
-    /// What the module exports as `name`, through `export const`, `export {
-    /// local as name }`, `export { .. } from` and `export * from`, as the
-    /// compiler's `findExportInModule` follows them: a local binding first,
-    /// then the re-exports.
-    fn export_kind(&self, resolver: &Resolver, name: &str) -> Kind {
+    /// The module that exports `name` for this one: itself, through `export
+    /// const`, `export { local as name }` or `export { .. } from`, or the
+    /// first of its `export * from` modules that does, in order. It is the
+    /// compiler's `findExportInModule`: a module is looked at once in a
+    /// search (`visited`, its `visitedModules`), each search starting anew,
+    /// and the first binding found is the answer whatever it is bound to.
+    fn exporter(
+        self: &Rc<Self>,
+        resolver: &Resolver,
+        name: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Option<Rc<Module>> {
+        if !visited.insert(self.path.clone()) {
+            return None;
+        }
+        if self.exports.contains_key(name) || self.re_exports.contains_key(name) {
+            return Some(self.clone());
+        }
+        self.export_all.iter().find_map(|specifier| {
+            resolver
+                .resolve(&self.path, specifier)?
+                .exporter(resolver, name, visited)
+        })
+    }
+
+    /// What the module's own export `name` stands for.
+    fn own_export_kind(&self, resolver: &Resolver, name: &str) -> Kind {
         if let Some(local) = self.exports.get(name) {
             return self.kind_of_name(resolver, local);
         }
-        if let Some((specifier, local)) = self.re_exports.get(name) {
-            return resolver.exported_kind(&self.path, specifier, local);
+        match self.re_exports.get(name) {
+            Some((specifier, local)) => resolver.exported_kind(&self.path, specifier, local),
+            None => Kind::None,
         }
-        for specifier in &self.export_all {
-            let kind = resolver.exported_kind(&self.path, specifier, name);
-            if kind != Kind::None {
-                return kind;
-            }
-            // The first module that exports the name is the one asked,
-            // whatever the name is there (`findExportInModule` returns the
-            // first binding found, then its kind is looked at).
-            let binds = resolver
-                .resolve(&self.path, specifier)
-                .is_some_and(|module| module.binds(resolver, name, &mut Vec::new()));
-            if binds {
-                return Kind::None;
-            }
-        }
-        Kind::None
-    }
-
-    /// Whether the module exports `name`, itself or through an `export *`,
-    /// short of the modules already being asked for it; `seen` holds the
-    /// modules looked at, so a cycle of them ends.
-    fn binds(&self, resolver: &Resolver, name: &str, seen: &mut Vec<String>) -> bool {
-        // A module being asked for the name is one the compiler's
-        // `visitedModules` holds: asked again, it exports nothing.
-        let asked = matches!(
-            resolver
-                .exported
-                .borrow()
-                .get(&(self.path.clone(), name.to_string())),
-            Some(Memo::Resolving(_))
-        );
-        if asked || seen.contains(&self.path) {
-            return false;
-        }
-        seen.push(self.path.clone());
-        self.exports.contains_key(name)
-            || self.re_exports.contains_key(name)
-            || self.export_all.iter().any(|specifier| {
-                resolver
-                    .resolve(&self.path, specifier)
-                    .is_some_and(|module| module.binds(resolver, name, seen))
-            })
     }
 }
 
@@ -854,35 +839,12 @@ struct Resolver<'m> {
     /// What a specifier named from a module: None for one that is not the
     /// app's (a package, a missing file) or that the parser cannot read.
     resolved: RefCell<HashMap<ImportKey, Option<Rc<Module>>>>,
-    /// What a module exports under a name, by path and name; one being
-    /// resolved is marked so, and a cycle of re-exports ends there.
-    exported: RefCell<HashMap<(String, String), Memo>>,
-    /// Every question asked, in order: how it ended.
-    questions: RefCell<Vec<Question>>,
-    /// The questions being answered, one inside the other, outermost first.
-    open: RefCell<Vec<usize>>,
-    /// The questions a None was cut at since the one being answered began,
-    /// by their depth in `open`.
-    cuts: RefCell<std::collections::BTreeSet<usize>>,
-}
-
-/// A memoized answer: known, being resolved by a question, or a None
-/// leaning on a question that cut it.
-#[derive(Clone, Copy)]
-enum Memo {
-    Resolving(usize),
-    Leaning(usize),
-    Known(Kind),
-}
-
-/// A question of [`Resolver::memoized`]: open at a depth, ended with
-/// nothing or with a kind, or ended with a None leaning on another.
-#[derive(Clone, Copy)]
-enum Question {
-    Open(usize),
-    Nothing,
-    Found,
-    Leaning(usize),
+    /// What a module exports under a name, by path and name; `None` while
+    /// it is being resolved, so a cycle of bindings ends there. A binding
+    /// leads to one other at most (an import to the export it names, a
+    /// variable to its initializer's root), so a name on a cycle, or
+    /// leading to one, is bound to nothing: the None is its answer.
+    exported: RefCell<HashMap<(String, String), Kind>>,
 }
 
 impl<'m> Resolver<'m> {
@@ -892,9 +854,6 @@ impl<'m> Resolver<'m> {
             loaded: RefCell::new(HashMap::new()),
             resolved: RefCell::new(HashMap::new()),
             exported: RefCell::new(HashMap::new()),
-            questions: RefCell::new(Vec::new()),
-            open: RefCell::new(Vec::new()),
-            cuts: RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -940,87 +899,15 @@ impl<'m> Resolver<'m> {
             };
         };
         let key = (module.path.clone(), name.to_string());
-        self.memoized(&self.exported, key, || module.export_kind(self, name))
-    }
-
-    /// `compute`'s answer for `key`, kept in `memo`. A question asked again
-    /// while it is being answered (a cycle of imports or re-exports) is
-    /// answered None, which ends the cycle. A None that leaned on such a cut
-    /// is not the question's own answer: with `m` re-exporting all of `n`
-    /// and `o`, and `n` all of `m`, asking `m` asks `n`, which is cut at `m`
-    /// and finds nothing, though `n` does export what `o` declares. So it is
-    /// kept as leaning on the question that cut it, the innermost one still
-    /// open: it answers while that one is open (each module of a cycle is
-    /// looked at once, not once for every path to it), becomes the answer
-    /// when that one ends with nothing, and is asked anew when that one
-    /// found something.
-    fn memoized<K: std::hash::Hash + Eq + Clone>(
-        &self,
-        memo: &RefCell<HashMap<K, Memo>>,
-        key: K,
-        compute: impl FnOnce() -> Kind,
-    ) -> Kind {
-        let known = memo.borrow().get(&key).copied();
-        match known {
-            Some(Memo::Known(kind)) => return kind,
-            Some(Memo::Resolving(question) | Memo::Leaning(question)) => {
-                match self.outcome(question) {
-                    Question::Open(depth) => {
-                        self.cuts.borrow_mut().insert(depth);
-                        return Kind::None;
-                    }
-                    Question::Nothing => {
-                        memo.borrow_mut().insert(key, Memo::Known(Kind::None));
-                        return Kind::None;
-                    }
-                    Question::Found | Question::Leaning(_) => {}
-                }
-            }
-            None => {}
+        if let Some(kind) = self.exported.borrow().get(&key) {
+            return *kind;
         }
-        let question = self.questions.borrow().len();
-        let depth = self.open.borrow().len();
-        self.questions.borrow_mut().push(Question::Open(depth));
-        self.open.borrow_mut().push(question);
-        memo.borrow_mut()
-            .insert(key.clone(), Memo::Resolving(question));
-        let outer = self.cuts.take();
-        let kind = compute();
-        self.open.borrow_mut().pop();
-        // The cuts at questions still open, further out than this one.
-        let mut cuts = self.cuts.take();
-        cuts.split_off(&depth);
-        let (outcome, kept) = match cuts.last() {
-            Some(innermost) if kind == Kind::None => {
-                let on = self.open.borrow()[*innermost];
-                (Question::Leaning(on), Memo::Leaning(on))
-            }
-            _ => {
-                cuts.clear();
-                let outcome = if kind == Kind::None {
-                    Question::Nothing
-                } else {
-                    Question::Found
-                };
-                (outcome, Memo::Known(kind))
-            }
-        };
-        self.questions.borrow_mut()[question] = outcome;
-        memo.borrow_mut().insert(key, kept);
-        cuts.extend(outer);
-        self.cuts.replace(cuts);
+        self.exported.borrow_mut().insert(key.clone(), Kind::None);
+        let kind = module
+            .exporter(self, name, &mut std::collections::HashSet::new())
+            .map_or(Kind::None, |exporter| exporter.own_export_kind(self, name));
+        self.exported.borrow_mut().insert(key, kind);
         kind
-    }
-
-    /// How `question` ended, through the questions it leaned on.
-    fn outcome(&self, mut question: usize) -> Question {
-        let questions = self.questions.borrow();
-        loop {
-            match questions[question] {
-                Question::Leaning(on) => question = on,
-                outcome => return outcome,
-            }
-        }
     }
 }
 
@@ -2559,10 +2446,11 @@ mod tests {
     }
 
     // Modules that each re-export all of the others: a name none exports,
-    // and one the last declares, are answered looking at each module once.
-    // A None cut by a cycle was asked again on every path to it, so twelve
-    // such modules were forty million paths, ten times more with each one
-    // added. The same for layers whose last re-exports the first.
+    // and one the last declares, are answered looking at each module once
+    // in a search, as the compiler's `visitedModules` does. Asked again on
+    // every path to it, twelve such modules were forty million paths, ten
+    // times more with each one added. The same for layers whose last
+    // re-exports the first.
     #[test]
     fn modules_re_exporting_one_another_are_each_looked_at_once() {
         let builder = "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn();\n";
@@ -2649,9 +2537,10 @@ mod tests {
     }
 
     // `m` re-exports all of `n` and of `o`, and `n` all of `m`: both export
-    // what `o` declares, whichever is asked first. Asking `m` asks `n`, which
-    // is cut at `m`; that answer is not `n`'s, and kept as if it were, the
-    // second of two imports found nothing, in the order they were written.
+    // what `o` declares, whichever is asked first, each search starting with
+    // no module looked at (the compiler's `visitedModules` is one search's).
+    // Asking `m` asks `n`, which ends at `m`; kept as `n`'s own answer, that
+    // left the second of two imports with nothing, in the order written.
     #[test]
     fn a_builder_behind_a_cycle_of_export_stars_is_found_from_every_module_of_it() {
         let files = [

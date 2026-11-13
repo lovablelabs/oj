@@ -1799,3 +1799,83 @@ async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_b
         "import protection flagged a server-only import: {console:?}"
     );
 }
+
+/// A builder's module that is no source file under `src/` (a `.js` file of a
+/// `shared/` directory), edited while `oj dev` runs. Start's compiler, on a
+/// hot update, forgets the changed module and invalidates the modules
+/// importing it (`hotUpdate` in start-compiler-plugin), so a `.handler(..)`
+/// call in an importer becomes a server function once what it is called on
+/// becomes a builder, and stops being one when it no longer is. Under oj the
+/// server-fn resolver is regenerated for that edit, and the server's copy of
+/// the importer compiled again: the function's id answers after the edit,
+/// with no restart.
+const LATE_FNS: &str = r#"import { gate } from "../../shared/gate";
+
+export const late = gate.handler(async () => "late-answer");
+"#;
+
+const GATE_PLAIN: &str = "export const gate = { handler: (fn) => fn };\n";
+
+const GATE_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const gate = createServerFn({ method: "POST" });
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_follows_an_edit_to_a_builder_module_outside_src() {
+    let files = [
+        ("shared/gate.js", GATE_PLAIN.to_string()),
+        ("src/lib/late.functions.ts", LATE_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { late } from \"../lib/late.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.resolve(late()).then(setResult, (e) => setResult("error " + String(e)));
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ];
+    let Some(app) = app_with("sf-late-builder-dev", &files, None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    let id = oj_compiler::server_fns::server_fn_id("src/lib/late.functions.ts", "late");
+    let (status, body) = dev.call(&id);
+    assert_ne!(
+        status,
+        200,
+        "no server function yet, answered {body:?}\n{}",
+        dev.output()
+    );
+
+    let answers = |want: bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, body) = dev.call(&id);
+            let is = status == 200 && body.contains("late-answer");
+            if is == want || std::time::Instant::now() > deadline {
+                return (is, status, body);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    std::fs::write(app.0.join("shared/gate.js"), GATE_BUILDER).unwrap();
+    let (is, status, body) = answers(true);
+    assert!(
+        is,
+        "after the module exports a builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+    std::fs::write(app.0.join("shared/gate.js"), GATE_PLAIN).unwrap();
+    let (is, status, body) = answers(false);
+    assert!(
+        !is,
+        "after the module exports no builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+}
