@@ -1527,11 +1527,15 @@ fn handle_batch(
     // renamed over its target before the quiet window closed. No page fetched
     // it and nothing can import it now, so holding it would only make the
     // editor's next flush reload every page for a path that no longer exists
-    // (its target's own rewrite is judged on its own). Vite never hears of
-    // such a file: chokidar's `atomic` handling, on by default off polling,
-    // hides an editor's temporary names and folds the save into one `change`
-    // of the target (chokidar's `_isIgnored` and `_emit`). The watchers,
-    // watchChange and invalidation below still see both.
+    // (its target's own rewrite is judged on its own). Vite sends nothing
+    // for it either: its handleHMRUpdate hears the add and the unlink, finds
+    // no module for the file and returns at "[no modules matched]" (only an
+    // .html file reloads the page), and chokidar's `atomic` handling, on by
+    // default off polling, hides the editor temporary names it knows (swap
+    // files, `~` backups, Sublime's `.tmp`) before Vite hears of them at
+    // all. A known file that is gone (deleted, not born here) stays held:
+    // its importers need the reload. The watchers, watchChange and
+    // invalidation below still see both, as Vite's plugins do.
     let hot = match &state.hmr_gate {
         Some(gate) => {
             let hot: Vec<PathBuf> = hot
