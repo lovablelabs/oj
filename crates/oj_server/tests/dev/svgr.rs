@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use crate::browser::Page;
+use crate::plugin_middleware::middleware_ready;
 use crate::App;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -236,4 +237,192 @@ async fn svgr_plugin_named_component_renders_in_dev() {
     );
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;
+}
+
+/// lovable-tagger's shape: a `pre` plugin whose function-form `load` is
+/// offered every id (Vite's container has no filter to ask) and claims no
+/// svg (it returns null), reporting the ids it saw at `/__loads`.
+const TAGGER_LIKE: &str = r#"const seen = [];
+export default [{
+  name: "tagger-like",
+  enforce: "pre",
+  load(id) {
+    if (id.endsWith(".svg")) seen.push(id);
+    return null;
+  },
+  configureServer(server) {
+    server.middlewares.use("/__loads", (_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(seen));
+    });
+  },
+}];
+"#;
+
+/// A plugin whose `load` has a filter no file id matches (a virtual-module
+/// plugin): Vite's container never calls it for an svg.
+const VIRTUAL_ONLY: &str = r#"export default [{
+  name: "virtual-only",
+  resolveId(id) {
+    return id === "virtual:answer" ? id : null;
+  },
+  load: {
+    filter: { id: /^virtual:/ },
+    handler() {
+      return "export default 42;\n";
+    },
+  },
+}];
+"#;
+
+fn plugin_app(plugins: &str, svg: (&str, &str), main: &str) -> App {
+    App::new(&[
+        (
+            "package.json",
+            r#"{"name":"svg-load-gate","version":"1.0.0","type":"module"}"#,
+        ),
+        ("oj.plugins.mjs", plugins),
+        svg,
+        ("src/main.tsx", main),
+        ("index.html", INDEX),
+    ])
+}
+
+fn svg_loads(body: &str) -> usize {
+    serde_json::from_str::<Vec<String>>(body)
+        .unwrap_or_else(|e| panic!("the load list ({e}): {body}"))
+        .iter()
+        .filter(|id| id.ends_with("/src/logo.svg"))
+        .count()
+}
+
+/// A plain svg under a `pre` plugin with a function-form `load` (lovable-tagger):
+/// Vite offers the plugin the id, it declines, and `vite:asset` answers the
+/// URL. oj asks the hook once and stores the URL module under the file's key:
+/// the next request for the unchanged file is the warm path (one stat), with
+/// a real ETag, and the hooks are not run again. The import stays plain, as
+/// under Vite, and the server render takes the same decision.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unfiltered_load_hook_is_asked_once_and_the_plain_svg_stays_the_url() {
+    let app = plugin_app(
+        TAGGER_LIKE,
+        ("src/logo.svg", ICON),
+        "import url from \"./logo.svg\";\nconsole.log(url);\n",
+    );
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+
+    let main = server.text("/src/main.tsx").await;
+    assert!(
+        main.contains("\"/src/logo.svg\""),
+        "the import stays plain for the hooks to see:\n{main}"
+    );
+    let first = imported(&server, "/src/logo.svg").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert!(
+        first
+            .body
+            .starts_with("export default \"data:image/svg+xml,"),
+        "unclaimed, the svg is its URL:\n{}",
+        first.body
+    );
+    let asked = svg_loads(&server.text("/__loads").await);
+    assert!(asked >= 1, "the load hook was offered the svg");
+    let etag = first
+        .headers
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        etag.len() > 2,
+        "the URL module carries the file's key as its ETag, not an empty one: {etag:?}"
+    );
+
+    let second = imported(&server, "/src/logo.svg").await;
+    assert_eq!(second.body, first.body);
+    assert_eq!(
+        svg_loads(&server.text("/__loads").await),
+        asked,
+        "the unchanged file's second request is the warm path, not the hooks again"
+    );
+
+    let ssr = server
+        .text(&format!(
+            "/@ssr-module?id={}",
+            app.root.join("src/logo.svg").display()
+        ))
+        .await;
+    assert!(
+        ssr.contains("export default") && !ssr.contains("jsx"),
+        "the ssr module is the URL too:\n{ssr}"
+    );
+}
+
+/// A load hook whose filter cannot match a file id is never asked for an svg
+/// (Vite's container tests the filter first): the import is rewritten to
+/// `?url` and served natively, with no round trip to the host.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_load_hook_whose_filter_excludes_the_svg_leaves_it_the_url_asset() {
+    let app = plugin_app(
+        VIRTUAL_ONLY,
+        ("src/logo.svg", ICON),
+        "import url from \"./logo.svg\";\nimport answer from \"virtual:answer\";\nconsole.log(url, answer);\n",
+    );
+    let server = app.serve().await;
+    let main = server.text("/src/main.tsx").await;
+    assert!(
+        main.contains("\"/src/logo.svg?url\""),
+        "the svg import is the URL asset's, as with no plugin:\n{main}"
+    );
+    let url = imported(&server, "/src/logo.svg?url").await;
+    assert_eq!(url.status, 200, "{}", url.body);
+    assert!(
+        url.body.starts_with("export default \"data:image/svg+xml,"),
+        "{}",
+        url.body
+    );
+}
+
+/// A BOM-prefixed svg is markup too: `?react` with no plugin is oj's own
+/// component (the BOM is no Unicode white space, so a plain
+/// `trim_start()` left the `<` hidden behind it), and a plain import under a
+/// load plugin that declines it is the URL, not a compile of the markup.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bom_prefixed_svg_is_markup_too() {
+    crate::require_fixture!("react", "react-dom", "scheduler");
+    let bom = format!("\u{feff}{ICON}");
+    let app = plugin_app(
+        "export default [];\n",
+        ("src/logo.svg", &bom),
+        "import Icon from \"./logo.svg?react\";\nconsole.log(Icon);\n",
+    );
+    // The component's JSX imports react's runtime.
+    for pkg in ["react", "react-dom", "scheduler"] {
+        app.link_fixture(pkg);
+    }
+    let server = app.serve().await;
+    let react = imported(&server, "/src/logo.svg?react").await;
+    assert_eq!(react.status, 200, "{}", react.body);
+    assert!(
+        react.body.contains("export default") && !react.body.trim_start().starts_with('<'),
+        "oj's svgr made the component:\n{}",
+        react.body
+    );
+
+    let app = plugin_app(
+        TAGGER_LIKE,
+        ("src/logo.svg", &bom),
+        "import url from \"./logo.svg\";\nconsole.log(url);\n",
+    );
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let plain = imported(&server, "/src/logo.svg").await;
+    assert_eq!(plain.status, 200, "{}", plain.body);
+    assert!(
+        plain
+            .body
+            .starts_with("export default \"data:image/svg+xml,"),
+        "declined by the plugin, the svg is its URL:\n{}",
+        plain.body
+    );
 }

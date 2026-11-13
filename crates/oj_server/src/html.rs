@@ -394,7 +394,7 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
                     &state.root,
                     p,
                     &entries,
-                    state.plugins_may_componentize_svg()
+                    state.svg_url_may_be_componentized(p)
                 )
             )
         })

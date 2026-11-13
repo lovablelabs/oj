@@ -45,12 +45,12 @@ pub(crate) async fn ensure_module_as(
             .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "react"));
     let is_svelte = ext == Some("svelte");
     let is_stylesheet = ext.is_some_and(is_style_ext);
-    // A plain `.svg` with a load or transform plugin active may be componentized
-    // (svgr): route it through the plugin hooks; unmatched svg falls back to a
-    // URL asset.
+    // A plain `.svg` a load or transform plugin may componentize (svgr):
+    // route it through the plugin hooks; unmatched svg falls back to a URL
+    // asset.
     let svgr_candidate = !react_svg
-        && state.plugins_may_componentize_svg()
         && ext == Some("svg")
+        && state.svg_may_be_componentized(file)
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
     if !react_svg && !svgr_candidate && is_asset_path(&state.root, file) {
@@ -214,20 +214,21 @@ pub(crate) async fn ensure_module_as(
     // A `?react` import a plugin's `load` already componentized (vite-plugin-svgr's
     // default `include` is `**/*.svg?react`) is its code; only markup takes
     // oj's own svgr.
-    let source = if react_svg && source.trim_start().starts_with('<') {
+    let source = if react_svg && svgr::is_svg_markup(&source) {
         svgr::svg_to_component(&source)
     } else {
         source
     };
-    // An svg candidate still raw after the plugin transform was not matched by svgr:
-    // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
-    let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
+    // An svg candidate still markup after the plugin hooks was not claimed
+    // (vite-plugin-svgr's filter did not match it, or the load hook was
+    // another plugin's): it is the URL asset it is under Vite. Stored under
+    // the compile key like any module, so the next request for the unchanged
+    // file is the warm path (one stat), not the hooks again.
+    let svgr_componentized = svgr_candidate && !svgr::is_svg_markup(&source);
     if svgr_candidate && !svgr_componentized {
-        return Ok(register_uncached(
-            state,
-            url,
-            url_asset_module(state, file, url)?,
-        ));
+        let module = Arc::new(url_asset_module(state, file, url)?);
+        store_module(state, url, &key, &module);
+        return Ok((key, module));
     }
     let source = if is_svelte {
         run_svelte_engine(state, url, &source)
@@ -1355,12 +1356,13 @@ impl ImportRewrite<'_> {
             spec,
             true,
         ) {
-            // With a load or transform plugin active, leave `.svg` unmarked (not
-            // `?url`) so it routes through compile and svgr can componentize it
-            // (Vite parity).
-            if state.plugins_may_componentize_svg() {
-                if let Some(base) = url.strip_suffix(".svg?url") {
-                    return Some(format!("{base}.svg"));
+            // An `.svg` a load or transform plugin may componentize stays
+            // unmarked (not `?url`), so it routes through the compile path
+            // where svgr can claim it (Vite parity).
+            if let Some(base) = url.strip_suffix(".svg?url") {
+                let plain = format!("{base}.svg");
+                if state.svg_url_may_be_componentized(&plain) {
+                    return Some(plain);
                 }
             }
             // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to imports of
