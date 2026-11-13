@@ -462,8 +462,9 @@ pub(crate) const SERVER_FN_UNRESOLVED: &str = "!";
 
 /// What a line of the reads file starts with when it names a tsconfig file
 /// the imports resolved through (app-relative, or absolute outside the
-/// app): `oj dev` adds these, so the removal of one is told from the
-/// removal of any other JSON file.
+/// app): added beside the scan's lines, for the dev resolver and the
+/// build's alike, so the removal of one is told from the removal of any
+/// other JSON file.
 pub(crate) const SERVER_FN_CONFIG: &str = "=";
 
 /// Beside the resolver, the app-relative paths of the modules its scan read
