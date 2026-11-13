@@ -49,6 +49,10 @@ rustls-pemfile = "2.2"
 # plugin's self-signed certificate on the aws-lc-rs provider rustls already
 # links, x509-parser reads a kept one's `notAfter` as the plugin does.
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# The plugin's key is RSA 2048, which rcgen signs with but does not generate:
+# aws-lc-rs (rustls's provider, already linked) makes it, as PKCS#8.
+aws-lc-rs = "1"
+rustls-pki-types = "1"
 x509-parser = "0.18"
 time = "0.3"
 hyper = "1.11"

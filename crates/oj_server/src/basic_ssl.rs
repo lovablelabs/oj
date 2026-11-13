@@ -11,9 +11,9 @@
 //! rcgen: the same file, so an app that alternates `vite` and `oj` keeps one
 //! certificate the browser trusted once, and the same subject and names
 //! (`name`, default `example.org`, as the CN; localhost, 127.0.0.1, fe80::1
-//! and the `domains` option as alternative names; `ttlDays`, default 30). The
-//! key is ECDSA P-256 where the plugin's is RSA 2048: node reads either from
-//! the cache file, and no RSA key generation runs in a config evaluation.
+//! and the `domains` option as alternative names; `ttlDays`, default 30; an
+//! RSA 2048 key, as PKCS#8 where node-forge writes PKCS#1, which node reads
+//! alike). The key generation runs here, not in a config evaluation.
 
 use std::path::{Path, PathBuf};
 
@@ -176,9 +176,26 @@ fn generate(options: &Options) -> anyhow::Result<String> {
     let now = time::OffsetDateTime::now_utc();
     params.not_before = now;
     params.not_after = now + time::Duration::days(options.ttl_days);
-    let key = rcgen::KeyPair::generate()?;
+    let key = rsa_key_pair()?;
     let cert = params.self_signed(&key)?;
     Ok(format!("{}{}", key.serialize_pem(), cert.pem()))
+}
+
+/// An RSA 2048 key, the plugin's `keySize`: rcgen signs with one but does
+/// not make one, so aws-lc-rs (rustls's provider) generates it and hands it
+/// over as PKCS#8.
+fn rsa_key_pair() -> anyhow::Result<rcgen::KeyPair> {
+    use aws_lc_rs::encoding::AsDer;
+    let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048)
+        .map_err(|_| anyhow::anyhow!("RSA key generation failed"))?;
+    let der = key
+        .as_der()
+        .map_err(|_| anyhow::anyhow!("RSA key could not be serialized"))?;
+    let pkcs8 = rustls_pki_types::PrivatePkcs8KeyDer::from(der.as_ref().to_vec());
+    Ok(rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
+        &pkcs8,
+        &rcgen::PKCS_RSA_SHA256,
+    )?)
 }
 
 /// The file holds the private key, so it is the owner's alone from the
@@ -280,6 +297,17 @@ mod tests {
         assert_eq!(first.key, first.cert, "one PEM carries key and certificate");
         assert!(first.key.starts_with("-----BEGIN PRIVATE KEY-----"));
         assert!(first.key.contains("-----BEGIN CERTIFICATE-----"));
+        let block = x509_parser::pem::Pem::iter_from_buffer(first.cert.as_bytes())
+            .filter_map(Result::ok)
+            .find(|b| b.label == "CERTIFICATE")
+            .unwrap();
+        let cert = block.parse_x509().unwrap();
+        match cert.public_key().parsed().unwrap() {
+            x509_parser::public_key::PublicKey::RSA(rsa) => {
+                assert_eq!(rsa.key_size(), 2048, "the plugin's keySize")
+            }
+            other => panic!("an RSA key, as the plugin's: {other:?}"),
+        }
         let file = cache.join("basic-ssl/_cert.pem");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), first.cert);
         #[cfg(unix)]
