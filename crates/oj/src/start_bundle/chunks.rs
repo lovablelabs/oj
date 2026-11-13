@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use oj_server::plugins::PluginHost;
 use rolldown_common::{
     ChunkOptimizationOption, ChunkOptimizationOptions, ChunkingContext, CodeSplittingMode,
-    ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
+    ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest, ModuleTag,
     PreserveEntrySignatures,
 };
 use serde_json::Value;
@@ -134,10 +134,10 @@ fn manual(
             max_module_size: f64_of(g, "maxModuleSize"),
             entries_aware: g.get("entriesAware").and_then(Value::as_bool),
             entries_aware_merge_threshold: f64_of(g, "entriesAwareMergeThreshold"),
+            tags: group_tags(g),
             include_dependencies_recursively: g
                 .get("includeDependenciesRecursively")
                 .and_then(Value::as_bool),
-            ..Default::default()
         });
     }
     Ok(ManualCodeSplittingOptions {
@@ -152,6 +152,19 @@ fn manual(
             .and_then(Value::as_bool),
         ..Default::default()
     })
+}
+
+/// A group's `tags` (`["$initial"]`: only modules the entries reach by static
+/// imports), as rolldown's own options reader takes them. Without them a
+/// group with no `test` captures every module.
+pub(crate) fn group_tags(g: &Value) -> Option<Vec<ModuleTag>> {
+    let tags = g.get("tags")?.as_array()?;
+    Some(
+        tags.iter()
+            .filter_map(Value::as_str)
+            .map(|tag| ModuleTag::from(tag.to_string()))
+            .collect(),
+    )
 }
 
 /// A group's dev tolerance: one warning, then the group steps aside.
@@ -331,6 +344,14 @@ fn truthy(v: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_groups_tags_reach_rolldown() {
+        let group =
+            serde_json::json!({ "name": "app-boot", "tags": ["$initial"], "minShareCount": 1 });
+        assert_eq!(group_tags(&group), Some(vec![ModuleTag::Initial]));
+        assert_eq!(group_tags(&serde_json::json!({ "name": "vendor" })), None);
+    }
 
     #[test]
     fn javascript_truthiness() {

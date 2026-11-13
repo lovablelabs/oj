@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `oj build`: a chunk group's `tags` reach rolldown (`output.codeSplitting.groups[].tags`, `["$initial"]`: only the modules the entries reach by static imports). oj read a group's `name`, `test`, sizes and share counts and dropped its `tags`, so a group written with tags and no `test`, as an app pinning its boot path writes one (`{ name: "app-boot", tags: ["$initial"], minShareCount: 1 }`), captured every module of the bundle, the lazy ones included: on one large TanStack Start app the client's `app-boot` chunk was 61 MB where `vite build` writes 462 KB, and every route's first load fetched it. The tags are forwarded in the Start client bundle and in the plain build's `advancedChunks` alike.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
