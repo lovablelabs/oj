@@ -1278,6 +1278,13 @@ pub fn adopt_vite_config_values(
     let Some(v) = extract_vite_values(root, config_file, command, mode) else {
         return no_values_verdict(root, config_file);
     };
+    adopt_values(config, root, command, v);
+    Ok(())
+}
+
+/// The values merged into oj's config, then what the native plugins' config
+/// hooks do with the merged result.
+fn adopt_values(config: &mut oj_config::OjConfig, root: &Path, command: &str, v: ViteValues) {
     let basic_ssl = basic_ssl_applies(config, &v);
     merge_vite_values(config, v);
     install_assets_include(config, root);
@@ -1285,7 +1292,6 @@ pub fn adopt_vite_config_values(
     if basic_ssl {
         install_basic_ssl_certificate(config, root);
     }
-    Ok(())
 }
 
 /// Like `adopt_vite_config_values`, for a default `mode`: the config file's own
@@ -1300,13 +1306,7 @@ pub fn adopt_vite_config_values_default_mode(
     let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
         return no_values_verdict(root, config_file);
     };
-    let basic_ssl = basic_ssl_applies(config, &v);
-    merge_vite_values(config, v);
-    install_assets_include(config, root);
-    exclude_stylex_dependencies(config, root, command);
-    if basic_ssl {
-        install_basic_ssl_certificate(config, root);
-    }
+    adopt_values(config, root, command, v);
     Ok(())
 }
 

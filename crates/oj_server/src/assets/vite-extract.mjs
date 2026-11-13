@@ -1717,7 +1717,7 @@ function extractServerFlags(s, legacy, appType) {
       else if (s.https.pfx != null) warn("server.https.pfx is not supported; use PEM key and cert");
       else warn("server.https needs PEM key and cert; serving plain http");
     } else if (s.https === true) {
-      warn("server.https: true carries no certificate; serving plain http (set key and cert)");
+      warn("server.https: true carries no certificate of its own; without a plugin's (@vitejs/plugin-basic-ssl) the server stays on plain http");
     } else if (s.https === false) {
       // Off by choice: a plugin's certificate (basic-ssl) is not installed over it.
       out.https = false;
@@ -1929,9 +1929,11 @@ async function stylexPlugin(raw) {
 // The config's @vitejs/plugin-basic-ssl, for oj's native certificate: the
 // options it was given, or null when the config has none. oj's stand-in for
 // the package (oj_js stand_ins) records them when the config imports it by
-// name; a config that imports the plugin's file by path has it bundled into
-// the config by Vite's config loader, so the real plugin's object arrives,
-// without the options.
+// name. A config that imports the plugin's file by path has it bundled into
+// the config by Vite's config loader, so the real plugin's object arrives
+// without them: that instance is left to itself (whatever its own hook put
+// in `server.https` crosses as a configured pair), since a certificate oj
+// made beside the plugin's own would race it for the same cache file.
 async function basicSslPlugin(raw) {
   if (!raw) return null;
   try {
@@ -1940,10 +1942,10 @@ async function basicSslPlugin(raw) {
     const options = plugin.__ojBasicSslOptions;
     if (!options) {
       warn(
-        "@vitejs/plugin-basic-ssl was loaded from outside node_modules/@vitejs/plugin-basic-ssl, so oj cannot read " +
-          "its options and makes the certificate with the plugin's defaults",
+        "@vitejs/plugin-basic-ssl was loaded from outside node_modules/@vitejs/plugin-basic-ssl; import it by name " +
+          "for oj's native certificate (this instance is left to its own hook)",
       );
-      return { options: {} };
+      return null;
     }
     return { options: jsonOptions(options) };
   } catch {

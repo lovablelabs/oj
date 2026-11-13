@@ -407,15 +407,25 @@ export default { plugins: [basicSsl({ name: "dev.local", domains: ["dev.local"],
         "the stand-in sets no certificate; oj makes it when the values are adopted"
     );
 
-    // `require()`d from a CommonJS config, the stand-in answers too.
-    std::fs::write(
-        dir.path().join("vite.config.cjs"),
-        "const basicSsl = require(\"@vitejs/plugin-basic-ssl\");\nmodule.exports = { plugins: [basicSsl.default()] };\n",
-    )
-    .unwrap();
+    // `require()`d from a CommonJS config, the stand-in answers too, callable
+    // as the package's cjs build is, with `default` on it.
     std::fs::remove_file(dir.path().join("vite.config.mjs")).unwrap();
-    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
-    assert_eq!(v.basic_ssl, Some(serde_json::json!({ "options": {} })));
+    for call in ["basicSsl()", "basicSsl.default({ name: \"d\" })"] {
+        std::fs::write(
+            dir.path().join("vite.config.cjs"),
+            format!(
+                "const basicSsl = require(\"@vitejs/plugin-basic-ssl\");\nmodule.exports = {{ plugins: [{call}] }};\n"
+            ),
+        )
+        .unwrap();
+        let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+        let want = if call.contains("name") {
+            serde_json::json!({ "options": { "name": "d" } })
+        } else {
+            serde_json::json!({ "options": {} })
+        };
+        assert_eq!(v.basic_ssl, Some(want), "{call}");
+    }
 }
 
 /// The process env with `vars` set over it, as a later launch would see it.

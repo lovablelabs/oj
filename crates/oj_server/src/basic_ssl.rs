@@ -107,7 +107,9 @@ fn pair(pem: String) -> oj_config::HttpsConfig {
 }
 
 /// The file's PEM when its certificate has a readable `notAfter` still ahead
-/// (the plugin's `isCertificateExpired`) and rustls accepts the pair.
+/// (the plugin's `isCertificateExpired`) and it holds a certificate and a
+/// private key the PEM reader knows (the listener builds the rustls config
+/// once, when it binds).
 fn kept(path: &Path) -> Option<oj_config::HttpsConfig> {
     let pem = std::fs::read_to_string(path).ok()?;
     let not_after = x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes())
@@ -122,7 +124,7 @@ fn kept(path: &Path) -> Option<oj_config::HttpsConfig> {
         return None;
     }
     let pair = pair(pem);
-    crate::tls::accepts(&pair).then_some(pair)
+    crate::tls::pair_parses(&pair).then_some(pair)
 }
 
 /// A self-signed certificate shaped as the plugin's `createCertificate`
@@ -137,8 +139,17 @@ fn generate(options: &Options) -> anyhow::Result<String> {
         "fe80::1".to_string(),
     ];
     for domain in &options.domains {
-        if !names.contains(domain) {
-            names.push(domain.clone());
+        // rcgen writes a name as IA5 (ASCII); the plugin's node-forge took
+        // any string. One it would decline is left out, not the certificate.
+        let domain = domain.trim();
+        if domain.is_empty() || !domain.is_ascii() {
+            eprintln!(
+                "oj: basic-ssl: domain {domain:?} is not an ASCII name and is left off the certificate"
+            );
+            continue;
+        }
+        if !names.iter().any(|n| n == domain) {
+            names.push(domain.to_string());
         }
     }
     let mut params = rcgen::CertificateParams::new(names)?;
@@ -262,7 +273,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let cache = root.join("node_modules/.vite");
-        let options = Options::from_json(&serde_json::json!({ "domains": ["dev.local"] }));
+        let options = Options::from_json(
+            &serde_json::json!({ "domains": ["dev.local", " dev.local ", "bücher.local", ""] }),
+        );
         let first = certificate(&options, root, &cache).unwrap();
         assert_eq!(first.key, first.cert, "one PEM carries key and certificate");
         assert!(first.key.starts_with("-----BEGIN PRIVATE KEY-----"));

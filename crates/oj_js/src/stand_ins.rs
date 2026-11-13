@@ -66,8 +66,10 @@ fn basic_ssl(file: &str, format: Format) -> Option<String> {
     }
     let exports = match format {
         Format::Esm => "export { getCertificate };\nexport default viteBasicSslPlugin;\n",
+        // The package's own cjs tail: the factory is the export, callable,
+        // with `default` and `getCertificate` on it.
         Format::CommonJs => {
-            "module.exports = { __esModule: true, getCertificate, default: viteBasicSslPlugin };\n"
+            "module.exports = viteBasicSslPlugin;\nmodule.exports.default = viteBasicSslPlugin;\nmodule.exports.getCertificate = getCertificate;\n"
         }
     };
     Some(format!("{BASIC_SSL}\n{exports}"))
@@ -94,9 +96,10 @@ mod tests {
             Format::CommonJs,
         )
         .unwrap();
-        assert!(cjs.contains(
-            "module.exports = { __esModule: true, getCertificate, default: viteBasicSslPlugin }"
-        ));
+        assert!(
+            cjs.contains("module.exports = viteBasicSslPlugin;\nmodule.exports.default = viteBasicSslPlugin;"),
+            "callable, as the package's cjs build: {cjs}"
+        );
         assert!(source_for(
             "/app/node_modules/@vitejs/plugin-basic-ssl/package.json",
             Format::Esm

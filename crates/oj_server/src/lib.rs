@@ -355,7 +355,10 @@ struct ServerState {
     /// This boot's mark on the source map urls (`&b=`): a map is served
     /// immutable under its module's compile key, which covers the source,
     /// the url and oj's own compile inputs but not a hosted plugin's
-    /// transform, so a boot after a plugin or config change names new maps.
+    /// transform, so a module body served anew after a plugin change names
+    /// a new map instead of the one the browser holds for the old body. (A
+    /// body the browser revalidated, 304 under the same key, keeps its old
+    /// map, which still matches it.)
     boot_stamp: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
