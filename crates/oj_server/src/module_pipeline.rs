@@ -45,11 +45,12 @@ pub(crate) async fn ensure_module_as(
             .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "react"));
     let is_svelte = ext == Some("svelte");
     let is_stylesheet = ext.is_some_and(is_style_ext);
-    // A plain `.svg` with a transform plugin active may be componentized (svgr):
-    // route it through the transform pipeline; unmatched svg falls back to a URL asset.
+    // A plain `.svg` a load or transform plugin may componentize (svgr):
+    // route it through the plugin hooks; unmatched svg falls back to a URL
+    // asset.
     let svgr_candidate = !react_svg
-        && state.plugins_have_transform
         && ext == Some("svg")
+        && state.svg_may_be_componentized(file)
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
     if !react_svg && !svgr_candidate && is_asset_path(&state.root, file) {
@@ -76,10 +77,14 @@ pub(crate) async fn ensure_module_as(
     }
 
     let is_dep = is_dep_module(url, file);
-    let source = match preloaded {
-        Some(source) => source,
+    let (source, from_disk) = match preloaded {
+        Some(source) => (source, false),
         None => load_source(state, file, url, is_dep).await?,
     };
+    // The svg's own bytes, for the URL module a declined candidate falls
+    // back to (its inlining reads nothing then); a plugin's `load` output
+    // is not the file.
+    let disk_svg = (svgr_candidate && from_disk).then(|| source.clone());
     if track {
         state
             .content
@@ -210,20 +215,29 @@ pub(crate) async fn ensure_module_as(
         source
     };
 
-    let source = if react_svg {
+    // A `?react` import a plugin's `load` already componentized (vite-plugin-svgr's
+    // default `include` is `**/*.svg?react`) is its code; only markup takes
+    // oj's own svgr.
+    let source = if react_svg && svgr::is_svg_markup(&source) {
         svgr::svg_to_component(&source)
     } else {
         source
     };
-    // An svg candidate still raw after the plugin transform was not matched by svgr:
-    // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
-    let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
+    // An svg candidate still markup after the plugin hooks was not claimed
+    // (vite-plugin-svgr's filter did not match it, or the load hook was
+    // another plugin's): it is the URL asset it is under Vite. Stored under
+    // the compile key like any module, so the next request for the unchanged
+    // file is the warm path (one stat), not the hooks again.
+    let svgr_componentized = svgr_candidate && !svgr::is_svg_markup(&source);
     if svgr_candidate && !svgr_componentized {
-        return Ok(register_uncached(
+        let module = Arc::new(url_asset_module_with(
             state,
+            file,
             url,
-            url_asset_module(state, file, url)?,
-        ));
+            disk_svg.as_deref().map(str::as_bytes),
+        )?);
+        store_module(state, url, &key, &module);
+        return Ok((key, module));
     }
     let source = if is_svelte {
         run_svelte_engine(state, url, &source)
@@ -348,7 +362,19 @@ fn code_module(code: String) -> CachedModule {
 /// `export default "<url>"`: how a non-compiled asset import is served, its
 /// URL as Vite's dev fileToDevUrl names it.
 fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> Result<CachedModule, String> {
-    let named = state.asset_urls.file_url("client", file, url)?;
+    url_asset_module_with(state, file, url, None)
+}
+
+/// [`url_asset_module`] with the file's bytes when they were read already.
+fn url_asset_module_with(
+    state: &ServerState,
+    file: &Path,
+    url: &str,
+    content: Option<&[u8]>,
+) -> Result<CachedModule, String> {
+    let named = state
+        .asset_urls
+        .file_url_with("client", file, url, content)?;
     Ok(code_module(format!(
         "export default {};\n",
         serde_json::Value::String(encode_uri_path(&named))
@@ -410,22 +436,24 @@ fn hook_id(file: &Path, url: &str) -> String {
     }
 }
 
-/// The module source: a plugin `load` result, else the file on disk.
+/// The module source: a plugin `load` result (false), else the file on
+/// disk (true).
 async fn load_source(
     state: &ServerState,
     file: &Path,
     url: &str,
     is_dep: bool,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     if let Some(code) = plugin_load(state, file, url, is_dep).await? {
-        return Ok(code);
+        return Ok((code, false));
     }
-    bytes_to_string(
+    let source = bytes_to_string(
         tokio::fs::read(file)
             .await
             .map_err(|err| format!("read error for {url}: {err}"))?,
     )
-    .map_err(|err| format!("read error for {url}: {err}"))
+    .map_err(|err| format!("read error for {url}: {err}"))?;
+    Ok((source, true))
 }
 
 // Vite parity: plugin `load` runs before the fs read, so a plugin can replace an
@@ -1351,15 +1379,23 @@ impl ImportRewrite<'_> {
             spec,
             true,
         ) {
-            // With a transform plugin active, leave `.svg` unmarked (not `?url`) so
-            // it routes through compile and svgr can componentize it (Vite parity).
-            if state.plugins_have_transform {
-                if let Some(base) = url.strip_suffix(".svg?url") {
-                    return Some(format!("{base}.svg"));
+            // An `.svg` a load or transform plugin may componentize stays
+            // unmarked (not `?url`), so it routes through the compile path
+            // where svgr can claim it (Vite parity).
+            let url = match url.strip_suffix(".svg?url") {
+                Some(base) => {
+                    let plain = format!("{base}.svg");
+                    if state.svg_url_may_be_componentized(&plain) {
+                        plain
+                    } else {
+                        url
+                    }
                 }
-            }
+                None => url,
+            };
             // Vite's importAnalysis appends `?t=<lastHMRTimestamp>` to imports of
-            // HMR-invalidated modules so the importer loads the new version.
+            // HMR-invalidated modules so the importer loads the new version
+            // (the plain svg's too: its module is the one that changed).
             let stamp = state
                 .graph
                 .lock()

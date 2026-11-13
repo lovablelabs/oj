@@ -6898,15 +6898,21 @@ async function run(hook, args, c) {
               pluginsWithHook(c, "writeBundle").length > 0 ||
               pluginsWithHook(c, "buildEnd").length > 0)))
       ) {
-        return { present: true, unfiltered: true, plugins: [] };
+        return { present: true, unfiltered: true, unfilteredBeforeAsset: true, plugins: [] };
       }
       const entries = [];
       let unfiltered = false;
+      // ...among the plugins Vite's container runs before vite:asset: a hook
+      // with `order: "pre"`, else a plugin with `enforce: "pre"` (resolvePlugins
+      // puts vite:asset between the pre and the normal plugins). Only those can
+      // claim a module vite:asset would otherwise answer (a plain svg).
+      let unfilteredBeforeAsset = false;
       let present = false;
       for (const p of c.plugins) {
         const h = p && p[name];
         if (typeof hookHandler(h) !== "function") continue;
         present = true;
+        const beforeAsset = hookOrderRank(h) < 0 || (hookOrderRank(h) === 0 && enforceRank(p) < 0);
         const f = h && typeof h === "object" ? h.filter : null;
         const id = f ? gatePatterns(f.id, "id") : null;
         // A normal or post transform's filter.code is tested on the code after
@@ -6924,11 +6930,12 @@ async function run(hook, args, c) {
           (!idHas && !codeHas)
         ) {
           unfiltered = true;
+          if (beforeAsset) unfilteredBeforeAsset = true;
           continue;
         }
-        entries.push({ id: idHas ? id : [], code: codeHas ? code : [] });
+        entries.push({ id: idHas ? id : [], code: codeHas ? code : [], beforeAsset });
       }
-      return { present, unfiltered, plugins: entries };
+      return { present, unfiltered, unfilteredBeforeAsset, plugins: entries };
     };
     return JSON.stringify({
       transform: planFor("transform", true),

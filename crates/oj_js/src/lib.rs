@@ -26,6 +26,21 @@ mod stand_ins;
 mod watchdog;
 mod worker;
 
+/// The heap limit (young and old generation together, in bytes) V8 gives an
+/// isolate on a machine with `system_memory` bytes: its own
+/// `ResourceConstraints::ConfigureDefaults`, which is how Node sizes its heap
+/// and how Deno's CLI does (`create_isolate_create_params`). `max_old_space_mb`
+/// is Node's `--max-old-space-size`: it replaces the old generation's size and
+/// leaves the young generation V8 chose.
+pub fn heap_limit_bytes(system_memory: u64, max_old_space_mb: Option<usize>) -> usize {
+    let mut params =
+        deno_core::v8::CreateParams::default().heap_limits_from_system_memory(system_memory, 0);
+    if let Some(mb) = max_old_space_mb {
+        params = params.set_max_old_generation_size_in_bytes(mb * 1024 * 1024);
+    }
+    params.max_old_generation_size_in_bytes() + params.max_young_generation_size_in_bytes()
+}
+
 pub use bridge::EngineHooks;
 pub use bridge::RpcHandler;
 pub use code_cache::engine_abi_key;

@@ -390,7 +390,12 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
-                preload_href(&state.root, p, &entries, state.plugins_have_transform)
+                preload_href(
+                    &state.root,
+                    p,
+                    &entries,
+                    state.svg_url_may_be_componentized(p)
+                )
             )
         })
         .collect();
