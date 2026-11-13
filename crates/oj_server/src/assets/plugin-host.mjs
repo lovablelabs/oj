@@ -4855,25 +4855,75 @@ function ssrFixStacktrace(server, e) {
   } catch {}
 }
 
+// connect's `getProtohost`: the scheme and host of an absolute-form request
+// url (`http://host/path?q` gives `http://host`), nothing for the usual
+// origin form (`/path`) or when the first `://` sits inside the query.
+function getProtohost(url) {
+  if (!url || url[0] === "/") return undefined;
+  const fqdnIndex = url.indexOf("://");
+  if (fqdnIndex === -1 || url.lastIndexOf("?", fqdnIndex) !== -1) return undefined;
+  const slash = url.indexOf("/", 3 + fqdnIndex);
+  return slash === -1 ? "" : url.slice(0, slash);
+}
+
 async function setupConfigureServer() {
   const stack = [];
+  // connect's `proto.handle` (the stack Vite's `server.middlewares` is), for
+  // a middleware mounted on a route (`use("/api", fn)`): the route matches
+  // the request path case-insensitively and only at a segment boundary
+  // (`/api` takes `/api/x`, `/api.json` and `/api?q`, not `/apiary`); the
+  // handler sees `req.url` with the route stripped (`/x`, a leading slash
+  // added when nothing is left) and the browser's url in `req.originalUrl`;
+  // and the strip is undone before the next entry runs, so a root middleware,
+  // and oj's fall-through report below, see the url whole again.
   function runStack(req, res, done) {
     let i = 0;
+    // An absolute-form url (`http://host/path`, what a proxy or a plugin's
+    // own bridge may hand the stack): connect's `getProtohost`, the part
+    // before the path, which matching skips and stripping keeps.
+    const protohost = getProtohost(req.url) || "";
+    let removed = "";
+    let slashAdded = false;
+    req.originalUrl = req.originalUrl || req.url;
     const next = (err) => {
+      if (slashAdded) {
+        req.url = req.url.slice(1);
+        slashAdded = false;
+      }
+      if (removed) {
+        // The route as mounted, not as the request spelled it (connect
+        // restores `route`): the entries after see `/api/x` for `/API/x`.
+        req.url = protohost + removed + req.url.slice(protohost.length);
+        removed = "";
+      }
+      // connect's `call`: an error (anything truthy) goes to the entries
+      // of arity 4 alone, a request to those under it.
+      const hasError = Boolean(err);
       while (i < stack.length) {
         const entry = stack[i++];
-        const path = entry.route === "/" ? null : entry.route;
+        const route = entry.route;
         const fn = entry.handle;
-        if (path && !req.url.startsWith(path)) continue;
-        if (fn.length >= 4 !== (err != null)) continue;
+        if (hasError ? fn.length !== 4 : fn.length >= 4) continue;
+        const pathname = req.url.slice(protohost.length).split(/[?#]/, 1)[0] || "/";
+        if (!pathname.toLowerCase().startsWith(route.toLowerCase())) continue;
+        const c = pathname.length > route.length ? pathname[route.length] : "";
+        if (c && c !== "/" && c !== ".") continue;
+        if (route.length !== 0 && route !== "/") {
+          removed = route;
+          req.url = protohost + req.url.slice(protohost.length + route.length);
+          if (!protohost && req.url[0] !== "/") {
+            req.url = `/${req.url}`;
+            slashAdded = true;
+          }
+        }
         try {
-          return err != null ? fn(err, req, res, next) : fn(req, res, next);
+          return hasError ? fn(err, req, res, next) : fn(req, res, next);
         } catch (e) {
           return next(e);
         }
       }
       if (typeof done === "function") return done(err);
-      if (err != null) {
+      if (hasError) {
         res.statusCode = 500;
         res.end(String((err && err.stack) || err));
         return;
@@ -4924,11 +4974,32 @@ async function setupConfigureServer() {
   function middlewares(req, res, done) {
     return runStack(req, res, done);
   }
-  // connect stack entries are { route, handle } (plugins walk .stack reading
-  // handle.name); mirror that shape.
-  middlewares.use = (a, b) => {
-    if (typeof a === "function") stack.push({ route: "/", handle: a });
-    else stack.push({ route: a, handle: b });
+  // connect's `proto.use`. Stack entries are { route, handle } (plugins walk
+  // .stack reading handle.name and splice their own in); a root entry's
+  // route is the empty string, as under connect: `use(fn)` is `use("/", fn)`
+  // and a route's trailing slash is dropped (`use("/api/", fn)` mounts on
+  // `/api`, which takes `/api` itself too). A sub-app (anything with a
+  // `handle(req, res, next)`) is wrapped and told its route; an http.Server
+  // contributes its request listener. Returns the app, for a chained
+  // `use(a).use(b)`.
+  middlewares.use = (route, fn) => {
+    let handle = fn;
+    let path = route;
+    if (typeof route !== "string") {
+      handle = route;
+      path = "/";
+    }
+    if (handle && typeof handle.handle === "function") {
+      const app = handle;
+      app.route = path;
+      handle = function (req, res, next) {
+        app.handle(req, res, next);
+      };
+    }
+    if (handle instanceof http.Server) handle = handle.listeners("request")[0];
+    if (path[path.length - 1] === "/") path = path.slice(0, -1);
+    stack.push({ route: path, handle });
+    return middlewares;
   };
   middlewares.stack = stack;
   const noop = () => {};
@@ -5114,6 +5185,24 @@ async function setupConfigureServer() {
         // the Rust side with its base.
         req.ojStrippedBase = devBase;
       }
+      next();
+    });
+  }
+  // Vite's own middlewares after the base strip, by name only: a plugin's
+  // post hook that moves its middleware ahead of one of them in
+  // `server.middlewares.stack` (vite-plugin-static-copy looks for
+  // `viteServePublicMiddleware`, then `viteTransformMiddleware`) lands it
+  // where it does under Vite, after the base strip. Without them the
+  // plugin's `splice(-1, 0, item)` put it before the strip, where a copied
+  // file asked for under a non-root base was looked up with the base on.
+  // The requests themselves oj serves natively; these only pass. An app
+  // whose plugins registered nothing and return no post hook keeps an
+  // empty stack, so no middleware server starts for it.
+  if (ownsServer && (stack.length > 0 || post.length > 0)) {
+    middlewares.use(function viteServePublicMiddleware(_req, _res, next) {
+      next();
+    });
+    middlewares.use(function viteTransformMiddleware(_req, _res, next) {
       next();
     });
   }

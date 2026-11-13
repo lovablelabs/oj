@@ -79,6 +79,7 @@ mod plugin_environments;
 mod plugin_error_surfaced;
 mod plugin_filter_globs;
 mod plugin_middleware;
+mod plugin_middleware_connect;
 mod plugin_module_graph;
 mod plugin_object_hooks;
 mod plugin_parse;

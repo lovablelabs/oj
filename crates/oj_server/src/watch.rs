@@ -1373,7 +1373,19 @@ fn scan_tree(dir: &Path, out: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
 /// unwatched dirs, the cache dir, or what `scan_files` skips), spelled under
 /// the root's real path. Vite's chokidar calls a later event for one of
 /// these a change, never an add.
+/// Tests stretch the watchers' boot scans (`OJ_WATCH_SCAN_DELAY_MS`) to
+/// what a slow disk makes of them, with the events queueing behind.
+pub fn scan_delay_for_tests() {
+    if let Some(delay) = std::env::var("OJ_WATCH_SCAN_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+}
+
 pub fn watched_files(root: &Path) -> std::collections::HashSet<PathBuf> {
+    scan_delay_for_tests();
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let cache_base = {
         let base = oj_cache::cache_base(&root);
@@ -1409,6 +1421,7 @@ pub(crate) type Snapshot = std::collections::HashMap<PathBuf, Stamp>;
 /// the scan began: a file created while it ran has a Create queued that must
 /// still read as an add.
 pub(crate) fn boot_snapshot(ignored: &[glob::Pattern], root: &Path, cache_base: &Path) -> Snapshot {
+    scan_delay_for_tests();
     let began = SystemTime::now();
     let (mut files, mut dirs) = (Vec::new(), Vec::new());
     scan_watched(root, cache_base, &mut files, &mut dirs);
