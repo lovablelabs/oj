@@ -2624,6 +2624,25 @@ fn server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<bo
         "{}: server-fn resolver ({count} function(s))",
         oj_server::oj_brand()
     );
+    // The tsconfig files the imports resolved through, beside the modules
+    // the scan read: one of them removed is then known for what it was.
+    let configs: String = resolution_configs(root)
+        .iter()
+        .map(|config| {
+            let shown = config.strip_prefix(root).unwrap_or(config);
+            format!(
+                "\n{}{}",
+                crate::start_bundle::SERVER_FN_CONFIG,
+                shown.to_string_lossy().replace('\\', "/")
+            )
+        })
+        .collect();
+    if !configs.is_empty() {
+        let scan = std::fs::read_to_string(&reads_dest).unwrap_or_default();
+        let scan = format!("{scan}{configs}");
+        std::fs::write(&reads_dest, scan.trim_start_matches('\n'))
+            .map_err(|e| anyhow::anyhow!("server-fn resolver: {e}"))?;
+    }
     // The scan just written names the modules this resolver depends on.
     store.persist(&server_fn_inputs(root, &reads_dest), &outputs);
     Ok(false)
@@ -2647,6 +2666,8 @@ enum ScanLine<'a> {
     Asked(&'a str),
     /// An import that is not relative and that nothing answered.
     Unresolved { from: &'a str, specifier: &'a str },
+    /// A tsconfig file the imports resolved through.
+    Config(&'a str),
 }
 
 fn scan_lines(reads: &str) -> impl Iterator<Item = ScanLine<'_>> {
@@ -2656,6 +2677,8 @@ fn scan_lines(reads: &str) -> impl Iterator<Item = ScanLine<'_>> {
         } else if let Some(import) = line.strip_prefix(crate::start_bundle::SERVER_FN_UNRESOLVED) {
             let (from, specifier) = import.split_once('\t')?;
             Some(ScanLine::Unresolved { from, specifier })
+        } else if let Some(config) = line.strip_prefix(crate::start_bundle::SERVER_FN_CONFIG) {
+            Some(ScanLine::Config(config))
         } else {
             Some(ScanLine::Read(line))
         }
@@ -2679,6 +2702,8 @@ fn server_fn_inputs(root: &Path, reads_file: &Path) -> Vec<PathBuf> {
             ScanLine::Read(rel) => Some(rel.to_string()),
             ScanLine::Asked(base) => oj_compiler::server_fns::resolve_relative(root, base),
             ScanLine::Unresolved { from, specifier } => modules.resolve(from, specifier),
+            // Keyed by content already (`codegen_store`'s salt).
+            ScanLine::Config(_) => None,
         };
         if let Some(file) = rel.map(|rel| root.join(rel)).filter(|f| f.is_file()) {
             inputs.push(file);
@@ -2705,22 +2730,26 @@ fn server_fn_inputs_changed(root: &Path, cache: &Path, changed: &[PathBuf]) -> b
     changed.iter().any(|p| {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        // A deleted JSON file may be one a tsconfig extended.
-        if is_resolution_config(name)
-            || (ext == "json"
-                && (!p.exists() || configs.get_or_init(|| resolution_configs(root)).contains(p)))
-        {
-            return true;
-        }
         let rel = p
             .strip_prefix(root)
             .unwrap_or(p)
             .to_string_lossy()
             .replace('\\', "/");
+        // A JSON file a tsconfig extends, there now or listed by the last
+        // scan (one removed since). Any other JSON file, removed or not, is
+        // none of the resolver's: a data file a glob matches, created and
+        // gone inside one batch, must leave the batch a hot update.
+        if is_resolution_config(name)
+            || (ext == "json"
+                && (scan_lines(&reads).any(|line| matches!(line, ScanLine::Config(c) if c == rel))
+                    || configs.get_or_init(|| resolution_configs(root)).contains(p)))
+        {
+            return true;
+        }
         let read = scan_lines(&reads).any(|line| match line {
             ScanLine::Read(read) => read == rel,
             ScanLine::Asked(base) => answers_import(base, &rel),
-            ScanLine::Unresolved { .. } => false,
+            ScanLine::Unresolved { .. } | ScanLine::Config(_) => false,
         });
         if read {
             return true;
@@ -6949,7 +6978,9 @@ mod tests {
             [
                 "src/lib/authed.ts",
                 "?src/lib/authed",
-                "!src/lib/fns.ts\t@shared/authed"
+                "!src/lib/fns.ts\t@shared/authed",
+                "=config/base.json",
+                "=tsconfig.json"
             ]
         );
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
@@ -6957,8 +6988,19 @@ mod tests {
         assert!(!changed("shared/authed.js"));
         assert!(!changed("shared/other.js"));
         assert!(changed("src/lib/authed.js"));
-        assert!(changed("config/gone.json"));
+        // A JSON file that is gone and was no tsconfig's is nobody's: a data
+        // file a glob matched, created and removed inside one batch, turned
+        // the batch's hot update into a reload when any removed JSON file
+        // regenerated the resolver.
+        assert!(!changed("config/gone.json"));
+        assert!(!changed("src/content/sed1a2b3c.json"));
         assert!(!changed("config/base.json.bak"));
+        // The extended file, there or removed since the scan listed it.
+        assert!(changed("config/base.json"));
+        let base = std::fs::read(root.join("config/base.json")).unwrap();
+        std::fs::remove_file(root.join("config/base.json")).unwrap();
+        assert!(changed("config/base.json"));
+        std::fs::write(root.join("config/base.json"), base).unwrap();
 
         // The alias's target is created.
         std::fs::create_dir_all(root.join("shared")).unwrap();
@@ -6994,7 +7036,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             reads.lines().collect::<Vec<_>>(),
-            ["src/lib/authed.ts", "src/lib/barrel.ts"]
+            ["src/lib/authed.ts", "src/lib/barrel.ts", "=tsconfig.json"]
         );
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
         assert!(changed("src/lib/aliased.functions.ts"));
