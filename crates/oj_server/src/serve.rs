@@ -106,6 +106,9 @@ async fn serve_internal_route(
             },
         );
     }
+    if path == "/@oj/map" {
+        return Some(serve_source_map(state, uri.query()).await);
+    }
     if let Some(hex) = path.strip_prefix(OPTIONAL_PEER_PREFIX) {
         return Some(match optional_peer_dep_stub(hex) {
             Some(code) => js_response(code),
@@ -705,25 +708,27 @@ async fn serve_compiled_from(
         ));
         body
     };
-    // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
-    // map moves down by the prelude's lines.
-    let prelude = worker_file_prelude(
+    // A `?worker_file&type=<type>` module gets vite:worker's env prelude
+    // (its map moves down by the prelude's lines, see [`serve_source_map`]).
+    if let Some(prelude) = worker_file_prelude(
         url,
         &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
         &state.vite_env_js,
-    );
-    let map_json = match (&prelude, &module.map_json) {
-        (Some(p), Some(map)) => Some(shift_map_lines(map, p.matches('\n').count())),
-        _ => module.map_json.clone(),
-    };
-    if let Some(prelude) = prelude {
+    ) {
         body.insert_str(0, &prelude);
     }
-    if let Some(map) = &map_json {
-        // Vite builds the data URL per send (genSourceMapUrl); caches retain
-        // the raw JSON, 25% smaller than base64.
+    if module.map_json.is_some() {
+        // Vite inlines the map as a data URL, which triples a module's bytes
+        // for a map the browser reads only with DevTools open. oj names it
+        // beside the module instead, by the module's url and compile key
+        // (see [`serve_source_map`]): fetched when wanted, cached forever.
         body.push_str("\n//# sourceMappingURL=");
-        body.push_str(&oj_compiler::map_json_to_data_url(map));
+        body.push_str(&source_map_url(
+            &state.oj_paths,
+            url,
+            &key,
+            &state.boot_stamp,
+        ));
         body.push('\n');
     }
 
@@ -734,6 +739,104 @@ async fn serve_compiled_from(
             (header::ETAG, etag),
         ],
         body,
+    )
+        .into_response()
+}
+
+/// Where the map of the module `url` compiled under `key` is served
+/// (`/@oj/map?u=<url>&k=<key>` under the base). The browser resolves a
+/// `sourceMappingURL` against the module's URL, so the path is absolute.
+pub(crate) fn source_map_url(paths: &OjPublicPaths, url: &str, key: &str, boot: &str) -> String {
+    format!(
+        "{}?u={}&k={key}&b={boot}",
+        paths.source_map,
+        urlencode_component(url)
+    )
+}
+
+/// `/@oj/map?u=<module url>&k=<compile key>`: the source map of the module
+/// `u` as compiled under key `k`, which the module's `sourceMappingURL` names
+/// (see [`serve_compiled_from`]). The key hashes the module's source and
+/// every setting of its compile, so the map is immutable under this URL. A
+/// module the memory cache has let go of is compiled again through its own
+/// request first; a `k` no compile of `u` produces any more (the file
+/// changed) is a map that no longer exists.
+async fn serve_source_map(state: &Arc<ServerState>, query: Option<&str>) -> Response {
+    let (mut url, mut key) = (None, None);
+    for kv in query.unwrap_or("").split('&') {
+        if let Some(u) = kv.strip_prefix("u=") {
+            url = Some(urldecode(u));
+        } else if let Some(k) = kv.strip_prefix("k=") {
+            key = Some(k.to_string());
+        }
+        // `b=`, the boot stamp, only tells one boot's urls from another's.
+    }
+    let (Some(url), Some(key)) = (url, key) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "oj: a source map is named by its module's url (u) and compile key (k)",
+        )
+            .into_response();
+    };
+    let mut module = memory_get(state, &url, &key);
+    if module.is_none() {
+        // Evicted: the module's own request compiles it again, whichever
+        // route serves it (a file's, or the plugin and virtual fallbacks a
+        // missing file goes to, whose answer is not wanted here, only the
+        // entry it leaves in memory).
+        let (path, rest) = url
+            .split_once('?')
+            .map_or((url.as_str(), ""), |(p, q)| (p, q));
+        let encoded = match rest {
+            "" => urlencode_component(path),
+            q => format!("{}?{q}", urlencode_component(path)),
+        };
+        if let Ok(uri) = encoded.parse::<Uri>() {
+            let rel = urldecode(uri.path().trim_start_matches('/'));
+            let headers = HeaderMap::new();
+            if let Ok(file) = request_file(state, &headers, &uri, &rel).await {
+                if !path_is_denied(&file, &state.root, &state.fs_deny) {
+                    let _ = serve_file(state, &headers, &uri, &file, &rel).await;
+                }
+            }
+            module = memory_get(state, &url, &key);
+        }
+    }
+    let Some(map) = module.as_ref().and_then(|m| m.map_json.clone()) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("oj: no source map for {url} at {key}"),
+        )
+            .into_response();
+    };
+    let module = module.expect("a map comes from a module");
+    // What [`serve_compiled_from`] puts before the code: the hot-context
+    // glue of a module that reads import.meta.hot (or a svelte module),
+    // then a worker's env prelude. The map moves down by their lines.
+    let mut shift = 0;
+    if module.kind == "svelte" || module.hot.is_some() {
+        shift += crate::hmr::svelte_hot_glue(&url, &state.oj_paths)
+            .matches('\n')
+            .count();
+    }
+    if let Some(prelude) = worker_file_prelude(
+        &url,
+        &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
+        &state.vite_env_js,
+    ) {
+        shift += prelude.matches('\n').count();
+    }
+    let map = if shift > 0 {
+        shift_map_lines(&map, shift)
+    } else {
+        map
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "max-age=31536000,immutable"),
+        ],
+        map,
     )
         .into_response()
 }

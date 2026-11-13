@@ -44,6 +44,8 @@ mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
+mod basic_ssl;
+mod compress;
 mod deps;
 use deps::*;
 mod module_pipeline;
@@ -350,6 +352,14 @@ struct ServerState {
     asset_urls: assets_serve::DevAssetUrls,
     /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
     vite_env_js: String,
+    /// This boot's mark on the source map urls (`&b=`): a map is served
+    /// immutable under its module's compile key, which covers the source,
+    /// the url and oj's own compile inputs but not a hosted plugin's
+    /// transform, so a module body served anew after a plugin change names
+    /// a new map instead of the one the browser holds for the old body. (A
+    /// body the browser revalidated, 304 under the same key, keeps its old
+    /// map, which still matches it.)
+    boot_stamp: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -1796,7 +1806,14 @@ fn build_router(
             cors_middleware,
         ));
     }
-    (app.with_state(state), route_hook, extra_headers)
+    // Outermost: every text response, a proxy's or a plugin middleware's
+    // included, leaves compressed when the client accepts it (one it sends
+    // already encoded passes as is).
+    (
+        app.with_state(state).layer(compress::layer()),
+        route_hook,
+        extra_headers,
+    )
 }
 
 /// Load the serve config and adopt the vite.config's values.
@@ -2290,6 +2307,13 @@ impl DevServer {
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
             vite_env_js: assets_serve::vite_env_module(&config),
+            boot_stamp: format!(
+                "{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            ),
             ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()

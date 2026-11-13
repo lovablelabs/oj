@@ -127,6 +127,24 @@ pub fn url_scheme(https: Option<&oj_config::HttpsConfig>) -> &'static str {
     }
 }
 
+/// Whether the pair holds a certificate and a private key the PEM reader
+/// knows: what a kept certificate file is checked for before it is served
+/// (the listener builds the rustls config once, when it binds).
+pub(crate) fn pair_parses(https: &oj_config::HttpsConfig) -> bool {
+    let certs = rustls_pemfile::certs(&mut https.cert.as_bytes()).collect::<Result<Vec<_>, _>>();
+    matches!(certs, Ok(c) if !c.is_empty())
+        && matches!(
+            rustls_pemfile::private_key(&mut https.key.as_bytes()),
+            Ok(Some(_))
+        )
+}
+
+/// Whether rustls accepts the pair, the way the listener will.
+#[cfg(test)]
+pub(crate) fn accepts(https: &oj_config::HttpsConfig) -> bool {
+    tls_config(https).is_ok()
+}
+
 fn tls_config(https: &oj_config::HttpsConfig) -> anyhow::Result<Arc<rustls::ServerConfig>> {
     let certs: Vec<_> = rustls_pemfile::certs(&mut https.cert.as_bytes())
         .collect::<Result<_, _>>()
