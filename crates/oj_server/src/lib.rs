@@ -490,11 +490,15 @@ impl ServerState {
     /// `load` reads the file itself, so with `include: "**/*.svg"` it claims
     /// the plain id and the asset plugin never sees it. Whether the file was
     /// claimed is decided after the hooks ran, on their output.
-    /// A load hook is asked by its filter first, as Vite's container asks
-    /// (`getCachedFilterForPlugin`): a plugin whose `load` filter cannot
-    /// match the svg's id (a virtual-module plugin) leaves it the URL asset
-    /// it is under Vite, with no round trip to the host; a function-form
-    /// `load` (lovable-tagger's) is offered every id, as under Vite.
+    ///
+    /// A load hook is asked the way Vite's container asks it: by its filter
+    /// (`getCachedFilterForPlugin`), so a plugin whose `load` filter cannot
+    /// match the svg's id (a virtual-module plugin) leaves it the URL asset,
+    /// with no round trip to the host; and only if Vite runs the hook before
+    /// `vite:asset` (a hook with `order: "pre"`, else an `enforce: "pre"`
+    /// plugin), since a later plugin's `load` never sees a plain svg there.
+    /// A function-form `load` on a `pre` plugin (lovable-tagger's) is offered
+    /// every id, as under Vite.
     pub(crate) fn svg_may_be_componentized(&self, file: &Path) -> bool {
         if self.plugins_have_transform {
             return true;
@@ -503,19 +507,13 @@ impl ServerState {
             && self
                 .plugins
                 .as_ref()
-                .is_some_and(|host| host.hook_wants_load(&file.to_string_lossy()))
+                .is_some_and(|host| host.hook_wants_load_before_asset(&file.to_string_lossy()))
     }
 
     /// [`Self::svg_may_be_componentized`] for a served url (the importer's
-    /// rewrite and the page's preloads see urls, not files): the file an
-    /// app-root url names; a `/@fs/` url the path it carries.
+    /// rewrite and the page's preloads see urls, not files).
     pub(crate) fn svg_url_may_be_componentized(&self, url: &str) -> bool {
-        let path = url.split(['?', '#']).next().unwrap_or(url);
-        let file = match path.strip_prefix("/@fs/") {
-            Some(abs) => PathBuf::from(format!("/{abs}")),
-            None => self.root.join(path.trim_start_matches('/')),
-        };
-        self.svg_may_be_componentized(&file)
+        self.svg_may_be_componentized(&rewrite::file_of_url(&self.root, url))
     }
 }
 

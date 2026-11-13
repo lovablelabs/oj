@@ -1669,6 +1669,13 @@ impl PluginHost {
         self.hook_plan.read().unwrap().load.wants(id, None)
     }
 
+    /// [`Self::hook_wants_load`] for a module `vite:asset` would answer (a
+    /// plain svg): only a `load` Vite runs before it is asked.
+    #[inline]
+    pub fn hook_wants_load_before_asset(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().load.wants_before_asset(id)
+    }
+
     /// The hooks the host is running right now, oldest first (what a probe
     /// reports; see [`RunningHook`]). Empty when the host is gone.
     pub async fn running_hooks(&self) -> Vec<RunningHook> {

@@ -13,8 +13,8 @@ pub fn is_svg_markup(source: &str) -> bool {
 }
 
 pub fn svg_to_component(svg: &str) -> String {
-    // A BOM-prefixed file: the BOM would land inside the JSX, where it is
-    // no white space either, and the component would not parse.
+    // A BOM-prefixed file: the BOM is no part of the markup (Vite's
+    // importAnalysis strips one off a module too).
     let svg = svg.trim_start_matches('\u{feff}');
     let cleaned = strip_noise(svg);
     let jsx = transform_tags(&cleaned);

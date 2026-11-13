@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use crate::browser::Page;
+use crate::listen::{close, frame_matching, is_reload};
 use crate::plugin_middleware::middleware_ready;
 use crate::App;
 
@@ -304,10 +305,13 @@ fn svg_loads(body: &str) -> usize {
 /// under Vite, and the server render takes the same decision.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unfiltered_load_hook_is_asked_once_and_the_plain_svg_stays_the_url() {
+    // The entry accepts itself, so an edit to the svg is a hot update of the
+    // entry (under a React boundary it would be the component's), not a
+    // page reload: the page keeps its module map, and the stamp matters.
     let app = plugin_app(
         TAGGER_LIKE,
         ("src/logo.svg", ICON),
-        "import url from \"./logo.svg\";\nconsole.log(url);\n",
+        "import url from \"./logo.svg\";\nconsole.log(url);\nif (import.meta.hot) import.meta.hot.accept();\n",
     );
     let server = app.serve().await;
     middleware_ready(&server).await;
@@ -356,6 +360,140 @@ async fn an_unfiltered_load_hook_is_asked_once_and_the_plain_svg_stays_the_url()
         ssr.contains("export default") && !ssr.contains("jsx"),
         "the ssr module is the URL too:\n{ssr}"
     );
+
+    // An edit, with a page on the socket: the importer's import carries
+    // Vite's `?t=` stamp, as a `?url` import does, so the page loads the new
+    // module rather than the one its module map holds; the stored module
+    // misses on the new bytes (the hook is asked again, once) and is the
+    // new URL.
+    let before_edit = svg_loads(&server.text("/__loads").await);
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
+    app.write(&[(
+        "src/logo.svg",
+        &ICON.replace("viewBox=\"0 0 24 24\"", "viewBox=\"0 0 48 48\""),
+    )]);
+    let frame = frame_matching(&mut socket, "the svg change's update", is_reload).await;
+    assert_eq!(
+        frame["type"], "update",
+        "a hot update of the entry: {frame}"
+    );
+    close(socket).await;
+    let importer = server.text("/src/main.tsx").await;
+    let stamped = stamped_import(&importer, "/src/logo.svg?t=");
+    let edited = imported(&server, &stamped).await;
+    assert_eq!(edited.status, 200, "{}", edited.body);
+    assert!(
+        edited
+            .body
+            .starts_with("export default \"data:image/svg+xml,")
+            && edited.body != first.body,
+        "the edited svg is a new URL module:\n{}",
+        edited.body
+    );
+    assert_eq!(
+        svg_loads(&server.text("/__loads").await),
+        before_edit + 1,
+        "the changed file is offered to the hook once more"
+    );
+    let again = imported(&server, &stamped).await;
+    assert_eq!(again.body, edited.body);
+    assert_eq!(
+        svg_loads(&server.text("/__loads").await),
+        before_edit + 1,
+        "the edited file's next request is the warm path again"
+    );
+}
+
+/// The stamped import url (`needle`, ending in `?t=`) in an importer's code.
+fn stamped_import(importer: &str, needle: &str) -> String {
+    let start = importer
+        .find(needle)
+        .unwrap_or_else(|| panic!("the import of the edited svg is not stamped:\n{importer}"));
+    let rest = &importer[start..];
+    rest[..rest.find('"').unwrap_or(rest.len())].to_string()
+}
+
+/// A plugin whose function-form `load` claims every `.svg` with a module of
+/// its own, at the given plugin `enforce` and hook `order`.
+fn claimer(enforce: &str, order: &str) -> String {
+    let load = if order.is_empty() {
+        "load(id) { if (!id.endsWith(\".svg\")) return null; seen.push(id); return \"export default 'claimed';\\n\"; }".to_string()
+    } else {
+        format!(
+            "load: {{ order: \"{order}\", handler(id) {{ if (!id.endsWith(\".svg\")) return null; seen.push(id); return \"export default 'claimed';\\n\"; }} }}"
+        )
+    };
+    let enforce = if enforce.is_empty() {
+        String::new()
+    } else {
+        format!("enforce: \"{enforce}\",")
+    };
+    format!(
+        "const seen = [];\nexport default [{{\n  name: \"claimer\",\n  {enforce}\n  {load},\n  configureServer(server) {{\n    server.middlewares.use(\"/__loads\", (_req, res) => {{\n      res.setHeader(\"content-type\", \"application/json\");\n      res.end(JSON.stringify(seen));\n    }});\n  }},\n}}];\n"
+    )
+}
+
+/// Vite's container runs `vite:asset`'s `load` between the `pre` plugins
+/// and the normal ones, a hook with `order: "pre"` ahead of them all, and
+/// takes the first answer: a plain svg is claimed by a `pre` plugin's load,
+/// or a normal plugin's `order: "pre"` load, and never by a normal plugin's
+/// plain load, which vite:asset's URL module answers ahead of. oj asks only
+/// the hooks Vite runs before vite:asset.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_load_hook_vite_runs_before_vite_asset_claims_a_plain_svg() {
+    let main = "import logo from \"./logo.svg\";\nconsole.log(logo);\n";
+    for (enforce, order, claims) in [
+        ("", "", false),
+        ("pre", "", true),
+        ("", "pre", true),
+        ("post", "", false),
+    ] {
+        let app = plugin_app(&claimer(enforce, order), ("src/logo.svg", ICON), main);
+        let server = app.serve().await;
+        middleware_ready(&server).await;
+        let shape = format!("enforce={enforce:?} order={order:?}");
+        let importer = server.text("/src/main.tsx").await;
+        let module = imported(
+            &server,
+            if claims {
+                "/src/logo.svg"
+            } else {
+                "/src/logo.svg?url"
+            },
+        )
+        .await;
+        assert_eq!(module.status, 200, "{shape}: {}", module.body);
+        let asked = svg_loads(&server.text("/__loads").await);
+        if claims {
+            assert!(
+                importer.contains("\"/src/logo.svg\""),
+                "{shape}: the import stays plain for the plugin to claim:\n{importer}"
+            );
+            assert!(
+                module.body.contains("claimed"),
+                "{shape}: the plugin's module is served:\n{}",
+                module.body
+            );
+            assert!(asked >= 1, "{shape}: the plugin was asked");
+        } else {
+            assert!(
+                importer.contains("\"/src/logo.svg?url\""),
+                "{shape}: the import is the URL asset's, vite:asset answering first:\n{importer}"
+            );
+            assert!(
+                module
+                    .body
+                    .starts_with("export default \"data:image/svg+xml,"),
+                "{shape}: the svg is its URL:\n{}",
+                module.body
+            );
+            assert_eq!(
+                asked, 0,
+                "{shape}: a load vite:asset precedes is never asked for an svg"
+            );
+        }
+    }
 }
 
 /// A load hook whose filter cannot match a file id is never asked for an svg
