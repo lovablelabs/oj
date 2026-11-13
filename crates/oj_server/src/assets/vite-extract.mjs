@@ -1923,6 +1923,31 @@ async function stylexPlugin(raw) {
   }
 }
 
+// The config's @vitejs/plugin-basic-ssl, for oj's native certificate: the
+// options it was given, or null when the config has none. oj's stand-in for
+// the package (oj_js stand_ins) records them when the config imports it by
+// name; a config that imports the plugin's file by path has it bundled into
+// the config by Vite's config loader, so the real plugin's object arrives,
+// without the options.
+async function basicSslPlugin(raw) {
+  if (!raw) return null;
+  try {
+    const plugin = (await flattenPlugins(raw.plugins)).find((p) => p?.name === "vite:basic-ssl");
+    if (!plugin) return null;
+    const options = plugin.__ojBasicSslOptions;
+    if (!options) {
+      warn(
+        "@vitejs/plugin-basic-ssl was loaded from outside node_modules/@vitejs/plugin-basic-ssl, so oj cannot read " +
+          "its options and makes the certificate with the plugin's defaults",
+      );
+      return { options: {} };
+    }
+    return { options: jsonOptions(options) };
+  } catch {
+    return null;
+  }
+}
+
 export async function extract(input) {
   keepForHost = input.keep === true;
   cliInline =
@@ -2137,6 +2162,7 @@ async function extractValues(input) {
         activePlugins: await activePluginCount(raw),
         resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
         stylex: await stylexPlugin(raw),
+        basicSsl: await basicSslPlugin(raw),
         editorHmrGate: await hasEditorHmrGate(raw),
       };
     };

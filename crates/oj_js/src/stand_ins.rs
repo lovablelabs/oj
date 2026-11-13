@@ -2,6 +2,7 @@
 //! file inside one is served oj's stand-in, never the package's own code.
 
 const STYLEX_UNPLUGIN: &str = include_str!("stand_ins/stylex-unplugin.js");
+const BASIC_SSL: &str = include_str!("stand_ins/basic-ssl.js");
 
 /// `@stylexjs/unplugin`'s bundler adapters, each a module of its own
 /// (`@stylexjs/unplugin/vite`) whose default export is the adapter.
@@ -22,6 +23,9 @@ pub(crate) enum Format {
 /// replaces.
 pub(crate) fn source_for(path: &str, format: Format) -> Option<String> {
     let path = path.replace('\\', "/");
+    if let Some((_, file)) = path.split_once("/node_modules/@vitejs/plugin-basic-ssl/") {
+        return basic_ssl(file, format);
+    }
     let (_, file) = path.split_once("/node_modules/@stylexjs/unplugin/")?;
     let name = file.rsplit('/').next()?;
     let (stem, ext) = name.split_once('.')?;
@@ -50,9 +54,55 @@ pub(crate) fn source_for(path: &str, format: Format) -> Option<String> {
     Some(format!("{STYLEX_UNPLUGIN}\n{exports}"))
 }
 
+/// `@vitejs/plugin-basic-ssl`: one module (`dist/index.mjs`, `dist/index.cjs`)
+/// whose default export is the plugin factory. Its `getCertificate` export,
+/// the plugin's own generator, is not offered: a config calling it is after
+/// the certificate file, which oj writes before it serves.
+fn basic_ssl(file: &str, format: Format) -> Option<String> {
+    let name = file.rsplit('/').next()?;
+    let (_, ext) = name.split_once('.')?;
+    if !matches!(ext, "js" | "mjs" | "cjs") {
+        return None;
+    }
+    let exports = match format {
+        Format::Esm => "export default viteBasicSslPlugin;\n",
+        Format::CommonJs => "module.exports = { __esModule: true, default: viteBasicSslPlugin };\n",
+    };
+    Some(format!("{BASIC_SSL}\n{exports}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{source_for, Format};
+
+    #[test]
+    fn basic_ssls_modules_are_the_stand_in() {
+        let esm = source_for(
+            "/app/node_modules/@vitejs/plugin-basic-ssl/dist/index.mjs",
+            Format::Esm,
+        )
+        .unwrap();
+        assert!(
+            esm.contains("__ojBasicSslOptions")
+                && esm.ends_with("export default viteBasicSslPlugin;\n")
+        );
+        let cjs = source_for(
+            "/app/node_modules/.pnpm/@vitejs+plugin-basic-ssl@2.3.0/node_modules/@vitejs/plugin-basic-ssl/dist/index.cjs",
+            Format::CommonJs,
+        )
+        .unwrap();
+        assert!(cjs.contains("module.exports = { __esModule: true, default: viteBasicSslPlugin }"));
+        assert!(source_for(
+            "/app/node_modules/@vitejs/plugin-basic-ssl/package.json",
+            Format::Esm
+        )
+        .is_none());
+        assert!(source_for(
+            "/app/node_modules/@vitejs/plugin-react/dist/index.mjs",
+            Format::Esm
+        )
+        .is_none());
+    }
 
     #[test]
     fn every_module_of_the_package_is_the_stand_in() {

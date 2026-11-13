@@ -127,6 +127,12 @@ pub fn url_scheme(https: Option<&oj_config::HttpsConfig>) -> &'static str {
     }
 }
 
+/// Whether rustls accepts the pair: a kept certificate file is served only
+/// when it does.
+pub(crate) fn accepts(https: &oj_config::HttpsConfig) -> bool {
+    tls_config(https).is_ok()
+}
+
 fn tls_config(https: &oj_config::HttpsConfig) -> anyhow::Result<Arc<rustls::ServerConfig>> {
     let certs: Vec<_> = rustls_pemfile::certs(&mut https.cert.as_bytes())
         .collect::<Result<_, _>>()

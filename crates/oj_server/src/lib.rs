@@ -44,6 +44,7 @@ mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
+mod basic_ssl;
 mod compress;
 mod deps;
 use deps::*;

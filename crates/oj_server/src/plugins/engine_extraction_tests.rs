@@ -367,6 +367,57 @@ fn extraction_counts_the_plugins_a_host_would_run() {
     );
 }
 
+/// A `@vitejs/plugin-basic-ssl` install whose own code must never run: the
+/// engine serves oj's stand-in for its module.
+pub(crate) fn install_basic_ssl_throwing(root: &Path) {
+    let pkg = root.join("node_modules/@vitejs/plugin-basic-ssl");
+    std::fs::create_dir_all(pkg.join("dist")).unwrap();
+    std::fs::write(
+        pkg.join("package.json"),
+        r#"{"name":"@vitejs/plugin-basic-ssl","version":"2.3.0","type":"module","main":"./dist/index.cjs","module":"./dist/index.mjs","exports":{".":{"import":"./dist/index.mjs","require":"./dist/index.cjs"}}}"#,
+    )
+    .unwrap();
+    for file in ["dist/index.mjs", "dist/index.cjs"] {
+        std::fs::write(
+            pkg.join(file),
+            "throw new Error(\"the real @vitejs/plugin-basic-ssl ran\");\n",
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn basic_ssls_options_cross_without_the_plugin_running_or_needing_a_host() {
+    let _g = lock();
+    let dir = app(r#"import basicSsl from "@vitejs/plugin-basic-ssl";
+export default { plugins: [basicSsl({ name: "dev.local", domains: ["dev.local"], ttlDays: 90 })] };"#);
+    install_basic_ssl_throwing(dir.path());
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.basic_ssl,
+        Some(
+            serde_json::json!({ "options": { "name": "dev.local", "domains": ["dev.local"], "ttlDays": 90 } })
+        )
+    );
+    assert_eq!(v.active_plugins, Some(0), "the stand-in is oj's own plugin");
+    assert!(
+        v.server_flags
+            .as_ref()
+            .is_none_or(|sf| sf.get("https").is_none()),
+        "the stand-in sets no certificate; oj makes it when the values are adopted"
+    );
+
+    // `require()`d from a CommonJS config, the stand-in answers too.
+    std::fs::write(
+        dir.path().join("vite.config.cjs"),
+        "const basicSsl = require(\"@vitejs/plugin-basic-ssl\");\nmodule.exports = { plugins: [basicSsl.default()] };\n",
+    )
+    .unwrap();
+    std::fs::remove_file(dir.path().join("vite.config.mjs")).unwrap();
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(v.basic_ssl, Some(serde_json::json!({ "options": {} })));
+}
+
 /// The process env with `vars` set over it, as a later launch would see it.
 fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
     let mut all: Vec<(String, String)> = oj_env::get()

@@ -37,6 +37,11 @@ export const OJ_NATIVE_PLUGIN_NAMES = new Set([
   // config extraction turns that gate on when the app has this plugin.
   // Hosted as well, it would gate behind oj's own gate.
   "hmr-gate",
+  // @vitejs/plugin-basic-ssl: the config sees oj's stand-in (oj_js
+  // stand_ins/basic-ssl.js), which records the options; oj makes the
+  // plugin's certificate itself (oj_server basic_ssl.rs) and the extractor
+  // carries the options over as `basicSsl`.
+  "vite:basic-ssl",
 ]);
 
 // Dev-tooling plugins oj cannot host: they drive a full Vite dev server (ws

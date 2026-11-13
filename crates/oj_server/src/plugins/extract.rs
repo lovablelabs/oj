@@ -70,6 +70,9 @@ pub struct ViteValues {
     pub active_plugins: Option<usize>,
     /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
     pub stylex: Option<serde_json::Value>,
+    /// The config's `@vitejs/plugin-basic-ssl` (`{ options }`), whose
+    /// certificate oj makes natively.
+    pub basic_ssl: Option<serde_json::Value>,
     /// The config has an editor's HMR gate plugin: oj's native gate stands
     /// in for it.
     pub editor_hmr_gate: bool,
@@ -1249,6 +1252,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize),
         stylex: non_null(json, "stylex"),
+        basic_ssl: non_null(json, "basicSsl"),
         editor_hmr_gate: json
             .get("editorHmrGate")
             .and_then(|v| v.as_bool())
@@ -1277,6 +1281,7 @@ pub fn adopt_vite_config_values(
     merge_vite_values(config, v);
     install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
+    install_basic_ssl_certificate(config, root);
     Ok(())
 }
 
@@ -1295,6 +1300,7 @@ pub fn adopt_vite_config_values_default_mode(
     merge_vite_values(config, v);
     install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
+    install_basic_ssl_certificate(config, root);
     Ok(())
 }
 
@@ -1370,6 +1376,33 @@ fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, co
     }
 }
 
+/// The `@vitejs/plugin-basic-ssl` `configResolved` hook, which oj runs
+/// natively (the config only ever sees oj's stand-in for the plugin): the
+/// plugin's certificate, kept under its cache file, becomes `server.https`
+/// (and so `preview.https`, which falls back to it) when the config set
+/// none, as the hook assigns over an unset or truthy `server.https`. A
+/// certificate that cannot be made leaves the server on plain http and says
+/// why, as a failed hook would fail Vite's createServer.
+pub(crate) fn install_basic_ssl_certificate(config: &mut oj_config::OjConfig, root: &Path) {
+    let Some(basic_ssl) = &config.vite_basic_ssl else {
+        return;
+    };
+    let server = config.server.get_or_insert_with(Default::default);
+    if server.https.is_some() {
+        return;
+    }
+    let options = basic_ssl.get("options").cloned().unwrap_or_default();
+    let options = crate::basic_ssl::Options::from_json(&options);
+    let cache_dir = oj_config::cache_dir(config, root);
+    let server = config.server.get_or_insert_with(Default::default);
+    match crate::basic_ssl::certificate(&options, root, &cache_dir) {
+        Ok(pair) => server.https = Some(pair),
+        Err(e) => {
+            eprintln!("oj: basic-ssl: no certificate could be made ({e}); serving plain http")
+        }
+    }
+}
+
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     config.vite_active_plugins = v.active_plugins;
@@ -1379,6 +1412,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         server.hmr_gate.get_or_insert(true);
     }
     config.vite_stylex = v.stylex;
+    config.vite_basic_ssl = v.basic_ssl;
     config.vite_start_router = v.start_router;
     if config.base.is_none() {
         config.base = v.base;
