@@ -27,6 +27,7 @@ import {
   flattenPlugins,
   isReimplemented,
   isRouteSplitting,
+  isStartManifest,
 } from "./native-plugins.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs, viteGlobs } from "./start/vite-globs.mjs";
 import {
@@ -299,6 +300,12 @@ const ojBundleHost = initial.ojBundleHost === true;
 // run. A host of its own for either leaves them out; so does a container
 // opened for either on the dev server's host (openEnvironmentContainer).
 const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
+// The framework plugins a Start host leaves out. A build keeps Start's
+// manifest plugins in (see isStartManifest).
+function startLeavesOut(name) {
+  if (command === "build" && isStartManifest(name)) return false;
+  return isReimplemented(name);
+}
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -899,7 +906,7 @@ async function loadUserResolvedViteConfig() {
   // A Start SSR or bundle host resolves without the framework plugins oj
   // reimplements, as it runs without them: their config hooks (the router
   // generator's among them) do work oj's own pipeline does.
-  const candidates = startLeavesOutReimplemented ? allPlugins.filter((p) => !isReimplemented(p.name)) : allPlugins;
+  const candidates = startLeavesOutReimplemented ? allPlugins.filter((p) => !startLeavesOut(p.name)) : allPlugins;
   const hosted = new Set(main.plugins);
   const restores = [];
   // Through the config hooks the hidden hooks still read as the plugin's own
@@ -1758,7 +1765,7 @@ function hostedPlugins(list, userConfig, c = main) {
 // top-level list and what applyToEnvironment returns alike.
 function ojRunsNatively(p, c = main) {
   const name = p && p.name;
-  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (c.leaveOut && isReimplemented(name));
+  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (c.leaveOut && startLeavesOut(name));
 }
 // Where Start's compiler sits among the plugins (noteStartCompilerPosition),
 // set as the plugins load.
@@ -2625,7 +2632,7 @@ let configResolvedEdits = [];
 let leftOutConfig = null;
 function leaveOutConfig() {
   return (leftOutConfig ??= (async () => {
-    const kept = (p) => !isReimplemented(p && p.name);
+    const kept = (p) => !startLeavesOut(p && p.name);
     const rc = await resolveUserViteConfig(allPlugins.filter(kept).map((p) => replayingPlugin(p, true)));
     return hostConfig(rc, main.topLevelPlugins.filter(kept), { replay: true, container: {} });
   })());
@@ -2784,7 +2791,7 @@ async function openEnvironmentContainer(spec) {
   c.durable = true;
   c.rawPlugins = main.rawPlugins;
   c.pluginCss = main.pluginCss;
-  c.topLevelPlugins = leaveOut ? main.topLevelPlugins.filter((p) => !isReimplemented(p.name)) : main.topLevelPlugins;
+  c.topLevelPlugins = leaveOut ? main.topLevelPlugins.filter((p) => !startLeavesOut(p.name)) : main.topLevelPlugins;
   if (leaveOut && !main.leaveOut) {
     const view = await leaveOutConfig();
     c.ojConfig = view.resolved;
@@ -5779,7 +5786,7 @@ async function buildApp(builtJson) {
   };
   const context = minimalContext({ watchMode: false });
   const hooks = main.topLevelPlugins
-    .filter((p) => !isReimplemented(p && p.name))
+    .filter((p) => !startLeavesOut(p && p.name))
     .map((p) => ({ p, fn: hookFn(p, "buildApp"), rank: hookOrderRank(p.buildApp) }))
     .filter((h) => h.fn)
     .sort((a, b) => a.rank - b.rank);
