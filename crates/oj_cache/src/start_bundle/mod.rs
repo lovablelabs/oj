@@ -93,6 +93,13 @@ impl PinnedBundle {
         name == self.entry || name == "client-entry.js"
     }
 
+    /// Every chunk by name, in no particular order.
+    pub fn chunks(&self) -> impl Iterator<Item = (&str, &PinnedChunk)> {
+        self.chunks
+            .iter()
+            .map(|(name, chunk)| (name.as_str(), chunk))
+    }
+
     /// The content hash of each chunk that has one.
     pub fn hashes(&self) -> impl Iterator<Item = &str> {
         self.chunks.values().filter_map(|c| c.hash.as_deref())
