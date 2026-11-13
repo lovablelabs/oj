@@ -152,3 +152,83 @@ fn bundle_hooks_read_the_start_bundles_whole_module_graph() {
         );
     }
 }
+
+/// A plugin rewriting Start's manifest, as an app adding its own preloads
+/// does: under `vite build` the server bundle's `tanstack-start-manifest:v`
+/// is Start's module (`export const tsrStartManifest = () => (...)`, the
+/// routes' preloads and scripts built from the client bundle), and a
+/// `transform` hook sees it under Vite's id for a virtual module.
+const MANIFEST_PROBE: &str = r#"
+import { writeFileSync as writeProbe } from "node:fs";
+function manifestProbe(): Plugin {
+  let root = "";
+  return {
+    name: "manifest-probe",
+    apply: "build",
+    configResolved(c) {
+      root = c.root;
+    },
+    transform(code, id) {
+      if (!id.endsWith("tanstack-start-manifest:v")) return;
+      writeProbe(
+        `${root}/manifest-${this.environment.name}.json`,
+        JSON.stringify({ id, consumer: this.environment.config.consumer, code }),
+      );
+      if (this.environment.config.consumer !== "server") return;
+      return code.replace("preloads:[", 'preloads:["/assets/added-by-transform.js",');
+    },
+  };
+}
+"#;
+
+#[test]
+fn a_plugin_transforms_starts_manifest_in_the_server_bundle() {
+    let Some(root) = app("manifest-transform") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen("  plugins: [\n", "  plugins: [\n    manifestProbe(),\n", 1);
+    std::fs::write(&config, format!("{source}{MANIFEST_PROBE}")).unwrap();
+    build(&root);
+
+    let probe: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("manifest-ssr.json"))
+            .expect("the transform saw the manifest in the server bundle"),
+    )
+    .unwrap();
+    assert_eq!(probe["id"], "\0tanstack-start-manifest:v", "{probe}");
+    assert_eq!(probe["consumer"], "server", "{probe}");
+    let code = probe["code"].as_str().unwrap_or_default();
+    assert!(
+        code.starts_with("export const tsrStartManifest = () => (")
+            && code.contains("/assets/client-"),
+        "Start's own manifest, naming the client entry: {code}"
+    );
+
+    // The bundle carries what the transform returned, and the page still
+    // links the client's stylesheet, which oj adds to the root route.
+    let mut bundle = String::new();
+    for dir in ["dist", "dist/chunks"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap().flatten() {
+            if entry.path().extension().is_some_and(|e| e == "mjs") {
+                bundle.push_str(&std::fs::read_to_string(entry.path()).unwrap());
+            }
+        }
+    }
+    assert!(
+        bundle.contains("/assets/added-by-transform.js"),
+        "the server bundle has the transformed manifest"
+    );
+    let sheet = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|f| f.ends_with(".css"))
+        .expect("the client emitted a stylesheet");
+    assert!(
+        bundle.contains(&format!("/assets/{sheet}")),
+        "the manifest links /assets/{sheet}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

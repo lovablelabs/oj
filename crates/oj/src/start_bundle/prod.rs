@@ -538,6 +538,12 @@ pub(crate) async fn build(
             ),
         )?;
 
+        let manifest_sheets = start.cache.join("manifest-sheets.ts");
+        std::fs::write(
+            &manifest_sheets,
+            super::alias::StartManifestSheets::module(&css, &client_url),
+        )?;
+
         // The server, on the client's plugin instances. The switch moves the
         // shared host's hook gates to the server's filters too, so the client
         // bundle must be done by now.
@@ -554,6 +560,9 @@ pub(crate) async fn build(
         // lookups (the environment's own resolve conditions).
         let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
+            plugins.push(Pluginable::new_shared(super::alias::StartManifestSheets {
+                wrapper: manifest_sheets.clone(),
+            }));
             if let Some(plugin) = &start.stylex {
                 plugins.push(crate::stylex_plugin::transform(plugin));
             }
