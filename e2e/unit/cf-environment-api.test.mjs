@@ -19,30 +19,51 @@ import fs from "node:fs";
 import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
 
+// A stub of the app's installed Vite: resolveConfig returns two environments,
+// each with a dev.createEnvironment factory the host must call, and records
+// the client buildStart of Vite's server startup (initServer).
+const STUB_VITE = `
+  export function resolveConfig(inline) {
+    const calls = (globalThis.__ojStubCalls = { clientBuildStart: [] });
+    // The client container: Vite's own plugins beside the host's instances.
+    const clientPlugins = [{ name: "vite:css", buildStart() {} }, ...(inline.plugins ?? [])];
+    const pluginContainer = {
+      options: {},
+      _started: false,
+      _getPluginContext: (p) => ({ plugin: p }),
+      async hookParallel(hook, context, args, condition) {
+        for (const p of clientPlugins) {
+          if (typeof p[hook] !== "function" || (condition && !condition(p))) continue;
+          calls.clientBuildStart.push(p.name);
+          await p[hook].apply(context(p), args(p));
+        }
+      },
+      // Vite's: every plugin's buildStart, once.
+      async buildStart() {
+        if (this._started) return;
+        this._started = true;
+        await this.hookParallel("buildStart", this._getPluginContext, () => [this.options]);
+      },
+    };
+    const mkEnv = (extra) => (name) => ({ name, init() {}, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
+    return {
+      root: inline.root,
+      logger: { info() {}, warn() {}, warnOnce() {}, error() {} },
+      environments: {
+        client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer })) } },
+        worker: { dev: { createEnvironment: mkEnv((name) => ({ initRunner() {} })) } },
+      },
+    };
+  }
+  export class DevEnvironment {}
+  export function createRunnableDevEnvironment(name) { return { name, init() {} }; }
+`;
+
 // The plugin here is deliberately NOT cloudflare-named: any plugin declaring
 // an environment activates the Environment-API path.
 test("an environment-declaring plugin gets server.environments (built from the app's Vite) and a callable middlewares app", async () => {
   const fx = tmpProject({ prefix: "oj-cf-envapi-" });
-
-  // Stub the app's installed Vite: resolveConfig returns two environments,
-  // each with a dev.createEnvironment factory the host must call.
-  fx.pkg("vite", "index.mjs", {
-    "index.mjs": `
-      export function resolveConfig(inline) {
-        const mkEnv = (extra) => (name) => ({ name, init() {}, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
-        return {
-          root: inline.root,
-          logger: { info() {}, warn() {}, warnOnce() {}, error() {} },
-          environments: {
-            client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer: { buildStart() {} } })) } },
-            worker: { dev: { createEnvironment: mkEnv((name) => ({ initRunner() {} })) } },
-          },
-        };
-      }
-      export class DevEnvironment {}
-      export function createRunnableDevEnvironment(name) { return { name, init() {} }; }
-    `,
-  });
+  fx.pkg("vite", "index.mjs", { "index.mjs": STUB_VITE });
 
   fx.write(
     "oj.plugins.mjs",
@@ -50,6 +71,7 @@ test("an environment-declaring plugin gets server.environments (built from the a
      export default [{
        name: "acme-workerd:dev",
        config: () => ({ environments: { worker: { dev: { createEnvironment: () => ({}) } } } }),
+       buildStart() {},
        configureServer(server) {
          seen.middlewaresCallable = typeof server.middlewares === "function";
          seen.middlewaresHasUse = typeof server.middlewares.use === "function";
@@ -67,7 +89,7 @@ test("an environment-declaring plugin gets server.environments (built from the a
          seen.middlewareRan = ran;
        },
        transform(code, id) {
-         if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+         if (id.endsWith("probe.js")) return "export default " + JSON.stringify({ ...seen, calls: globalThis.__ojStubCalls }) + ";";
          return null;
        },
      }];\n`,
@@ -105,9 +127,60 @@ test("an environment-declaring plugin gets server.environments (built from the a
     assert.equal(seen.middlewaresHasUse, true, "server.middlewares.use exists");
     assert.equal(seen.middlewareRan, true, "a registered middleware runs when the app is invoked");
 
+    // Vite's initServer: the client buildStart (the shared state server
+    // transforms read, as vite:css-post's CSS modules cache).
+    assert.deepEqual(
+      seen.calls.clientBuildStart,
+      ["vite:css"],
+      "the client buildStart runs Vite's own plugins; the host runs its plugins' itself",
+    );
+
     // Surface the cloudflare plugin also reads.
     assert.equal(seen.hasClose, true, "server.close is provided");
     assert.equal(seen.hasTransformIndexHtml, true, "server.transformIndexHtml is provided");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// Cloudflare's configureServer starts the client container itself; Vite's
+// initServer then leaves it be, and so does oj's.
+test("a client container a plugin already started is not started again", async () => {
+  const fx = tmpProject({ prefix: "oj-cf-started-" });
+  fx.pkg("vite", "index.mjs", { "index.mjs": STUB_VITE });
+  fx.write(
+    "oj.plugins.mjs",
+    `export default [{
+       name: "acme-workerd:dev",
+       config: () => ({ environments: { worker: { dev: { createEnvironment: () => ({}) } } } }),
+       async configureServer(server) { await server.environments.client.pluginContainer.buildStart(); },
+       transform(code, id) {
+         if (id.endsWith("probe.js")) return "export default " + JSON.stringify(globalThis.__ojStubCalls) + ";";
+         return null;
+       },
+     }];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        config: { root: fx.root },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+    const calls = JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
+    assert.deepEqual(calls.clientBuildStart, ["vite:css"], "Vite's own buildStart runs once, from the plugin's start");
   } finally {
     host.close();
     fx.cleanup();
@@ -606,10 +679,13 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
          const emits = [];
          server.watcher.on("change", (f) => emits.push("change:" + f.split("/").pop()));
          server.watcher.on("add", (f) => emits.push("add:" + f.split("/").pop()));
+         // chokidar's catch-all event, which Nitro's scan-dir watcher reads.
+         const all = [];
+         server.watcher.on("all", (event, f) => all.push(event + ":" + f.split("/").pop()));
          server.middlewares.use("/__probe", (req, res) => {
            res.setHeader("content-type", "application/json");
            const worker = server.environments.worker;
-           res.end(JSON.stringify({ workerSends: worker.__sends, changes: worker.__changes, emits }));
+           res.end(JSON.stringify({ workerSends: worker.__sends, changes: worker.__changes, emits, all }));
          });
        },
      }];\n`,
@@ -667,6 +743,7 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     await host.send({ id: 2, hook: "watcherEvents", args: [JSON.stringify([{ path: file, type: "update" }])] });
     seen = await probe();
     assert.deepEqual(seen.emits, ["change:live.ts"], "one watcher emit for the settled change");
+    assert.deepEqual(seen.all, ["change:live.ts"], "each file event is followed by chokidar's `all`");
 
     // DIFFERENT content under the SAME mtime (an mtime heuristic's blind spot:
     // coarse timestamps, two writes in one tick): the hash differs, so the
@@ -693,6 +770,17 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
       `update-then-create is one processed change, got ${JSON.stringify(seen.changes)}`,
     );
     assert.ok(!seen.emits.some((e) => e.startsWith("add:")), `no phantom add emit, got ${JSON.stringify(seen.emits)}`);
+
+    // A new file no graph knows (a Nitro route added in dev): an `add`, and
+    // the `all` after it, reach the plugin's watcher.
+    const added = path.join(fx.root, "server", "routes", "added.ts");
+    fs.mkdirSync(path.dirname(added), { recursive: true });
+    fs.writeFileSync(added, "export default () => 'added';\n");
+    await invalidate(added, "create");
+    await host.send({ id: 3, hook: "watcherEvents", args: [JSON.stringify([{ path: added, type: "create" }])] });
+    seen = await probe();
+    assert.ok(seen.emits.includes("add:added.ts"), `add emitted, got ${JSON.stringify(seen.emits)}`);
+    assert.ok(seen.all.includes("add:added.ts"), `all emitted for the add, got ${JSON.stringify(seen.all)}`);
 
     // A file that cannot be read (never suppress on error): both sends process.
     const ghost = path.join(fx.root, "src", "ghost.ts");
@@ -898,6 +986,8 @@ test("detection true with nothing built prints the none-came-up warning, whateve
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.match(host.stderr(), warning, "silent degradation to the Node SSR runner is never acceptable");
+    // Here the cause is that the app has no vite: the message names the fix.
+    assert.match(host.stderr(), /is vite in the app's devDependencies\?/);
   } finally {
     host.close();
     fx.cleanup();
