@@ -433,25 +433,39 @@ pub(crate) fn write_server_fn_resolver(
     // functions in a file that was not edited.
     let mut reads = app_modules.reads();
     reads.sort();
-    let mut misses: Vec<String> = app_modules
-        .misses()
+    let mut asked: Vec<String> = app_modules
+        .asked()
         .into_iter()
-        .map(|base| format!("{SERVER_FN_MISS}{base}"))
+        .map(|base| format!("{SERVER_FN_ASKED}{base}"))
         .collect();
-    misses.sort();
-    reads.extend(misses);
+    asked.sort();
+    reads.extend(asked);
+    let mut unresolved: Vec<String> = app_modules
+        .unresolved()
+        .into_iter()
+        .map(|(from, specifier)| format!("{SERVER_FN_UNRESOLVED}{from}\t{specifier}"))
+        .collect();
+    unresolved.sort();
+    reads.extend(unresolved);
     std::fs::write(cache.join(server_fn_reads_file(dev)), reads.join("\n"))?;
     Ok(count)
 }
 
 /// What a line of the reads file starts with when it names a relative import
-/// no file answered, app-relative as written.
-pub(crate) const SERVER_FN_MISS: &str = "?";
+/// the scan asked for, app-relative as written (no extension added).
+pub(crate) const SERVER_FN_ASKED: &str = "?";
+
+/// What a line of the reads file starts with when it names an import that
+/// is not relative and that nothing answered: the importer, a tab, the
+/// specifier.
+pub(crate) const SERVER_FN_UNRESOLVED: &str = "!";
 
 /// Beside the resolver, the app-relative paths of the modules its scan read
 /// for an imported builder or factory, one per line; then, each after
-/// [`SERVER_FN_MISS`], the relative imports it asked for that no file
-/// answered, which a file created there would.
+/// [`SERVER_FN_ASKED`], the relative imports it asked for, which another
+/// file may come to answer (a file created where there was none, or one
+/// with an extension tried earlier); then, each after
+/// [`SERVER_FN_UNRESOLVED`], the other imports nothing answered.
 pub(crate) fn server_fn_reads_file(dev: bool) -> &'static str {
     if dev {
         "server-fn-resolver.reads"

@@ -39,7 +39,7 @@
 //! function, as the compiler's `getVariableDeclaratorForExpressionPath` finds
 //! none for it.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
@@ -146,9 +146,11 @@ pub struct FsModules<'a> {
     resolver: std::sync::OnceLock<oj_resolver::OjResolver>,
     /// The app-relative paths read, in order, once each.
     reads: std::sync::Mutex<Vec<String>>,
-    /// The relative imports no file answered, app-relative as written (no
-    /// extension added), once each.
-    misses: std::sync::Mutex<Vec<String>>,
+    /// The relative imports asked for, app-relative as written (no
+    /// extension added), once each, whether or not a file answered.
+    asked: std::sync::Mutex<Vec<String>>,
+    /// The other imports nothing answered, as `(importer, specifier)`.
+    unresolved: std::sync::Mutex<Vec<(String, String)>>,
     /// How many files were read, a file read twice counted twice.
     loads: std::sync::atomic::AtomicUsize,
 }
@@ -159,15 +161,33 @@ impl<'a> FsModules<'a> {
             root,
             resolver: std::sync::OnceLock::new(),
             reads: std::sync::Mutex::new(Vec::new()),
-            misses: std::sync::Mutex::new(Vec::new()),
+            asked: std::sync::Mutex::new(Vec::new()),
+            unresolved: std::sync::Mutex::new(Vec::new()),
             loads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
-    /// The relative imports asked for that no file answered, app-relative
-    /// as written: a file created there changes the answers given.
-    pub fn misses(&self) -> Vec<String> {
-        self.misses.lock().map(|m| m.clone()).unwrap_or_default()
+    /// The relative imports asked for, app-relative as written: which
+    /// file answers one (none, or another once a file is created there)
+    /// changes the answers given.
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// The imports that are not relative and that nothing answered, as
+    /// `(importer, specifier)`: an alias to a file not there yet.
+    pub fn unresolved(&self) -> Vec<(String, String)> {
+        self.unresolved
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default()
+    }
+
+    /// The app's module `specifier` (not relative) names from the module at
+    /// `from`, app-relative, or None: what [`Self::unresolved`] lists, asked
+    /// again.
+    pub fn resolve(&self, from: &str, specifier: &str) -> Option<String> {
+        self.resolve_aliased(from, specifier).flatten()
     }
 
     /// How many files were read, a file read twice counted twice.
@@ -181,8 +201,9 @@ impl<'a> FsModules<'a> {
         self.reads.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
-    /// `specifier` (not relative) as the app's module it names, or None.
-    fn resolve_aliased(&self, from: &str, specifier: &str) -> Option<String> {
+    /// `specifier` (not relative) as the app's module it names: None when
+    /// nothing answers it, `Some(None)` when what answers is not the app's.
+    fn resolve_aliased(&self, from: &str, specifier: &str) -> Option<Option<String>> {
         // oxc's resolver, with the tsconfig that owns the importer applying
         // its `paths` as Vite 8's own resolver does (`resolve.tsconfigPaths`,
         // or vite-tsconfig-paths ahead of it). An app without either cannot
@@ -202,6 +223,11 @@ impl<'a> FsModules<'a> {
         let resolved = resolver
             .resolve_from(&self.root.join(from), specifier)
             .ok()?;
+        Some(self.app_module(&resolved))
+    }
+
+    /// `resolved` as the app's module, app-relative.
+    fn app_module(&self, resolved: &Path) -> Option<String> {
         // The resolver answers with the real path; the root may be given
         // through a symlink.
         let rel = match resolved.strip_prefix(self.root) {
@@ -224,13 +250,14 @@ impl Modules for FsModules<'_> {
         let rel = if specifier.starts_with('.') {
             let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
             let base = normalize(&dir.join(specifier));
-            let Some(rel) = resolve_file(self.root, &base) else {
-                push_once(&self.misses, slash(&base));
+            push_once(&self.asked, slash(&base));
+            resolve_file(self.root, &base)?
+        } else {
+            let Some(resolved) = self.resolve_aliased(from, specifier) else {
+                push_once(&self.unresolved, (from.to_string(), specifier.to_string()));
                 return None;
             };
-            rel
-        } else {
-            self.resolve_aliased(from, specifier)?
+            resolved?
         };
         let code = std::fs::read_to_string(self.root.join(&rel)).ok()?;
         self.loads
@@ -240,7 +267,7 @@ impl Modules for FsModules<'_> {
     }
 }
 
-fn push_once(list: &std::sync::Mutex<Vec<String>>, item: String) {
+fn push_once<T: PartialEq>(list: &std::sync::Mutex<Vec<T>>, item: T) {
     if let Ok(mut list) = list.lock() {
         if !list.contains(&item) {
             list.push(item);
@@ -250,7 +277,7 @@ fn push_once(list: &std::sync::Mutex<Vec<String>>, item: String) {
 
 /// The file a relative import written as `base` (app-relative, no extension
 /// added) is answered by under `root`, app-relative, or None while no file
-/// answers: what [`FsModules::misses`] lists, asked again.
+/// answers: what [`FsModules::asked`] lists, asked again.
 pub fn resolve_relative(root: &Path, base: &str) -> Option<String> {
     resolve_file(root, Path::new(base))
 }
@@ -768,8 +795,43 @@ impl Module {
             if kind != Kind::None {
                 return kind;
             }
+            // The first module that exports the name is the one asked,
+            // whatever the name is there (`findExportInModule` returns the
+            // first binding found, then its kind is looked at).
+            let binds = resolver
+                .resolve(&self.path, specifier)
+                .is_some_and(|module| module.binds(resolver, name, &mut Vec::new()));
+            if binds {
+                return Kind::None;
+            }
         }
         Kind::None
+    }
+
+    /// Whether the module exports `name`, itself or through an `export *`,
+    /// short of the modules already being asked for it; `seen` holds the
+    /// modules looked at, so a cycle of them ends.
+    fn binds(&self, resolver: &Resolver, name: &str, seen: &mut Vec<String>) -> bool {
+        // A module being asked for the name is one the compiler's
+        // `visitedModules` holds: asked again, it exports nothing.
+        let asked = matches!(
+            resolver
+                .exported
+                .borrow()
+                .get(&(self.path.clone(), name.to_string())),
+            Some(Memo::Resolving(_))
+        );
+        if asked || seen.contains(&self.path) {
+            return false;
+        }
+        seen.push(self.path.clone());
+        self.exports.contains_key(name)
+            || self.re_exports.contains_key(name)
+            || self.export_all.iter().any(|specifier| {
+                resolver
+                    .resolve(&self.path, specifier)
+                    .is_some_and(|module| module.binds(resolver, name, seen))
+            })
     }
 }
 
@@ -795,18 +857,32 @@ struct Resolver<'m> {
     /// What a module exports under a name, by path and name; one being
     /// resolved is marked so, and a cycle of re-exports ends there.
     exported: RefCell<HashMap<(String, String), Memo>>,
-    /// How many questions are being answered, one inside the other.
-    depth: Cell<usize>,
-    /// The outermost question a None was cut at since the question being
-    /// answered began, by its depth; `usize::MAX` for none.
-    cut: Cell<usize>,
+    /// Every question asked, in order: how it ended.
+    questions: RefCell<Vec<Question>>,
+    /// The questions being answered, one inside the other, outermost first.
+    open: RefCell<Vec<usize>>,
+    /// The questions a None was cut at since the one being answered began,
+    /// by their depth in `open`.
+    cuts: RefCell<std::collections::BTreeSet<usize>>,
 }
 
-/// A memoized answer: known, or being resolved at a depth.
+/// A memoized answer: known, being resolved by a question, or a None
+/// leaning on a question that cut it.
 #[derive(Clone, Copy)]
 enum Memo {
     Resolving(usize),
+    Leaning(usize),
     Known(Kind),
+}
+
+/// A question of [`Resolver::memoized`]: open at a depth, ended with
+/// nothing or with a kind, or ended with a None leaning on another.
+#[derive(Clone, Copy)]
+enum Question {
+    Open(usize),
+    Nothing,
+    Found,
+    Leaning(usize),
 }
 
 impl<'m> Resolver<'m> {
@@ -816,8 +892,9 @@ impl<'m> Resolver<'m> {
             loaded: RefCell::new(HashMap::new()),
             resolved: RefCell::new(HashMap::new()),
             exported: RefCell::new(HashMap::new()),
-            depth: Cell::new(0),
-            cut: Cell::new(usize::MAX),
+            questions: RefCell::new(Vec::new()),
+            open: RefCell::new(Vec::new()),
+            cuts: RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -868,43 +945,82 @@ impl<'m> Resolver<'m> {
 
     /// `compute`'s answer for `key`, kept in `memo`. A question asked again
     /// while it is being answered (a cycle of imports or re-exports) is
-    /// answered None, which ends the cycle; an answer that leaned on such a
-    /// None is not kept unless the question that cut it is its own or one
-    /// asked inside it. `export * from` is why: with `m` re-exporting all of
-    /// `n` and `o`, and `n` all of `m`, asking `m` asks `n`, which is cut at
-    /// `m` and finds nothing, though `n` does export what `o` declares. Kept,
-    /// that None answered a later import from `n`.
+    /// answered None, which ends the cycle. A None that leaned on such a cut
+    /// is not the question's own answer: with `m` re-exporting all of `n`
+    /// and `o`, and `n` all of `m`, asking `m` asks `n`, which is cut at `m`
+    /// and finds nothing, though `n` does export what `o` declares. So it is
+    /// kept as leaning on the question that cut it, the innermost one still
+    /// open: it answers while that one is open (each module of a cycle is
+    /// looked at once, not once for every path to it), becomes the answer
+    /// when that one ends with nothing, and is asked anew when that one
+    /// found something.
     fn memoized<K: std::hash::Hash + Eq + Clone>(
         &self,
         memo: &RefCell<HashMap<K, Memo>>,
         key: K,
         compute: impl FnOnce() -> Kind,
     ) -> Kind {
-        match memo.borrow().get(&key) {
-            Some(Memo::Known(kind)) => return *kind,
-            Some(Memo::Resolving(depth)) => {
-                self.cut.set(self.cut.get().min(*depth));
-                return Kind::None;
+        let known = memo.borrow().get(&key).copied();
+        match known {
+            Some(Memo::Known(kind)) => return kind,
+            Some(Memo::Resolving(question) | Memo::Leaning(question)) => {
+                match self.outcome(question) {
+                    Question::Open(depth) => {
+                        self.cuts.borrow_mut().insert(depth);
+                        return Kind::None;
+                    }
+                    Question::Nothing => {
+                        memo.borrow_mut().insert(key, Memo::Known(Kind::None));
+                        return Kind::None;
+                    }
+                    Question::Found | Question::Leaning(_) => {}
+                }
             }
             None => {}
         }
-        let depth = self.depth.get();
-        self.depth.set(depth + 1);
+        let question = self.questions.borrow().len();
+        let depth = self.open.borrow().len();
+        self.questions.borrow_mut().push(Question::Open(depth));
+        self.open.borrow_mut().push(question);
         memo.borrow_mut()
-            .insert(key.clone(), Memo::Resolving(depth));
-        let outer = self.cut.replace(usize::MAX);
+            .insert(key.clone(), Memo::Resolving(question));
+        let outer = self.cuts.take();
         let kind = compute();
-        self.depth.set(depth);
-        // Cut by a question still being answered further out.
-        let open = kind == Kind::None && self.cut.get() < depth;
-        if open {
-            memo.borrow_mut().remove(&key);
-            self.cut.set(outer.min(self.cut.get()));
-        } else {
-            memo.borrow_mut().insert(key, Memo::Known(kind));
-            self.cut.set(outer);
-        }
+        self.open.borrow_mut().pop();
+        // The cuts at questions still open, further out than this one.
+        let mut cuts = self.cuts.take();
+        cuts.split_off(&depth);
+        let (outcome, kept) = match cuts.last() {
+            Some(innermost) if kind == Kind::None => {
+                let on = self.open.borrow()[*innermost];
+                (Question::Leaning(on), Memo::Leaning(on))
+            }
+            _ => {
+                cuts.clear();
+                let outcome = if kind == Kind::None {
+                    Question::Nothing
+                } else {
+                    Question::Found
+                };
+                (outcome, Memo::Known(kind))
+            }
+        };
+        self.questions.borrow_mut()[question] = outcome;
+        memo.borrow_mut().insert(key, kept);
+        cuts.extend(outer);
+        self.cuts.replace(cuts);
         kind
+    }
+
+    /// How `question` ended, through the questions it leaned on.
+    fn outcome(&self, mut question: usize) -> Question {
+        let questions = self.questions.borrow();
+        loop {
+            match questions[question] {
+                Question::Leaning(on) => question = on,
+                outcome => return outcome,
+            }
+        }
     }
 }
 
@@ -2405,24 +2521,130 @@ mod tests {
             .collect();
         assert_eq!(names, ["a"]);
         assert_eq!(modules.reads(), Vec::<String>::new());
-        assert_eq!(modules.misses(), Vec::<String>::new());
+        assert_eq!(modules.asked(), Vec::<String>::new());
+        assert_eq!(modules.unresolved(), Vec::new());
         assert_eq!(modules.loads(), 0);
         assert!(modules.resolver.get().is_none());
 
         // A handler on each of them does resolve its root.
-        let code = format!("{code}export const b = db.handler(async () => 1);\nexport const c = gone.handler(async () => 1);\n");
+        let code = format!("{code}import {{ later }} from \"@app/lib/later\";\nexport const b = db.handler(async () => 1);\nexport const c = gone.handler(async () => 1);\nexport const d = later.handler(async () => 1);\nexport const e = z.handler(async () => 1);\n");
         assert_eq!(
             super::find_server_fns(&code, "src/lib/fns.ts", &modules).len(),
             1
         );
         assert_eq!(modules.reads(), ["src/lib/db.ts"]);
-        assert_eq!(modules.misses(), ["src/lib/gone"]);
+        // Every relative import asked for, answered or not; of the others,
+        // the ones nothing answers (a package not installed is one).
+        assert_eq!(modules.asked(), ["src/lib/db", "src/lib/gone"]);
+        let unresolved = |specifier: &str| ("src/lib/fns.ts".to_string(), specifier.to_string());
+        assert_eq!(
+            modules.unresolved(),
+            [unresolved("@app/lib/later"), unresolved("zod")]
+        );
+        assert_eq!(modules.resolve("src/lib/fns.ts", "@app/lib/later"), None);
+        std::fs::write(root.join("src/lib/later.ts"), "export const later = 1;\n").unwrap();
+        assert_eq!(
+            FsModules::new(&root)
+                .resolve("src/lib/fns.ts", "@app/lib/later")
+                .as_deref(),
+            Some("src/lib/later.ts")
+        );
         assert_eq!(super::resolve_relative(&root, "src/lib/gone"), None);
         std::fs::write(root.join("src/lib/gone.tsx"), "export const gone = 1;\n").unwrap();
         assert_eq!(
             super::resolve_relative(&root, "src/lib/gone").as_deref(),
             Some("src/lib/gone.tsx")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Modules that each re-export all of the others: a name none exports,
+    // and one the last declares, are answered looking at each module once.
+    // A None cut by a cycle was asked again on every path to it, so twelve
+    // such modules were forty million paths, ten times more with each one
+    // added. The same for layers whose last re-exports the first.
+    #[test]
+    fn modules_re_exporting_one_another_are_each_looked_at_once() {
+        let builder = "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn();\n";
+        let count = 24;
+        let mut files = Vec::new();
+        for i in 0..count {
+            let mut code: String = (0..count)
+                .filter(|j| *j != i)
+                .map(|j| format!("export * from \"./c{j}\";\n"))
+                .collect();
+            if i + 1 == count {
+                code.push_str("export * from \"./builder\";\n");
+            }
+            files.push((format!("src/lib/c{i}.ts"), code));
+        }
+        let depth = 24;
+        for layer in 0..depth {
+            for side in ["a", "b"] {
+                let next = (layer + 1) % depth;
+                let mut code =
+                    format!("export * from \"./l{next}a\";\nexport * from \"./l{next}b\";\n");
+                if layer + 1 == depth && side == "b" {
+                    code.push_str("export * from \"./builder\";\n");
+                }
+                files.push((format!("src/lib/l{layer}{side}.ts"), code));
+            }
+        }
+        files.push(("src/lib/builder.ts".to_string(), builder.to_string()));
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+        let root = temp_app("star-clique", &files);
+        let started = std::time::Instant::now();
+        for (first, second) in [("c0", "c7"), ("c7", "c0"), ("l0a", "l9b"), ("l9b", "l0a")] {
+            let code = format!("import {{ absent, base as one }} from \"./{first}\";\nimport {{ base as two, absent as gone }} from \"./{second}\";\nexport const a = absent.handler(async () => 1);\nexport const b = one.handler(async () => 2);\nexport const c = two.handler(async () => 3);\nexport const d = gone.handler(async () => 4);\n");
+            let modules = FsModules::new(&root);
+            let names: Vec<_> = super::find_server_fns(&code, "src/lib/fns.ts", &modules)
+                .into_iter()
+                .map(|f| f.name)
+                .collect();
+            assert_eq!(names, ["b", "c"], "{first} first");
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the scans took {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Two `export *` of a name: the first module exporting it is the one
+    // asked, as the compiler's `findExportInModule` returns the first
+    // binding found. A builder behind a name the earlier module exports as
+    // something else is not looked for.
+    #[test]
+    fn the_first_export_star_that_exports_a_name_answers_for_it() {
+        let builder = "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn();\n";
+        let root = temp_app(
+            "star-order",
+            &[
+                ("src/lib/plain.ts", "export const base = 1;\n"),
+                ("src/lib/via.ts", "export * from \"./plain\";\n"),
+                ("src/lib/builder.ts", builder),
+                ("src/lib/other.ts", "export const other = 1;\n"),
+                (
+                    "src/lib/plain-first.ts",
+                    "export * from \"./via\";\nexport * from \"./builder\";\n",
+                ),
+                (
+                    "src/lib/builder-first.ts",
+                    "export * from \"./other\";\nexport * from \"./builder\";\nexport * from \"./via\";\n",
+                ),
+            ],
+        );
+        let code = "import { base as one } from \"./plain-first\";\nimport { base as two } from \"./builder-first\";\nexport const a = one.handler(async () => 1);\nexport const b = two.handler(async () => 2);\n";
+        let modules = FsModules::new(&root);
+        let names: Vec<_> = super::find_server_fns(code, "src/lib/fns.ts", &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["b"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
