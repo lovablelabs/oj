@@ -457,35 +457,31 @@ pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
     std::time::Duration::from_secs(5);
 
-/// V8's young generation at its largest (three 64MB semi-space units). Node
-/// sizes the old space and reports a heap limit this much above it:
-/// `--max-old-space-size=4096` reads back as 4288MB.
-pub(crate) const YOUNG_GENERATION_MB: usize = 192;
+/// The cap when the machine's memory cannot be read: what every engine had
+/// before the cap followed it.
+const UNREAD_MEMORY_HEAP_MB: usize = 4096;
 
-/// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB` (the whole heap),
-/// then NODE_OPTIONS `--max-old-space-size` (the old space, as Node reads it),
-/// then Node's own default. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
+/// Plugin-host heap cap, as Node sizes its own heap: V8's default for the
+/// memory this process may use, with NODE_OPTIONS `--max-old-space-size` as
+/// the old space when it is set. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
-    let knobs = &oj_env::get().knobs;
-    if let Some(mb) = knobs.plugin_memory_mb {
-        return mb;
-    }
-    match knobs.node_options.as_deref().and_then(max_old_space_mb) {
-        Some(old_space) => old_space + YOUNG_GENERATION_MB,
-        None => default_heap_mb(available_memory_bytes()),
-    }
+    let old_space = oj_env::get()
+        .knobs
+        .node_options
+        .as_deref()
+        .and_then(max_old_space_mb);
+    heap_cap_mb(available_memory_bytes(), old_space)
 }
 
-/// The heap limit Node starts with on a machine with `memory` bytes: V8 gives
-/// the old space 4GB once there is 15GB of memory (`Heap::MaxOldGenerationSize`),
-/// and the young generation sits on top. A smaller machine, or one whose
-/// memory cannot be read, keeps 4096MB for the whole heap (Node's own figure
-/// there is lower, and a build that fits today must still fit).
-pub(crate) fn default_heap_mb(memory: Option<u64>) -> usize {
-    match memory {
-        Some(bytes) if bytes >> 30 >= 15 => 4096 + YOUNG_GENERATION_MB,
-        _ => 4096,
-    }
+/// The cap for a machine with `memory` bytes. V8 computes it
+/// (`oj_js::heap_limit_bytes`), as it does for Node and for Deno's CLI: half
+/// the memory for the old space up to 4GB, and the young generation on top.
+/// `--max-old-space-size=N` is N with that same young generation.
+pub(crate) fn heap_cap_mb(memory: Option<u64>, old_space_mb: Option<usize>) -> usize {
+    let Some(memory) = memory else {
+        return old_space_mb.unwrap_or(UNREAD_MEMORY_HEAP_MB);
+    };
+    oj_js::heap_limit_bytes(memory, old_space_mb) / (1024 * 1024)
 }
 
 /// The memory this process may use: the cgroup ceiling when one is set and
@@ -2990,7 +2986,7 @@ impl HostCore {
                 // A near-limit heap is a property of the isolate, not this call:
                 // declare it gone, the next call revives a fresh one.
                 let msg = format!(
-                    "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
+                    "plugin host exceeded its memory limit ({}MB; raise it with NODE_OPTIONS=--max-old-space-size) running {hook}",
                     self.boot.memory_limit_bytes / (1024 * 1024)
                 );
                 self.declare_gone(&msg, generation);
