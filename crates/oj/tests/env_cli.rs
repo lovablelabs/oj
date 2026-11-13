@@ -558,3 +558,122 @@ fn a_set_value_outlives_a_restart_of_the_server() {
     assert_eq!(status["keys"][0]["source"], "set", "{status}");
     assert_eq!(status["keys"][1]["source"], "file", "{status}");
 }
+
+// ---- more tests ------------------------------------------------------------------------
+
+/// Edits `.env`, which restarts the server, and returns the status the next
+/// image answers with.
+fn status_after_restart(app: &App, server: &Server, marker: &str) -> serde_json::Value {
+    let mark = server.output().len();
+    app.write(
+        ".env",
+        &format!("VITE_BACKEND_URL=https://baked.test\nVITE_EDITED={marker}\n"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !server.output()[mark..].contains("restarting dev server") {
+        assert!(
+            Instant::now() < deadline,
+            "the server did not restart:\n{}",
+            server.output()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    loop {
+        let (code, out, err) = oj_env(app, &["get", "--json"]);
+        if code == 0 && server.output()[mark..].contains("runtime env:") {
+            return json(&out);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the server did not come back: {err}\n{}",
+            server.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+// What a restart hands over is what is set when it happens: a value unset
+// before it is not set again by it, restart after restart.
+#[test]
+fn an_unset_value_is_not_brought_back_by_a_restart() {
+    let app = App::new("restart-unset");
+    app.publish(BOUND);
+    let server = app.serve();
+    let (code, _, err) = oj_env(
+        &app,
+        &["set", "VITE_BACKEND_URL=/_port_9000", "VITE_BACKEND_KEY=k"],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = oj_env(&app, &["unset", "VITE_BACKEND_URL"]);
+    assert_eq!(code, 0, "{err}");
+
+    let status = status_after_restart(&app, &server, "1");
+    assert_eq!(status["keys"][0]["source"], "file", "{status}");
+    assert_eq!(status["keys"][0]["value"], "/_port_8001", "{status}");
+    assert_eq!(status["keys"][1]["source"], "set", "{status}");
+    assert_eq!(status["keys"][1]["value"], "k", "{status}");
+
+    // Unset in the second image, then restarted again: the first restart's
+    // hand-over is not the third image's.
+    let (code, _, err) = oj_env(&app, &["unset", "VITE_BACKEND_KEY"]);
+    assert_eq!(code, 0, "{err}");
+    let status = status_after_restart(&app, &server, "2");
+    assert_eq!(status["keys"][1]["source"], "file", "{status}");
+    assert_eq!(status["keys"][1]["value"], "sb_publishable_x", "{status}");
+}
+
+// A value holding a line break goes to the server whole and prints as one
+// dotenv line; the JSON status holds it as it is.
+#[test]
+fn a_value_with_a_line_break_is_set_whole_and_printed_on_one_line() {
+    let app = App::new("multiline");
+    app.publish(BOUND);
+    let _server = app.serve();
+    let (code, out, err) = oj_env(&app, &["set", "VITE_BACKEND_KEY", "one\ntwo \"q\""]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "VITE_BACKEND_URL=/_port_8001\nVITE_BACKEND_KEY=\"one\\ntwo \\\"q\\\"\"\n"
+    );
+    let (code, out, _) = oj_env(&app, &["get", "--json", "VITE_BACKEND_KEY"]);
+    assert_eq!(code, 0);
+    assert_eq!(json(&out)["keys"][0]["value"], "one\ntwo \"q\"", "{out}");
+}
+
+// A server bound to one of the machine's own addresses: `oj env` reaches it
+// there, so its connection comes from that address, which is this machine's
+// as loopback is. Skipped on a machine with no address but loopback.
+#[test]
+fn a_server_bound_to_the_machines_own_address_answers_oj_env() {
+    let own = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").and_then(|()| s.local_addr()))
+        .map(|a| a.ip())
+        .ok()
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
+    let Some(own) = own else {
+        eprintln!("skipped: no address but loopback");
+        return;
+    };
+    let app = App::new("lan-host");
+    app.publish(BOUND);
+    let values = app.values.to_string_lossy().into_owned();
+    let host = format!("--host={own}");
+    let _server = Server::oj_dev_with_args(
+        &app.root,
+        &[&host],
+        &[
+            ("OJ_RUNTIME_ENV_KEYS", KEYS),
+            ("OJ_RUNTIME_ENV_FILE", values.as_str()),
+        ],
+    );
+    let (code, out, err) = oj_env(&app, &["set", "VITE_BACKEND_URL=/_port_9000"]);
+    assert_eq!(
+        (code, err.as_str()),
+        (0, ""),
+        "refused at {own}, the machine's own address: {out}"
+    );
+    assert_eq!(
+        out,
+        "VITE_BACKEND_URL=/_port_9000\nVITE_BACKEND_KEY=sb_publishable_x\n"
+    );
+}

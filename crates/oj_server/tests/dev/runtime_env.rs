@@ -972,3 +972,178 @@ async fn a_classic_worker_loads_the_values_without_an_import() {
     let module = server.text("/src/worker.js?worker_file&type=module").await;
     assert!(module.contains("import \"/@oj/env.js\";"), "{module}");
 }
+
+// ---- more tests ------------------------------------------------------------------------
+
+// Under a base: the generation, the classic script and a classic worker's
+// file all answer and name each other under it.
+#[tokio::test(flavor = "multi_thread")]
+async fn under_a_base_the_generation_and_the_classic_script_answer_under_it() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"runtime-env-base-worker","private":true}"#,
+        ),
+        ("oj.config.json", r#"{"base":"/app/"}"#),
+        (".env", "VITE_BACKEND_URL=https://baked.test\n"),
+        ("index.html", INDEX),
+        (
+            "src/main.js",
+            "new Worker(new URL(\"./worker.js\", import.meta.url));\n",
+        ),
+        (
+            "src/worker.js",
+            "self.postMessage(import.meta.env.VITE_BACKEND_URL);\n",
+        ),
+    ]);
+    let server = serve_with(&app, None, None).await;
+    assert_eq!(server.text("/app/@oj/env.js?generation").await, "0");
+    let module = server.text("/app/@oj/env.js").await;
+    assert!(
+        module.contains("fetch(\"/app/@oj/env.js?generation\""),
+        "{module}"
+    );
+    let script = server.text("/app/@oj/env.js?classic").await;
+    assert!(
+        script.starts_with("{\nconst env = {") && !script.contains("export"),
+        "{script}"
+    );
+    let worker = server
+        .text("/app/src/worker.js?worker_file&type=classic")
+        .await;
+    assert!(
+        worker.contains("importScripts(\"/app/@oj/env.js?classic\");"),
+        "{worker}"
+    );
+    assert!(!worker.contains("import \"/app/@oj/env.js\""), "{worker}");
+    let res = post(&server, r#"{"VITE_BACKEND_URL":"/_port_9000"}"#, &[]).await;
+    assert_eq!(res.status, 200, "{}", res.body);
+    assert_eq!(server.text("/app/@oj/env.js?generation").await, "1");
+}
+
+// A request a proxy on this machine relays comes over a local connection:
+// what the proxy adds for the caller it stands for refuses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_control_endpoint_refuses_what_a_local_proxy_relays() {
+    let app = app();
+    let server = serve_with(&app, None, None).await;
+    let body = r#"{"VITE_BACKEND_URL":"/evil"}"#;
+    let local = oj_server::tls::ClientConn {
+        addr: "127.0.0.1:40000".parse().unwrap(),
+        encrypted: false,
+    };
+    for (name, value) in [
+        ("x-forwarded-for", "203.0.113.5"),
+        ("forwarded", "for=203.0.113.5;proto=https"),
+        ("x-real-ip", "203.0.113.5"),
+        ("via", "1.1 tunnel"),
+        ("sec-fetch-site", "cross-site"),
+    ] {
+        let res =
+            oj_server::tls::with_client_conn(local, post(&server, body, &[(name, value)])).await;
+        assert_eq!(res.status, 403, "{name}: {}", res.body);
+        assert_eq!(header(&res, "cache-control"), Some("no-store"));
+    }
+    assert!(!server.text("/@oj/env.js").await.contains("/evil"));
+    // The module and its generation are the page's to read, whoever asks.
+    let res = oj_server::tls::with_client_conn(
+        oj_server::tls::ClientConn {
+            addr: "203.0.113.5:40000".parse().unwrap(),
+            encrypted: false,
+        },
+        server.request(
+            Request::get("/@oj/env.js?generation")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!((res.status, res.body.as_str()), (200, "0"));
+}
+
+// A set that changes nothing reloads nobody; one that does reloads the
+// pages once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_set_of_the_value_in_force_reloads_nobody() {
+    let app = app();
+    let server = serve_with(&app, None, None).await;
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
+    let body = r#"{"VITE_BACKEND_URL":"/_port_9000"}"#;
+    assert_eq!(post(&server, body, &[]).await.status, 200);
+    frame_matching(&mut socket, "the reload", |f| f["type"] == "full-reload").await;
+    let res = post(&server, body, &[]).await;
+    assert_eq!(res.status, 200);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&res.body).unwrap()["generation"],
+        1
+    );
+    let mut frames = Vec::new();
+    while let Some(text) = next_text_within(&mut socket, Duration::from_millis(700)).await {
+        frames.push(text);
+    }
+    assert!(
+        !frames.iter().any(|f| f.contains("full-reload")),
+        "{frames:?}"
+    );
+    close(socket).await;
+}
+
+// A values file inside the app root is covered by the root's watch: a write
+// rebinds, and it is no module, so it restarts nothing and updates no page
+// module.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_values_file_inside_the_root_is_followed_by_the_roots_watch() {
+    let app = app();
+    let file = app.root.join("backend.json");
+    std::fs::write(&file, PENDING).unwrap();
+    let server = serve_with(&app, Some(file.clone()), None).await;
+    assert_eq!(status(&server).await["state"], "pending");
+    assert_eq!(server.get("/").await.status, 503);
+    let seen = settle(
+        &server,
+        || std::fs::write(&file, BOUND).unwrap(),
+        |s| s["state"] == "bound",
+    )
+    .await;
+    assert_eq!(seen["file"]["state"], "complete", "{seen}");
+    assert_eq!(server.get("/").await.status, 200);
+    assert!(server.text("/@oj/env.js").await.contains("/_port_8001"));
+}
+
+// The hold is a document's answer: under a base too, and never a module's,
+// the env module's or the control endpoint's.
+#[tokio::test(flavor = "multi_thread")]
+async fn under_a_base_only_documents_are_held_while_pending() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"runtime-env-base-hold","private":true}"#,
+        ),
+        ("oj.config.json", r#"{"base":"/app/"}"#),
+        ("index.html", INDEX),
+        ("src/main.js", MAIN),
+    ]);
+    let file = values_dir(&app).join("env.json");
+    std::fs::write(&file, PENDING).unwrap();
+    let server = serve_with(&app, Some(file), None).await;
+    for document in ["/app/", "/app/index.html", "/app/some/route"] {
+        let res = server.get(document).await;
+        assert_eq!(res.status, 503, "{document}");
+        assert_eq!(header(&res, "cache-control"), Some("no-store"));
+        assert!(
+            res.body.contains(r#"src="/app/@oj/client.js""#),
+            "{document}: {}",
+            res.body
+        );
+    }
+    for served in [
+        "/app/src/main.js",
+        "/app/@oj/env.js",
+        "/app/@oj/env.js?generation",
+        "/app/@oj/env",
+    ] {
+        assert_eq!(server.get(served).await.status, 200, "{served}");
+    }
+}

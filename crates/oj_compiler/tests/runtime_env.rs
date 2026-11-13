@@ -516,3 +516,65 @@ fn a_read_broken_across_lines_imports_the_env_module() {
     );
     assert!(!out.contains(GLOBAL), "{out}");
 }
+
+// ---- more tests ------------------------------------------------------------------------
+
+proptest::proptest! {
+    /// However a read's parts are spaced, an output that names the global
+    /// imports the module, once and first, and a read of a runtime key
+    /// always names it.
+    #[test]
+    fn a_read_spaced_any_way_imports_the_env_module(
+        gaps in proptest::collection::vec(
+            proptest::sample::select(vec!["", " ", "\n", "\n  ", "\t", " \n "]),
+            5,
+        ),
+        key in proptest::sample::select(vec!["VITE_URL", "VITE_OTHER", "MODE", "VITE_UNDEFINED"]),
+        lead in proptest::sample::select(vec![
+            "",
+            "export const mode = process.env.NODE_ENV;\n",
+            "// import.meta.url\n",
+            "export const u = import.meta.url;\n",
+        ]),
+    ) {
+        let env = env(&["VITE_URL"]);
+        let read = format!(
+            "import{}.{}meta{}.{}env{}.{key}",
+            gaps[0], gaps[1], gaps[2], gaps[3], gaps[4]
+        );
+        let src = format!("{lead}export const v = {read};\n");
+        let code = compiled("p.js", &src, &dev(&env));
+        parses_as_module(&code);
+        let named = code.contains(&format!("globalThis.{GLOBAL}"));
+        // Never without its import; an import the output does not need (a
+        // baked key the scan could not tell from a whole-object read) is
+        // one tiny module.
+        if named {
+            proptest::prop_assert_eq!(import_count(&code), 1, "{}", &code);
+            proptest::prop_assert!(code.starts_with("import \"/@oj/env.js\";"), "{}", &code);
+        } else {
+            proptest::prop_assert!(import_count(&code) <= 1, "{}", &code);
+        }
+        if key == "VITE_URL" {
+            proptest::prop_assert!(named, "a runtime key was not redirected:\n{}\n{}", &src, &code);
+        }
+        // The SSR compile reads no global, spaced or not.
+        let server = compiled("p.js", &src, &ssr(&env));
+        proptest::prop_assert!(!server.contains(GLOBAL), "{}", &server);
+    }
+
+    /// The scan runs on every client compile once keys are configured: no
+    /// source makes it panic, whatever characters it holds.
+    #[test]
+    fn the_read_scan_takes_any_source(src in "\\PC{0,200}", cut in 0usize..40) {
+        let rt = env(&["VITE_URL"]).runtime().unwrap().clone();
+        let _ = rt.read_by(&src);
+        let spliced: String = src
+            .chars()
+            .take(cut)
+            .chain("import\u{a0}.meta .\u{2028}env é import.méta.env".chars())
+            .chain(src.chars().skip(cut))
+            .collect();
+        let _ = rt.read_by(&spliced);
+    }
+}

@@ -1131,3 +1131,184 @@ fn the_values_file_is_read_no_further_than_the_limit() {
     std::fs::write(&file, format!(r#"{{"a":"{fits}"}}"#)).unwrap();
     assert_eq!(read_file(&file, &keys).1, FileState::Complete);
 }
+
+// ---- more tests ------------------------------------------------------------------------
+
+fn based_env(base: &str) -> RuntimeEnv {
+    let env = RuntimeEnv::new(
+        RuntimeEnvConfig {
+            keys: supabase_keys(),
+            file: None,
+            ready_file: None,
+        },
+        &defines(),
+        Some(base),
+    );
+    env.serving();
+    env
+}
+
+// Under a base every url the module and a worker's file name is under it:
+// the generation the page asks for, and the script a classic worker loads.
+#[test]
+fn under_a_base_the_generation_and_the_worker_script_are_asked_for_under_it() {
+    let env = based_env("/app/");
+    let js = env.module_js();
+    parse_module(&js);
+    assert!(js.contains("fetch(\"/app/@oj/env.js?generation\""), "{js}");
+    let compiled =
+        "import \"/app/@oj/env.js\";\nself.postMessage(globalThis.__oj_env.VITE_SUPABASE_URL);\n";
+    let classic = worker_body(
+        &env,
+        "/app/src/w.js?worker_file&type=classic",
+        compiled.to_string(),
+    );
+    assert!(
+        classic.starts_with("importScripts(\"/app/@oj/env.js?classic\");\n"),
+        "{classic}"
+    );
+    // The unbased import is another module's: left alone.
+    let other = "import \"/@oj/env.js\";\n";
+    assert_eq!(
+        worker_body(
+            &env,
+            "/app/src/w.js?worker_file&type=classic",
+            other.to_string()
+        ),
+        other
+    );
+}
+
+// Only the first import is the env module's: the same text further down (a
+// string the worker holds) stays as written.
+#[test]
+fn only_the_leading_import_of_a_worker_file_is_replaced() {
+    let env = env();
+    let compiled = "import \"/@oj/env.js\";\nconst text = 'import \"/@oj/env.js\";';\n";
+    let classic = worker_body(
+        &env,
+        "/src/w.js?worker_file&type=classic",
+        compiled.to_string(),
+    );
+    assert_eq!(
+        classic,
+        "importScripts(\"/@oj/env.js?classic\");\nconst text = 'import \"/@oj/env.js\";';\n"
+    );
+    // A worker file that reads no key has no import to replace.
+    let plain = "self.postMessage(1);\n";
+    for kind in ["classic", "ignore", "module"] {
+        assert_eq!(
+            worker_body(
+                &env,
+                &format!("/src/w.js?worker_file&type={kind}"),
+                plain.to_string()
+            ),
+            plain
+        );
+    }
+}
+
+// The inline form stays on one line whatever a value holds: line breaks and
+// the separators JavaScript counts as ones are inside JSON strings.
+#[test]
+fn the_inline_script_is_one_line_whatever_the_values_hold() {
+    let env = env();
+    env.set(updates(&[
+        ("VITE_SUPABASE_URL", Some("a\nb\r\nc\u{2028}d\u{2029}e")),
+        ("VITE_SUPABASE_PUBLISHABLE_KEY", Some("</script><!--")),
+        ("VITE_SUPABASE_PROJECT_ID", Some("};alert(1);//\\\"")),
+    ]))
+    .unwrap();
+    let compiled = "import \"/@oj/env.js\";\nself.postMessage(1);\n";
+    let inline = worker_body(
+        &env,
+        "/src/w.js?worker_file&type=ignore",
+        compiled.to_string(),
+    );
+    assert_eq!(inline.split('\n').count(), compiled.split('\n').count());
+    assert!(!inline.contains("alert(1);//\\\"\" }"), "{inline}");
+    for kind in [oxc_span::SourceType::cjs(), oxc_span::SourceType::mjs()] {
+        let allocator = oxc_allocator::Allocator::default();
+        let parsed = oxc_parser::Parser::new(&allocator, &inline, kind).parse();
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{:?}\n{inline}",
+            parsed.diagnostics
+        );
+        // One block, one call: nothing a value holds became a statement.
+        assert_eq!(parsed.program.body.len(), 2, "{inline}");
+    }
+    parse_module(&env.module_js());
+}
+
+// What moves the pages and what does not: a set that changes nothing, an
+// unset of a key that was not set, and a file rewritten with the same
+// values tell nobody; each real change tells them once.
+#[test]
+fn the_pages_reload_once_for_each_change_and_never_for_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    let env = env_with(Some(file.clone()), None);
+    let set = |pairs: &[(&str, Option<&str>)]| env.set(updates(pairs)).unwrap();
+
+    assert!(set(&[("VITE_SUPABASE_URL", Some("/a"))]));
+    assert!(!set(&[("VITE_SUPABASE_URL", Some("/a"))]), "the same value");
+    assert!(!set(&[("VITE_SUPABASE_PROJECT_ID", None)]), "was not set");
+    assert!(!set(&[]), "nothing asked");
+    assert_eq!(env.generation(), 1);
+
+    std::fs::write(&file, bound_json()).unwrap();
+    assert!(env.load_file(), "two more keys bound");
+    assert!(!env.load_file(), "read again, the same");
+    std::fs::write(&file, format!("{}\n", bound_json())).unwrap();
+    assert!(!env.load_file(), "rewritten, the same values");
+    assert_eq!(env.generation(), 2);
+
+    // The file's value for a set key changes: the set one stays in force.
+    std::fs::write(&file, bound_json().replace("/_port_8001", "/_port_7")).unwrap();
+    assert!(!env.load_file(), "hidden behind the set value");
+    assert!(set(&[("VITE_SUPABASE_URL", None)]), "now the file's shows");
+    assert_eq!(env.values()["VITE_SUPABASE_URL"], "/_port_7");
+    assert_eq!(env.generation(), 3);
+}
+
+// Addresses that are nobody's: the unspecified ones never count as this
+// machine, mapped or not.
+#[test]
+fn the_unspecified_address_is_not_this_machine() {
+    let headers = HeaderMap::new();
+    for ip in ["0.0.0.0", "::", "::ffff:0.0.0.0"] {
+        assert!(!control_caller(&headers, Some(ip.parse().unwrap())), "{ip}");
+    }
+}
+
+// The hold page is a document's answer alone, and says so in its headers.
+#[test]
+fn the_hold_is_for_a_pending_file_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    let env = env_with(Some(file.clone()), None);
+    assert!(!env.pending(), "no file: the literals serve");
+    std::fs::write(&file, r#"{"pending":true}"#).unwrap();
+    env.load_file();
+    assert!(env.pending());
+    std::fs::write(&file, "[]").unwrap();
+    env.load_file();
+    assert!(env.pending(), "an invalid file holds too");
+    std::fs::write(&file, bound_json()).unwrap();
+    env.load_file();
+    assert!(!env.pending());
+    // A set that covers every key lifts a pending file's hold.
+    std::fs::write(&file, r#"{"pending":true}"#).unwrap();
+    env.load_file();
+    assert!(env.pending());
+    env.set(updates(&[
+        ("VITE_SUPABASE_URL", Some("/a")),
+        ("VITE_SUPABASE_PUBLISHABLE_KEY", Some("k")),
+    ]))
+    .unwrap();
+    assert!(env.pending(), "one key still has no value");
+    env.set(updates(&[("VITE_SUPABASE_PROJECT_ID", Some(""))]))
+        .unwrap();
+    assert!(!env.pending());
+}
