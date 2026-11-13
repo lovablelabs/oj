@@ -179,6 +179,11 @@ pub(crate) struct FlushTiming {
     deferred: std::sync::atomic::AtomicBool,
     /// The watcher has seen a change this session (never cleared).
     seen: std::sync::atomic::AtomicBool,
+    /// The watcher thread is past its initial scan and reading its feed.
+    armed: std::sync::atomic::AtomicBool,
+    /// The watcher thread is waiting on an empty feed: every event that
+    /// reached it has been classified.
+    idle: std::sync::atomic::AtomicBool,
 }
 
 impl FlushTiming {
@@ -196,14 +201,39 @@ impl FlushTiming {
     }
 
     /// Whether the watcher's runs cover a reload the boot's revalidation
-    /// would send: it is for an edit made before the watcher armed, which
-    /// nothing else reloads for; one the watcher saw is rebuilt and reloaded
-    /// by its run (whose output the revalidation's reload would predate), so
-    /// once a change has been seen, or a run is in flight, the revalidation
-    /// only drops its stale modules and sends nothing.
+    /// would send: it is for an edit the watcher never gets (a file outside
+    /// what it watches), which nothing else reloads for; one the watcher saw
+    /// is rebuilt and reloaded by its run (whose output the revalidation's
+    /// reload would predate), so once a change has been seen, or a run is in
+    /// flight, the revalidation only drops its stale modules and sends
+    /// nothing. Meaningful once the watcher is [caught up](Self::watcher_caught_up):
+    /// an edit it has yet to read from its feed is not a seen change.
     pub(crate) fn runs_cover_reloads(&self) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
         self.seen.load(SeqCst) || self.rebundling.load(SeqCst)
+    }
+
+    /// The watcher thread finished its initial scan and reads its feed.
+    pub(crate) fn watcher_armed(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the watcher thread waits on an empty feed (true) or has an
+    /// event in hand (false).
+    pub(crate) fn watcher_idle(&self, idle: bool) {
+        self.idle.store(idle, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the watcher has classified every event that reached it: it
+    /// is past its scan and its feed is empty. Events queue on the feed
+    /// while the scan runs (the OS watcher was registered before the engine
+    /// warmed), so an edit the boot's revalidation finds stale is one the
+    /// watcher will read, however long the scan takes; until then it is not
+    /// a seen change, and a reload sent for it from elsewhere doubles the
+    /// run's own (and, under the gate, passes the hold the event takes).
+    pub(crate) fn watcher_caught_up(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.armed.load(SeqCst) && self.idle.load(SeqCst)
     }
 
     /// A flush landed: true to release now, false when a run in flight takes
@@ -424,5 +454,35 @@ mod tests {
             let at_flush = flush.join().unwrap();
             assert!(at_end != at_flush, "end={at_end} flush={at_flush}");
         }
+    }
+
+    /// The boot's revalidation may run while the watcher is still scanning,
+    /// with the edit it found queued on the watcher's feed: the watcher is
+    /// caught up only once it is armed and waiting on an empty feed, and a
+    /// change it then has seen covers the reload.
+    #[test]
+    fn the_watcher_is_caught_up_once_armed_and_waiting_on_an_empty_feed() {
+        let timing = FlushTiming::default();
+        assert!(!timing.watcher_caught_up(), "scanning");
+        timing.watcher_idle(true);
+        assert!(
+            !timing.watcher_caught_up(),
+            "idle before the scan ended is not caught up"
+        );
+        timing.watcher_armed();
+        assert!(timing.watcher_caught_up());
+        assert!(
+            !timing.runs_cover_reloads(),
+            "nothing seen: the revalidation reloads"
+        );
+        timing.watcher_idle(false);
+        assert!(!timing.watcher_caught_up(), "an event in hand");
+        timing.watcher_change();
+        timing.watcher_idle(true);
+        assert!(timing.watcher_caught_up());
+        assert!(
+            timing.runs_cover_reloads(),
+            "the seen change's run covers the reload"
+        );
     }
 }

@@ -284,6 +284,43 @@ fn config_path(root: &Path, config: Option<PathBuf>) -> Option<PathBuf> {
     config.map(|c| if c.is_absolute() { c } else { root.join(c) })
 }
 
+/// The OS watcher's delivery latency: how long the boot's revalidation gives
+/// an edit it found to reach the watcher's feed once the watcher has read
+/// everything that got there before (the feed's backlog is waited out
+/// separately, see `watcher_covers`).
+const PREWARM_RELOAD_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The most the boot's revalidation waits for the watcher to catch up with
+/// its feed before deciding on its reload alone.
+const PREWARM_RELOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a watcher run covers the reload for the modules the boot's
+/// revalidation dropped. The watcher's feed was open before the engine
+/// warmed, so the edit that made them stale is on it, behind whatever the
+/// watcher thread has yet to read (its initial scan of the root, on a slow
+/// disk, is seconds): asked too early, the watcher has seen nothing, and a
+/// reload sent from here doubled the run's own, or passed the gate's hold
+/// the event was about to take. So: wait until the watcher is caught up,
+/// give the OS its delivery latency, and ask again while that holds.
+async fn watcher_covers(timing: &crate::start_reloads::FlushTiming) -> bool {
+    let deadline = tokio::time::Instant::now() + PREWARM_RELOAD_WAIT;
+    loop {
+        // Checked every turn: a feed that goes busy within each grace would
+        // otherwise cycle here past the deadline.
+        if tokio::time::Instant::now() >= deadline {
+            return timing.runs_cover_reloads();
+        }
+        if !timing.watcher_caught_up() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            continue;
+        }
+        tokio::time::sleep(PREWARM_RELOAD_GRACE).await;
+        if timing.watcher_caught_up() {
+            return timing.runs_cover_reloads();
+        }
+    }
+}
+
 pub async fn start_dev(
     root: PathBuf,
     port: Option<u16>,
@@ -572,15 +609,31 @@ pub async fn start_dev(
                 let _ = resp.body_bytes().await;
             }
             oj_server::boot_phase("prewarm complete");
+            // Tests stretch the gap between the warm render and the
+            // revalidation, to land an edit in it.
+            if let Some(delay) = std::env::var("OJ_START_PREWARM_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
             // Modules edited while the engine warmed are dropped; the pages
             // reload for them only when no watcher run does (an edit before
             // the watcher armed). An edit the watcher saw is rebuilt and
             // reloaded by its run: a reload from here too, after the gate's
             // flush consumed the hold (or parked, for the flush to publish
             // ahead of the run), reloaded the pages a second time, or onto
-            // the bundle from before the edit.
-            if engine.revalidate().await && !flush_timing.runs_cover_reloads() {
-                reloads.bump();
+            // the bundle from before the edit. The watcher may not have
+            // read that edit yet (`watcher_covers` waits for it to).
+            if engine.revalidate().await {
+                if watcher_covers(&flush_timing).await {
+                    oj_server::boot_phase(
+                        "revalidate: stale modules, reload left to the watcher's run",
+                    );
+                } else {
+                    oj_server::boot_phase("revalidate: stale modules, reloading");
+                    reloads.bump();
+                }
             }
             oj_server::boot_phase("revalidate complete");
         });
@@ -1491,9 +1544,22 @@ fn spawn_start_watcher(
         // the feed meanwhile. A file created while it runs can read as known,
         // a race chokidar's own initial scan has too.
         let mut known = KnownFiles(oj_server::watched_files(&watch_root));
+        state.flush_timing.watcher_armed();
         loop {
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            let mut paths: std::collections::HashSet<PathBuf> = match rx.recv() {
+            // The boot's revalidation asks whether this thread is caught up
+            // with its feed (`FlushTiming::watcher_caught_up`): idle while
+            // waiting on an empty one, not from the first event in hand.
+            let first = match rx.try_recv() {
+                Ok(ev) => Ok(ev),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    state.flush_timing.watcher_idle(true);
+                    rx.recv()
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            };
+            state.flush_timing.watcher_idle(false);
+            let mut paths: std::collections::HashSet<PathBuf> = match first {
                 Ok(ev) => {
                     created.extend(known.adds(&ev));
                     changes.changed_paths(&ev).into_iter().collect()
