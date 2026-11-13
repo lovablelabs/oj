@@ -352,6 +352,11 @@ struct ServerState {
     asset_urls: assets_serve::DevAssetUrls,
     /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
     vite_env_js: String,
+    /// This boot's mark on the source map urls (`&b=`): a map is served
+    /// immutable under its module's compile key, which covers the source,
+    /// the url and oj's own compile inputs but not a hosted plugin's
+    /// transform, so a boot after a plugin or config change names new maps.
+    boot_stamp: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -2263,6 +2268,13 @@ impl DevServer {
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
             vite_env_js: assets_serve::vite_env_module(&config),
+            boot_stamp: format!(
+                "{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            ),
             ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()

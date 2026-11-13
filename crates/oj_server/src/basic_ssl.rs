@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 /// The plugin's cache file under its directory.
 const CERT_FILE: &str = "_cert.pem";
 
+/// The longest `ttlDays` honored.
+const MAX_TTL_DAYS: i64 = 36_500;
+
 /// The `name`, `domains`, `certDir` and `ttlDays` of `basicSsl(options)`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Options {
@@ -54,11 +57,13 @@ impl Options {
                 .get("certDir")
                 .and_then(|v| v.as_str())
                 .map(PathBuf::from),
+            // Capped at a century: past it the date arithmetic overflows,
+            // where the plugin would hand node an invalid date.
             ttl_days: options
                 .get("ttlDays")
                 .and_then(|v| v.as_f64())
                 .filter(|d| d.is_finite() && *d >= 1.0)
-                .map(|d| d as i64)
+                .map(|d| d.min(MAX_TTL_DAYS as f64) as i64)
                 .unwrap_or(30),
         }
     }
@@ -165,15 +170,26 @@ fn generate(options: &Options) -> anyhow::Result<String> {
     Ok(format!("{}{}", key.serialize_pem(), cert.pem()))
 }
 
-/// The file holds the private key, so it is the owner's alone.
+/// The file holds the private key, so it is the owner's alone from the
+/// moment it exists (created with that mode, not chmod'd after), and a file
+/// the plugin left world-readable is tightened when replaced.
 fn write_private(dir: &Path, path: &Path, pem: &str) -> std::io::Result<()> {
+    use std::io::Write;
     std::fs::create_dir_all(dir)?;
-    std::fs::write(path, pem)?;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    let mut file = open.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    file.write_all(pem.as_bytes())?;
     Ok(())
 }
 
@@ -236,6 +252,9 @@ mod tests {
             Options::from_json(&serde_json::json!({ "ttlDays": 0, "name": 5 })).ttl_days,
             30
         );
+        let huge = Options::from_json(&serde_json::json!({ "ttlDays": 1e300 }));
+        assert_eq!(huge.ttl_days, MAX_TTL_DAYS);
+        generate(&huge).expect("a century-long certificate is made, not a panic");
     }
 
     #[test]

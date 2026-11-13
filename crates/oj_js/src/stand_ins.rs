@@ -55,9 +55,9 @@ pub(crate) fn source_for(path: &str, format: Format) -> Option<String> {
 }
 
 /// `@vitejs/plugin-basic-ssl`: one module (`dist/index.mjs`, `dist/index.cjs`)
-/// whose default export is the plugin factory. Its `getCertificate` export,
-/// the plugin's own generator, is not offered: a config calling it is after
-/// the certificate file, which oj writes before it serves.
+/// whose default export is the plugin factory, beside `getCertificate`, the
+/// plugin's own generator, which under oj throws and says so (oj writes the
+/// certificate file before it serves; a config has nothing to call it for).
 fn basic_ssl(file: &str, format: Format) -> Option<String> {
     let name = file.rsplit('/').next()?;
     let (_, ext) = name.split_once('.')?;
@@ -65,8 +65,10 @@ fn basic_ssl(file: &str, format: Format) -> Option<String> {
         return None;
     }
     let exports = match format {
-        Format::Esm => "export default viteBasicSslPlugin;\n",
-        Format::CommonJs => "module.exports = { __esModule: true, default: viteBasicSslPlugin };\n",
+        Format::Esm => "export { getCertificate };\nexport default viteBasicSslPlugin;\n",
+        Format::CommonJs => {
+            "module.exports = { __esModule: true, getCertificate, default: viteBasicSslPlugin };\n"
+        }
     };
     Some(format!("{BASIC_SSL}\n{exports}"))
 }
@@ -84,6 +86,7 @@ mod tests {
         .unwrap();
         assert!(
             esm.contains("__ojBasicSslOptions")
+                && esm.contains("export { getCertificate };")
                 && esm.ends_with("export default viteBasicSslPlugin;\n")
         );
         let cjs = source_for(
@@ -91,7 +94,9 @@ mod tests {
             Format::CommonJs,
         )
         .unwrap();
-        assert!(cjs.contains("module.exports = { __esModule: true, default: viteBasicSslPlugin }"));
+        assert!(cjs.contains(
+            "module.exports = { __esModule: true, getCertificate, default: viteBasicSslPlugin }"
+        ));
         assert!(source_for(
             "/app/node_modules/@vitejs/plugin-basic-ssl/package.json",
             Format::Esm

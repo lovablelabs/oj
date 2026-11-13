@@ -1718,6 +1718,9 @@ function extractServerFlags(s, legacy, appType) {
       else warn("server.https needs PEM key and cert; serving plain http");
     } else if (s.https === true) {
       warn("server.https: true carries no certificate; serving plain http (set key and cert)");
+    } else if (s.https === false) {
+      // Off by choice: a plugin's certificate (basic-ssl) is not installed over it.
+      out.https = false;
     }
   }
   if (legacy?.skipWebSocketTokenCheck === true) out.skipWebSocketTokenCheck = true;

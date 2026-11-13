@@ -689,7 +689,12 @@ async fn serve_compiled_from(
         // beside the module instead, by the module's url and compile key
         // (see [`serve_source_map`]): fetched when wanted, cached forever.
         body.push_str("\n//# sourceMappingURL=");
-        body.push_str(&source_map_url(&state.oj_paths, url, &key));
+        body.push_str(&source_map_url(
+            &state.oj_paths,
+            url,
+            &key,
+            &state.boot_stamp,
+        ));
         body.push('\n');
     }
 
@@ -707,9 +712,9 @@ async fn serve_compiled_from(
 /// Where the map of the module `url` compiled under `key` is served
 /// (`/@oj/map?u=<url>&k=<key>` under the base). The browser resolves a
 /// `sourceMappingURL` against the module's URL, so the path is absolute.
-pub(crate) fn source_map_url(paths: &OjPublicPaths, url: &str, key: &str) -> String {
+pub(crate) fn source_map_url(paths: &OjPublicPaths, url: &str, key: &str, boot: &str) -> String {
     format!(
-        "{}?u={}&k={key}",
+        "{}?u={}&k={key}&b={boot}",
         paths.source_map,
         urlencode_component(url)
     )
@@ -730,6 +735,7 @@ async fn serve_source_map(state: &Arc<ServerState>, query: Option<&str>) -> Resp
         } else if let Some(k) = kv.strip_prefix("k=") {
             key = Some(k.to_string());
         }
+        // `b=`, the boot stamp, only tells one boot's urls from another's.
     }
     let (Some(url), Some(key)) = (url, key) else {
         return (
@@ -740,17 +746,26 @@ async fn serve_source_map(state: &Arc<ServerState>, query: Option<&str>) -> Resp
     };
     let mut module = memory_get(state, &url, &key);
     if module.is_none() {
-        // Evicted: the file's own request compiles it again (a virtual or
-        // plugin module, whose route lies elsewhere, has no map until then).
-        if let Ok(uri) = url.parse::<Uri>() {
+        // Evicted: the module's own request compiles it again, whichever
+        // route serves it (a file's, or the plugin and virtual fallbacks a
+        // missing file goes to, whose answer is not wanted here, only the
+        // entry it leaves in memory).
+        let (path, rest) = url
+            .split_once('?')
+            .map_or((url.as_str(), ""), |(p, q)| (p, q));
+        let encoded = match rest {
+            "" => urlencode_component(path),
+            q => format!("{}?{q}", urlencode_component(path)),
+        };
+        if let Ok(uri) = encoded.parse::<Uri>() {
             let rel = urldecode(uri.path().trim_start_matches('/'));
             let headers = HeaderMap::new();
             if let Ok(file) = request_file(state, &headers, &uri, &rel).await {
                 if !path_is_denied(&file, &state.root, &state.fs_deny) {
                     let _ = serve_file(state, &headers, &uri, &file, &rel).await;
-                    module = memory_get(state, &url, &key);
                 }
             }
+            module = memory_get(state, &url, &key);
         }
     }
     let Some(map) = module.as_ref().and_then(|m| m.map_json.clone()) else {
@@ -760,13 +775,27 @@ async fn serve_source_map(state: &Arc<ServerState>, query: Option<&str>) -> Resp
         )
             .into_response();
     };
-    let map = match worker_file_prelude(
+    let module = module.expect("a map comes from a module");
+    // What [`serve_compiled_from`] puts before the code: the hot-context
+    // glue of a module that reads import.meta.hot (or a svelte module),
+    // then a worker's env prelude. The map moves down by their lines.
+    let mut shift = 0;
+    if module.kind == "svelte" || module.hot.is_some() {
+        shift += crate::hmr::svelte_hot_glue(&url, &state.oj_paths)
+            .matches('\n')
+            .count();
+    }
+    if let Some(prelude) = worker_file_prelude(
         &url,
         &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
         &state.vite_env_js,
     ) {
-        Some(prelude) => shift_map_lines(&map, prelude.matches('\n').count()),
-        None => map,
+        shift += prelude.matches('\n').count();
+    }
+    let map = if shift > 0 {
+        shift_map_lines(&map, shift)
+    } else {
+        map
     };
     (
         [

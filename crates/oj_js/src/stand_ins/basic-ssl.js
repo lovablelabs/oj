@@ -11,3 +11,11 @@
 function viteBasicSslPlugin(options) {
   return { name: "vite:basic-ssl", __ojBasicSslOptions: options ?? {} };
 }
+
+// The package's other export, its generator: oj writes the certificate file
+// before it serves, so a config has nothing to call this for.
+function getCertificate() {
+  throw new Error(
+    "@vitejs/plugin-basic-ssl's getCertificate is not available under oj, which makes the plugin's certificate itself: list basicSsl() in plugins",
+  );
+}

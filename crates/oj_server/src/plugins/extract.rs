@@ -1278,10 +1278,13 @@ pub fn adopt_vite_config_values(
     let Some(v) = extract_vite_values(root, config_file, command, mode) else {
         return no_values_verdict(root, config_file);
     };
+    let basic_ssl = basic_ssl_applies(config, &v);
     merge_vite_values(config, v);
     install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
-    install_basic_ssl_certificate(config, root);
+    if basic_ssl {
+        install_basic_ssl_certificate(config, root);
+    }
     Ok(())
 }
 
@@ -1297,10 +1300,13 @@ pub fn adopt_vite_config_values_default_mode(
     let Some(v) = extract_vite_values_with(root, config_file, command, mode, false) else {
         return no_values_verdict(root, config_file);
     };
+    let basic_ssl = basic_ssl_applies(config, &v);
     merge_vite_values(config, v);
     install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
-    install_basic_ssl_certificate(config, root);
+    if basic_ssl {
+        install_basic_ssl_certificate(config, root);
+    }
     Ok(())
 }
 
@@ -1376,21 +1382,37 @@ fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, co
     }
 }
 
+/// Whether `@vitejs/plugin-basic-ssl`'s `configResolved` would set the
+/// certificate: the config lists the plugin, and `server.https` is not
+/// `false` (the hook assigns over an unset or truthy value, a pair the
+/// vite.config names included). oj's own config is outside Vite's reach, so
+/// a pair set there stays, as every oj-side value wins over the vite.config.
+/// Decided before the values merge, while the two configs are still apart.
+pub(crate) fn basic_ssl_applies(config: &oj_config::OjConfig, v: &ViteValues) -> bool {
+    if v.basic_ssl.is_none() {
+        return false;
+    }
+    let off = v
+        .server_flags
+        .as_ref()
+        .and_then(|sf| sf.get("https"))
+        .and_then(|h| h.as_bool())
+        == Some(false);
+    let oj_pair = config.server.as_ref().is_some_and(|s| s.https.is_some());
+    !off && !oj_pair
+}
+
 /// The `@vitejs/plugin-basic-ssl` `configResolved` hook, which oj runs
 /// natively (the config only ever sees oj's stand-in for the plugin): the
 /// plugin's certificate, kept under its cache file, becomes `server.https`
-/// (and so `preview.https`, which falls back to it) when the config set
-/// none, as the hook assigns over an unset or truthy `server.https`. A
-/// certificate that cannot be made leaves the server on plain http and says
-/// why, as a failed hook would fail Vite's createServer.
+/// (and so `preview.https`, which falls back to it), over a pair the
+/// vite.config named, as the hook's `Object.assign` does. A certificate that
+/// cannot be made leaves the server on plain http and says why, as a failed
+/// hook would fail Vite's createServer. Run when [`basic_ssl_applies`].
 pub(crate) fn install_basic_ssl_certificate(config: &mut oj_config::OjConfig, root: &Path) {
     let Some(basic_ssl) = &config.vite_basic_ssl else {
         return;
     };
-    let server = config.server.get_or_insert_with(Default::default);
-    if server.https.is_some() {
-        return;
-    }
     let options = basic_ssl.get("options").cloned().unwrap_or_default();
     let options = crate::basic_ssl::Options::from_json(&options);
     let cache_dir = oj_config::cache_dir(config, root);

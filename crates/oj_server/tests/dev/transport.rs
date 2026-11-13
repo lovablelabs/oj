@@ -206,3 +206,31 @@ async fn a_small_response_and_a_304_stay_plain() {
     assert!(!headers.contains_key("content-encoding"), "{headers:?}");
     assert!(body.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_reading_import_meta_hot_has_its_map_moved_down_by_the_glue() {
+    let app = app(&[(
+        "src/hot.js",
+        "export const hot = 1;\nif (import.meta.hot) import.meta.hot.accept();\n",
+    )]);
+    let server = app.serve().await;
+    let module = server.text("/src/hot.js").await;
+    assert!(
+        module.starts_with("\nimport { createHotContext as __oj_createHotContext }"),
+        "the hot context glue leads:\n{module}"
+    );
+    let glue_lines = module
+        .split("export const hot")
+        .next()
+        .unwrap()
+        .matches('\n')
+        .count();
+    assert_eq!(glue_lines, 3);
+    let map: serde_json::Value =
+        serde_json::from_str(&server.text(&map_url(&module)).await).unwrap();
+    let mappings = map["mappings"].as_str().unwrap();
+    assert!(
+        mappings.starts_with(";;;") && !mappings.starts_with(";;;;"),
+        "three glue lines shift the map: {mappings}"
+    );
+}

@@ -24,14 +24,17 @@ impl Predicate for Compressible {
             })
             .unwrap_or_default();
         (mime.starts_with("text/") && mime != "text/event-stream")
+            || mime.ends_with("+json")
+            || mime.ends_with("+xml")
             || matches!(
                 mime.as_str(),
                 "application/javascript"
+                    | "application/ecmascript"
+                    | "application/x-javascript"
                     | "application/json"
-                    | "application/manifest+json"
+                    | "application/x-ndjson"
                     | "application/wasm"
                     | "application/xml"
-                    | "image/svg+xml"
             )
     }
 }
@@ -74,6 +77,15 @@ mod tests {
             "application/json",
             "image/svg+xml",
             "application/wasm",
+            // Structured suffixes (a proxied API's), and the other script types.
+            "application/ld+json",
+            "application/problem+json",
+            "application/manifest+json",
+            "application/xhtml+xml",
+            "application/rss+xml",
+            "application/x-ndjson",
+            "application/ecmascript",
+            "application/x-javascript",
         ] {
             assert!(says(Some(ct)), "{ct} should compress");
         }
