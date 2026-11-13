@@ -543,6 +543,12 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             min_share_count: gu("minShareCount"),
             min_module_size: gf("minModuleSize"),
             max_module_size: gf("maxModuleSize"),
+            tags: g.get("tags").and_then(|v| v.as_array()).map(|tags| {
+                tags.iter()
+                    .filter_map(|tag| tag.as_str())
+                    .map(|tag| rolldown_common::ModuleTag::from(tag.to_string()))
+                    .collect()
+            }),
             include_dependencies_recursively: g
                 .get("includeDependenciesRecursively")
                 .and_then(|v| v.as_bool()),
