@@ -69,22 +69,23 @@ Good to know:
 - Under the hood, a module that reads a key compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js`, which the server renders on each request. Workers are covered too.
 - This is for plain `oj dev` only, for now. `oj dev --ssr`, TanStack Start apps and `oj build` print a warning and keep the baked values.
 
-`oj env` is the command line to the same endpoint, for the app's running dev server (found as `oj dev-typecheck` finds it):
+### `oj env`
+
+`oj env` does the same from the command line. It finds the dev server running for the app in the current directory, or the one you name with `--root DIR`.
 
 ```sh
-oj env get                                   # KEY=value lines; `# KEY unset` for a key without one
-oj env get --json                            # the GET /@oj/env status
-oj env set VITE_API_URL=/_port_8001 VITE_API_KEY sb_x   # KEY=VALUE or KEY VALUE pairs (a value starting with `-`: KEY=-v, or after `--`)
-oj env unset VITE_API_URL                    # back to the file's value or the literal
-oj env get --wait --timeout 60               # returns once every key is bound (exit 3 on timeout; `inf` waits without one)
-oj env get --wait VITE_API_KEY               # or once the named keys do
+oj env get                             # every key, as KEY=value lines
+oj env get --json                      # the full status, as JSON
+oj env set VITE_API_URL=/_port_8001    # set one or more values
+oj env unset VITE_API_URL              # back to the file's value
+oj env get --wait --timeout 60         # block until every key has a value
 ```
 
-Each prints the values in force afterwards; a key's `.env` literal shows as its value but does not bind it, for `--wait` as for the server's state. `--root DIR` names the app when the command does not run from it. Exit codes: 0 answered, 1 no dev server for the root, one started without the keys, or the request was refused (a key outside the list), 2 usage, 3 `--wait` timed out.
-
-With `--wait`, a server that is not there yet, or is restarting, is waited for (`oj dev & oj env set KEY=value --wait`); what a server answers to refuse ends the wait at once. A value a `.env` parser would cut or expand (a `#`, a `$`, a space at either end, a line break) is printed quoted so the line reads back as the value; one that no single line keeps (a line break beside a `"`, both kinds of quote) is printed as near as a line gets and named on stderr, and `--json` has every value as it is.
-
-Apps that share an `OJ_CACHE_DIR` share one address file, which names a single server: a `--typecheck` server over one without, else the last to start. `oj env` finds no server for the others' roots; their `/@oj/env` still answers a direct `curl -X POST http://127.0.0.1:<port>/@oj/env -d '{"KEY":"value"}'` from the same machine.
+- `set` takes `KEY=VALUE` or `KEY VALUE`. Write a value that starts with `-` as `KEY=-value`.
+- `--wait` also waits for a server that isn't up yet, so `oj dev & oj env set KEY=value --wait` works. Name keys after `get --wait` to wait for just those. A `.env` literal doesn't count as a value. `--timeout inf` waits forever.
+- Exit codes: 0 done, 1 no dev server for the app (or it has no runtime keys, or it refused the request), 2 bad arguments, 3 `--wait` timed out.
+- The `KEY=value` output can be read back as a `.env` file: values that need quotes get them. The rare value that can't fit on one line (say, a line break next to a `"`) gets a warning on stderr; use `--json` for those.
+- Apps that share an `OJ_CACHE_DIR` share one address file, and it names only one server. `oj env` can't find the others; use `curl` against their port instead.
 
 ## TanStack Start
 
