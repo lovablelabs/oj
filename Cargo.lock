@@ -6588,6 +6588,7 @@ dependencies = [
  "proptest",
  "serde_json",
  "tempfile",
+ "unicode-id-start",
 ]
 
 [[package]]

@@ -126,6 +126,7 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
     }
     let mut code = OK;
     if opts.wait {
+        let mut failing: Option<String> = None;
         while !bound(&status, &only) {
             let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
             if left.is_some_and(|left| left.is_zero()) {
@@ -140,13 +141,26 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
             tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
             // A request does not outlast the wait it is part of.
             let request = left.map_or(REQUEST, |left| left.max(POLL).min(REQUEST));
-            status = match oj_server::env_via_server(&root, None, request).await {
-                Ok(status) => status,
-                Err(e) => {
+            match oj_server::env_via_server(&root, None, request).await {
+                Ok(answer) => {
+                    status = answer;
+                    failing = None;
+                }
+                // The server that comes back without the keys never binds them.
+                Err(e) if e == oj_server::RUNTIME_ENV_NOT_CONFIGURED => {
                     eprintln!("oj env: {e}");
                     return UNAVAILABLE;
                 }
-            };
+                // A server restarting (a config or `.env` edit) is away for a
+                // moment and keeps the values that were set: asked again
+                // until the wait runs out, the failure said once.
+                Err(e) => {
+                    if failing.as_ref() != Some(&e) {
+                        eprintln!("oj env: {e}; asking again");
+                        failing = Some(e);
+                    }
+                }
+            }
         }
     }
     // A closed stdout (`oj env get | head -1`) ends the output, not the command.

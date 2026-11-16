@@ -837,6 +837,10 @@ pub(crate) async fn serve_env_module(uri: Uri, State(state): State<Arc<ServerSta
         [
             (header::CONTENT_TYPE, "text/javascript"),
             (header::CACHE_CONTROL, "no-store"),
+            // The classic form is a script any page could name in a
+            // `<script src>` and then read the global it installs: only the
+            // server's own pages and workers load either form.
+            (CROSS_ORIGIN_RESOURCE_POLICY, "same-origin"),
         ],
         if classic {
             env.classic_js()
@@ -846,6 +850,9 @@ pub(crate) async fn serve_env_module(uri: Uri, State(state): State<Arc<ServerSta
     )
         .into_response()
 }
+
+const CROSS_ORIGIN_RESOURCE_POLICY: header::HeaderName =
+    header::HeaderName::from_static("cross-origin-resource-policy");
 
 /// The query asking for the generation of the values in force alone: what
 /// a page compares the one it loaded with.

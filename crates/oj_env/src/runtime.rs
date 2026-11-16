@@ -47,15 +47,27 @@ pub fn parse_runtime_env_keys(spec: &str) -> Result<Vec<RuntimeKey>, String> {
     Ok(keys)
 }
 
-/// ECMAScript IdentifierName over ASCII plus any non-ASCII letter: what a
-/// define key part may be (oxc's `is_identifier_name` for the keys oj builds).
+use unicode_id_start::{
+    is_id_continue_unicode as is_id_continue, is_id_start_unicode as is_id_start,
+};
+
+/// ECMAScript IdentifierName, by the rule oxc's `is_identifier_name` holds a
+/// define key part to (ID_Start and ID_Continue, `$`, `_`, and the two
+/// joiners inside). A key oxc refuses fails the whole define config, and
+/// with it every other define of the compile, so it is refused here, by name.
 fn is_identifier_name(s: &str) -> bool {
-    let mut chars = s.chars();
-    let Some(first) = chars.next() else {
-        return false;
+    let start = |c: char| {
+        c == '$' || c == '_' || c.is_ascii_alphabetic() || (!c.is_ascii() && is_id_start(c))
     };
-    let start = |c: char| c == '$' || c == '_' || c.is_alphabetic();
-    start(first) && chars.all(|c| start(c) || c.is_numeric())
+    let part = |c: char| {
+        start(c)
+            || c.is_ascii_digit()
+            || (!c.is_ascii() && is_id_continue(c))
+            || c == '\u{200c}'
+            || c == '\u{200d}'
+    };
+    let mut chars = s.chars();
+    chars.next().is_some_and(start) && chars.all(part)
 }
 
 #[cfg(test)]
@@ -127,6 +139,32 @@ mod tests {
         }
         // Dollar, underscore, digits after the first char and non-ASCII letters are fine.
         assert_eq!(keys("$a,_b,c1,ünï").len(), 4);
+    }
+
+    // Letters by `char::is_alphabetic` or digits by `char::is_numeric` that
+    // are no ID_Start or ID_Continue: oxc refuses a define key holding one,
+    // and the config failing took every define of the compile with it.
+    #[test]
+    fn a_key_oxc_would_refuse_as_a_define_is_refused() {
+        for bad in [
+            "VITE_x\u{b2}",
+            "VITE_\u{bd}",
+            "VITE_\u{2460}",
+            "\u{24b6}VITE",
+            "\u{200d}VITE",
+        ] {
+            let err = parse_runtime_env_keys(bad).unwrap_err();
+            assert!(err.contains("not a valid"), "{bad}: {err}");
+        }
+        for good in [
+            "VITE_caf\u{e9}",
+            "\u{540d}\u{524d}",
+            "VITE_a\u{200d}b",
+            "VITE_e\u{301}",
+            "$_9",
+        ] {
+            assert_eq!(keys(good), vec![(good.to_string(), good.to_string())]);
+        }
     }
 
     #[test]

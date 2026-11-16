@@ -945,13 +945,14 @@ struct ValuesDir {
 }
 
 impl ValuesDir {
-    fn of(state: &ServerState) -> Option<ValuesDir> {
+    fn of(state: &ServerState, cache_base: &Path) -> Option<ValuesDir> {
         let file = state.runtime_env.as_ref()?.file()?;
-        // Inside the root the root's watch covers it; `node_modules` is
-        // never watched ([`ensure_watched_file`]).
-        if file.starts_with(&state.root)
-            || file.components().any(|c| c.as_os_str() == "node_modules")
-        {
+        // Where the root's watch reaches, it covers the file. It does not
+        // reach `node_modules`, `dist`, `.git` or the cache dir, and what
+        // `server.watch.ignored` names is dropped from its events: a file
+        // there has its directory watched for itself, or it was read at
+        // boot and never again.
+        if watched_subtree(&state.watch_ignored, &state.root, cache_base, file) {
             return None;
         }
         Some(ValuesDir {
@@ -1216,6 +1217,13 @@ impl Watchers {
         );
         Ok(())
     }
+}
+
+/// The cache dir as the watcher reports paths under it: canonicalized, so a
+/// relative or symlinked `OJ_CACHE_DIR` still matches.
+fn canonical_cache_base(root: &Path) -> PathBuf {
+    let base = oj_cache::cache_base(root);
+    std::fs::canonicalize(&base).unwrap_or(base)
 }
 
 /// Top-level entries never watched: recursively watching node_modules/.oj-cache/dist/.git
@@ -1618,7 +1626,18 @@ fn handle_batch(
             if env.load_file() {
                 crate::runtime_env::announce(state, env, "file changed");
             }
-            runtime_values = paths.iter().filter(|p| !env.is_file(p)).cloned().collect();
+            // The rest goes on as any batch's paths do, minus what the
+            // watch would have left out had it not sat beside the file.
+            let cache_base = canonical_cache_base(&state.root);
+            let left_out = |p: &Path| {
+                p.starts_with(&state.root)
+                    && !watched_subtree(&state.watch_ignored, &state.root, &cache_base, p)
+            };
+            runtime_values = paths
+                .iter()
+                .filter(|p| !env.is_file(p) && !left_out(p))
+                .cloned()
+                .collect();
             runtime_values.as_slice()
         }
         _ => paths,
@@ -1736,10 +1755,7 @@ pub(crate) fn spawn_watcher(
         let feed = state.watch_feed.clone();
         // Canonicalized so a relative or symlinked `OJ_CACHE_DIR` still
         // matches the absolute paths the watcher reports.
-        let cache_base = {
-            let base = oj_cache::cache_base(&state.root);
-            std::fs::canonicalize(&base).unwrap_or(base)
-        };
+        let cache_base = canonical_cache_base(&state.root);
         let (ignored, root, cache) = (
             state.watch_ignored.clone(),
             state.root.clone(),
@@ -1775,7 +1791,7 @@ pub(crate) fn spawn_watcher(
         let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
         let mut pending_dir: Option<PathBuf> = None;
-        let mut values_dir = ValuesDir::of(&state);
+        let mut values_dir = ValuesDir::of(&state, &cache_base);
         loop {
             let msg = match &values_dir {
                 Some(values) => {
@@ -2011,7 +2027,17 @@ fn add_watched(
     batch: &mut Batch,
     ev: &notify::Event,
 ) -> bool {
-    let excluded = |p: &PathBuf| watch_excluded(&state.watch_ignored, &state.root, cache_base, p);
+    // The runtime env values file and what sits beside it are kept wherever
+    // they are: `handle_batch` re-reads the values on them and drops the rest.
+    let values = |p: &PathBuf| {
+        state
+            .runtime_env
+            .as_ref()
+            .is_some_and(|env| env.is_file(p) || env.beside_file(p))
+    };
+    let excluded = |p: &PathBuf| {
+        watch_excluded(&state.watch_ignored, &state.root, cache_base, p) && !values(p)
+    };
     if !ev.paths.iter().any(excluded) {
         return batch.add(changes, ev);
     }

@@ -8,6 +8,7 @@ description = "dotenv loading and import.meta.env define construction (Vite-comp
 
 [dependencies]
 serde_json.workspace = true
+unicode-id-start = "1.5"
 
 [dev-dependencies]
 proptest.workspace = true

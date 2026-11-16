@@ -1112,6 +1112,62 @@ async fn a_values_file_inside_the_root_is_followed_by_the_roots_watch() {
     assert!(server.text("/@oj/env.js").await.contains("/_port_8001"));
 }
 
+// The root's watch leaves out `dist` and `node_modules`: a values file there
+// has its directory watched for itself. It was read at boot and never
+// again, the page held on the 503 for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_values_file_the_roots_watch_leaves_out_is_followed() {
+    for dir in ["dist", "node_modules/.cache/backend"] {
+        let app = app();
+        let file = app.root.join(dir).join("env.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, PENDING).unwrap();
+        let server = serve_with(&app, Some(file.clone()), None).await;
+        assert_eq!(status(&server).await["state"], "pending", "{dir}");
+        assert_eq!(server.get("/").await.status, 503, "{dir}");
+        let seen = settle(
+            &server,
+            || std::fs::write(&file, BOUND).unwrap(),
+            |s| s["state"] == "bound",
+        )
+        .await;
+        assert_eq!(seen["file"]["state"], "complete", "{dir}: {seen}");
+        assert_eq!(server.get("/").await.status, 200, "{dir}");
+        // And back, by a rename as a backend publishes.
+        let seen = settle(
+            &server,
+            || {
+                let tmp = file.with_extension("tmp");
+                std::fs::write(&tmp, PENDING).unwrap();
+                std::fs::rename(&tmp, &file).unwrap();
+            },
+            |s| s["state"] == "pending",
+        )
+        .await;
+        assert_eq!(seen["file"]["state"], "pending", "{dir}: {seen}");
+    }
+}
+
+// Both forms of the module are the server's own pages' and workers' to
+// load: another site's `<script src>` of the classic form would run it and
+// read the global it installs.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_env_module_is_not_another_origins_to_load() {
+    let app = app();
+    let file = values_dir(&app).join("env.json");
+    std::fs::write(&file, BOUND).unwrap();
+    let server = serve_with(&app, Some(file), None).await;
+    for url in ["/@oj/env.js", "/@oj/env.js?classic"] {
+        let res = server.get(url).await;
+        assert_eq!(res.status, 200, "{url}");
+        assert_eq!(
+            header(&res, "cross-origin-resource-policy"),
+            Some("same-origin"),
+            "{url}"
+        );
+    }
+}
+
 // The hold is a document's answer: under a base too, and never a module's,
 // the env module's or the control endpoint's.
 #[tokio::test(flavor = "multi_thread")]

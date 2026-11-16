@@ -516,6 +516,63 @@ fn a_short_wait_ends_on_time() {
     );
 }
 
+// A wait asks until its time is out: the server going away meanwhile (a
+// restart, a supervisor bringing it back) is not the wait's end. It exited
+// 1 on the first request that failed.
+#[test]
+fn a_wait_outlasts_the_server_going_away_and_coming_back() {
+    let app = App::new("wait-away");
+    app.publish(PENDING);
+    let server = app.serve();
+    let waiting = {
+        let root = app.root.clone();
+        std::thread::spawn(move || {
+            let root = root.to_string_lossy().into_owned();
+            oj_env_in(
+                &std::env::temp_dir(),
+                &["get", "--wait", "--timeout", "60", "--root", &root],
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(600));
+    drop(server);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!waiting.is_finished(), "gave up when the server went away");
+    let _server = app.serve();
+    app.publish(BOUND);
+    let (code, out, err) = waiting.join().unwrap();
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "VITE_BACKEND_URL=/_port_8001\nVITE_BACKEND_KEY=sb_publishable_x\n"
+    );
+    assert_eq!(err.matches("asking again").count(), 1, "said once: {err}");
+}
+
+// With the server gone for good the wait still ends on time, as a wait
+// that ran out (3), the last status printed.
+#[test]
+fn a_wait_on_a_server_that_went_away_runs_out_as_a_timeout() {
+    let app = App::new("wait-gone");
+    app.publish(PENDING);
+    let server = app.serve();
+    let waiting = {
+        let root = app.root.clone();
+        std::thread::spawn(move || {
+            let root = root.to_string_lossy().into_owned();
+            oj_env_in(
+                &std::env::temp_dir(),
+                &["get", "--wait", "--timeout", "3", "--json", "--root", &root],
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(600));
+    drop(server);
+    let (code, out, err) = waiting.join().unwrap();
+    assert_eq!(code, 3, "{err}");
+    assert_eq!(json(&out)["state"], "pending", "{out}");
+}
+
 // A value set over `/@oj/env` lives in the server alone. An `.env` edit
 // restarts the server: the value is handed to the next image, where it is
 // still the set value, and the ready file is gone while nothing serves.
