@@ -470,6 +470,63 @@ proptest::proptest! {
 // redirects it, so the module needs the import though the source never
 // holds `import.meta.env` unbroken. Without it the read threw when no other
 // module had loaded the env module first.
+// The replacer cannot make an assignment's target a literal: it keeps the
+// member and redirects its object, so a module that only writes a baked key
+// names the global and must import the module that defines it.
+#[test]
+fn a_write_to_a_baked_key_names_the_global_and_imports_the_module() {
+    let env = env(&["VITE_URL"]);
+    for src in [
+        "import.meta.env.MODE = \"test\";\n",
+        "import.meta.env.DEV ||= true;\n",
+        "import.meta.env.MODE += \"x\";\n",
+    ] {
+        let code = compiled("/src/a.ts", src, &dev(&env));
+        if code.contains(&format!("globalThis.{GLOBAL}")) {
+            assert_eq!(import_count(&code), 1, "{src:?}: {code}");
+            assert_eq!(first_statement(&code), format!("import {ENV_URL:?};"));
+        }
+        parses_as_module(&code);
+    }
+    let code = compiled(
+        "/src/a.ts",
+        "import.meta.env.MODE = \"test\";\n",
+        &dev(&env),
+    );
+    assert!(
+        code.contains(&format!("globalThis.{GLOBAL}.MODE = ")),
+        "{code}"
+    );
+    // A read of the same key beside nothing else is still the literal alone.
+    let code = compiled(
+        "/src/a.ts",
+        "export const m = import.meta.env.MODE;\n",
+        &dev(&env),
+    );
+    assert_eq!(import_count(&code), 0, "{code}");
+}
+
+// A comment or a non-ASCII space between the parts is whitespace to the
+// parser, so the read is redirected, and imported.
+#[test]
+fn a_read_with_a_comment_between_its_parts_imports_the_env_module() {
+    let env = env(&["VITE_URL"]);
+    for src in [
+        "export const url = import.meta/* c */.env.VITE_URL;\n",
+        "export const url = import.meta // c\n  .env.VITE_URL;\n",
+        "export const url = import.meta\u{a0}.env.VITE_URL;\n",
+        "export const url = import /* a */ . /* b */ meta.env.VITE_URL;\nexport const m = import.meta.env.MODE;\n",
+    ] {
+        let code = compiled("/src/a.ts", src, &dev(&env));
+        assert!(
+            code.contains(&format!("globalThis.{GLOBAL}.VITE_URL")),
+            "{src:?}: {code}"
+        );
+        assert_eq!(import_count(&code), 1, "{src:?}: {code}");
+        assert_eq!(first_statement(&code), format!("import {ENV_URL:?};"));
+    }
+}
+
 #[test]
 fn a_read_broken_across_lines_imports_the_env_module() {
     let env = env(&["VITE_URL"]);

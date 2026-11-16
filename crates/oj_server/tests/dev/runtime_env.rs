@@ -1168,6 +1168,74 @@ async fn the_env_module_is_not_another_origins_to_load() {
     }
 }
 
+// A compiled file a page loads as a classic script (`<script src>` with no
+// `type="module"`), or registers as a service worker, cannot hold the
+// import a compile puts first: it gets the values inline, and its tag
+// follows them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_classic_script_gets_the_values_inline_not_an_import() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"runtime-env-classic-script","private":true}"#,
+        ),
+        ("index.html", INDEX),
+        ("src/main.js", MAIN),
+        (
+            "src/sw.js",
+            "self.backend = import.meta.env.VITE_BACKEND_URL;\n",
+        ),
+    ]);
+    let server = serve_with(&app, None, None).await;
+    let get = |headers: Vec<(&'static str, String)>| {
+        let mut req = axum::http::Request::get("/src/sw.js");
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        server.request(req.body(axum::body::Body::empty()).unwrap())
+    };
+    let classic = |dest: &'static str, mode: &'static str| {
+        vec![
+            ("sec-fetch-dest", dest.to_string()),
+            ("sec-fetch-mode", mode.to_string()),
+        ]
+    };
+    let module = get(classic("script", "cors")).await;
+    assert!(
+        module.body.starts_with("import \"/@oj/env.js\";"),
+        "{}",
+        module.body
+    );
+    for (dest, mode) in [("script", "no-cors"), ("serviceworker", "same-origin")] {
+        let res = get(classic(dest, mode)).await;
+        assert_eq!(res.status, 200, "{dest}");
+        assert!(!res.body.contains("import \""), "{dest}: {}", res.body);
+        assert!(res.body.contains("\"__oj_env\""), "{dest}: {}", res.body);
+        assert!(
+            res.body.contains("globalThis.__oj_env.VITE_BACKEND_URL"),
+            "{dest}: {}",
+            res.body
+        );
+        assert_eq!(
+            res.body.lines().count(),
+            module.body.lines().count(),
+            "the map stands"
+        );
+        assert_ne!(header(&res, "etag"), header(&module, "etag"));
+    }
+    // Its tag: not modified while the values stand, served again once they move.
+    let first = get(classic("script", "no-cors")).await;
+    let etag = header(&first, "etag").unwrap().to_string();
+    let mut again = classic("script", "no-cors");
+    again.push(("if-none-match", etag.clone()));
+    assert_eq!(get(again.clone()).await.status, 304);
+    let res = post(&server, r#"{"VITE_BACKEND_URL":"/_port_9"}"#, &[]).await;
+    assert_eq!(res.status, 200, "{}", res.body);
+    let moved = get(again).await;
+    assert_eq!(moved.status, 200);
+    assert!(moved.body.contains("\"/_port_9\""), "{}", moved.body);
+}
+
 // The hold is a document's answer: under a base too, and never a module's,
 // the env module's or the control endpoint's.
 #[tokio::test(flavor = "multi_thread")]

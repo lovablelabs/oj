@@ -37,12 +37,19 @@ impl EnvDefines {
         })
     }
 
-    /// The module a compile of `source_text` imports first, when the source
-    /// reads a runtime key through this variant.
-    pub(crate) fn runtime_import(&self, source_text: &str) -> Option<&str> {
+    /// The module a compile imports first: when `source_text` reads a
+    /// runtime key through this variant, or when `names_global` says the
+    /// replaced program names the global all the same. The source scan
+    /// knows reads; the replacer also redirects what it cannot make a
+    /// literal (`import.meta.env.MODE = "test"`: an assignment's target
+    /// keeps its object, which is the global now).
+    pub(crate) fn runtime_import(
+        &self,
+        source_text: &str,
+        names_global: impl FnOnce(&str) -> bool,
+    ) -> Option<&str> {
         let runtime = self.runtime.as_ref()?;
-        runtime
-            .read_by(source_text)
+        (runtime.read_by(source_text) || names_global(&runtime.global))
             .then_some(runtime.module_url.as_str())
     }
 
@@ -189,17 +196,32 @@ impl RuntimeDefines {
     }
 }
 
-/// Whether `source` writes `import.meta.env` with whitespace between its
-/// parts (`import.meta\n  .env.KEY`, as a formatter breaks a long chain):
+/// Whether `source` writes `import.meta.env` with whitespace or a comment
+/// between its parts (`import.meta\n  .env.KEY`, as a formatter breaks a
+/// long chain; `import.meta /* c */ .env`):
 /// the replacer reads the tree and redirects it all the same, so the module
 /// needs the import; which key follows is not looked at.
 fn spaced_env_read(source: &str) -> bool {
     let bytes = source.as_bytes();
-    let skip_ws = |mut at: usize| {
-        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
-            at += 1;
+    // Whitespace as the parser reads it between tokens: the non-ASCII
+    // spaces and line ends, and comments.
+    let skip_ws = |mut at: usize| loop {
+        let rest = &source[at..];
+        let next = rest.chars().next();
+        if let Some(c) = next.filter(|c| c.is_whitespace() || *c == '\u{feff}') {
+            at += c.len_utf8();
+        } else if rest.starts_with("/*") {
+            match rest.find("*/") {
+                Some(end) => at += end + 2,
+                None => return at,
+            }
+        } else if rest.starts_with("//") {
+            at += rest
+                .find(['\n', '\r', '\u{2028}', '\u{2029}'])
+                .unwrap_or(rest.len());
+        } else {
+            return at;
         }
-        at
     };
     // `at` just past a word: the next word after `.`, whitespace allowed.
     let member = |at: usize, word: &str| {

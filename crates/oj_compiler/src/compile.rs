@@ -479,7 +479,43 @@ fn apply_defines<'a>(
             .into_scoping();
         let _ = ReplaceGlobalDefines::new(allocator, config).build(scoping, program);
     }
-    defines.runtime_import(source_text).map(str::to_owned)
+    defines
+        .runtime_import(source_text, |global| names_global(program, global))
+        .map(str::to_owned)
+}
+
+/// Whether `program` holds `globalThis.<global>`: what the replacer wrote
+/// for a redirected `import.meta.env`, wherever it stands.
+fn names_global(program: &Program, global: &str) -> bool {
+    use oxc_ast::ast::{Expression, StaticMemberExpression};
+    use oxc_ast_visit::{walk, Visit};
+
+    struct Finder<'g> {
+        global: &'g str,
+        found: bool,
+    }
+    impl<'a> Visit<'a> for Finder<'_> {
+        fn visit_static_member_expression(&mut self, member: &StaticMemberExpression<'a>) {
+            if self.found {
+                return;
+            }
+            if member.property.name == self.global {
+                if let Expression::Identifier(object) = &member.object {
+                    if object.name == "globalThis" {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+            walk::walk_static_member_expression(self, member);
+        }
+    }
+    let mut finder = Finder {
+        global,
+        found: false,
+    };
+    finder.visit_program(program);
+    finder.found
 }
 
 /// Puts `import "<url>";` first in `program`. Its spans are emptied: the

@@ -573,6 +573,38 @@ fn a_wait_on_a_server_that_went_away_runs_out_as_a_timeout() {
     assert_eq!(json(&out)["state"], "pending", "{out}");
 }
 
+// A value a dotenv parser would cut (a `#`, a space at either end) is
+// printed quoted; `unset` of a key twice, or of no key, is a usage error as
+// it is for `set`, before any request; values past the limit are refused.
+#[test]
+fn quoted_output_unset_usage_and_the_set_limit() {
+    let app = App::new("quoting");
+    let _server = app.serve();
+    let (code, out, err) = oj_env(
+        &app,
+        &["set", "VITE_BACKEND_URL=/a #b", "VITE_BACKEND_KEY= k "],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "VITE_BACKEND_URL='/a #b'\nVITE_BACKEND_KEY=' k '\n");
+
+    for args in [
+        &["unset", "VITE_BACKEND_URL", "VITE_BACKEND_URL"][..],
+        &["unset", ""][..],
+    ] {
+        let (code, out, err) = oj_env(&app, args);
+        assert_eq!((code, out.as_str()), (2, ""), "{args:?}: {err}");
+    }
+    let (_, out, _) = oj_env(&app, &["get", "VITE_BACKEND_URL"]);
+    assert_eq!(out, "VITE_BACKEND_URL='/a #b'\n", "nothing was unset");
+
+    let big = format!("VITE_BACKEND_KEY={}", "x".repeat(70_000));
+    let (code, _, err) = oj_env(&app, &["set", &big]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("larger than"), "{err}");
+    let (_, out, _) = oj_env(&app, &["get", "VITE_BACKEND_KEY"]);
+    assert_eq!(out, "VITE_BACKEND_KEY=' k '\n");
+}
+
 // A value set over `/@oj/env` lives in the server alone. An `.env` edit
 // restarts the server: the value is handed to the next image, where it is
 // still the set value, and the ready file is gone while nothing serves.

@@ -665,7 +665,15 @@ async fn serve_compiled_from(
         }
     };
 
-    let etag = format!("\"{key}\"");
+    // A classic script cannot hold the runtime env module's static import:
+    // it gets the values inline, so its tag names their generation too.
+    let inline_env = state.runtime_env.as_ref().filter(|env| {
+        crate::runtime_env::classic_script_request(headers) && env.imported_by(&module.code)
+    });
+    let etag = match inline_env {
+        Some(env) => format!("\"{key}-env{}\"", env.generation()),
+        None => format!("\"{key}\""),
+    };
     if query.is_none() && crate::etag::not_modified(headers, &etag) {
         return (
             StatusCode::NOT_MODIFIED,
@@ -707,7 +715,10 @@ async fn serve_compiled_from(
     };
     // A classic worker cannot hold the runtime env module's static import.
     if let Some(env) = &state.runtime_env {
-        body = crate::runtime_env::worker_body(env, url, body);
+        body = match inline_env {
+            Some(env) => env.inlined(body),
+            None => crate::runtime_env::worker_body(env, url, body),
+        };
     }
     // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
     // map moves down by the prelude's lines.

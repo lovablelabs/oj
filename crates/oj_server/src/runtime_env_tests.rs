@@ -1012,12 +1012,104 @@ fn the_module_checks_the_generation_it_was_rendered_at() {
     // Once for a generation in a tab: a stale copy of the module cannot
     // reload the page over and over.
     assert!(
-        js.contains("sessionStorage.getItem(\"__oj_env_reloaded\") === g"),
+        js.contains("sessionStorage.getItem(\"__oj_env_reloaded\") === seen"),
         "{js}"
     );
+    // By this server's name: another image counts its generations from
+    // zero again, and its generation 2 is not the one reloaded for.
+    let seen = |js: &str| {
+        let at = js.find("const seen = ").expect("the guard");
+        js[at..].split(" + g").next().unwrap().to_string()
+    };
+    assert!(seen(&js).contains(':'), "{js}");
+    assert_eq!(seen(&js), seen(&env.module_js()));
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    assert_ne!(seen(&js), seen(&self::env().module_js()));
     env.set(updates(&[("VITE_SUPABASE_URL", Some("/a"))]))
         .unwrap();
     assert!(env.module_js().contains("g === \"1\""));
+}
+
+// A restart hands the set values on as one environment variable: together
+// they stay under the file's limit, a set past it refused whole.
+#[test]
+fn set_values_past_the_limit_are_refused_and_nothing_changes() {
+    let env = env();
+    env.set(updates(&[("VITE_SUPABASE_URL", Some("/a"))]))
+        .unwrap();
+    let big = "x".repeat(MAX_FILE_BYTES as usize);
+    let err = env
+        .set(updates(&[
+            ("VITE_SUPABASE_URL", Some("/b")),
+            ("VITE_SUPABASE_PUBLISHABLE_KEY", Some(&big)),
+        ]))
+        .unwrap_err();
+    assert!(err.contains("larger than"), "{err}");
+    assert_eq!(
+        env.values().get("VITE_SUPABASE_URL").map(String::as_str),
+        Some("/a")
+    );
+    assert!(!env.values().contains_key("VITE_SUPABASE_PUBLISHABLE_KEY"));
+}
+
+// A writer that truncates and then writes is seen in between: the file is
+// read again before it counts as invalid, so the values never moved.
+#[test]
+fn a_file_seen_half_written_is_read_again_before_it_is_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    std::fs::write(&file, bound_json()).unwrap();
+    let env = env_with(Some(file.clone()), None);
+    let generation = env.generation();
+    std::fs::write(&file, &bound_json()[..20]).unwrap();
+    let writer = {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            std::fs::write(&file, bound_json()).unwrap();
+        })
+    };
+    assert!(!env.load_file(), "no reload for values that never moved");
+    writer.join().unwrap();
+    assert_eq!(env.state(), Binding::Bound);
+    assert_eq!(env.generation(), generation);
+    // Left cut short, it is invalid after all.
+    std::fs::write(&file, &bound_json()[..20]).unwrap();
+    assert!(env.load_file());
+    assert_eq!(env.state(), Binding::Pending);
+}
+
+// A `<script src>` without `type="module"` and a service worker's script:
+// neither may hold a static import.
+#[test]
+fn a_classic_script_request_is_told_by_its_fetch_headers() {
+    let headers = |pairs: &[(&'static str, &'static str)]| {
+        let mut map = HeaderMap::new();
+        for (k, v) in pairs {
+            map.insert(*k, v.parse().unwrap());
+        }
+        map
+    };
+    for classic in [
+        headers(&[("sec-fetch-dest", "script"), ("sec-fetch-mode", "no-cors")]),
+        headers(&[
+            ("sec-fetch-dest", "serviceworker"),
+            ("sec-fetch-mode", "same-origin"),
+        ]),
+    ] {
+        assert!(classic_script_request(&classic), "{classic:?}");
+    }
+    for module in [
+        headers(&[("sec-fetch-dest", "script"), ("sec-fetch-mode", "cors")]),
+        headers(&[
+            ("sec-fetch-dest", "worker"),
+            ("sec-fetch-mode", "same-origin"),
+        ]),
+        headers(&[("sec-fetch-dest", "empty"), ("sec-fetch-mode", "no-cors")]),
+        headers(&[]),
+    ] {
+        assert!(!classic_script_request(&module), "{module:?}");
+    }
 }
 
 #[test]

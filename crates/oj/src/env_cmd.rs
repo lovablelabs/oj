@@ -97,7 +97,17 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
             }
         },
         EnvCommand::Unset { opts, keys } => {
-            let updates = keys.into_iter().map(|k| (k, None)).collect();
+            let mut updates = BTreeMap::new();
+            for key in keys {
+                if key.is_empty() {
+                    eprintln!("oj env unset: an empty argument names no key");
+                    return USAGE;
+                }
+                if updates.insert(key.clone(), None).is_some() {
+                    eprintln!("oj env unset: `{key}` is given twice");
+                    return USAGE;
+                }
+            }
             (opts, Vec::new(), Some(updates))
         }
     };
@@ -110,7 +120,12 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
         .ok()
         .and_then(|timeout| Instant::now().checked_add(timeout));
     let root = opts.root.clone().unwrap_or_else(default_root);
-    let mut status = match oj_server::env_via_server(&root, updates.as_ref(), REQUEST).await {
+    // A request does not outlast the wait it is part of, the first included.
+    let first = match (opts.wait, Duration::try_from_secs_f64(opts.timeout)) {
+        (true, Ok(timeout)) => timeout.max(POLL).min(REQUEST),
+        _ => REQUEST,
+    };
+    let mut status = match oj_server::env_via_server(&root, updates.as_ref(), first).await {
         Ok(status) => status,
         Err(e) => {
             eprintln!("oj env: {e}");
@@ -139,7 +154,6 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
                 break;
             }
             tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
-            // A request does not outlast the wait it is part of.
             let request = left.map_or(REQUEST, |left| left.max(POLL).min(REQUEST));
             match oj_server::env_via_server(&root, None, request).await {
                 Ok(answer) => {
@@ -255,12 +269,32 @@ pub(crate) fn render(status: &serde_json::Value, only: &[String]) -> String {
     out
 }
 
-/// `value` as a dotenv file holds it on one line: as it is, unless it holds a
-/// line break, which only a double-quoted value can (`\n`, with `\` and `"`
-/// escaped beside it).
+/// `value` as a dotenv file holds it on one line, so that reading the line
+/// back gives the value: as it is when a parser takes it whole, else in the
+/// quotes that keep it. Unquoted, a parser trims it, ends it at a `#` and
+/// strips a quote it starts with. Single quotes and backticks keep every
+/// character but their own; double quotes are the only ones to hold a line
+/// break (`\n`), and the last resort (`\"`), which a parser may read back
+/// with its backslash.
 fn dotenv_value(value: &str) -> String {
-    if !value.contains(['\n', '\r']) {
+    let line_break = value.contains(['\n', '\r']);
+    let plain = !line_break
+        && !value.contains('#')
+        && value.trim() == value
+        && !value.starts_with(['\'', '"', '`']);
+    if plain {
         return value.to_string();
+    }
+    if !line_break {
+        for quote in ['\'', '`'] {
+            if !value.contains(quote) {
+                return format!("{quote}{value}{quote}");
+            }
+        }
+        // `"..."` as it is when nothing in it would be read as an escape.
+        if !value.contains(['"', '\\']) {
+            return format!("\"{value}\"");
+        }
     }
     let mut out = String::from("\"");
     for c in value.chars() {
@@ -373,6 +407,27 @@ mod tests {
             render(&status, &[]),
             "A=\"one\\ntwo \\\"q\\\" \\\\ \\r\"\nB=x=\"y\"\n"
         );
+    }
+
+    // Unquoted, a dotenv parser trims the value, ends it at a `#` and
+    // strips a quote it starts with: such a value is printed in the quotes
+    // that keep it whole.
+    #[test]
+    fn a_value_a_parser_would_cut_is_quoted() {
+        for (value, line) in [
+            ("abc #def", "'abc #def'"),
+            ("a#b", "'a#b'"),
+            (" padded ", "' padded '"),
+            ("\"x\"", "'\"x\"'"),
+            ("'x'", "`'x'`"),
+            ("it's `a` #1", "\"it's `a` #1\""),
+            ("it's `a` \"b\" #1", "\"it's `a` \\\"b\\\" #1\""),
+            ("plain=\"y\" 'z'", "plain=\"y\" 'z'"),
+            ("", ""),
+        ] {
+            let status = status("bound", &[("A", Some(value))]);
+            assert_eq!(render(&status, &[]), format!("A={line}\n"), "{value:?}");
+        }
     }
 
     #[test]

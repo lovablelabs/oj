@@ -156,6 +156,9 @@ pub(crate) struct RuntimeEnv {
     /// env had one: what the module serves while the key has no value.
     fallbacks: BTreeMap<String, String>,
     module_url: String,
+    /// Tells this server's generations from another's: they count from zero
+    /// in every image, and a tab outlives a restart.
+    boot: String,
     inner: Mutex<Inner>,
 }
 
@@ -193,6 +196,7 @@ impl RuntimeEnv {
             statics,
             fallbacks,
             module_url: dev_html::posix_join(&[base.unwrap_or("/"), MODULE_PATH]),
+            boot: boot_id(),
             inner: Mutex::new(Inner::default()),
         };
         env.load_file();
@@ -278,7 +282,24 @@ impl RuntimeEnv {
         let Some(file) = &self.file else {
             return false;
         };
-        let (values, state) = read_file(file, &self.keys);
+        let (mut values, mut state) = read_file(file, &self.keys);
+        // A writer that truncates and then writes is seen in between, empty
+        // or cut short: a file that read well before is read again a moment
+        // later before it counts as invalid. Taken at once, every page
+        // reloaded onto the hold page and back for values that never moved.
+        let read_well = matches!(
+            self.inner.lock().unwrap().file_state,
+            Some(FileState::Complete | FileState::Pending { .. })
+        );
+        if read_well {
+            for _ in 0..REWRITE_READS {
+                if !matches!(state, FileState::Invalid(_)) {
+                    break;
+                }
+                std::thread::sleep(REWRITE_WAIT);
+                (values, state) = read_file(file, &self.keys);
+            }
+        }
         let mut inner = self.inner.lock().unwrap();
         let before = (effective(&inner, &self.keys), state_of(&inner, &self.keys));
         if inner.file_state.is_some() && inner.file_state.as_ref() != Some(&state) {
@@ -316,18 +337,28 @@ impl RuntimeEnv {
         }
         let mut inner = self.inner.lock().unwrap();
         let before = (effective(&inner, &self.keys), state_of(&inner, &self.keys));
+        let mut set_values = inner.set_values.clone();
         for (key, value) in updates {
             match value {
                 Some(value) => {
-                    inner.set_values.insert(key, value);
+                    set_values.insert(key, value);
                 }
                 None => {
-                    inner.set_values.remove(&key);
+                    set_values.remove(&key);
                 }
             }
         }
-        *carried().lock().unwrap() =
-            (!inner.set_values.is_empty()).then(|| serde_json::json!(inner.set_values).to_string());
+        // The file's limit, for the set values together: a restart hands
+        // them to the next image as one environment variable, and one too
+        // long for the system fails the exec, which ended the server.
+        let handed = serde_json::json!(set_values).to_string();
+        if handed.len() as u64 > MAX_FILE_BYTES {
+            return Err(format!(
+                "the set values together are larger than {MAX_FILE_BYTES} bytes"
+            ));
+        }
+        *carried().lock().unwrap() = (!set_values.is_empty()).then_some(handed);
+        inner.set_values = set_values;
         Ok(self.settle(&mut inner, before))
     }
 
@@ -366,10 +397,13 @@ impl RuntimeEnv {
         };
         // Ready says a server answers with every value: not before it
         // listens, and not once it was told to stop.
+        // Under the lock the stop's sweep takes: a write that saw the server
+        // running lands before the sweep, never after it.
+        let mut written = ready_files().lock().unwrap();
         let serving = self.serving.load(std::sync::atomic::Ordering::SeqCst)
             && !STOPPING.load(std::sync::atomic::Ordering::SeqCst);
         let result = if state == Binding::Bound && serving {
-            ready_files().lock().unwrap().insert(ready.clone());
+            written.insert(ready.clone());
             std::fs::write(ready, b"1\n")
         } else {
             match std::fs::remove_file(ready) {
@@ -386,7 +420,10 @@ impl RuntimeEnv {
     pub(crate) fn serving(&self) {
         self.serving
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.publish_ready(self.state());
+        // The state and the file under one lock, as every change publishes
+        // it: a change in between would have its removal written over.
+        let inner = self.inner.lock().unwrap();
+        self.publish_ready(state_of(&inner, &self.keys));
     }
 
     pub(crate) fn state(&self) -> Binding {
@@ -509,12 +546,15 @@ impl RuntimeEnv {
         // counts, so an answer that is not the server's reloads nothing, and
         // a generation is reloaded for once in a tab: a copy of this module
         // served from a cache (an app's service worker) would otherwise
-        // reload the page for as long as it is stale.
+        // reload the page for as long as it is stale. Once per generation of
+        // this server: the next image counts from zero again, and its
+        // generation 2 is not the one a tab reloaded for before the restart.
         let check = format!(
-            "if (typeof window !== \"undefined\" && typeof fetch === \"function\") {{\n  const check = () => fetch({url}, {{ cache: \"no-store\" }}).then((r) => (r.ok ? r.text() : \"\")).then((g) => {{\n    if (!/^\\d+$/.test(g) || g === {generation}) return;\n    try {{ if (sessionStorage.getItem({guard}) === g) return; sessionStorage.setItem({guard}, g); }} catch {{}}\n    location.reload();\n  }}, () => {{}});\n  if (document.readyState === \"complete\") check(); else window.addEventListener(\"load\", check, {{ once: true }});\n}}\n",
+            "if (typeof window !== \"undefined\" && typeof fetch === \"function\") {{\n  const check = () => fetch({url}, {{ cache: \"no-store\" }}).then((r) => (r.ok ? r.text() : \"\")).then((g) => {{\n    if (!/^\\d+$/.test(g) || g === {generation}) return;\n    const seen = {boot} + g;\n    try {{ if (sessionStorage.getItem({guard}) === seen) return; sessionStorage.setItem({guard}, seen); }} catch {{}}\n    location.reload();\n  }}, () => {{}});\n  if (document.readyState === \"complete\") check(); else window.addEventListener(\"load\", check, {{ once: true }});\n}}\n",
             url = json_str(&format!("{}?{GENERATION_QUERY}", self.module_url)),
             generation = json_str(&inner.generation.to_string()),
             guard = json_str("__oj_env_reloaded"),
+            boot = json_str(&format!("{}:", self.boot)),
         );
         let install = format!(
             "Object.defineProperty(globalThis, {global}, {{ value: env, configurable: true, enumerable: false, writable: false }});\n",
@@ -537,6 +577,11 @@ enum Form {
     Module,
     Script,
 }
+
+/// How often, and how far apart, a file that turned invalid is read again
+/// before it is taken as invalid ([`RuntimeEnv::load_file`]).
+const REWRITE_READS: usize = 4;
+const REWRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The set values of this process's server, as the JSON object a restart
 /// hands the next image.
@@ -569,7 +614,8 @@ static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// process killed outright leaves the file, which the next start removes.
 pub fn clear_ready_files() {
     STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
-    for file in std::mem::take(&mut *ready_files().lock().unwrap()) {
+    let mut written = ready_files().lock().unwrap();
+    for file in std::mem::take(&mut *written) {
         let _ = std::fs::remove_file(file);
     }
 }
@@ -582,6 +628,14 @@ impl Drop for RuntimeEnv {
             }
         }
     }
+}
+
+/// A name no other server image has: the process and when it was asked.
+fn boot_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{:x}-{nanos:x}", std::process::id())
 }
 
 fn json_str(s: &str) -> String {
@@ -779,9 +833,12 @@ pub(crate) fn local_caller(headers: &HeaderMap) -> bool {
 }
 
 /// Who may read or set the runtime values: a [`local_caller`] that is not a
-/// browser's request at all (every browser request carries `Sec-Fetch-Site`,
-/// the page's own same-origin `fetch` included, which has no `Origin`) and
-/// whose connection comes from this machine. The header rule alone let any
+/// browser's request (a page served from a trustworthy origin, localhost
+/// among them, sends `Sec-Fetch-Site` with every request, its own
+/// same-origin `fetch` included, which has no `Origin`; a page on plain
+/// http under another name sends none, and its POST still carries `Origin`,
+/// so it may at most read the status, which holds what `/@oj/env.js` hands
+/// any page) and whose connection comes from this machine. The header rule alone let any
 /// machine that reaches the port (`--host 0.0.0.0`) set the values with a
 /// plain `curl`; the other endpoints under it only read.
 pub(crate) fn control_caller(headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> bool {
@@ -875,15 +932,49 @@ pub(crate) fn worker_body(env: &RuntimeEnv, url: &str, body: String) -> String {
             .flatten()
     });
     let script = json_str(&format!("{}?{CLASSIC_QUERY}", env.module_url));
-    let load = match worker_type {
-        Some("classic") => format!("importScripts({script});"),
-        // One line, so the map stands: the values are JSON, which holds no
-        // line break outside the ones this rendering puts between fields.
-        Some("ignore") => env.classic_js().replace('\n', " ").trim_end().to_string(),
-        _ => return body,
+    match worker_type {
+        // Same line count, so the map stands.
+        Some("classic") => body.replacen(&env.import(), &format!("importScripts({script});"), 1),
+        Some("ignore") => env.inlined(body),
+        _ => body,
+    }
+}
+
+impl RuntimeEnv {
+    /// The statement a compile puts first in a module that reads the global.
+    fn import(&self) -> String {
+        format!("import {};", json_str(&self.module_url))
+    }
+
+    /// Whether compiled `code` imports the module.
+    pub(crate) fn imported_by(&self, code: &str) -> bool {
+        code.contains(&self.import())
+    }
+
+    /// `body` with the script itself where its import of the module stood,
+    /// which a classic script and a module both run. One line, so the map
+    /// stands: the values are JSON, which holds no line break outside the
+    /// ones the rendering puts between fields.
+    pub(crate) fn inlined(&self, body: String) -> String {
+        let script = self.classic_js().replace('\n', " ").trim_end().to_string();
+        body.replacen(&self.import(), &script, 1)
+    }
+}
+
+/// Whether a request for a compiled file loads it as a classic script, or
+/// may: a `<script src>` without `type="module"` (a module script is
+/// fetched in `cors` mode, a classic one in `no-cors`), or a service
+/// worker's script, whose type the request does not say. Neither may hold
+/// the static import a compile puts first, so each gets the values inline
+/// ([`RuntimeEnv::inlined`]), where the read was a literal before.
+pub(crate) fn classic_script_request(headers: &HeaderMap) -> bool {
+    let is = |name: &str, value: &str| {
+        headers
+            .get(name)
+            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(value.as_bytes()))
     };
-    // Same line count, so the map stands.
-    body.replacen(&format!("import {};", json_str(&env.module_url)), &load, 1)
+    is("sec-fetch-dest", "serviceworker")
+        || (is("sec-fetch-dest", "script") && is("sec-fetch-mode", "no-cors"))
 }
 
 /// `GET /@oj/env` (the status) and `POST /@oj/env` (a JSON object of
