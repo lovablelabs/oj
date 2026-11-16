@@ -3587,14 +3587,41 @@ async fn a_discarded_environment_container_is_gone_from_every_engine() {
     );
     assert_eq!(client.start_facts().await.as_ref(), Ok(&facts));
 
-    // One discarded while the engine is down is dropped by the engine that
-    // comes, though that engine opened it from a seed taken before: the
-    // next environment container to open asks.
+    // One discarded while no engine was up to drop it (a respawn in
+    // progress may have opened it from a seed taken before): the engine
+    // still holds it, and the next environment container to open has it
+    // dropped. The state such a discard leaves is made here by hand, the
+    // window being a few instructions wide.
     let late = host
         .open_environment_container("client", true, true)
         .await
         .expect("a third container opens");
-    assert_eq!(host.environment_containers(), 2);
+    let late_id = late.container;
+    host.core
+        .environments
+        .lock()
+        .unwrap()
+        .retain(|(spec, _)| spec["id"] != late_id);
+    host.core.discarded.lock().unwrap().insert(late_id);
+    assert_eq!(host.environment_containers(), 1);
+    assert_eq!(
+        late.start_facts().await.as_ref(),
+        Ok(&facts),
+        "the engine holds it yet"
+    );
+    let another = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("a container opens");
+    let gone = late.start_facts().await;
+    assert!(gone.is_err(), "dropped when the next one opened: {gone:?}");
+    assert!(host.core.discarded.lock().unwrap().is_empty());
+    assert_eq!(another.start_facts().await.as_ref(), Ok(&facts));
+    another.discard_environment_container().await;
+    assert_eq!(host.environment_containers(), 1);
+
+    // A host that is down keeps what was discarded for the engine to come,
+    // and is not respawned for it.
     let err = host
         .load("__block__")
         .await
@@ -3603,21 +3630,28 @@ async fn a_discarded_environment_container_is_gone_from_every_engine() {
         err.contains("unresponsive") || err.contains("exited"),
         "{err}"
     );
-    late.discard_environment_container().await;
-    assert_eq!(host.environment_containers(), 1);
+    let dead = host.engine_generation();
+    host.core.discarded.lock().unwrap().insert(late_id);
+    another.discard_environment_container().await;
+    assert_eq!(
+        host.engine_generation(),
+        dead,
+        "no respawn to drop a container"
+    );
+    assert!(host.core.discarded.lock().unwrap().contains(&late_id));
     clear_respawn_spacing(&host);
     assert_eq!(
         client.start_facts().await.as_ref(),
         Ok(&facts),
         "the engine is back"
     );
-    let another = host
+    assert_eq!(host.engine_generation(), dead + 1);
+    let third = host
         .open_environment_container("client", true, true)
         .await
         .expect("a container opens on the revived engine");
-    let gone = late.start_facts().await;
-    assert!(gone.is_err(), "dropped once an engine was up: {gone:?}");
-    another.discard_environment_container().await;
+    assert!(host.core.discarded.lock().unwrap().is_empty());
+    third.discard_environment_container().await;
     assert_eq!(host.environment_containers(), 1);
 
     // A respawned engine reopens the one in use, and not the others.
@@ -3715,4 +3749,155 @@ async fn a_modules_meta_is_one_object_for_the_plugins_and_the_chunk_groups() {
         "{meta}"
     );
     drop(host);
+}
+
+// A plugin that assigns `info.meta` a new object, where most write into the
+// one they are handed, gives the module that content: the hooks' later word
+// merges onto it, as in Vite's dev, and the chunk groups read the same.
+// Here the assigning plugin runs before the one whose `transform` returns a
+// newer value. The assigned object stood apart from the module's, the newer
+// value reached the module's alone, and the assigned object's older one was
+// merged back over it when the transform ended, for the plugins and the
+// groups alike.
+#[tokio::test]
+async fn a_meta_a_plugin_assigns_whole_takes_the_hooks_later_word() {
+    let config = r#"let version = 0;
+export default {
+  plugins: [
+    {
+      name: "assigner",
+      load(id) {
+        return id === "/app/a.js" ? { code: "export default 1" } : null;
+      },
+      transform(code, id) {
+        if (id !== "/app/a.js") return null;
+        const info = this.getModuleInfo(id);
+        info.meta = { ...info.meta, mine: true, seen: info.meta.version ?? 0 };
+        return null;
+      },
+    },
+    {
+      name: "versioned",
+      transform(code, id) {
+        if (id !== "/app/a.js") return null;
+        version += 1;
+        return { code, meta: { version } };
+      },
+    },
+    {
+      name: "reader",
+      transform(code, id) {
+        if (id !== "/app/a.js") return null;
+        return { code, meta: { read: this.getModuleInfo(id).meta.version } };
+      },
+    },
+  ],
+  build: {
+    rolldownOptions: {
+      output: { manualChunks: (id, { getModuleInfo }) => JSON.stringify(getModuleInfo(id).meta) },
+    },
+  },
+};
+"#;
+    let (_root, _host, client) = start_fn_host("assigned-meta", config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let name = fn_handle(&facts["codeSplitting"]["groups"][0]["name"], &facts);
+    let id = "/app/a.js";
+    let ids = [id.to_string()];
+    let infos = serde_json::json!([{ "id": id, "importers": [] }]).to_string();
+    client.load(id).await.expect("the module loads");
+    for version in 1..=3u64 {
+        client
+            .transform("export default 1", id, id)
+            .await
+            .expect("the plugins transform the module");
+        let named = client
+            .call_start_fn_batch(
+                name,
+                &ids,
+                version,
+                Some(&infos),
+                true,
+                true,
+                ChunkPass::Start,
+            )
+            .await
+            .expect("the function names the chunk");
+        let meta: serde_json::Value = serde_json::from_str(named[0].as_str().unwrap()).unwrap();
+        assert_eq!(
+            meta,
+            serde_json::json!({
+                "mine": true,
+                // What the assigner found: the transform before's.
+                "seen": version - 1,
+                // What `versioned` said after it, for the group...
+                "version": version,
+                // ...and for the plugin after it.
+                "read": version,
+            }),
+            "transform {version}"
+        );
+    }
+}
+
+// The engine a host counts is its last one until a call respawns it. What
+// is about to run on a host found dead runs on the engine after, which
+// `live_engine_generation` brings up and counts; on a live host it is the
+// count as it stands.
+#[tokio::test]
+async fn a_dead_hosts_engine_is_counted_once_it_is_up_again() {
+    let config = format!("export default {{ plugins: [{BLOCKER}] }};\n");
+    let (_root, host, client) = start_fn_host("live-engine", &config).await;
+    let first = host.engine_generation();
+    assert_eq!(host.live_engine_generation().await, first, "a live host");
+    wedge(&host).await;
+    assert_eq!(
+        host.engine_generation(),
+        first,
+        "dead, and not yet respawned"
+    );
+    assert_eq!(client.live_engine_generation().await, first + 1);
+    assert_eq!(host.engine_generation(), first + 1);
+    assert_eq!(host.live_engine_generation().await, first + 1);
+    assert!(client.start_facts().await.is_ok());
+    assert_eq!(
+        host.engine_generation(),
+        first + 1,
+        "the same engine answers"
+    );
+}
+
+// Closing a worker bundle's container on a host that is down asks nothing
+// of it: the container died with the engine, and a call would respawn the
+// host to close an id the new engine never opened, or gave to another
+// bundle since.
+#[tokio::test]
+async fn closing_a_worker_container_never_respawns_a_dead_host() {
+    let config = format!("export default {{ plugins: [{BLOCKER}] }};\n");
+    let (_root, host, client) = start_fn_host("close-dead", &config).await;
+    let worker = client
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container opens");
+    let closed_live = client
+        .open_worker_container(&[])
+        .await
+        .expect("a second worker container opens");
+    assert_eq!(closed_live.close_container().await, Ok(()));
+    assert!(
+        closed_live.load("/app/a.js").await.is_err(),
+        "closed on the live engine"
+    );
+    assert_eq!(worker.load("/app/a.js").await, Ok(None));
+
+    let before = host.engine_generation();
+    wedge(&host).await;
+    assert_eq!(worker.close_container().await, Ok(()));
+    assert_eq!(host.engine_generation(), before, "no respawn to close it");
+    // The host comes back for the next thing asked of it, and the handle
+    // is of an engine gone.
+    assert!(client.start_facts().await.is_ok());
+    assert_eq!(host.engine_generation(), before + 1);
+    assert_eq!(worker.close_container().await, Ok(()));
+    assert!(worker.load("/app/a.js").await.is_err(), "a stale handle");
 }

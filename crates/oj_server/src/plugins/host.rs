@@ -159,8 +159,9 @@ pub(crate) struct HostCore {
     /// plans a respawn resets.
     pub(crate) environments: Mutex<Vec<(serde_json::Value, std::sync::Weak<PluginHost>)>>,
     /// Environment containers discarded while no engine was up to drop
-    /// them (`discard_environment_container`).
-    discarded: Mutex<std::collections::HashSet<u32>>,
+    /// them (`discard_environment_container`): an engine being respawned
+    /// then may have taken one from its seed already.
+    pub(crate) discarded: Mutex<std::collections::HashSet<u32>>,
     next_environment: std::sync::atomic::AtomicU32,
 }
 
@@ -2042,6 +2043,18 @@ impl PluginHost {
         self.core.revive.lock().unwrap().generation
     }
 
+    /// [`PluginHost::engine_generation`] of an engine that is up: a host
+    /// found dead is respawned first, by a call that asks nothing of the
+    /// plugins, so that what runs next runs on the engine counted here. A
+    /// dead host's count is still its last engine's: read as it stands, the
+    /// next hook would respawn the host and run on an engine one later.
+    pub async fn live_engine_generation(&self) -> u64 {
+        if *self.core.host_gone.borrow() {
+            let _ = self.call_ok("getTopLevelPluginCount").await;
+        }
+        self.engine_generation()
+    }
+
     /// A worker container from an engine since revived: its id may name
     /// another bundle's container in the new one.
     fn is_stale(&self) -> bool {
@@ -2235,6 +2248,12 @@ impl PluginHost {
             .lock()
             .unwrap()
             .remove(&self.container);
+        // A dead host's containers died with it: the call would respawn it
+        // to close an id the new engine never opened, or has since given
+        // to another bundle.
+        if *self.core.host_gone.borrow() {
+            return Ok(());
+        }
         self.call_unit("closeContainer", &[]).await
     }
 

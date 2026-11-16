@@ -392,7 +392,13 @@ impl DevBundler {
         // session's modules (`meta`, which a chunk group may name by) went
         // with it, and the session rebuilds only what changes. A fresh one
         // runs every hook on the engine there is.
-        let host_engine = host.map_or(0, |h| h.host.engine_generation());
+        // Of an engine that is up: a host found dead is respawned here, so
+        // the session's hooks, and its chunk policy made below, count the
+        // engine they run on and not the dead one before it.
+        let host_engine = match host {
+            Some(h) => h.host.live_engine_generation().await,
+            None => 0,
+        };
         let stale = session.as_ref().is_some_and(|s| {
             session_stale(
                 hot,

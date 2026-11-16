@@ -871,10 +871,28 @@ class ModuleInfoCache extends Map {
     if (!option) this.options.set(id, (option = { moduleSideEffects: null, meta: {} }));
     return option;
   }
+  // `info.meta` is the module's object, and stays it: a plugin that assigns
+  // a new one (`info.meta = { ...info.meta, mine: true }`) gives the object
+  // that content, as Vite's dev keeps what the plugin assigned and merges
+  // the hooks' later word onto it. Held as a plain property, the assigned
+  // object stood apart from the module's, and its older values were merged
+  // back over what a hook said after.
   set(id, info) {
     const { meta } = this.option(id);
-    if (info.meta && info.meta !== meta) Object.assign(meta, info.meta);
-    info.meta = meta;
+    const own = Object.getOwnPropertyDescriptor(info, "meta");
+    if (!own?.get) {
+      if (info.meta && info.meta !== meta) Object.assign(meta, info.meta);
+      Object.defineProperty(info, "meta", {
+        get: () => meta,
+        set(assigned) {
+          if (assigned === meta) return;
+          for (const key of Object.keys(meta)) delete meta[key];
+          if (assigned && typeof assigned === "object") Object.assign(meta, assigned);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    }
     return super.set(id, info);
   }
   clear() {
