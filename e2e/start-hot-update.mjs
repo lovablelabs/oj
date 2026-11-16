@@ -120,6 +120,26 @@ try {
         return () => fs.rmSync(temp);
       },
     ],
+    // What the server-fn resolver takes for a file it may depend on, gone
+    // before the batch settled: a source file (it may have declared a server
+    // function) and a file named as a tsconfig. The resolver is made again
+    // and is the same one, so the edit beside them is still patched in.
+    [
+      "a source temp gone before the batch settled",
+      () => {
+        const temp = path.join(app, "src", "content", "tmp4f2a.ts");
+        fs.writeFileSync(temp, "export const tmp = 1;\n");
+        return () => fs.rmSync(temp);
+      },
+    ],
+    [
+      "a tsconfig-named temp gone before the batch settled",
+      () => {
+        const temp = path.join(app, "src", "content", "tsconfig.tmp.json");
+        fs.writeFileSync(temp, "{}");
+        return () => fs.rmSync(temp);
+      },
+    ],
   ]) {
     const before = hotCount();
     const mark = log.length;

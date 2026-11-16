@@ -45,6 +45,16 @@ server is fully bundled: `createStartHandler` (inside `@tanstack/start-server-co
 runs `import("#tanstack-router-entry")`, and that import only resolves if the
 framework package is bundled so rolldown can apply the alias. See "Known limits".
 
+The manifest is the exception in a build. There Start's own manifest plugins
+are hosted (`isStartManifest` in `native-plugins.mjs`): one captures the
+client bundle's chunks, the other answers the server bundle's
+`tanstack-start-manifest:v` with every route's preloads and scripts, under
+Vite's id, so an app plugin's `transform` sees it. The framework's import
+goes through `manifest-sheets.ts` (`StartManifestSheets` in
+`start_bundle/alias.rs`), which adds the stylesheets oj linked to the root
+route. With no Start plugin answering, the alias to oj's own `manifest.ts`
+is what the wrapper imports.
+
 ## Where things live
 
 The bundles (`crates/oj/src/start_bundle/`):
@@ -262,7 +272,9 @@ identical `/assets/<hash>` URLs for identical bytes. CSS is emitted with its
 `url()` references rewritten and its referenced fonts and images emitted
 alongside. The emitter records the stylesheet URLs, which the manifest lists
 under the root route's `css` so `HeadContent` links them in the SSR `<head>`
-(no flash of unstyled content).
+(no flash of unstyled content). They are added to the manifest at run time by
+the `manifest-sheets.ts` wrapper, since a sheet's URL can still change after
+the client bundle is written (a plugin's late CSS replaces a sheet).
 
 ### The prod server entrypoints
 

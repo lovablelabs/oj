@@ -1,7 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
+/// Whether `source` is still svg markup rather than a module: what a plugin's
+/// `load` or `transform` left of an svg decides if oj's own svgr runs (a
+/// `?react` import) or the file is a URL (a plain one). A BOM is not Unicode
+/// white space, so it is taken off first: a BOM-prefixed svg is markup too.
+pub fn is_svg_markup(source: &str) -> bool {
+    source
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .starts_with('<')
+}
+
 pub fn svg_to_component(svg: &str) -> String {
+    // A BOM-prefixed file: the BOM is no part of the markup (Vite's
+    // importAnalysis strips one off a module too).
+    let svg = svg.trim_start_matches('\u{feff}');
     let cleaned = strip_noise(svg);
     let jsx = transform_tags(&cleaned);
     format!(

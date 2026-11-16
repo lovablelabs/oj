@@ -457,18 +457,59 @@ pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
     std::time::Duration::from_secs(5);
 
-/// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB`, then NODE_OPTIONS
-/// `--max-old-space-size`, then 4096MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
+/// The cap when the machine's memory cannot be read: what every engine had
+/// before the cap followed it.
+const UNREAD_MEMORY_HEAP_MB: usize = 4096;
+
+/// Plugin-host heap cap, as Node sizes its own heap: V8's default for the
+/// memory this process may use, with NODE_OPTIONS `--max-old-space-size` as
+/// the old space when it is set. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
-    let knobs = &oj_env::get().knobs;
-    if let Some(mb) = knobs.plugin_memory_mb {
-        return mb;
-    }
-    knobs
+    let old_space = oj_env::get()
+        .knobs
         .node_options
         .as_deref()
-        .and_then(max_old_space_mb)
-        .unwrap_or(4096)
+        .and_then(max_old_space_mb);
+    heap_cap_mb(available_memory_bytes(), old_space)
+}
+
+/// The cap for a machine with `memory` bytes. V8 computes it
+/// (`oj_js::heap_limit_bytes`), as it does for Node and for Deno's CLI: half
+/// the memory for the old space up to 4GB, and the young generation on top.
+/// `--max-old-space-size=N` is N with that same young generation.
+pub(crate) fn heap_cap_mb(memory: Option<u64>, old_space_mb: Option<usize>) -> usize {
+    let Some(memory) = memory else {
+        return old_space_mb.unwrap_or(UNREAD_MEMORY_HEAP_MB);
+    };
+    oj_js::heap_limit_bytes(memory, old_space_mb) / (1024 * 1024)
+}
+
+/// The memory this process may use: the cgroup ceiling when one is set and
+/// below the machine's, else the machine's physical memory (what Node passes
+/// to V8: `uv_get_constrained_memory`, then `uv_get_total_memory`).
+fn available_memory_bytes() -> Option<u64> {
+    let limit = crate::memory_cache::detect_memory_limit().map(|l| l as u64);
+    match (physical_memory_bytes(), limit) {
+        (Some(physical), Some(limit)) => Some(physical.min(limit)),
+        (physical, limit) => physical.or(limit),
+    }
+}
+
+#[cfg(unix)]
+fn physical_memory_bytes() -> Option<u64> {
+    // SAFETY: sysconf reads two system constants and touches no memory of ours.
+    let (pages, size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
+}
+
+#[cfg(not(unix))]
+fn physical_memory_bytes() -> Option<u64> {
+    None
 }
 
 /// The last `--max-old-space-size` in NODE_OPTIONS (last wins, like Node;
@@ -1667,6 +1708,27 @@ impl PluginHost {
     #[inline]
     pub fn hook_wants_load(&self, id: &str) -> bool {
         self.hook_plan.read().unwrap().load.wants(id, None)
+    }
+
+    /// [`Self::hook_wants_load`] for a module `vite:asset` would answer (a
+    /// plain svg): only a `load` Vite runs before it is asked.
+    #[inline]
+    pub fn hook_wants_load_before_asset(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().load.wants_before_asset(id)
+    }
+
+    /// Whether a `load` or `transform` filter could claim `id`, its source
+    /// unknown (see [`BuildHookPlan::claims_module`]).
+    #[inline]
+    pub fn hook_claims_module(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().claims_module(id)
+    }
+
+    /// Whether a `load` or `transform` id filter names `id` outright (see
+    /// [`BuildHookPlan::names_module`]).
+    #[inline]
+    pub fn hook_names_module(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().names_module(id)
     }
 
     /// The hooks the host is running right now, oldest first (what a probe
@@ -2945,7 +3007,7 @@ impl HostCore {
                 // A near-limit heap is a property of the isolate, not this call:
                 // declare it gone, the next call revives a fresh one.
                 let msg = format!(
-                    "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
+                    "plugin host exceeded its memory limit ({}MB; raise it with NODE_OPTIONS=--max-old-space-size) running {hook}",
                     self.boot.memory_limit_bytes / (1024 * 1024)
                 );
                 self.declare_gone(&msg, generation);
