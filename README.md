@@ -66,6 +66,26 @@ oj build web                                     # production build
 
 Dev serves file-based routes with streaming SSR and client hydration, keeps Fast Refresh working, runs server functions in the module runner, and applies the app's `vite.config` plugins (React and the app's own). `oj build` emits a Node `server.mjs`, a Cloudflare `worker.mjs` (`nodejs_compat`), content-hashed client assets, and prerendered routes. oj's own docs site (`www/`) is a TanStack Start app built by oj and served from a Cloudflare Worker.
 
+In dev, `GET /@oj/tanstack/routes.json` returns the app's routes as JSON, so a tool next to the page (a route picker in a preview, say) can list them. oj reads the generated route tree (`routeTree.gen.ts`) on every request, so a route you add or remove shows up right away.
+
+```json
+{
+  "routes": [
+    { "path": "/", "id": "/", "file": "src/routes/index.tsx" },
+    { "path": "/dash", "id": "/_layout/dash", "file": "src/routes/_layout/dash.tsx" },
+    { "path": "/files/$", "id": "/files/$", "file": "src/routes/files.$.tsx", "params": ["_splat"] },
+    { "path": "/posts/$postId", "id": "/posts/$postId", "file": "src/routes/posts.$postId.tsx", "params": ["postId"] }
+  ]
+}
+```
+
+- `path`: what the router matches, and what a picker navigates to.
+- `id`: the route id. It differs from `path` under a pathless layout or a route group.
+- `file`: the route's source file, relative to the app root.
+- `params`: the dynamic parts of `path`, in order (`_splat` for a `$` splat). Left out when there are none.
+
+Pathless layouts and the root aren't listed, since you can't navigate to them. An app whose routes are written in code instead of files gets an empty list.
+
 ## Type checking
 
 `oj typecheck` is `tsc` on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj typecheck` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
