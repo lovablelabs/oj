@@ -165,6 +165,15 @@ impl ContentIndex {
         }
     }
 
+    /// Whether the server has served `path` as a module at no point of this
+    /// run. Only the module pipeline records a serve: a file fetched raw, as
+    /// an asset or from `public/` does not count.
+    pub fn never_served(&self, path: &Path) -> bool {
+        self.lock()
+            .get(path)
+            .is_none_or(|f| f.served.last.is_none())
+    }
+
     /// Whether `path` reads as what `b` last settled on. A file `b` never
     /// settled, or settled while missing, is never unchanged. For the gate,
     /// every content served since its baseline must be that content too: a

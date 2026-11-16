@@ -687,11 +687,27 @@ pub(crate) struct HmrGate {
 #[derive(Default)]
 pub(crate) struct GateInner {
     pending: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
+    /// The paths whose hold began with their creation: a batch reported the
+    /// file as created, and nothing was pending for it. The pages were never
+    /// brought to such a file, so one that is gone again before the flush is
+    /// no change to them ([`HmrGate::drop_born_and_gone`]). A path already
+    /// held when it is created again (deleted under the gate, then written
+    /// back) is not one: the pages have the file it replaced.
+    born: std::collections::BTreeSet<PathBuf>,
+    /// The paths left out as come and gone since the last flush. An event
+    /// for one can trail into a later batch (the rename that took the file
+    /// away, reported after the batch that held its creation closed), where
+    /// it names a path that is gone and was never reported as created.
+    passed_through: std::collections::BTreeSet<PathBuf>,
     /// When the last flush ran. A flush covers every write made before it, so
     /// a hold arriving later for one of those writes is already released; the
     /// cap timer compares against the same instant to know whether its hold
     /// set was ever flushed.
     last_flush: Option<std::time::SystemTime>,
+    /// When the cap timer of the current hold set was armed. A hold set can
+    /// empty without a flush (its files went back to what the pages have),
+    /// and the timer it armed must not release the next one early.
+    armed: Option<std::time::SystemTime>,
     /// When the last flush that released nothing ran: see [`FLUSH_GRACE`].
     empty_flush_at: Option<std::time::Instant>,
 }
@@ -723,8 +739,15 @@ impl HmrGate {
     /// `reload` arms the held page reload with the paths, inside the same
     /// lock: armed after `hold` returns, a flush racing the two steps would
     /// drain the paths yet leave the reload held, with nothing pending to make
-    /// the cap timer fire and release it.
-    pub(crate) fn hold(&self, state: &Arc<ServerState>, paths: &[PathBuf], reload: bool) -> bool {
+    /// the cap timer fire and release it. `created` are the paths the batch
+    /// saw come into existence (see [`GateInner::born`]).
+    pub(crate) fn hold(
+        &self,
+        state: &Arc<ServerState>,
+        paths: &[PathBuf],
+        created: &std::collections::HashSet<PathBuf>,
+        reload: bool,
+    ) -> bool {
         let mut relevant: Vec<&PathBuf> = paths.iter().filter(|p| gate_relevant(p)).collect();
         if relevant.is_empty() {
             return false;
@@ -753,6 +776,9 @@ impl HmrGate {
         }
         let was_empty = inner.pending.is_empty();
         for p in relevant {
+            if created.contains(p) && !inner.pending.contains_key(p) {
+                inner.born.insert(p.clone());
+            }
             inner
                 .pending
                 .entry(p.clone())
@@ -768,6 +794,7 @@ impl HmrGate {
             // flushed after it was armed, the same instant the write-coverage
             // check above compares against.
             let armed = std::time::SystemTime::now();
+            inner.armed = Some(armed);
             let state = Arc::clone(state);
             let max_hold = self.max_hold;
             let rt = state.rt.clone();
@@ -776,7 +803,11 @@ impl HmrGate {
                 if let Some(gate) = &state.hmr_gate {
                     let expired = {
                         let g = gate.inner.lock().unwrap();
-                        !g.pending.is_empty() && g.last_flush.is_none_or(|f| f < armed)
+                        // A hold set emptied without a flush may still have
+                        // a page reload held with it.
+                        let holding = !g.pending.is_empty()
+                            || gate.held_reload.load(std::sync::atomic::Ordering::SeqCst);
+                        holding && g.armed == Some(armed) && g.last_flush.is_none_or(|f| f < armed)
                     };
                     if expired {
                         gate.flush(&state).await;
@@ -799,6 +830,8 @@ impl HmrGate {
                 .swap(false, std::sync::atomic::Ordering::SeqCst);
             inner.empty_flush_at =
                 (inner.pending.is_empty() && !held_reload).then(std::time::Instant::now);
+            inner.born.clear();
+            inner.passed_through.clear();
             (
                 std::mem::take(&mut inner.pending).into_iter().collect(),
                 held_reload,
@@ -843,6 +876,48 @@ impl HmrGate {
                 content.settle(p, crate::Baseline::Flushed);
             }
         }
+    }
+
+    /// `paths` minus the files that came and went without a page seeing
+    /// them: the temporary file of an atomic save, written beside its target
+    /// and renamed over it. Gone now, such a file is left out when this batch
+    /// saw it created (`created`), or when its pending hold began with its
+    /// creation in an earlier batch (the save took longer than the quiet
+    /// window, so the file was held as created and is only now renamed
+    /// away); that hold is dropped. A later event for a path left out this
+    /// way (the rename itself, trailing into the next batch) is left out
+    /// too. A file the server served as a module is
+    /// kept, in either case: a page may have it (a batch lasts as long as
+    /// writes keep coming). So is a file that was there at the last flush,
+    /// one whose creation the gate let through, and one written back over a
+    /// held deletion: the pages know it, and its importers need the reload.
+    pub(crate) fn drop_born_and_gone(
+        &self,
+        content: &ContentIndex,
+        paths: Vec<PathBuf>,
+        created: &std::collections::HashSet<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut inner = self.inner.lock().unwrap();
+        paths
+            .into_iter()
+            .filter(|p| {
+                if std::fs::symlink_metadata(p).is_ok() {
+                    inner.passed_through.remove(p);
+                    return true;
+                }
+                let born_held = inner.born.remove(p) && inner.pending.contains_key(p);
+                let came_and_went =
+                    created.contains(p) || born_held || inner.passed_through.contains(p);
+                let unseen = came_and_went && content.never_served(p);
+                if unseen {
+                    if born_held {
+                        inner.pending.remove(p);
+                    }
+                    inner.passed_through.insert(p.clone());
+                }
+                !unseen
+            })
+            .collect()
     }
 
     /// `paths` minus the files whose content is what the pages have (a
@@ -914,7 +989,7 @@ impl HmrGateHandle {
         let Some(gate) = &self.state.hmr_gate else {
             return false;
         };
-        gate.hold(&self.state, paths, true)
+        gate.hold(&self.state, paths, &Default::default(), true)
     }
 
     /// Whether the gate still holds anything: changes awaiting a flush, or an
@@ -1783,6 +1858,40 @@ mod gate_tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// The rename that takes a temporary file away can be reported a batch
+    /// after the one that saw the file created and already gone: there it
+    /// is no creation, only a path that is gone, and it is left out again.
+    /// A path that was never reported as created is a deletion, and kept.
+    #[test]
+    fn an_event_trailing_a_file_that_came_and_went_is_left_out() {
+        let d = dir("trailing");
+        let (tmp, known) = (d.join("color.js.tmp"), d.join("known.js"));
+        let (gate, content) = (gate(), ContentIndex::default());
+        let created: std::collections::HashSet<PathBuf> = [tmp.clone()].into();
+        let none = std::collections::HashSet::new();
+
+        assert!(gate
+            .drop_born_and_gone(&content, vec![tmp.clone()], &created)
+            .is_empty());
+        assert_eq!(
+            gate.drop_born_and_gone(&content, vec![tmp.clone(), known.clone()], &none),
+            vec![known]
+        );
+
+        // Written again and still there, it is a file like any other, and
+        // its going afterwards is a deletion.
+        std::fs::write(&tmp, "x").unwrap();
+        assert_eq!(
+            gate.drop_born_and_gone(&content, vec![tmp.clone()], &none),
+            vec![tmp.clone()]
+        );
+        std::fs::remove_file(&tmp).unwrap();
+        assert_eq!(
+            gate.drop_born_and_gone(&content, vec![tmp.clone()], &none),
+            vec![tmp]
+        );
     }
 
     #[test]
