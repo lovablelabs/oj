@@ -113,40 +113,61 @@ pub(crate) struct ViteDev {
 }
 
 impl ViteDev {
+    /// Vite's dev server over `root`, up and answering. The port is one the
+    /// system just handed out and let go of, which another test's server
+    /// may take before Vite binds it: Vite (`--strictPort`) then exits while
+    /// that server answers the port, so a listener alone says nothing. The
+    /// server is up when it is this child, still running, that serves
+    /// Vite's own client module; a child that exited is started again on
+    /// another port.
     pub(crate) fn start(root: &Path, config: &str) -> ViteDev {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let child = Command::new("node")
-            .arg(root.join("node_modules/vite/bin/vite.js"))
-            .args(["--host", "127.0.0.1", "--strictPort", "--port"])
-            .arg(port.to_string())
-            .args(["--config", config])
-            .current_dir(root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "vite dev never listened");
-            std::thread::sleep(Duration::from_millis(100));
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let mut child = Command::new("node")
+                .arg(root.join("node_modules/vite/bin/vite.js"))
+                .args(["--host", "127.0.0.1", "--strictPort", "--port"])
+                .arg(port.to_string())
+                .args(["--config", config])
+                .current_dir(root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            loop {
+                assert!(Instant::now() < deadline, "vite dev never listened");
+                if child.try_wait().ok().flatten().is_some() {
+                    // The port was taken, or Vite could not start: again.
+                    break;
+                }
+                let (status, body) = fetch(port, "/@vite/client", 5);
+                // Vite's client module, or Vite's word that the config's
+                // `base` is elsewhere.
+                let vite =
+                    status == 200 && body.contains("vite") || body.contains("public base URL");
+                if vite && child.try_wait().ok().flatten().is_none() {
+                    return ViteDev { child, port };
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
         }
-        ViteDev { child, port }
     }
 
-    /// The status and body of `path`.
+    /// The status and body of `path`. A request that got no answer at all
+    /// (a connection the loaded machine dropped) is made once more.
     pub(crate) fn get(&self, path: &str) -> (u16, String) {
-        let out = Command::new("curl")
-            .args(["-s", "-m", "60", "-w", "\n%{http_code}"])
-            .arg(format!("http://127.0.0.1:{}{path}", self.port))
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        let (body, status) = text.rsplit_once('\n').unwrap_or(("", "0"));
-        (status.trim().parse().unwrap_or(0), body.to_string())
+        let answer = fetch(self.port, path, 60);
+        if answer.0 != 0 {
+            return answer;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        fetch(self.port, path, 60)
     }
 
     /// The imports of `path`, once Vite has served it.
@@ -155,6 +176,19 @@ impl ViteDev {
         assert_eq!(status, 200, "vite dev {path}:\n{body}");
         imports(&body)
     }
+}
+
+/// The status and body of `path` on `port`, 0 for a request that got no
+/// answer within `seconds`.
+fn fetch(port: u16, path: &str, seconds: u32) -> (u16, String) {
+    let out = Command::new("curl")
+        .args(["-s", "-m", &seconds.to_string(), "-w", "\n%{http_code}"])
+        .arg(format!("http://127.0.0.1:{port}{path}"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (body, status) = text.rsplit_once('\n').unwrap_or(("", "0"));
+    (status.trim().parse().unwrap_or(0), body.to_string())
 }
 
 impl Drop for ViteDev {
