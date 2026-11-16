@@ -1591,6 +1591,7 @@ fn merge_adopts_only_unset_fields() {
         assets_include: None,
         active_plugins: None,
         stylex: None,
+        basic_ssl: None,
         editor_hmr_gate: false,
         start_router: None,
         resolve_error: None,
@@ -1650,6 +1651,7 @@ fn merge_never_overrides_config() {
         assets_include: None,
         active_plugins: None,
         stylex: None,
+        basic_ssl: None,
         editor_hmr_gate: false,
         start_router: None,
         resolve_error: None,
@@ -2318,4 +2320,59 @@ fn an_editor_hmr_gate_plugin_turns_the_native_gate_on_unless_oj_config_says_no()
     let mut config = oj_config::OjConfig::default();
     merge_vite_values(&mut config, parse_vite_values(&serde_json::json!({})));
     assert_eq!(config.server.as_ref().and_then(|s| s.hmr_gate), None);
+}
+
+#[test]
+fn basic_ssl_installs_as_the_plugins_hook_assigns_unless_https_is_off_or_oj_named_a_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let listed = serde_json::json!({ "basicSsl": { "options": {} } });
+    let mut config = oj_config::OjConfig::default();
+    let v = parse_vite_values(&listed);
+    assert!(basic_ssl_applies(&config, &v));
+    merge_vite_values(&mut config, v);
+    install_basic_ssl_certificate(&mut config, dir.path());
+    let made = config.server.as_ref().unwrap().https.clone().unwrap();
+    assert!(made.cert.contains("-----BEGIN CERTIFICATE-----"));
+
+    // `server.https: false` in the vite.config: the hook leaves it off.
+    let v = parse_vite_values(
+        &serde_json::json!({ "basicSsl": { "options": {} }, "serverFlags": { "https": false } }),
+    );
+    assert!(!basic_ssl_applies(&oj_config::OjConfig::default(), &v));
+    let mut config = oj_config::OjConfig::default();
+    merge_vite_values(&mut config, v);
+    assert!(config.server.as_ref().is_none_or(|s| s.https.is_none()));
+
+    // A pair the vite.config names is assigned over, as under Vite.
+    let v = parse_vite_values(&serde_json::json!({
+        "basicSsl": { "options": {} },
+        "serverFlags": { "https": { "key": "k", "cert": "c" } }
+    }));
+    let mut config = oj_config::OjConfig::default();
+    assert!(basic_ssl_applies(&config, &v));
+    merge_vite_values(&mut config, v);
+    assert_eq!(
+        config.server.as_ref().unwrap().https.as_ref().unwrap().cert,
+        "c"
+    );
+    install_basic_ssl_certificate(&mut config, dir.path());
+    assert_eq!(
+        config.server.as_ref().unwrap().https.as_ref().unwrap().cert,
+        made.cert,
+        "the kept file"
+    );
+
+    // A pair in oj's own config is outside Vite's reach and stays.
+    let mut config = oj_config::OjConfig::default();
+    config.server.get_or_insert_with(Default::default).https = Some(oj_config::HttpsConfig {
+        key: "k".into(),
+        cert: "c".into(),
+    });
+    assert!(!basic_ssl_applies(&config, &parse_vite_values(&listed)));
+
+    // Not listed: nothing applies.
+    assert!(!basic_ssl_applies(
+        &oj_config::OjConfig::default(),
+        &parse_vite_values(&serde_json::json!({}))
+    ));
 }

@@ -13,6 +13,9 @@ pub(crate) struct OjPublicPaths {
     pub(crate) client: String,
     pub(crate) refresh_runtime: String,
     pub(crate) refresh_preamble: String,
+    /// Where a served module's source map answers (`/@oj/map`, see
+    /// `serve::serve_source_map`).
+    pub(crate) source_map: String,
     /// The served runtime, importing the client first: Vite's import analysis
     /// adds `import { injectQuery } from clientPublicPath` for the runtime's
     /// non-literal `import()`, so a preamble-only page (TanStack Start's dev
@@ -40,6 +43,7 @@ impl OjPublicPaths {
         );
         OjPublicPaths {
             refresh_preamble: at("/@oj/refresh-preamble.js"),
+            source_map: at("/@oj/map"),
             react_refresh_js: Bytes::from(react_refresh_js),
             refresh_runtime_js: Bytes::from(refresh_runtime_js),
             refresh_preamble_js: Bytes::from(refresh_preamble_js),

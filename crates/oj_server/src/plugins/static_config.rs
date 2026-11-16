@@ -5,9 +5,10 @@
 //! oj's native plugins plus plain values starts no JS engine at all.
 //!
 //! The accepted shape is narrow on purpose: imports of `vite`'s
-//! `defineConfig`, `@vitejs/plugin-react`, `@stylexjs/unplugin` and `path`,
-//! then `export default` of an object (or `defineConfig({...})`) holding
-//! `plugins: [react(), stylex.vite({...})]`, `server.port`, `server.host`,
+//! `defineConfig`, `@vitejs/plugin-react`, `@stylexjs/unplugin`,
+//! `@vitejs/plugin-basic-ssl` and `path`, then `export default` of an object
+//! (or `defineConfig({...})`) holding `plugins: [react(), stylex.vite({...}),
+//! basicSsl({...})]`, `server.port`, `server.host`,
 //! `resolve.alias` and the inert `logLevel` / `clearScreen`. Anything else
 //! (another statement, a function config, a spread, an env read) returns None
 //! and the config is evaluated on an engine as before.
@@ -104,6 +105,11 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
             return Err(reason);
         }
     }
+    // Any version: oj stands in for the whole package. Absent, the import
+    // fails in evaluation as it does under Vite, instead of serving TLS.
+    if config.basic_ssl.is_some() && installed_version(root, "@vitejs/plugin-basic-ssl").is_none() {
+        return Err("@vitejs/plugin-basic-ssl is not installed".into());
+    }
     let allow = fs_allow(root)?;
 
     let malformed = || "the template is malformed".to_string();
@@ -141,6 +147,13 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
         "stylex".into(),
         config
             .stylex
+            .map(|options| serde_json::json!({ "options": options }))
+            .unwrap_or(Value::Null),
+    );
+    fields.insert(
+        "basicSsl".into(),
+        config
+            .basic_ssl
             .map(|options| serde_json::json!({ "options": options }))
             .unwrap_or(Value::Null),
     );
@@ -197,6 +210,8 @@ struct LiteralConfig {
     alias: Map<String, Value>,
     /// `stylex.vite(options)`'s options, when the plugin is listed.
     stylex: Option<Value>,
+    /// `basicSsl(options)`'s options, when the plugin is listed.
+    basic_ssl: Option<Value>,
 }
 
 /// Local names the config's imports bound.
@@ -205,6 +220,7 @@ struct Bindings {
     define_config: Option<String>,
     react: Option<String>,
     stylex: Option<String>,
+    basic_ssl: Option<String>,
     path: Option<String>,
 }
 
@@ -267,6 +283,9 @@ fn bind_import(
         }
         ("@stylexjs/unplugin", ImportDeclarationSpecifier::ImportDefaultSpecifier(_)) => {
             &mut bindings.stylex
+        }
+        ("@vitejs/plugin-basic-ssl", ImportDeclarationSpecifier::ImportDefaultSpecifier(_)) => {
+            &mut bindings.basic_ssl
         }
         (
             "path" | "node:path",
@@ -393,6 +412,17 @@ fn read_plugins(value: &Expression, bindings: &Bindings, config: &mut LiteralCon
         };
         if is_binding(&call.callee, &bindings.react) && call.arguments.is_empty() && !config.react {
             config.react = true;
+            continue;
+        }
+        if is_binding(&call.callee, &bindings.basic_ssl) {
+            if config.basic_ssl.is_some() {
+                return None;
+            }
+            config.basic_ssl = Some(match call.arguments.as_slice() {
+                [] => Value::Object(Map::new()),
+                [Argument::ObjectExpression(obj)] => json_object(obj)?,
+                _ => return None,
+            });
             continue;
         }
         let Expression::StaticMemberExpression(member) = &call.callee else {
@@ -714,6 +744,45 @@ mod tests {
         .is_some_and(|r| r.starts_with("config is outside the literal shape")));
         let literal = format!("{react}export default {{ plugins: [react()] }};\n");
         assert_eq!(decline(&literal), None);
+        let ssl = "import basicSsl from \"@vitejs/plugin-basic-ssl\";\n";
+        assert_eq!(
+            decline(&format!(
+                "{react}{ssl}export default {{ plugins: [react(), basicSsl()] }};\n"
+            ))
+            .as_deref(),
+            Some("@vitejs/plugin-basic-ssl is not installed")
+        );
+        install(&root, "@vitejs/plugin-basic-ssl", "2.3.0");
+        assert!(decline(&format!(
+            "{react}{ssl}export default {{ plugins: [react(), basicSsl(opts)] }};\n"
+        ))
+        .is_some_and(|r| r.starts_with("config is outside the literal shape")));
+        assert_eq!(
+            decline(&format!(
+                "{react}{ssl}export default {{ plugins: [basicSsl({{ name: \"dev.local\", domains: [\"dev.local\"], ttlDays: 90 }}), react()] }};\n"
+            )),
+            None
+        );
+        let out = read_static(&root, &config, "serve", "development").unwrap();
+        assert_eq!(
+            out.get("basicSsl"),
+            Some(
+                &serde_json::json!({ "options": { "name": "dev.local", "domains": ["dev.local"], "ttlDays": 90 } })
+            ),
+            "basicSsl's literal options cross as the extractor's `basicSsl`"
+        );
+        assert_eq!(
+            decline(&format!(
+                "{react}{ssl}export default {{ plugins: [react(), basicSsl()] }};\n"
+            )),
+            None
+        );
+        assert_eq!(
+            read_static(&root, &config, "serve", "development")
+                .unwrap()
+                .get("basicSsl"),
+            Some(&serde_json::json!({ "options": {} }))
+        );
         let out = read_static(&root, &config, "serve", "development").unwrap();
         assert_eq!(
             out.get("assetsInclude"),

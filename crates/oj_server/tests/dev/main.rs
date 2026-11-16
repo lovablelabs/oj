@@ -11,6 +11,7 @@
 mod alias_order;
 mod assets;
 mod assets_include;
+mod basic_ssl;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
@@ -110,6 +111,7 @@ mod tailwind_js_import;
 mod tailwind_postcss_imports;
 mod tailwind_sheet_stale;
 mod tailwind_v4_persistent;
+mod transport;
 mod tsconfig_module;
 mod unresolved_bare;
 mod vite_dep_paths;
@@ -326,7 +328,17 @@ impl Server {
     }
 
     /// Sends `req` with `Host: localhost` unless it carries its own.
-    pub async fn request(&self, mut req: Request<Body>) -> Response {
+    pub async fn request(&self, req: Request<Body>) -> Response {
+        let (status, headers, body) = self.request_bytes(req).await;
+        Response {
+            status,
+            headers,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        }
+    }
+
+    /// [`Self::request`] with the body's bytes as sent (a compressed one).
+    pub async fn request_bytes(&self, mut req: Request<Body>) -> (u16, HeaderMap, Vec<u8>) {
         if !req.headers().contains_key("host") {
             req.headers_mut()
                 .insert("host", "localhost".parse().unwrap());
@@ -337,11 +349,7 @@ impl Server {
         let body = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
-        Response {
-            status,
-            headers,
-            body: String::from_utf8_lossy(&body).into_owned(),
-        }
+        (status, headers, body.to_vec())
     }
 
     /// GET that must answer 200; returns the body.

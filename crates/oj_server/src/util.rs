@@ -143,6 +143,21 @@ pub(crate) fn canonicalize_memo(state: &ServerState, p: &str) -> PathBuf {
     }
 }
 
+/// `encodeURIComponent` less `/`: a module url as one query value, which
+/// [`urldecode`] reads back (its `?`, `&`, `=`, `%` and `+` escaped).
+pub(crate) fn urlencode_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub(crate) fn urldecode(input: &str) -> String {
     let bytes = input.as_bytes();
     let nibble = |b: u8| (b as char).to_digit(16).map(|d| d as u8);

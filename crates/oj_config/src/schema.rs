@@ -65,6 +65,11 @@ pub struct OjConfig {
     /// `{ options }`, the object its `stylex.vite(...)` call received.
     #[serde(skip)]
     pub vite_stylex: Option<serde_json::Value>,
+    /// The config's `@vitejs/plugin-basic-ssl`, from extraction (not a config
+    /// key): `{ options }`, the object its `basicSsl(...)` call received. oj
+    /// makes the plugin's certificate itself (oj_server's basic_ssl).
+    #[serde(skip)]
+    pub vite_basic_ssl: Option<serde_json::Value>,
     /// The paths TanStack Start's router generator ran with when the app's
     /// config resolved, from extraction (not a config key). See
     /// `start_route_tree`.

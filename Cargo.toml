@@ -116,6 +116,7 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["compression-gzip"] }
 # oj-maintained fork of notify 9.0.0-rc.6 (published to crates.io under this
 # name), carrying the unreleased upstream FSEvents fix that keeps pending
 # events across watch changes. See crates/oj_notify/README.md.

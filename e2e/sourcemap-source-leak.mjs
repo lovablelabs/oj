@@ -75,6 +75,11 @@ try {
   if (dep.status !== 200) throw new Error(`dep module returned ${dep.status} for ${depUrl}`);
 
   const suspects = [dep.text, ...inlineMaps(dep.text)];
+  // The map oj serves beside a module (`sourceMappingURL=/@oj/map?u=…&k=…`).
+  for (const [, u] of dep.text.matchAll(/sourceMappingURL=(?!data:)(\S+)/g)) {
+    const m = await get(u.startsWith("/") ? u : `/${u}`);
+    if (m.status === 200) suspects.push(m.text);
+  }
   // A separately served .map beside the module, if the server exposes one.
   for (const cand of [`${depUrl}.map`, depUrl.replace(/\.js(\?|$)/, ".js.map$1")]) {
     try {

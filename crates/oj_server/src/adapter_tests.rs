@@ -178,6 +178,22 @@ fn locate_prefers_root_then_public_dir() {
 // --- adverse: request paths are attacker-shaped strings ---
 
 #[test]
+fn urlencode_component_round_trips_through_urldecode() {
+    for url in [
+        "/src/main.js",
+        "/src/a b.tsx?import&v=1",
+        "/@id/__x00__/page?html-proxy&index=0.js",
+        "/src/%41.js",
+        "/src/ü.js",
+        "/src/a+b.js",
+    ] {
+        let enc = urlencode_component(url);
+        assert!(!enc.contains(['?', '&', '=', '+', ' ']), "{url} -> {enc}");
+        assert_eq!(urldecode(&enc), url);
+    }
+}
+
+#[test]
 fn urldecode_handles_every_malformed_escape() {
     assert_eq!(urldecode("plain/path.tsx"), "plain/path.tsx");
     assert_eq!(urldecode("a%20b"), "a b");

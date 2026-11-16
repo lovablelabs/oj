@@ -5,7 +5,8 @@
 //! of evaluating it with Vite on a JS engine. Its output must equal the
 //! engine's, field for field, or a boot without an engine serves a different
 //! config. Runs against e2e/fixtures/stylex-app's installed Vite,
-//! `@vitejs/plugin-react` and `@stylexjs/unplugin` (`npm ci` there); skips
+//! `@vitejs/plugin-react`, `@stylexjs/unplugin` and `@vitejs/plugin-basic-ssl`
+//! (`npm ci` there); skips
 //! without them unless `OJ_REQUIRE_FIXTURES` is set.
 
 use std::path::{Path, PathBuf};
@@ -123,6 +124,25 @@ export default {
   plugins: [react(), stylex.vite({ lightningcssOptions: { targets: { chrome: 6225920 } } })],
   resolve: { alias: { "@/": "/abs/src/", "~": "/abs/lib/", "@": "/abs/other" } },
 };
+"#,
+    ),
+    (
+        "basic-ssl with options, and without",
+        "vite.config.mjs",
+        r#"import basicSsl from "@vitejs/plugin-basic-ssl";
+import react from "@vitejs/plugin-react";
+import stylex from "@stylexjs/unplugin";
+export default {
+  plugins: [react(), stylex.vite(), basicSsl({ name: "dev.local", domains: ["dev.local"], ttlDays: 90 })],
+};
+"#,
+    ),
+    (
+        "basic-ssl without options",
+        "vite.config.mjs",
+        r#"import basicSsl from "@vitejs/plugin-basic-ssl";
+import react from "@vitejs/plugin-react";
+export default { plugins: [basicSsl(), react()] };
 "#,
     ),
 ];
