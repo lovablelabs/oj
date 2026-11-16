@@ -11,6 +11,7 @@ mod start_dev;
 mod start_host;
 mod start_hot;
 mod start_reloads;
+mod start_routes;
 mod stylex_plugin;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates

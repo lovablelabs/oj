@@ -80,6 +80,21 @@ oj build web                                     # production build
 
 Dev serves file-based routes with streaming SSR and client hydration, keeps Fast Refresh working, runs server functions in the module runner, and applies the app's `vite.config` plugins (React and the app's own). `oj build` emits a Node `server.mjs`, a Cloudflare `worker.mjs` (`nodejs_compat`), content-hashed client assets, and prerendered routes. oj's own docs site (`www/`) is a TanStack Start app built by oj and served from a Cloudflare Worker.
 
+In dev, `GET /@oj/tanstack/routes.json` lists the app's routes, for a tool beside the page that offers them (a preview's route picker). oj reads them from the generated route tree (`routeTree.gen.ts`) each time it is asked, so a route file added or removed shows up as soon as the router generator has rewritten the tree:
+
+```json
+{
+  "routes": [
+    { "path": "/", "id": "/", "file": "src/routes/index.tsx" },
+    { "path": "/dash", "id": "/_layout/dash", "file": "src/routes/_layout/dash.tsx" },
+    { "path": "/files/$", "id": "/files/$", "file": "src/routes/files.$.tsx", "params": ["_splat"] },
+    { "path": "/posts/$postId", "id": "/posts/$postId", "file": "src/routes/posts.$postId.tsx", "params": ["postId"] }
+  ]
+}
+```
+
+`path` is the full path the router matches, `id` the route id (they differ under a pathless layout or a route group), `file` the route's source relative to the app root, and `params` the dynamic segments of `path` in order, left out when there are none (a splat is `_splat`, an optional `{-$locale}` is `locale`). Routes are sorted by `path`. A pathless layout route and the root have no path of their own and are not listed; an index route under a layout is listed beside it, as `/posts/` next to `/posts`. An app with no generated tree yet, or whose routes are code-based, answers `{"routes":[]}`. `oj build` and apps that are not TanStack Start have no such URL.
+
 ## Type checking
 
 `oj typecheck` is `tsc` on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj typecheck` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
