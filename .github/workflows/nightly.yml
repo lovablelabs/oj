@@ -47,7 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Restores nothing useful and saves nothing: no job on main saves a debug
+      # test build, and one saved here would push main's caches past the
+      # repository's 10 GB limit (see ci.yml).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
       # These are `#[ignore]`d because they abort the test binary on purpose
       # (see docs/development/testing.md). Nightly runs them so a change
       # upstream that fixes -- or worsens -- one of them is noticed.

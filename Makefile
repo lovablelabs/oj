@@ -7,6 +7,8 @@ JS_FILES = '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'
 # fetched into .tools/ on first use; no Node or npm needed. Run inside the
 # recipe so a failed download or checksum fails the target.
 OXFMT = oxfmt="$$(tools/fetch-oxfmt.sh)" && "$$oxfmt"
+# The pinned cargo-nextest release binary, fetched the same way.
+NEXTEST = nextest="$$(tools/fetch-nextest.sh)" && "$$nextest" nextest
 
 lint:
 	cargo fmt -- --check --color always
@@ -17,4 +19,11 @@ fmt:
 	cargo fmt
 	$(OXFMT) $(JS_FILES)
 
-.PHONY: lint fmt
+# The whole Rust suite: nextest runs the test binaries side by side (see
+# .config/nextest.toml), which `cargo test` runs one after another; it does
+# not run doctests, so those keep `cargo test`.
+test:
+	$(NEXTEST) run --workspace --no-fail-fast
+	cargo test --workspace --doc
+
+.PHONY: lint fmt test
