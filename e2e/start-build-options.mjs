@@ -11,7 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -72,28 +72,110 @@ try {
     throw new Error("server.mjs does not know the base");
   }
 
-  // The server bundle's manifest must carry the shape UNION across
-  // start-server-core versions: 1.167 and earlier build the client entry
-  // script tag from the top-level `clientEntry` (a missing field renders
-  // `import(undefined)` and a page that never hydrates) and read css from
-  // per-route `assets`; 1.168+ read per-route `scripts`/`css`. The manifest is
-  // the installed Start's own, and oj's wrapper (`manifest-sheets.ts`) adds
-  // the sheets and `clientEntry` when the module returns none: either shape
-  // may be baked (a JSON field, or the wrapper's `clientEntry = "<url>"` and
-  // `root.assets = [...]`), in any emitted server chunk, not one file by name.
-  const serverChunks = fs
-    .readdirSync(out, { recursive: true })
-    .filter((f) => String(f).endsWith(".mjs"))
-    .map((f) => fs.readFileSync(path.join(out, String(f)), "utf8"));
-  const clientEntryUrl = `"/app/assets/${clientJs.replace(/[.$]/g, "\\$&")}"`;
-  for (const [key, field] of [
-    ["clientEntry", new RegExp(`clientEntry[^\\n]*${clientEntryUrl}`)],
-    ["assets", /"assets"\s*:|\.assets\s*=/],
-  ]) {
-    if (!serverChunks.some((code) => field.test(code))) {
-      throw new Error(`the baked server manifest lost the pre-1.168 ${key} field`);
-    }
+  // The manifest the built server renders from, called as the server calls
+  // it. It is the installed Start's own, as under `vite build`: the root
+  // route's `preloads` and `scripts` name the client entry, which is what
+  // start-server-core reads from 1.168 on. Start's manifest names no
+  // stylesheet of oj's, so oj's wrapper (`manifest-sheets.ts`) adds the
+  // client's sheets to the root route's `css`, and, for start-server-core
+  // 1.167 and earlier, the fields those read: the top-level `clientEntry` (a
+  // missing one renders `import(undefined)` and a page that never hydrates)
+  // and the sheets as link tags in the root route's `assets`.
+  const clientUrl = `/app/assets/${clientJs}`;
+  const manifests = [];
+  for (const file of fs.readdirSync(out, { recursive: true }).map(String)) {
+    if (!file.endsWith(".mjs") || file.startsWith("client")) continue;
+    const full = path.join(out, file);
+    if (!/export\s*\{[^}]*\btsrStartManifest\b/.test(fs.readFileSync(full, "utf8"))) continue;
+    manifests.push((await import(pathToFileURL(full).href)).tsrStartManifest);
   }
+  if (manifests.length !== 1) {
+    throw new Error(`expected one server chunk exporting tsrStartManifest, found ${manifests.length}`);
+  }
+  const manifest = manifests[0]();
+  const root = manifest.routes?.__root__;
+  if (!root) throw new Error("the server manifest has no root route:\n" + JSON.stringify(manifest, null, 2));
+  const shown = () => "\n" + JSON.stringify({ ...manifest, routes: { __root__: root } }, null, 2);
+  if (!root.preloads?.includes(clientUrl))
+    throw new Error("the root route does not preload the client entry" + shown());
+  const entryScript = root.scripts?.find((script) => script.attrs?.src === clientUrl);
+  if (entryScript?.attrs.type !== "module") {
+    throw new Error("the root route has no module script for the client entry" + shown());
+  }
+  const sheets = fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => `/app/assets/${f}`);
+  if (sheets.length === 0) throw new Error("the fixture built no stylesheet");
+  const hrefs = (root.css ?? []).map((sheet) => (typeof sheet === "string" ? sheet : sheet?.href));
+  for (const href of hrefs) {
+    if (!sheets.includes(href))
+      throw new Error(`the root route links ${href}, which the build did not write` + shown());
+  }
+  if (hrefs.length === 0) throw new Error("the root route links no stylesheet" + shown());
+  if (new Set(hrefs).size !== hrefs.length) throw new Error("the root route links a stylesheet twice" + shown());
+  // The pre-1.168 fields.
+  if (manifest.clientEntry !== clientUrl) throw new Error("the manifest lost the pre-1.168 clientEntry" + shown());
+  const tagged = (root.assets ?? [])
+    .filter((asset) => asset.tag === "link" && asset.attrs?.rel === "stylesheet")
+    .map((asset) => asset.attrs.href);
+  if (JSON.stringify(tagged) !== JSON.stringify(hrefs)) {
+    throw new Error("the root route's pre-1.168 assets are not its stylesheets" + shown());
+  }
+  // A second call starts from Start's manifest again: nothing piles up.
+  const again = manifests[0]().routes.__root__;
+  if (again.css.length !== hrefs.length || again.assets.length !== root.assets.length) {
+    throw new Error("a second call of the manifest added the stylesheets again");
+  }
+
+  // The wrapper over what other Start versions return, as the build wrote
+  // it: its import of Start's manifest swapped for each shape in turn.
+  const wrapperFile = path.join(app, ".oj-cache", "v1", "start", "manifest-sheets.ts");
+  const wrapper = fs.readFileSync(wrapperFile, "utf8");
+  const importLine = /^import \{ tsrStartManifest as startManifest \} from "tanstack-start-manifest:v";\n/;
+  if (!importLine.test(wrapper)) throw new Error("the manifest wrapper no longer imports Start's manifest by its id");
+  const wrapped = async (startManifest) => {
+    const code = wrapper.replace(importLine, `const startManifest = () => (${JSON.stringify(startManifest)});\n`);
+    const mod = await import("data:text/javascript," + encodeURIComponent(code));
+    return mod.tsrStartManifest();
+  };
+  const link = (href) => ({ tag: "link", attrs: { rel: "stylesheet", href } });
+  const same = (got, want, what) => {
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      throw new Error(`the manifest wrapper, ${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+    }
+  };
+  // A manifest with nothing in it (no Start plugin answered).
+  const bare = await wrapped({});
+  same(bare.clientEntry, clientUrl, "over an empty manifest, clientEntry");
+  same(bare.routes.__root__.css, hrefs, "over an empty manifest, css");
+  same(bare.routes.__root__.assets, hrefs.map(link), "over an empty manifest, assets");
+  // 1.167 and earlier: its own clientEntry and assets, kept as they are; a
+  // sheet it already tagged is not tagged twice.
+  const older = await wrapped({
+    clientEntry: "/app/assets/its-own.js",
+    routes: {
+      __root__: { assets: [link(hrefs[0]), { tag: "meta", attrs: { name: "x" } }] },
+      "/about": { preloads: ["/a.js"] },
+    },
+  });
+  same(older.clientEntry, "/app/assets/its-own.js", "over a manifest with a clientEntry");
+  same(
+    older.routes.__root__.assets,
+    [link(hrefs[0]), { tag: "meta", attrs: { name: "x" } }, ...hrefs.slice(1).map(link)],
+    "over a manifest that tagged a sheet, assets",
+  );
+  same(older.routes["/about"], { preloads: ["/a.js"] }, "another route");
+  // 1.168 on: css as hrefs or as objects, and a sheet it already links.
+  const newer = await wrapped({
+    routes: { __root__: { css: [{ href: hrefs[0] }, "/app/assets/theirs.css"], preloads: [clientUrl] } },
+  });
+  same(
+    newer.routes.__root__.css,
+    [{ href: hrefs[0] }, "/app/assets/theirs.css", ...hrefs.slice(1)],
+    "over a manifest that links a sheet, css",
+  );
+  same(newer.routes.__root__.preloads, [clientUrl], "the root route's preloads");
 
   const port = 6510;
   const srv = spawn("node", [path.join(out, "server.mjs")], {
@@ -108,6 +190,17 @@ try {
     if (home.status !== 200) throw new Error(`/ returned ${home.status}`);
     if (!html.includes(`src="/app/assets/${clientJs}"`)) {
       throw new Error("the rendered page does not load the client entry under the base:\n" + html.slice(0, 800));
+    }
+    // What the server made of the manifest: the entry's preload and every
+    // stylesheet of the root route, linked once.
+    if (!new RegExp(`<link[^>]*rel="modulepreload"[^>]*href="${clientUrl.replace(/[.$]/g, "\\$&")}"`).test(html)) {
+      throw new Error("the rendered page does not preload the client entry:\n" + html.slice(0, 800));
+    }
+    for (const href of hrefs) {
+      const links = html.split(`rel="stylesheet" href="${href}"`).length - 1;
+      if (links !== 1) throw new Error(`the rendered page links ${href} ${links} times:\n` + html.slice(0, 800));
+      const sheet = await fetch(`http://localhost:${port}${href}`);
+      if (sheet.status !== 200) throw new Error(`${href} returned ${sheet.status}`);
     }
     if (/(?:src|href)="\/assets\//.test(html)) throw new Error("an asset URL was emitted without the base prefix");
     const asset = await fetch(`http://localhost:${port}/app/assets/${clientJs}`);

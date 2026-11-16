@@ -167,7 +167,20 @@ const waitFrames = async (conn, n, ms = 5000) => {
 
 const port = 5488;
 let failed = false;
-const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
+// Its own process group: the plugin host goes down with it.
+const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", detached: true });
+const exited = new Promise((resolve) => srv.once("exit", resolve));
+const stop = async () => {
+  const signal = (name) => {
+    try {
+      process.kill(-srv.pid, name);
+    } catch {}
+  };
+  signal("SIGTERM");
+  const kill = setTimeout(() => signal("SIGKILL"), 3000);
+  await exited;
+  clearTimeout(kill);
+};
 try {
   await waitUp(`http://localhost:${port}/`);
 
@@ -241,11 +254,12 @@ try {
   failed = true;
   console.error(e);
 } finally {
-  srv.kill();
+  // The app is removed once the server and its plugin host are gone: left
+  // running, they were still writing the cache as it went (`ENOTEMPTY`). A
+  // child that outlives the group's signal is what the retries are for.
+  await stop();
   upstream.close();
   httpUpstream.close();
-  // The server and its plugin host may still be writing the cache as they
-  // go down: retried, as the other scripts remove their apps.
   fs.rmSync(app, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 process.exit(failed ? 1 : 0);
