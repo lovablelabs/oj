@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start, what a chunk group's function is told of a module, after 0.4.14's work on `codeSplitting` functions:
+  - A module's `meta` is one object, the same a plugin gets from `this.getModuleInfo(id)` and in `moduleParsed` and a group's `name` (or `manualChunks`) gets from `getModuleInfo(id)`, as in rolldown. 0.4.14 gave the group an object of its own, so a plugin tagging `info.meta` in `moduleParsed` or through `this.getModuleInfo` was not seen by the function, in dev or in a build, and what `resolveId` said of a module was not seen by the plugin's later hooks.
+  - A plugin host respawned by the chunking call itself is noticed: the call's answer came from an engine that knew nothing of the bundle, so the pass is started over and a function reading `meta` or `moduleSideEffects` is told they are gone. It was answered with an empty `meta`, and named chunks by it.
+  - After a respawn the dev client's hot session starts over, so every hook runs again on the engine there is and the next bundle is whole. The session went on rebuilding only what changed, and a group that reads `meta` stepped aside for as long as the session lived.
+- `oj build` of a TanStack Start app closes a worker bundle's plugin container when the worker cannot read its config or the build is cancelled under it. 0.4.14 left it on the plugin host.
+- TanStack Start dev: a bundle that cannot read its config leaves no bundler-resolve route (and the task waiting on it) behind for the container it opened, and a container discarded while the plugin host was down is dropped by the engine that comes up.
+
 ## [0.4.14] - 2026-11-16
 
 ### Added

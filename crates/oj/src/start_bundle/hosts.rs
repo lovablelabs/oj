@@ -145,7 +145,7 @@ impl Drop for ContainerGuard {
         };
         if let Some(runtime) = host.runtime().cloned() {
             runtime.spawn(async move {
-                host.discard_environment_container().await;
+                let _ = host.close_container().await;
             });
         }
     }
@@ -187,7 +187,7 @@ impl BundleHost {
         let facts = match host.start_facts().await {
             Ok(facts) => Facts::from_json(&facts),
             Err(e) => {
-                host.discard_environment_container().await;
+                let _ = host.close_container().await;
                 return Err(anyhow::anyhow!("the worker plugin container: {e}"));
             }
         };
@@ -418,6 +418,47 @@ mod tests {
             .host
             .hook_wants_transform(&root.join("src/a.md").display().to_string(), "# a"));
         worker.close_worker().await.expect("closed");
+    }
+
+    // A worker bundle dropped before it finished (a build cancelled under
+    // it) closes its container on the host: the guard taken for it does, and
+    // a guard disarmed for a bundle that closed its own does nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_worker_bundle_dropped_midway_closes_its_container() {
+        let root = app(
+            "worker-dropped",
+            "export default [{ name: \"app-all\", transform(code) { return code; } }];\n",
+        );
+        let client = client_host(&root).await;
+        let open = |file: &str| {
+            let (client, chain) = (client.clone(), [root.join(file)]);
+            async move { client.worker(&chain).await.expect("a worker container") }
+        };
+        let answers = |worker: &BundleHost| {
+            let host = Arc::clone(&worker.host);
+            async move { host.start_facts().await.is_ok() }
+        };
+
+        let kept = open("src/kept.ts").await;
+        let mut disarmed = kept.close_on_drop();
+        disarmed.disarm();
+        drop(disarmed);
+        let dropped = open("src/dropped.ts").await;
+        assert!(answers(&dropped).await);
+        drop(dropped.close_on_drop());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while answers(&dropped).await {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped worker's container still answers"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(answers(&kept).await, "the disarmed guard closed nothing");
+        assert!(client.host.start_facts().await.is_ok());
+        kept.close_worker().await.expect("closed");
+        assert!(!answers(&kept).await);
+        client.host.shutdown();
     }
 
     // A normal transform's `filter.code` is tested on the code after Vite's

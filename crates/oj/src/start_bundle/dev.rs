@@ -388,11 +388,21 @@ impl DevBundler {
         // engine compiled predate the epoch, and a partial is no module of
         // its graph at all. A fresh engine compiles them anew. One that
         // compiled no sheet keeps running.
+        // The plugin host's engine was respawned: what its hooks said of the
+        // session's modules (`meta`, which a chunk group may name by) went
+        // with it, and the session rebuilds only what changes. A fresh one
+        // runs every hook on the engine there is.
+        let host_engine = host.map_or(0, |h| h.host.engine_generation());
         let stale = session.as_ref().is_some_and(|s| {
-            !hot || (s.epoch != epoch
-                && s.styles
-                    .compiled_sheets
-                    .load(std::sync::atomic::Ordering::SeqCst))
+            session_stale(
+                hot,
+                s.epoch != epoch
+                    && s.styles
+                        .compiled_sheets
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                s.host_engine,
+                host_engine,
+            )
         });
         if stale {
             if let Some(old) = session.take() {
@@ -450,6 +460,8 @@ impl DevBundler {
                 || self.pages(),
             )
             .await?;
+            let mut live = live;
+            live.host_engine = host_engine;
             *session = Some(live);
         }
         let live = session.as_ref().expect("a live session");
@@ -761,6 +773,13 @@ enum Run {
     Output { files: usize },
 }
 
+/// Whether a hot session is done for: the bundle is no longer hot, a style
+/// input moved under sheets the session compiled, or the plugin host's
+/// engine is another than the one the session's hooks ran on.
+fn session_stale(hot: bool, styles_moved: bool, engine_then: u64, engine_now: u64) -> bool {
+    !hot || styles_moved || engine_then != engine_now
+}
+
 /// The app's client externals as a predicate over specifiers: strings,
 /// RegExps, and the specifiers a function external answered true for when
 /// the bundle resolved them (`kept`).
@@ -1070,6 +1089,23 @@ impl PageSockets {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // A hot session lives while the bundle is hot, its sheets stand and the
+    // plugin host's engine is the one its hooks ran on. A respawned engine
+    // knows none of what they said of the modules, and the session would
+    // rebuild only what changes: it starts over, and the bundle after a
+    // respawn is whole again.
+    #[test]
+    fn a_hot_session_ends_with_the_engine_its_hooks_ran_on() {
+        assert!(!super::session_stale(true, false, 2, 2));
+        assert!(super::session_stale(true, false, 2, 3), "respawned");
+        assert!(
+            super::session_stale(true, true, 2, 2),
+            "a style input moved"
+        );
+        assert!(super::session_stale(false, false, 2, 2), "no longer hot");
+        assert!(!super::session_stale(true, false, 0, 0), "no plugin host");
+    }
+
     use super::*;
 
     /// Engine calls run in the order they were queued, however long each

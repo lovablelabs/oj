@@ -361,6 +361,13 @@ fn chunk_pass(fresh: bool, then: u64, now: u64) -> ChunkPass {
     }
 }
 
+/// Whether a `name` batch is sent again from its pass's start: the engine
+/// refused it (`stale`), or was respawned while the call was out (`before`
+/// and `after`, the engine's generation around it).
+fn starts_over(stale: bool, before: u64, after: u64) -> bool {
+    stale || before != after
+}
+
 fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn> {
     Arc::new(move |ids: Vec<String>, ctx: &ChunkingContext| {
         let batch = infos_to_send(&ids, ctx);
@@ -385,13 +392,16 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
                 }
             };
             let generation = batch.generation;
+            let before = host.engine_generation();
             let mut answer = call(batch).await;
-            // The engine was respawned since the pass started: once more,
-            // from the pass's start.
-            if answer
+            // The engine was respawned since the pass started, as its
+            // refusal says, or by this very call, which then ran on an
+            // engine that knows nothing of the bundle and was not told so:
+            // once more, from the pass's start, on the engine as it is.
+            let stale = answer
                 .as_ref()
-                .is_err_and(|e| e.contains(oj_server::plugins::STALE_CHUNK_INFOS))
-            {
+                .is_err_and(|e| e.contains(oj_server::plugins::STALE_CHUNK_INFOS));
+            if starts_over(stale, before, host.engine_generation()) {
                 forget_sent(generation);
                 answer = call(infos_to_send(&ids, &ctx)).await;
             }
@@ -607,6 +617,21 @@ mod tests {
         assert_eq!(chunk_pass(false, 3, 3), ChunkPass::Continue);
         assert_eq!(chunk_pass(false, 3, 4), ChunkPass::Continue);
         assert_eq!(Guard::new("vendor".into(), true, 7).engine, 7);
+    }
+
+    // A batch goes out again from its pass's start when the engine refused
+    // it, and when the engine was respawned under the call: the answer then
+    // came from an engine told nothing of the bundle. Sent again, the batch
+    // starts the pass with the hooks' word gone, since the engine is no
+    // longer the bundle's.
+    #[test]
+    fn a_batch_whose_call_respawned_the_engine_starts_the_pass_over() {
+        assert!(!starts_over(false, 4, 4));
+        assert!(starts_over(true, 4, 4), "refused by the engine");
+        assert!(starts_over(false, 4, 5), "respawned under the call");
+        assert!(starts_over(true, 4, 5));
+        // The bundle's engine was 4: the batch sent again says what is lost.
+        assert_eq!(chunk_pass(true, 4, 5), ChunkPass::StartHooksLost);
     }
 
     fn host_failures(guard: &Guard) -> u64 {

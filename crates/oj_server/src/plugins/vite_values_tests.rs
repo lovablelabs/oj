@@ -3587,7 +3587,40 @@ async fn a_discarded_environment_container_is_gone_from_every_engine() {
     );
     assert_eq!(client.start_facts().await.as_ref(), Ok(&facts));
 
-    // A respawned engine reopens the one in use, and not the other.
+    // One discarded while the engine is down is dropped by the engine that
+    // comes, though that engine opened it from a seed taken before: the
+    // next environment container to open asks.
+    let late = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("a third container opens");
+    assert_eq!(host.environment_containers(), 2);
+    let err = host
+        .load("__block__")
+        .await
+        .expect_err("a synchronous wedge silences the probes");
+    assert!(
+        err.contains("unresponsive") || err.contains("exited"),
+        "{err}"
+    );
+    late.discard_environment_container().await;
+    assert_eq!(host.environment_containers(), 1);
+    clear_respawn_spacing(&host);
+    assert_eq!(
+        client.start_facts().await.as_ref(),
+        Ok(&facts),
+        "the engine is back"
+    );
+    let another = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("a container opens on the revived engine");
+    let gone = late.start_facts().await;
+    assert!(gone.is_err(), "dropped once an engine was up: {gone:?}");
+    another.discard_environment_container().await;
+    assert_eq!(host.environment_containers(), 1);
+
+    // A respawned engine reopens the one in use, and not the others.
     wedge(&host).await;
     assert_eq!(
         client
@@ -3598,4 +3631,88 @@ async fn a_discarded_environment_container_is_gone_from_every_engine() {
     let gone = unused.start_facts().await;
     assert!(gone.is_err(), "not reopened: {gone:?}");
     assert_eq!(host.environment_containers(), 1);
+}
+
+// A module has one `meta` object, as in rolldown: what a plugin writes to
+// it through `this.getModuleInfo(id).meta`, or to the info `moduleParsed`
+// hands it, is what a chunk group's `getModuleInfo` reads, and what
+// `resolveId` said of the module is there for the plugin's hooks.
+#[tokio::test]
+async fn a_modules_meta_is_one_object_for_the_plugins_and_the_chunk_groups() {
+    let config = r#"export default {
+  plugins: [{
+    name: "tagger",
+    resolveId(source) {
+      return source === "shared" ? { id: "/app/shared.js", meta: { fromResolve: 1 } } : null;
+    },
+    load(id) {
+      return id === "/app/shared.js" ? { code: "export default 1" } : null;
+    },
+    transform(code, id) {
+      if (id !== "/app/shared.js") return null;
+      const info = this.getModuleInfo(id);
+      info.meta.viaContext = Object.keys(info.meta).sort().join("+");
+      return { code, meta: { fromTransform: 2 } };
+    },
+    moduleParsed(info) {
+      info.meta.parsed = (info.meta.parsed ?? 0) + 1;
+    },
+  }],
+  build: {
+    rolldownOptions: {
+      output: {
+        manualChunks(id, { getModuleInfo }) {
+          const { meta } = getModuleInfo(id);
+          meta.named = true;
+          return JSON.stringify(meta);
+        },
+      },
+    },
+  },
+};
+"#;
+    let (_root, host, client) = start_fn_host("one-meta", config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let name = fn_handle(&facts["codeSplitting"]["groups"][0]["name"], &facts);
+    let id = "/app/shared.js";
+    assert_eq!(
+        client.resolve_id("shared", "").await,
+        Ok(Some(id.to_string()))
+    );
+    client.load(id).await.expect("the tagger loads the module");
+    client
+        .transform("export default 1", id, id)
+        .await
+        .expect("the tagger transforms the module");
+    let ids = [id.to_string()];
+    let infos = serde_json::json!([{ "id": id, "importers": [] }]).to_string();
+    let named = client
+        .call_start_fn_batch(name, &ids, 1, Some(&infos), true, true, ChunkPass::Start)
+        .await
+        .expect("the function names the chunk");
+    let meta: serde_json::Value = serde_json::from_str(named[0].as_str().unwrap()).unwrap();
+    assert_eq!(meta["fromResolve"], 1, "{meta}");
+    assert_eq!(meta["fromTransform"], 2, "{meta}");
+    assert_eq!(
+        meta["viaContext"], "fromResolve",
+        "the transform saw what resolveId said, and wrote beside it: {meta}"
+    );
+    assert_eq!(meta["named"], true, "{meta}");
+    // What the group wrote is there for the plugins too: a second
+    // transform reads it through the context.
+    client
+        .transform("export default 2", id, id)
+        .await
+        .expect("the tagger transforms the module again");
+    let named = client
+        .call_start_fn_batch(name, &ids, 2, Some(&infos), true, true, ChunkPass::Start)
+        .await
+        .expect("the function names the chunk");
+    let meta: serde_json::Value = serde_json::from_str(named[0].as_str().unwrap()).unwrap();
+    let seen = meta["viaContext"].as_str().unwrap_or_default();
+    assert!(
+        seen.contains("named") && seen.contains("fromTransform") && seen.contains("fromResolve"),
+        "{meta}"
+    );
+    drop(host);
 }
