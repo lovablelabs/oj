@@ -196,7 +196,7 @@ Production builds (`oj build` vs `vite build`) produce the same output on the 10
 cargo run -p oj -- dev                            # dev server for ./playground on :5199
 cargo run -p oj -- dev --ssr src/entry-server.tsx # streaming SSR + hydration
 cargo run -p oj -- build playground               # production build into playground/dist
-cargo test --workspace                            # rust unit tests
+make test                                         # rust unit + integration tests (nextest, in parallel)
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
 node e2e/run.mjs                                  # browser e2e suite
 node e2e/ssr-dev.mjs                              # SSR dev e2e, e2e/ssr-prod.mjs for the built server
@@ -219,7 +219,7 @@ node bench/card.mjs                               # render bench/card.html to oj
 ## Testing
 
 ```sh
-cargo test --workspace                            # unit + integration suites
+make test                                         # unit + integration suites
 node e2e/run.mjs                                  # the end-to-end suite
 ```
 

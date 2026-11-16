@@ -141,13 +141,25 @@ Things that look like gaps and are not, pinned by a test so they stay decisions:
 ## Commands
 
 ```sh
-cargo test --workspace                 # unit + integration, all crates
+make test                              # unit + integration, all crates (nextest, see below)
 cargo test -p oj_graph --test model    # one suite
 cargo test --workspace -- --ignored    # the process-aborting tier, deliberately
 cargo check --manifest-path fuzz/Cargo.toml   # fuzz targets still build
 node e2e/run.mjs                       # the main end-to-end suite
 node e2e/awkward-paths.mjs             # one seam
 ```
+
+`make test` runs the suite under [cargo-nextest](https://nexte.st), fetched at
+a pinned version by `tools/fetch-nextest.sh`, then the doctests under
+`cargo test`. `cargo test` runs the workspace's test binaries one after another
+and most of the time goes to a few dozen binaries that each boot a dev server
+or a build; nextest runs every test in its own process, binaries side by side.
+On an 18-core laptop the whole suite took about 5 minutes that way against 11
+under `cargo test --workspace`. `.config/nextest.toml` holds what the parallel
+run needs: the tests that share an on-disk fixture run one at a time, and a
+test that boots the `oj` binary counts as three. To run one suite, either
+runner works: `cargo test -p oj --test start` or
+`cargo nextest run -p oj --test start`.
 
 ## Conventions
 

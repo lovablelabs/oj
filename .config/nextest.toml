@@ -1,0 +1,34 @@
+# cargo-nextest runs every test in its own process, test binaries side by
+# side (`make test`; tools/fetch-nextest.sh pins the version). The overrides
+# below are what that needs to stay reliable.
+
+[test-groups]
+shared-fixture = { max-threads = 1 }
+
+# These build a fixture once per process at a path the whole test binary
+# shares (CARGO_TARGET_TMPDIR, or a fixed name under the temp dir), which is
+# only safe one process at a time. They take milliseconds each.
+[[profile.default.overrides]]
+filter = 'package(oj_stylex) | package(fru)'
+test-group = 'shared-fixture'
+
+# Each of these boots the oj binary on a fixture app, which bundles on its own
+# thread pool; counting one as three keeps the machine from being oversubscribed.
+[[profile.default.overrides]]
+filter = 'package(oj) & kind(test)'
+threads-required = 3
+
+# In-process dev servers, each with a file watcher.
+[[profile.default.overrides]]
+filter = 'package(oj_server) & binary(dev)'
+threads-required = 2
+
+# macOS only: on a busy machine a save sometimes reaches the dev server
+# twice, and the dev tests that count hook calls per save then see two. Which test it
+# hits changes from run to run (`cargo test` loses a few to it as well), so a
+# failure there is retried and reported as flaky rather than failing the run.
+# Linux, and so CI, gets no retries.
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "macos")'
+filter = 'package(oj_server) & binary(dev)'
+retries = 2

@@ -82,7 +82,11 @@ jobs:
             echo "never published, publish by hand with a scoped token first:$missing" >&2
             exit 1
           }
+      # Never saved: a cache saved on a tag is restored by no later run, and
+      # takes room from the ones main's CI relies on.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
       - name: authenticate with crates.io (trusted publishing)
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth

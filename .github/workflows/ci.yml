@@ -8,6 +8,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Rust caches are saved by pushes to main only, and a pull request restores
+# main's. A repository gets 10 GB of cache and evicts the least recently used
+# entry past that: with every pull request saving its own copy of each job's
+# cache, and main's own set over the limit, the unit job's cache was evicted
+# before any run could restore it. The set main saves has to stay under the
+# limit, so jobs that build the same thing share one entry (see `shared-key`
+# below) rather than each saving their own.
+
 jobs:
   lint:
     name: lint
@@ -16,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: make lint
 
   # rules_typescript builds oj under Bazel, whose rules_rs rejects an rlib that
@@ -27,6 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: tools/check-baked-source-paths.sh
 
   unit:
@@ -34,13 +46,15 @@ jobs:
     runs-on: ubuntu-latest-m-public
     timeout-minutes: 90
     # The profile the tests run under: release on main, debug on a pull
-    # request (see the cargo test step). Each profile keeps its own cache, so
-    # a PR's debug artifacts never evict main's release build or the reverse.
+    # request (see the cargo test step). Only main's release build is cached:
+    # a pull request's debug build compiles from nothing in under three
+    # minutes, so a cache of it would save little and cost 2.3 GB of the limit.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ github.event_name == 'push' && 'release' || 'debug' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -76,8 +90,16 @@ jobs:
       # before the release is cut.
       # Chrome and the fixture are installed above: a missing one fails the
       # tests that need it instead of letting them pass unrun.
-      - run: cargo test --workspace ${{ github.event_name == 'push' && '--release' || '' }}
+      # nextest runs the test binaries side by side, which `cargo test` runs
+      # one after another (.config/nextest.toml has what that needs); it does
+      # not run doctests, so those keep `cargo test`. Both are workspace runs
+      # under one profile, so the second builds nothing the first did not.
+      - run: |
+          nextest="$(tools/fetch-nextest.sh)"
+          "$nextest" nextest run --workspace --no-fail-fast $PROFILE
+          cargo test --workspace --doc $PROFILE
         env:
+          PROFILE: ${{ github.event_name == 'push' && '--release' || '' }}
           OJ_REQUIRE_BROWSER: "1"
           OJ_REQUIRE_FIXTURES: "1"
       - name: js unit tests (adapter helpers)
@@ -95,7 +117,13 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # e2e and the prod build smoke job both build the debug `oj` binary, so
+      # they share one cache entry; this job builds more (the wasm playground),
+      # so it is the one that saves it.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug-oj
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -406,6 +434,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug-oj
+          save-if: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
