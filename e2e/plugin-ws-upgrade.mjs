@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { waitUp } from "./util.mjs";
+import { rmrf, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -167,7 +167,23 @@ const waitFrames = async (conn, n, ms = 5000) => {
 
 const port = 5488;
 let failed = false;
-const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore" });
+// Its own process group: the plugin host goes down with it.
+const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", detached: true });
+const exited = new Promise((resolve) => srv.once("exit", resolve));
+const stop = async () => {
+  const signal = (name) => {
+    try {
+      process.kill(-srv.pid, name);
+    } catch {}
+  };
+  signal("SIGTERM");
+  const kill = setTimeout(() => signal("SIGKILL"), 3000);
+  await exited;
+  clearTimeout(kill);
+  // The server is gone; whatever it left in the group (a plugin host slow
+  // to see its parent die) goes now.
+  signal("SIGKILL");
+};
 try {
   await waitUp(`http://localhost:${port}/`);
 
@@ -241,9 +257,12 @@ try {
   failed = true;
   console.error(e);
 } finally {
-  srv.kill();
+  // The app is removed once the server and its plugin host are gone: left
+  // running, they were still writing the cache as it went (`ENOTEMPTY`). The
+  // removal is the async one, whose retries walk the tree again (util.mjs).
+  await stop();
   upstream.close();
   httpUpstream.close();
-  fs.rmSync(app, { recursive: true, force: true });
+  await rmrf(app);
 }
 process.exit(failed ? 1 : 0);
