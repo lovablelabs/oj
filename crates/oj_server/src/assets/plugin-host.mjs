@@ -1886,6 +1886,9 @@ function createContainer(id, environment, resolvedConfig) {
     emitted: [],
     chunkFileNames: new Map(),
     moduleInfoCache: new Map(),
+    // What the hooks said of each module, as rolldown keeps it for
+    // `getModuleInfo` in a chunk group's `name` (moduleOption).
+    moduleOptions: new Map(),
     seenIds: new Set(),
     buildStartRun: null,
     buildStartFailureLogged: false,
@@ -2032,10 +2035,26 @@ function makeModuleInfo(id, code, extra) {
     ...(extra ?? {}),
   };
 }
+// rolldown's PluginContextData.moduleOptionMap: the `meta` and
+// `moduleSideEffects` the hooks gave a module, from `resolveId`, `load` and
+// `transform`. `meta` merges into one object for the module, which
+// `getModuleInfo` hands out as it is; `moduleSideEffects` stays null until a
+// hook says, which the ModuleInfo of `this.getModuleInfo` does not tell (it
+// starts at true, as Rollup's).
+function moduleOption(c, id) {
+  let option = c.moduleOptions.get(id);
+  if (!option) c.moduleOptions.set(id, (option = { moduleSideEffects: null, meta: {} }));
+  return option;
+}
+function noteModuleOption(c, id, result) {
+  if (result.meta && typeof result.meta === "object") Object.assign(moduleOption(c, id).meta, result.meta);
+  if (result.moduleSideEffects != null) moduleOption(c, id).moduleSideEffects = result.moduleSideEffects;
+}
 // Vite's `_updateModuleInfo`: a load/transform result's `meta` merges into the
 // module's info (and moduleSideEffects/syntheticNamedExports replace).
 function updateModuleInfo(c, id, result) {
   if (!result || typeof result !== "object") return;
+  noteModuleOption(c, id, result);
   let info = c.moduleInfoCache.get(id);
   if (!info) c.moduleInfoCache.set(id, (info = makeModuleInfo(id, typeof result.code === "string" ? result.code : "")));
   if (result.meta && typeof result.meta === "object") info.meta = { ...(info.meta ?? {}), ...result.meta };
@@ -6036,6 +6055,7 @@ async function resolveIdFull(c, source, importer, opts) {
     for (const k of ["external", "meta", "moduleSideEffects", "syntheticNamedExports", "attributes"]) {
       if (r[k] !== undefined) out[k] = r[k];
     }
+    noteModuleOption(c, String(out.id), out);
     return out;
   }
   return null;
@@ -6109,19 +6129,25 @@ function factValue(v, fns, seen = new Set()) {
   }
   return v;
 }
+// The registry is swapped in whole once every fact is read, so a call that
+// arrives while the facts wait (on an environment's plugins) finds the
+// registry as it was or as it will be, never one half filled.
 async function startFacts(c) {
-  const fns = (c.startFns = []);
+  const fns = [];
   const cfg = c.ojConfig ?? c.resolvedConfig ?? {};
   const envOf = (name) => cfg.environments?.[name] ?? {};
   const self = envOf(c.environment.name);
   const top = cfg.build?.rolldownOptions ?? cfg.build?.rollupOptions ?? {};
   const own = self.build?.rolldownOptions ?? {};
-  const output = { ...(top.output ?? {}), ...(own.output ?? {}) };
-  const codeSplitting = output.codeSplitting ?? output.advancedChunks;
+  // An `output` array is one bundle per element under `vite build`; the
+  // client bundle here is one, the first, as Vite's bundled dev takes it.
+  const firstOutput = (o) => (Array.isArray(o) ? o[0] : o) ?? {};
+  const output = { ...firstOutput(top.output), ...firstOutput(own.output) };
+  const codeSplitting = chunkPolicy(output, command === "build");
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
   const names = c.rawPlugins.map((p) => p && p.name);
-  return JSON.stringify({
+  const facts = JSON.stringify({
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
     codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting, fns),
@@ -6141,6 +6167,57 @@ async function startFacts(c) {
       { pre: 0, post: 0 },
     ),
   });
+  c.startFns = fns;
+  return facts;
+}
+// The chunk policy of an `output`, as rolldown's bindingifyCodeSplitting
+// settles it from `codeSplitting`, the older `advancedChunks` and
+// `inlineDynamicImports`, and Rollup's `manualChunks`: `false` for no
+// splitting, a policy object, `true` or undefined for rolldown's own
+// splitting. What rolldown refuses (`manualChunks` where nothing is split,
+// or one that is no function) a build refuses in its words, as `vite build`
+// fails on it. A dev server does not: Vite's own reads such a config
+// without a word unless it bundles, every environment inherits the top
+// level's `build` (a client's `manualChunks` beside a Worker environment's
+// `inlineDynamicImports`), and only the client is bundled here.
+function chunkPolicy(output, build) {
+  const { codeSplitting, advancedChunks, manualChunks } = output;
+  const refuse = (error) => {
+    if (build) throw error;
+  };
+  if (codeSplitting === false) {
+    if (manualChunks != null) {
+      refuse(
+        new Error(
+          'Invalid configuration: "output.manualChunks" cannot be used when "output.codeSplitting" is set to false.',
+        ),
+      );
+    }
+    return false;
+  }
+  // `inlineDynamicImports` counts only where `codeSplitting` says nothing.
+  if (codeSplitting == null && output.inlineDynamicImports === true) {
+    if (manualChunks != null) {
+      refuse(
+        new Error(
+          'Invalid value "true" for option "output.inlineDynamicImports" - this option is not supported for "output.manualChunks".',
+        ),
+      );
+    }
+    return false;
+  }
+  // An object `codeSplitting` is the policy whatever `advancedChunks` says;
+  // `true` or nothing leaves it to `advancedChunks`.
+  const policy = codeSplitting && typeof codeSplitting === "object" ? codeSplitting : advancedChunks;
+  if (policy != null) return policy;
+  // With no policy object, a `manualChunks` function is one: a single group
+  // whose name it gives (it is ignored beside one). rolldown calls whatever
+  // is there, so Rollup's object form fails its build.
+  if (typeof manualChunks === "function") {
+    return { groups: [{ name: (id, ctx) => manualChunks(id, { getModuleInfo: (x) => ctx.getModuleInfo(x) }) }] };
+  }
+  if (manualChunks != null) refuse(new TypeError("manualChunks is not a function"));
+  return codeSplitting;
 }
 const stringOr = (v) => (typeof v === "string" ? v : null);
 // Vite's resolved worker options: `format` (iife by default) and
@@ -6202,35 +6279,102 @@ async function cloudflareEnvironmentFacts(c, fns) {
     rootOutDir: stringOr(userViteConfig?.build?.outDir),
   };
 }
+// The config function behind handle `index`. A handle outlives the engine
+// that handed it out: a bundle reads its facts once, when its container
+// opens, and keeps the handles for the life of the dev server, while a
+// respawned engine reopens that container (openEnvironmentContainer, from the
+// boot seed) with an empty registry. The facts derive from the config in one
+// fixed order, so reading them again on the fresh engine hands out the same
+// functions under the same handles, and the bundle's handles stay callable.
+async function startFn(c, index) {
+  let fn = c.startFns[Number(index)];
+  if (typeof fn !== "function" && c.startFns.length === 0) {
+    // One read for every call that arrives before it is done.
+    c.startFnsRead ??= startFacts(c).finally(() => {
+      c.startFnsRead = null;
+    });
+    await c.startFnsRead;
+    fn = c.startFns[Number(index)];
+  }
+  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  return fn;
+}
 // A config function a fact handed out (`$fn`), called with JSON arguments
 // (an `external` function: `(id, importer, isResolved)`).
 async function callStartFn(c, index, argsJson) {
-  const fn = c.startFns[Number(index)];
-  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  const fn = await startFn(c, index);
   const r = await fn(...JSON.parse(argsJson ?? "[]"));
   return JSON.stringify(r === undefined ? null : factValue(r, c.startFns));
 }
 // A codeSplitting group's `name` or `test` over a batch of module ids, each
-// called as rolldown calls it: `(id, { getModuleInfo })`. The module infos of
-// a chunking pass arrive once, with its first batch (`generation` names the
-// pass), and back `getModuleInfo` for every later batch of the same pass.
-// A throw in dev comes back as `{ $threw: message }` for that id: Vite's dev
-// server never evaluates these functions, so one written for the build (fed
-// by a build-only plugin) must not take the dev server down.
-async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolerant) {
-  const fn = c.startFns[Number(index)];
-  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
-  if (c.chunkInfos.generation !== generation) c.chunkInfos = { generation, byId: new Map() };
-  const { byId } = c.chunkInfos;
-  if (infosJson) for (const info of JSON.parse(infosJson)) byId.set(info.id, info);
-  const ctx = { getModuleInfo: (id) => byId.get(id) ?? null };
+// called as rolldown calls it: `name(id, { getModuleInfo })` (`withCtx`),
+// `test(id)`. The module infos of a chunking pass (`generation` names it)
+// arrive with its `name` batches, each carrying the ones not sent yet, and
+// back `getModuleInfo` for every later batch of the same pass. The batch
+// that starts a pass over says so (`pass`: "start"): what it carries is all
+// the host holds from then on. A `name` batch of a pass this engine holds
+// nothing of that does not start it over is one whose earlier infos went to
+// an engine since respawned, whatever it carries itself: STALE_CHUNK_INFOS
+// asks for the pass from its start.
+// `getModuleInfo` answers as rolldown's does: the graph's facts with the
+// module's `meta` and `moduleSideEffects` as the plugins' hooks left them
+// (an empty object and null when none said). A pass started with
+// "start-hooks-lost" is of a bundle whose hooks ran on an engine since
+// respawned: what they said went with it, so reading either says that
+// rather than answer as if no hook had spoken.
+// A throw in dev (`tolerant`) comes back as `{ $threw: message }` for that
+// id, and a result is taken as it comes (awaited, any value). That is oj's
+// leniency, not Vite's: Vite hands these functions to rolldown in the build
+// and in bundled dev alike, and only its unbundled dev never calls them. One
+// written for the build (fed by a build-only plugin) must not take oj's dev
+// server down. A build takes what rolldown takes, in its words: a string or
+// nothing from `name`, a boolean or nothing from `test`, and no promise.
+const STALE_CHUNK_INFOS = "oj: the chunking pass's module infos are not on this engine";
+const HOOKS_LOST =
+  "oj: the plugin host was respawned during this bundle, and what its hooks said of the modules (meta, moduleSideEffects) went with it";
+async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolerant, withCtx, pass) {
+  const fn = await startFn(c, index);
+  const named = withCtx === "true";
+  const lenient = tolerant === "true";
+  let ctx;
+  if (named) {
+    if (pass === "start" || pass === "start-hooks-lost") {
+      c.chunkInfos = { generation, byId: new Map(), hooksLost: pass === "start-hooks-lost" };
+    } else if (c.chunkInfos.generation !== generation) throw new Error(STALE_CHUNK_INFOS);
+    const { byId, hooksLost } = c.chunkInfos;
+    if (infosJson) for (const info of JSON.parse(infosJson)) byId.set(info.id, info);
+    const lost = () => {
+      throw new Error(HOOKS_LOST);
+    };
+    ctx = {
+      getModuleInfo(id) {
+        const info = byId.get(id);
+        if (!info) return null;
+        if (hooksLost) {
+          return Object.defineProperties(
+            { ...info },
+            { meta: { get: lost, enumerable: true }, moduleSideEffects: { get: lost, enumerable: true } },
+          );
+        }
+        const { meta, moduleSideEffects } = moduleOption(c, id);
+        return { ...info, meta, moduleSideEffects };
+      },
+    };
+  }
+  const expected = named ? "string" : "boolean";
   const out = [];
   for (const id of JSON.parse(idsJson)) {
     try {
-      const r = await fn(id, ctx);
+      let r = named ? fn(id, ctx) : fn(id);
+      if (lenient) r = await r;
+      else if (r != null && typeof r !== expected) {
+        throw new Error(
+          `advancedChunks group ${named ? "name" : "test"} option: The function returned \`${typeof r}\`, but expected \`${expected}\`.`,
+        );
+      }
       out.push(r === undefined ? null : r);
     } catch (e) {
-      if (tolerant !== "true") throw e;
+      if (!lenient) throw e;
       out.push({ $threw: String((e && e.message) || e) });
     }
   }
@@ -6832,7 +6976,8 @@ async function run(hook, args, c) {
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));
   if (hook === "startFacts") return startFacts(c);
   if (hook === "callStartFn") return callStartFn(c, args[0], args[1]);
-  if (hook === "callStartFnBatch") return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4]);
+  if (hook === "callStartFnBatch")
+    return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
   if (hook === "scanResolveId") return gateOnBuildStart(main).then(() => scanResolveId(args[0], args[1], args[2]));
   if (hook === "scanPluginHooks") return gateOnBuildStart(main).then(() => scanPluginHooks());
   if (hook === "scanPluginHook") return gateOnBuildStart(main).then(() => scanPluginHook(args[0], args[1]));

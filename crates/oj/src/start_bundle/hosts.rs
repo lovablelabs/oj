@@ -94,7 +94,17 @@ pub(crate) async fn open(dev: &PluginHost, env_name: &str) -> anyhow::Result<Bun
         .map_err(|e| anyhow::anyhow!("the {env_name} plugin container failed to open: {e}"))?;
     host.build_hook_plan().await;
     let ctx = serve_bundler_resolve(&host);
-    let (facts, defines, env_delta) = read_facts(&host, env_name).await?;
+    // A bundle that cannot read its facts is asked for again (the next
+    // bundle, the next page): the container it opened goes with the
+    // failure, or each try would leave one on the engine, reopened on every
+    // respawn.
+    let (facts, defines, env_delta) = match read_facts(&host, env_name).await {
+        Ok(read) => read,
+        Err(e) => {
+            host.discard_environment_container().await;
+            return Err(e);
+        }
+    };
     Ok(BundleHost {
         host,
         ctx,
@@ -135,7 +145,7 @@ impl Drop for ContainerGuard {
         };
         if let Some(runtime) = host.runtime().cloned() {
             runtime.spawn(async move {
-                let _ = host.close_container().await;
+                host.discard_environment_container().await;
             });
         }
     }
@@ -177,7 +187,7 @@ impl BundleHost {
         let facts = match host.start_facts().await {
             Ok(facts) => Facts::from_json(&facts),
             Err(e) => {
-                let _ = host.close_container().await;
+                host.discard_environment_container().await;
                 return Err(anyhow::anyhow!("the worker plugin container: {e}"));
             }
         };
@@ -263,6 +273,68 @@ mod tests {
         .await
         .expect("the bundle host spawns")
         .expect("the app has plugins")
+    }
+
+    // A bundle on the build's plugin host opens a container of its
+    // environment and reads its facts there. One that cannot read them
+    // (here an environment whose output rolldown refuses: the client's
+    // `manualChunks`, inherited, beside its own `inlineDynamicImports`)
+    // leaves no container behind, however often it is asked for; one that
+    // can keeps the container it opened.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bundle_that_cannot_read_its_facts_leaves_no_container_on_the_host() {
+        let root = app("facts-fail", "");
+        std::fs::remove_file(root.join("oj.plugins.mjs")).unwrap();
+        std::fs::write(
+            root.join("vite.config.mjs"),
+            r#"export default {
+  environments: {
+    edge: { build: { rolldownOptions: { output: { inlineDynamicImports: true } } } },
+  },
+  build: {
+    rolldownOptions: {
+      output: { manualChunks: (id) => (id.includes("/vendor/") ? "vendor" : undefined) },
+    },
+  },
+};
+"#,
+        )
+        .unwrap();
+        let mut start = crate::start_bundle::dev::tests::start_at(&root);
+        start.command = Command::Build;
+        start.mode = "production".into();
+        let client = spawn(&start, None, "client")
+            .await
+            .expect("the bundle host spawns")
+            .expect("the app has a config");
+        assert!(
+            client.facts.code_splitting.is_some(),
+            "the client groups by the function"
+        );
+        let before = client.host.environment_containers();
+        for attempt in 0..3 {
+            let failed = match open(&client.host, "edge").await {
+                Ok(_) => panic!("attempt {attempt}: the edge bundle read facts rolldown refuses"),
+                Err(e) => format!("{e:#}"),
+            };
+            assert!(
+                failed.contains("output.inlineDynamicImports")
+                    && failed.contains("the edge plugin host"),
+                "attempt {attempt}: {failed}"
+            );
+            assert_eq!(
+                client.host.environment_containers(),
+                before,
+                "attempt {attempt}: the container it opened is gone"
+            );
+        }
+        // One that reads its facts keeps its container.
+        let again = open(&client.host, "client")
+            .await
+            .unwrap_or_else(|e| panic!("the client bundle opens: {e:#}"));
+        assert_eq!(client.host.environment_containers(), before + 1);
+        assert!(again.facts.code_splitting.is_some());
+        client.host.shutdown();
     }
 
     const FILTERED: &str = r#"

@@ -3,6 +3,37 @@ use std::sync::Arc;
 
 /// The host's own plugin container: the environment it boots in.
 pub(crate) const MAIN_CONTAINER: u32 = 0;
+
+/// The engine's answer to a group's `name` batch of a chunking pass it holds
+/// nothing of, when the batch does not start the pass over (plugin-host.mjs,
+/// `callStartFnBatch`): the pass's earlier infos went to an engine respawned
+/// since.
+pub const STALE_CHUNK_INFOS: &str = "oj: the chunking pass's module infos are not on this engine";
+
+/// What a group's `name` batch is to its chunking pass, for the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkPass {
+    /// A later batch of a pass the engine holds.
+    Continue,
+    /// The batch starts the pass over for the engine, which holds from then
+    /// on what this batch and the ones after it carry.
+    Start,
+    /// [`ChunkPass::Start`], of a bundle whose hooks ran on an engine since
+    /// respawned: what they said of the modules (`meta`,
+    /// `moduleSideEffects`) went with it, and `getModuleInfo` says so when
+    /// either is read.
+    StartHooksLost,
+}
+
+impl ChunkPass {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChunkPass::Continue => "continue",
+            ChunkPass::Start => "start",
+            ChunkPass::StartHooksLost => "start-hooks-lost",
+        }
+    }
+}
 /// The first id of the containers [`PluginHost::open_environment_container`]
 /// opens; worker containers count up from 1 below it.
 const ENVIRONMENT_CONTAINERS: u32 = 1 << 20;
@@ -1382,6 +1413,14 @@ impl PluginHost {
     /// per id). `infos` (module infos, as JSON) carries the ones this
     /// chunking `generation` has not sent yet. `tolerant`: a throw comes back
     /// as `{ "$threw": message }` for its id instead of failing the batch.
+    /// A build (not `tolerant`) takes what rolldown takes from the function
+    /// and fails in its words on anything else.
+    /// `named`: the function is a group's `name`, called with the chunking
+    /// context (`getModuleInfo`) after the id; a `test` gets the id alone,
+    /// and `pass` is nothing to it. A `name` batch that does not start its
+    /// pass, for a pass the engine holds nothing of (it was respawned since
+    /// the pass started), fails with [`STALE_CHUNK_INFOS`].
+    #[allow(clippy::too_many_arguments)]
     pub async fn call_start_fn_batch(
         &self,
         handle: u64,
@@ -1389,6 +1428,8 @@ impl PluginHost {
         generation: u64,
         infos: Option<&str>,
         tolerant: bool,
+        named: bool,
+        pass: ChunkPass,
     ) -> Result<Vec<serde_json::Value>, String> {
         let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
         let raw = self
@@ -1400,6 +1441,8 @@ impl PluginHost {
                     &generation.to_string(),
                     infos.unwrap_or(""),
                     if tolerant { "true" } else { "false" },
+                    if named { "true" } else { "false" },
+                    pass.as_str(),
                 ],
             )
             .await?
@@ -1988,6 +2031,13 @@ impl PluginHost {
         self.core.call(self.container, hook, args).await
     }
 
+    /// Which of the host's engines is the one running: it goes up each time
+    /// the engine is respawned. What an engine held (what its hooks said of
+    /// the modules they saw) is gone with it.
+    pub fn engine_generation(&self) -> u64 {
+        self.core.revive.lock().unwrap().generation
+    }
+
     /// A worker container from an engine since revived: its id may name
     /// another bundle's container in the new one.
     fn is_stale(&self) -> bool {
@@ -2133,6 +2183,32 @@ impl PluginHost {
             .await
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
+    }
+
+    /// Drops this handle's environment container from the host, for one
+    /// whose opener could not use it (a bundle that failed to read its
+    /// facts): the engine holds it no longer, a respawned one does not
+    /// reopen it, and the handle answers no more hooks. A container in use
+    /// is never dropped, and neither is the host's own.
+    pub async fn discard_environment_container(&self) {
+        if self.generation.is_some() || self.container == MAIN_CONTAINER {
+            return;
+        }
+        let id = self.container;
+        self.core
+            .environments
+            .lock()
+            .unwrap()
+            .retain(|(spec, _)| spec["id"] != id);
+        if !*self.core.host_gone.borrow() {
+            let _ = self.core.call(id, "closeContainer", &["environment"]).await;
+        }
+    }
+
+    /// How many environment containers the host keeps open, each reopened
+    /// on every engine it respawns.
+    pub fn environment_containers(&self) -> usize {
+        self.core.environments.lock().unwrap().len()
     }
 
     /// Drops this handle's worker container from the host (its plugins answer
