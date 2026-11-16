@@ -532,8 +532,9 @@ fn server_url(root: &Path) -> Result<String, String> {
 /// The address a live dev server advertised for `root` (what
 /// [`advertise`] wrote), for the commands that ask a running server.
 pub(crate) struct Advertised {
-    host: std::net::IpAddr,
-    port: u16,
+    /// `None` when the file's host or port cannot be read: said last, after
+    /// what the file does say (no `--typecheck`, https), as it always was.
+    address: Option<std::net::SocketAddr>,
     https: bool,
     /// False only when the server said it runs without `--typecheck`.
     typecheck: bool,
@@ -548,10 +549,10 @@ impl Advertised {
                 "the dev server runs over https, which {command} cannot reach"
             ));
         }
-        Ok(format!(
-            "http://{}{path}",
-            std::net::SocketAddr::new(self.host, self.port)
-        ))
+        let address = self
+            .address
+            .ok_or("the dev server's address file is malformed")?;
+        Ok(format!("http://{address}{path}"))
     }
 }
 
@@ -566,18 +567,14 @@ pub(crate) fn advertised(root: &Path) -> Result<Advertised, String> {
     let Some(address) = address else {
         return Err(NO_SERVER.to_string());
     };
-    let malformed = || "the dev server's address file is malformed".to_string();
-    let host: std::net::IpAddr = address["host"]
+    let host = address["host"]
         .as_str()
-        .and_then(|h| h.parse().ok())
-        .ok_or_else(malformed)?;
-    let port = address["port"]
-        .as_u64()
-        .and_then(|p| u16::try_from(p).ok())
-        .ok_or_else(malformed)?;
+        .and_then(|h| h.parse::<std::net::IpAddr>().ok());
+    let port = address["port"].as_u64().and_then(|p| u16::try_from(p).ok());
     Ok(Advertised {
-        host,
-        port,
+        address: host
+            .zip(port)
+            .map(|(host, port)| std::net::SocketAddr::new(host, port)),
         https: address["https"].as_bool() == Some(true),
         typecheck: address["typecheck"] != false,
     })

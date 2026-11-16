@@ -384,6 +384,34 @@ fn dev_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir()
     let _ = std::fs::remove_dir_all(&cache);
 }
 
+// What the address file says is reported before what it fails to say: a
+// server without the flag, or over https, is named as that even when its
+// host or port cannot be read; a file with neither is malformed.
+#[test]
+fn dev_typecheck_reports_no_flag_then_https_then_a_malformed_address() {
+    let app = App::new("address-order");
+    let cache = app.0.join(".oj-cache/v1");
+    std::fs::create_dir_all(&cache).unwrap();
+    for (typecheck, https, expect) in [
+        (false, true, "started without --typecheck"),
+        (
+            true,
+            true,
+            "over https, which oj dev-typecheck cannot reach",
+        ),
+        (true, false, "address file is malformed"),
+    ] {
+        let address = serde_json::json!({
+            "root": app.0, "pid": std::process::id(), "host": "nowhere", "port": 70000,
+            "https": https, "typecheck": typecheck,
+        });
+        std::fs::write(cache.join("dev-server.json"), address.to_string()).unwrap();
+        let (code, out, err) = dev_typecheck_with(&app.0, &[], &[]);
+        assert_eq!((code, out.as_str()), (1, ""), "{err}");
+        assert!(err.contains(expect), "{typecheck} {https}: {err}");
+    }
+}
+
 #[test]
 fn dev_typecheck_takes_an_address_without_the_typecheck_field_for_a_checker() {
     // Older oj wrote the file only for `--typecheck` servers, without the

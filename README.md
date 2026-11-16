@@ -47,7 +47,7 @@ oj env get --wait --timeout 60               # returns once every key is bound (
 oj env get --wait VITE_API_KEY               # or once the named keys do
 ```
 
-Each prints the values in force afterwards; a key's `.env` literal shows as its value but does not bind it, for `--wait` as for the server's state. `--root DIR` names the app when the command does not run from it. Exit codes: 0 answered, 1 no dev server for the root or the request was refused (a key outside the list), 2 usage, 3 `--wait` timed out.
+Each prints the values in force afterwards; a key's `.env` literal shows as its value but does not bind it, for `--wait` as for the server's state. `--root DIR` names the app when the command does not run from it. Exit codes: 0 answered, 1 no dev server for the root, one started without the keys, or the request was refused (a key outside the list), 2 usage, 3 `--wait` timed out.
 
 ## TanStack Start
 
