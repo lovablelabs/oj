@@ -454,11 +454,14 @@ fn parse_changed(body: &[u8]) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
-/// Names the bound address for `oj dev-typecheck` (app root, pid, host,
-/// port, and whether it runs `--typecheck`) in the cache root. A stale file
-/// is harmless: the client checks the root and the pid. Apps sharing one
-/// `OJ_CACHE_DIR` share the file, so a server without `--typecheck` leaves a
-/// live `--typecheck` server's entry in place.
+/// Names the bound address for the commands that ask a running server,
+/// `oj dev-typecheck` and `oj env` (app root, pid, host, port, and whether
+/// it runs `--typecheck`) in the cache root. A stale file is harmless: the
+/// client checks the root and the pid. Apps sharing one `OJ_CACHE_DIR`
+/// share the file, so a server without `--typecheck` leaves a live
+/// `--typecheck` server's entry in place, and of two without it the last
+/// to start is the one named: `oj env` then finds no server for the
+/// other's root, whose `/@oj/env` still answers a direct request.
 pub(crate) fn advertise(
     root: &Path,
     host: std::net::IpAddr,

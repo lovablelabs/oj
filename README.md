@@ -49,6 +49,10 @@ oj env get --wait VITE_API_KEY               # or once the named keys do
 
 Each prints the values in force afterwards; a key's `.env` literal shows as its value but does not bind it, for `--wait` as for the server's state. `--root DIR` names the app when the command does not run from it. Exit codes: 0 answered, 1 no dev server for the root, one started without the keys, or the request was refused (a key outside the list), 2 usage, 3 `--wait` timed out.
 
+With `--wait`, a server that is not there yet, or is restarting, is waited for (`oj dev & oj env set KEY=value --wait`); what a server answers to refuse ends the wait at once. A value a `.env` parser would cut or expand (a `#`, a `$`, a space at either end, a line break) is printed quoted so the line reads back as the value; one that no single line keeps (a line break beside a `"`, both kinds of quote) is printed as near as a line gets and named on stderr, and `--json` has every value as it is.
+
+Apps that share an `OJ_CACHE_DIR` share one address file, which names a single server: a `--typecheck` server over one without, else the last to start. `oj env` finds no server for the others' roots; their `/@oj/env` still answers a direct `curl -X POST http://127.0.0.1:<port>/@oj/env -d '{"KEY":"value"}'` from the same machine.
+
 ## TanStack Start
 
 Point oj at a TanStack Start app and it runs the framework directly, no source changes. It detects Start from the app itself:

@@ -1099,7 +1099,23 @@ impl ServerState {
 }
 
 /// What `oj env` reports for a dev server started without the keys.
-pub const NOT_CONFIGURED: &str = "the dev server runs without OJ_RUNTIME_ENV_KEYS";
+const NOT_CONFIGURED: &str = "the dev server runs without OJ_RUNTIME_ENV_KEYS";
+
+/// Why [`env_via_server`] has no answer.
+#[derive(Debug)]
+pub struct EnvRequestError {
+    pub message: String,
+    /// Whether asking again may be answered: no server runs for the root,
+    /// or it did not answer (not up yet, restarting). False for what a
+    /// server said or is: no keys, a refused update, https, another status.
+    pub retry: bool,
+}
+
+impl std::fmt::Display for EnvRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 /// Asks the dev server running for `root` for its runtime env (the status
 /// `GET /@oj/env` answers), applying `updates` first when given (a `None`
@@ -1110,28 +1126,53 @@ pub async fn env_via_server(
     root: &Path,
     updates: Option<&BTreeMap<String, Option<String>>>,
     timeout: Duration,
-) -> Result<serde_json::Value, String> {
-    let url = typecheck::advertised(root)?.http_url(CONTROL_PATH, "oj env")?;
+) -> Result<serde_json::Value, EnvRequestError> {
+    let refused = |message: String| EnvRequestError {
+        message,
+        retry: false,
+    };
+    let away = |message: String| EnvRequestError {
+        message,
+        retry: true,
+    };
+    let url = typecheck::advertised(root)
+        .map_err(|e| EnvRequestError {
+            retry: e == typecheck::NO_SERVER,
+            message: e,
+        })?
+        .http_url(CONTROL_PATH, "oj env")
+        .map_err(refused)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(timeout.min(Duration::from_secs(30)))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| refused(e.to_string()))?;
     let request = match updates {
         Some(updates) => client
             .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
-            .body(serde_json::to_string(updates).map_err(|e| e.to_string())?),
+            .body(serde_json::to_string(updates).map_err(|e| refused(e.to_string()))?),
         None => client.get(&url),
     };
-    let response = request.send().await.map_err(|e| format!("{url}: {e}"))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| away(format!("{url}: {e}")))?;
     let status = response.status();
-    let body = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| away(format!("{url}: {e}")))?;
     match status {
-        reqwest::StatusCode::NOT_FOUND => Err(NOT_CONFIGURED.to_string()),
-        reqwest::StatusCode::BAD_REQUEST => Err(String::from_utf8_lossy(&body).trim().to_string()),
-        status if !status.is_success() => Err(format!("{url}: {status}")),
-        _ => serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}")),
+        reqwest::StatusCode::NOT_FOUND => Err(refused(NOT_CONFIGURED.to_string())),
+        reqwest::StatusCode::BAD_REQUEST => {
+            Err(refused(String::from_utf8_lossy(&body).trim().to_string()))
+        }
+        status if !status.is_success() => Err(refused(format!("{url}: {status}"))),
+        _ => serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .filter(|answer| answer["keys"].is_array())
+            .ok_or_else(|| refused(format!("{url}: the answer is not a dev server's status"))),
     }
 }
 

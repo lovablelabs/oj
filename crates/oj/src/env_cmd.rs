@@ -88,7 +88,13 @@ pub struct Opts {
 /// when none is given) and returns the exit code.
 pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
     let (opts, only, updates) = match command {
-        EnvCommand::Get { opts, keys } => (opts, keys, None),
+        EnvCommand::Get { opts, keys } => {
+            if keys.iter().any(String::is_empty) {
+                eprintln!("oj env get: an empty argument names no key");
+                return USAGE;
+            }
+            (opts, keys, None)
+        }
         EnvCommand::Set { opts, pairs } => match parse_pairs(&pairs) {
             Ok(updates) => (opts, Vec::new(), Some(updates)),
             Err(e) => {
@@ -120,61 +126,77 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
         .ok()
         .and_then(|timeout| Instant::now().checked_add(timeout));
     let root = opts.root.clone().unwrap_or_else(default_root);
-    // A request does not outlast the wait it is part of, the first included.
-    let first = match (opts.wait, Duration::try_from_secs_f64(opts.timeout)) {
-        (true, Ok(timeout)) => timeout.max(POLL).min(REQUEST),
-        _ => REQUEST,
-    };
-    let mut status = match oj_server::env_via_server(&root, updates.as_ref(), first).await {
-        Ok(status) => status,
-        Err(e) => {
-            eprintln!("oj env: {e}");
-            return UNAVAILABLE;
-        }
-    };
-    if let Some(unknown) = only.iter().find(|k| !names_key(&status, k)) {
-        eprintln!(
-            "oj env: unknown runtime env key {unknown}; the keys are {}",
-            key_names(&status).join(", ")
-        );
-        return UNAVAILABLE;
-    }
+    // The updates go once: asked again, the command only reads.
+    let mut updates = updates;
+    let mut status: Option<serde_json::Value> = None;
+    // Said once for each time the server is away, not for each request.
+    let mut away = false;
     let mut code = OK;
-    if opts.wait {
-        let mut failing: Option<String> = None;
-        while !bound(&status, &only) {
-            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
-            if left.is_some_and(|left| left.is_zero()) {
-                eprintln!(
+    loop {
+        let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+        // A request does not outlast the wait it is part of.
+        let limit = match left {
+            Some(left) if opts.wait => left.max(POLL).min(REQUEST),
+            _ => REQUEST,
+        };
+        match oj_server::env_via_server(&root, updates.as_ref(), limit).await {
+            Ok(answer) => {
+                updates = None;
+                away = false;
+                // Each answer: a server that came back with another key
+                // list has nothing to bind a key it no longer lists.
+                if let Some(unknown) = only.iter().find(|k| !names_key(&answer, k)) {
+                    eprintln!(
+                        "oj env: unknown runtime env key {unknown}; the keys are {}",
+                        key_names(&answer).join(", ")
+                    );
+                    return UNAVAILABLE;
+                }
+                let done = !opts.wait || bound(&answer, &only);
+                status = Some(answer);
+                if done {
+                    break;
+                }
+            }
+            // With `--wait`, a server that is not there is waited for: one
+            // not up yet (`oj dev & oj env set .. --wait`), or restarting
+            // (a config or `.env` edit), which keeps the values that were
+            // set. What a server answered to refuse is final.
+            Err(e) if opts.wait && e.retry => {
+                if !away {
+                    eprintln!("oj env: {e}; asking again");
+                    away = true;
+                }
+            }
+            Err(e) => {
+                eprintln!("oj env: {e}");
+                return UNAVAILABLE;
+            }
+        }
+        let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+        if left.is_some_and(|left| left.is_zero()) {
+            match &status {
+                Some(status) => eprintln!(
                     "oj env: still {} after {}s",
                     status["state"].as_str().unwrap_or("unbound"),
                     opts.timeout
-                );
-                code = TIMED_OUT;
-                break;
+                ),
+                None => eprintln!("oj env: no dev server answered in {}s", opts.timeout),
             }
-            tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
-            let request = left.map_or(REQUEST, |left| left.max(POLL).min(REQUEST));
-            match oj_server::env_via_server(&root, None, request).await {
-                Ok(answer) => {
-                    status = answer;
-                    failing = None;
-                }
-                // The server that comes back without the keys never binds them.
-                Err(e) if e == oj_server::RUNTIME_ENV_NOT_CONFIGURED => {
-                    eprintln!("oj env: {e}");
-                    return UNAVAILABLE;
-                }
-                // A server restarting (a config or `.env` edit) is away for a
-                // moment and keeps the values that were set: asked again
-                // until the wait runs out, the failure said once.
-                Err(e) => {
-                    if failing.as_ref() != Some(&e) {
-                        eprintln!("oj env: {e}; asking again");
-                        failing = Some(e);
-                    }
-                }
-            }
+            code = TIMED_OUT;
+            break;
+        }
+        tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
+    }
+    // Nothing to print when no server ever answered.
+    let Some(status) = status else {
+        return code;
+    };
+    if !opts.json {
+        for key in unfaithful(&status, &only) {
+            eprintln!(
+                "oj env: the value of {key} cannot be written as one dotenv line that reads back the same; `--json` has it as it is"
+            );
         }
     }
     // A closed stdout (`oj env get | head -1`) ends the output, not the command.
@@ -256,7 +278,9 @@ pub(crate) fn render(status: &serde_json::Value, only: &[String]) -> String {
             Some(value) => {
                 out.push_str(name);
                 out.push('=');
-                out.push_str(&dotenv_value(value));
+                out.push_str(&match dotenv_value(value) {
+                    Ok(line) | Err(line) => line,
+                });
             }
             None => {
                 out.push_str("# ");
@@ -269,45 +293,58 @@ pub(crate) fn render(status: &serde_json::Value, only: &[String]) -> String {
     out
 }
 
-/// `value` as a dotenv file holds it on one line, so that reading the line
-/// back gives the value: as it is when a parser takes it whole, else in the
-/// quotes that keep it. Unquoted, a parser trims it, ends it at a `#` and
-/// strips a quote it starts with. Single quotes and backticks keep every
-/// character but their own; double quotes are the only ones to hold a line
-/// break (`\n`), and the last resort (`\"`), which a parser may read back
-/// with its backslash.
-fn dotenv_value(value: &str) -> String {
+/// The keys among `only` (every key when empty) whose value no dotenv line
+/// reads back as ([`dotenv_value`]).
+pub(crate) fn unfaithful<'a>(status: &'a serde_json::Value, only: &[String]) -> Vec<&'a str> {
+    keys(status)
+        .filter_map(|key| Some((key["key"].as_str()?, key["value"].as_str()?)))
+        .filter(|(name, _)| only.is_empty() || only.iter().any(|k| k == name))
+        .filter(|(_, value)| dotenv_value(value).is_err())
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// `value` as a `.env` file holds it on one line, such that oj reading the
+/// line back (as Vite does: `oj_env::parse`) gives the value again:
+///
+/// - as it is, when the parser takes it whole: it trims an unquoted value,
+///   ends it at a `#`, expands a `$` and strips a quote it starts with;
+/// - in single quotes, which keep every character but `'` and a line break;
+/// - in double quotes, the only ones to hold a line break (`\n`), with `$`
+///   escaped; they cannot hold `"`, a carriage return, or the two characters
+///   `\n` or `\t`, which read back as the line break or the tab.
+///
+/// `Err` holds the nearest double-quoted line for a value none of them
+/// keeps (a line break beside a `"`, both kinds of quote).
+fn dotenv_value(value: &str) -> Result<String, String> {
     let line_break = value.contains(['\n', '\r']);
     let plain = !line_break
-        && !value.contains('#')
+        && !value.contains(['#', '$'])
         && value.trim() == value
-        && !value.starts_with(['\'', '"', '`']);
+        && !value.starts_with(['\'', '"', '`', '\u{feff}']);
     if plain {
-        return value.to_string();
+        return Ok(value.to_string());
     }
-    if !line_break {
-        for quote in ['\'', '`'] {
-            if !value.contains(quote) {
-                return format!("{quote}{value}{quote}");
-            }
-        }
-        // `"..."` as it is when nothing in it would be read as an escape.
-        if !value.contains(['"', '\\']) {
-            return format!("\"{value}\"");
-        }
+    if !line_break && !value.contains('\'') {
+        return Ok(format!("'{value}'"));
     }
     let mut out = String::from("\"");
     for c in value.chars() {
         match c {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
-            '\\' => out.push_str("\\\\"),
+            '$' => out.push_str("\\$"),
             '"' => out.push_str("\\\""),
             c => out.push(c),
         }
     }
     out.push('"');
-    out
+    let kept = !value.contains(['"', '\r']) && !value.contains("\\n") && !value.contains("\\t");
+    if kept {
+        Ok(out)
+    } else {
+        Err(out)
+    }
 }
 
 /// The status with its `keys` narrowed to `only` (unchanged when empty).
@@ -315,7 +352,7 @@ pub(crate) fn filtered(mut status: serde_json::Value, only: &[String]) -> serde_
     if only.is_empty() {
         return status;
     }
-    if let Some(keys) = status["keys"].as_array_mut() {
+    if let Some(keys) = status.get_mut("keys").and_then(|k| k.as_array_mut()) {
         keys.retain(|k| only.iter().any(|name| k["key"] == name.as_str()));
     }
     status
@@ -401,17 +438,18 @@ mod tests {
     fn a_value_with_a_line_break_stays_on_one_dotenv_line() {
         let status = status(
             "bound",
-            &[("A", Some("one\ntwo \"q\" \\ \r")), ("B", Some("x=\"y\""))],
+            &[("A", Some("one\ntwo 'q' \\ $x")), ("B", Some("x=\"y\""))],
         );
         assert_eq!(
             render(&status, &[]),
-            "A=\"one\\ntwo \\\"q\\\" \\\\ \\r\"\nB=x=\"y\"\n"
+            "A=\"one\\ntwo 'q' \\ \\$x\"\nB=x=\"y\"\n"
         );
+        assert!(unfaithful(&status, &[]).is_empty());
     }
 
-    // Unquoted, a dotenv parser trims the value, ends it at a `#` and
-    // strips a quote it starts with: such a value is printed in the quotes
-    // that keep it whole.
+    // Unquoted, the parser trims the value, ends it at a `#`, expands a `$`
+    // and strips a quote it starts with: such a value is printed in the
+    // quotes that keep it whole.
     #[test]
     fn a_value_a_parser_would_cut_is_quoted() {
         for (value, line) in [
@@ -419,15 +457,77 @@ mod tests {
             ("a#b", "'a#b'"),
             (" padded ", "' padded '"),
             ("\"x\"", "'\"x\"'"),
-            ("'x'", "`'x'`"),
-            ("it's `a` #1", "\"it's `a` #1\""),
-            ("it's `a` \"b\" #1", "\"it's `a` \\\"b\\\" #1\""),
+            ("p$word", "'p$word'"),
+            ("`x`", "'`x`'"),
+            ("it's #1", "\"it's #1\""),
+            ("it's $x", "\"it's \\$x\""),
             ("plain=\"y\" 'z'", "plain=\"y\" 'z'"),
             ("", ""),
         ] {
             let status = status("bound", &[("A", Some(value))]);
             assert_eq!(render(&status, &[]), format!("A={line}\n"), "{value:?}");
+            assert!(unfaithful(&status, &[]).is_empty(), "{value:?}");
         }
+    }
+
+    // A value no single line keeps is still printed, and named: both kinds
+    // of quote where it needs quoting, a line break beside a `"`, a
+    // carriage return, the characters `\n` beside a `'`.
+    #[test]
+    fn a_value_no_line_keeps_is_named() {
+        let status = status(
+            "bound",
+            &[
+                ("A", Some("it's \"x\" #1")),
+                ("B", Some("one\ntwo \"q\"")),
+                ("C", Some("a\rb")),
+                ("D", Some("it's C:\\new #1")),
+                ("E", Some("fine")),
+            ],
+        );
+        assert_eq!(unfaithful(&status, &[]), ["A", "B", "C", "D"]);
+        assert_eq!(unfaithful(&status, &args(&["B", "E"])), ["B"]);
+        assert_eq!(
+            render(&status, &args(&["B"])),
+            "B=\"one\\ntwo \\\"q\\\"\"\n"
+        );
+    }
+
+    // Every line the command calls faithful is read back as the value by
+    // oj's `.env` parser, over every string of up to five of the characters
+    // a parser treats specially.
+    #[test]
+    fn a_faithful_line_reads_back_as_the_value() {
+        const ALPHABET: [&str; 12] = [
+            "a", " ", "'", "\"", "`", "#", "$", "\\", "n", "t", "\n", "=",
+        ];
+        let mut faithful = 0;
+        let mut values = vec![String::new()];
+        for _ in 0..5 {
+            let longer: Vec<String> = values
+                .iter()
+                .flat_map(|v| ALPHABET.iter().map(move |c| format!("{v}{c}")))
+                .collect();
+            for value in &longer {
+                let Ok(line) = dotenv_value(value) else {
+                    continue;
+                };
+                faithful += 1;
+                assert!(!line.contains('\n'), "{value:?}: {line:?}");
+                let read = oj_env::parse(&format!("A={line}\nB=after\n"), &BTreeMap::new());
+                assert_eq!(
+                    read,
+                    [
+                        ("A".to_string(), value.clone()),
+                        ("B".into(), "after".into())
+                    ],
+                    "{value:?} as {line:?}"
+                );
+            }
+            values = longer;
+        }
+        // Most values have a line: the ones named are the exception.
+        assert!(faithful > 200_000, "{faithful}");
     }
 
     #[test]

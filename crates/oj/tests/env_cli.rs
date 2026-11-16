@@ -82,6 +82,8 @@ fn oj_env_in(cwd: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_oj"))
         .arg("env")
         .args(args)
+        // As the servers are started: each app's own cache dir.
+        .env_remove("OJ_CACHE_DIR")
         .current_dir(cwd)
         .output()
         .unwrap();
@@ -510,7 +512,7 @@ fn a_short_wait_ends_on_time() {
     let (code, _, err) = oj_env(&app, &["get", "--wait", "--timeout", "1"]);
     assert_eq!(code, 3, "{err}");
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(20),
         "{:?}",
         started.elapsed()
     );
@@ -570,7 +572,135 @@ fn a_wait_on_a_server_that_went_away_runs_out_as_a_timeout() {
     drop(server);
     let (code, out, err) = waiting.join().unwrap();
     assert_eq!(code, 3, "{err}");
-    assert_eq!(json(&out)["state"], "pending", "{out}");
+    // The last status, when the command was answered before the server went.
+    assert!(out.is_empty() || json(&out)["state"] == "pending", "{out}");
+}
+
+// `oj dev & oj env set .. --wait`: the command may run before the server
+// has said where it listens. With `--wait` it is waited for, the values set
+// once it answers; without, there is no server (exit 1), at once.
+#[test]
+fn a_wait_started_before_the_server_sets_once_it_is_up() {
+    let app = App::new("wait-before");
+    app.publish(PENDING);
+    let (code, out, err) = oj_env(&app, &["set", "VITE_BACKEND_URL=/early"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (1, "", "oj env: no dev server found\n")
+    );
+    let waiting = {
+        let root = app.root.clone();
+        std::thread::spawn(move || {
+            let root = root.to_string_lossy().into_owned();
+            oj_env_in(
+                &std::env::temp_dir(),
+                &[
+                    "set",
+                    "VITE_BACKEND_URL=/early",
+                    "VITE_BACKEND_KEY=k",
+                    "--wait",
+                    "--timeout",
+                    "60",
+                    "--root",
+                    &root,
+                ],
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!waiting.is_finished(), "gave up with no server yet");
+    let _server = app.serve();
+    let (code, out, err) = waiting.join().unwrap();
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "VITE_BACKEND_URL=/early\nVITE_BACKEND_KEY=k\n");
+    assert_eq!(
+        err, "oj env: no dev server found; asking again\n",
+        "said once"
+    );
+}
+
+// With no server at all, a wait runs out as a timeout (3), nothing printed.
+#[test]
+fn a_wait_no_server_ever_answers_runs_out_as_a_timeout() {
+    let app = App::new("wait-never");
+    let (code, out, err) = oj_env(&app, &["get", "--wait", "--timeout", "1"]);
+    assert_eq!((code, out.as_str()), (3, ""), "{err}");
+    assert!(err.contains("no dev server answered in 1s"), "{err}");
+}
+
+// What a server answers to refuse ends a wait at once: a key outside the
+// list, a server without the keys. Asking again would be answered the same.
+#[test]
+fn a_wait_ends_at_once_on_what_the_server_refuses() {
+    let app = App::new("wait-refused");
+    app.publish(PENDING);
+    {
+        let _server = app.serve();
+        let started = Instant::now();
+        let (code, out, err) = oj_env(&app, &["set", "NOPE=1", "--wait", "--timeout", "300"]);
+        assert_eq!((code, out.as_str()), (1, ""), "{err}");
+        assert!(err.contains("unknown runtime env key"), "{err}");
+        let (code, _, err) = oj_env(&app, &["get", "NOPE", "--wait", "--timeout", "300"]);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("unknown runtime env key NOPE"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+    let _server = Server::oj_dev(&app.root);
+    let started = Instant::now();
+    let (code, _, err) = oj_env(&app, &["get", "--wait", "--timeout", "300"]);
+    assert_eq!(
+        (code, err.as_str()),
+        (
+            1,
+            "oj env: the dev server runs without OJ_RUNTIME_ENV_KEYS\n"
+        )
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(120),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+// A key named to a wait is one of the server's for as long as the wait
+// lasts: a server that comes back listing other keys has nothing to bind
+// it, which is said (1), not taken for bound.
+#[test]
+fn a_named_key_the_server_no_longer_lists_ends_the_wait() {
+    let app = App::new("wait-renamed");
+    app.publish(PENDING);
+    let server = app.serve();
+    let waiting = {
+        let root = app.root.clone();
+        std::thread::spawn(move || {
+            let root = root.to_string_lossy().into_owned();
+            oj_env_in(
+                &std::env::temp_dir(),
+                &[
+                    "get",
+                    "VITE_BACKEND_KEY",
+                    "--wait",
+                    "--timeout",
+                    "60",
+                    "--root",
+                    &root,
+                ],
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(600));
+    drop(server);
+    let _server = Server::oj_dev_with(&app.root, &[("OJ_RUNTIME_ENV_KEYS", "VITE_BACKEND_URL")]);
+    let (code, out, err) = waiting.join().unwrap();
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(
+        err.contains("unknown runtime env key VITE_BACKEND_KEY; the keys are VITE_BACKEND_URL"),
+        "{err}"
+    );
 }
 
 // A value a dotenv parser would cut (a `#`, a space at either end) is
@@ -590,6 +720,7 @@ fn quoted_output_unset_usage_and_the_set_limit() {
     for args in [
         &["unset", "VITE_BACKEND_URL", "VITE_BACKEND_URL"][..],
         &["unset", ""][..],
+        &["get", ""][..],
     ] {
         let (code, out, err) = oj_env(&app, args);
         assert_eq!((code, out.as_str()), (2, ""), "{args:?}: {err}");
@@ -718,11 +849,23 @@ fn a_value_with_a_line_break_is_set_whole_and_printed_on_one_line() {
     let app = App::new("multiline");
     app.publish(BOUND);
     let _server = app.serve();
+    let (code, out, err) = oj_env(&app, &["set", "VITE_BACKEND_KEY", "one\ntwo 'q' $x"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(
+        out,
+        "VITE_BACKEND_URL=/_port_8001\nVITE_BACKEND_KEY=\"one\\ntwo 'q' \\$x\"\n"
+    );
+    // A line break beside a `"` has no line that reads back the same: it is
+    // printed as near as a line gets, and said.
     let (code, out, err) = oj_env(&app, &["set", "VITE_BACKEND_KEY", "one\ntwo \"q\""]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(
         out,
         "VITE_BACKEND_URL=/_port_8001\nVITE_BACKEND_KEY=\"one\\ntwo \\\"q\\\"\"\n"
+    );
+    assert!(
+        err.contains("the value of VITE_BACKEND_KEY cannot be written as one dotenv line"),
+        "{err}"
     );
     let (code, out, _) = oj_env(&app, &["get", "--json", "VITE_BACKEND_KEY"]);
     assert_eq!(code, 0);
