@@ -155,15 +155,17 @@ fn manual(
 }
 
 /// A group's dev tolerance: the group steps aside, with one warning for a
-/// function that throws (it throws the same way every pass) and one per
-/// chunking pass for a host that could not run it (each is an outage of its
-/// own, and the bundle that pass wrote lacks the group).
+/// function that throws (it throws the same way every pass) and one for
+/// each call the host could not run. rolldown calls a group's `test` once a
+/// chunking pass and its `name` once after it, for the modules the test
+/// let through, so that is a warning for each pass whose bundle lacks the
+/// group, whichever of the two failed.
 struct Guard {
     label: String,
     dev: bool,
     warned: Mutex<bool>,
-    /// The pass the last host failure was warned of.
-    host_warned: Mutex<Option<u64>>,
+    /// The calls the host could not run.
+    host_failures: std::sync::atomic::AtomicU64,
 }
 
 impl Guard {
@@ -172,7 +174,7 @@ impl Guard {
             label,
             dev,
             warned: Mutex::new(false),
-            host_warned: Mutex::new(None),
+            host_failures: Default::default(),
         }
     }
 
@@ -191,28 +193,25 @@ impl Guard {
             .collect()
     }
 
-    /// A batch the host could not run at all (`error`, the host's): under
-    /// dev the group steps aside for the batch, a miss per id, with one
-    /// warning for the chunking pass (`generation`); a build fails, as
-    /// rolldown fails `vite build` when a group's function cannot be called.
+    /// A call the host could not run at all (`error`, the host's): under
+    /// dev the group steps aside for it, a miss per id, with a warning; a
+    /// build fails, as rolldown fails `vite build` when a group's function
+    /// cannot be called.
     fn step_aside(
         &self,
         what: &str,
         error: String,
         ids: usize,
-        generation: u64,
     ) -> anyhow::Result<Vec<Option<Value>>> {
         if !self.dev {
             anyhow::bail!("codeSplitting group {} {what}: {error}", self.label);
         }
-        let mut warned = self.host_warned.lock().unwrap();
-        if *warned != Some(generation) {
-            *warned = Some(generation);
-            eprintln!(
-                "oj: codeSplitting group {} {what} could not run under dev and steps aside for this bundle: {error}",
-                self.label
-            );
-        }
+        self.host_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        eprintln!(
+            "oj: codeSplitting group {} {what} could not run under dev and steps aside for this bundle: {error}",
+            self.label
+        );
         Ok(vec![None; ids])
     }
 
@@ -233,9 +232,21 @@ struct Sent {
     pass: Option<ChunkingContext>,
     generation: u64,
     ids: HashSet<String>,
-    /// The host holds nothing of the pass: its next batch carries infos, an
-    /// empty list when there are none, which tells the host the pass is new
-    /// to it and not one whose infos an earlier engine took.
+    /// The host holds nothing of the pass: its next batch starts it over.
+    fresh: bool,
+}
+
+/// A `name` batch's share of its pass.
+#[derive(Debug, PartialEq)]
+struct Batch {
+    /// The pass.
+    generation: u64,
+    /// The module infos the host has not been sent this pass, as JSON.
+    infos: Option<String>,
+    /// The batch starts the pass over for the host: what it carries is all
+    /// the host holds of the pass from then on. Said outright, since a
+    /// batch may carry infos and still not be the pass's first (a part of
+    /// the graph the earlier batches did not reach).
     fresh: bool,
 }
 
@@ -246,7 +257,7 @@ static SENT: std::sync::LazyLock<Mutex<Sent>> = std::sync::LazyLock::new(Default
 /// reachable from them through imports and importers, so `getModuleInfo`
 /// answers a walk of the graph, as it does under Vite, and not only for the
 /// ids a function was called with.
-fn infos_to_send(ids: &[String], ctx: &ChunkingContext) -> (u64, Option<String>) {
+fn infos_to_send(ids: &[String], ctx: &ChunkingContext) -> Batch {
     let mut sent = SENT.lock().unwrap();
     if !sent
         .pass
@@ -300,26 +311,22 @@ fn infos_to_send(ids: &[String], ctx: &ChunkingContext) -> (u64, Option<String>)
             "code": null,
         }));
     }
-    let json = (fresh || !infos.is_empty()).then(|| Value::Array(infos).to_string());
-    (sent.generation, json)
+    Batch {
+        generation: sent.generation,
+        infos: (!infos.is_empty()).then(|| Value::Array(infos).to_string()),
+        fresh,
+    }
 }
 
 /// The host no longer holds what pass `generation` sent it (its engine was
 /// respawned, or a batch carrying infos failed on the way): the pass's next
-/// `name` batch sends them again.
+/// `name` batch starts it over.
 fn forget_sent(generation: u64) {
     let mut sent = SENT.lock().unwrap();
     if sent.generation == generation {
         sent.ids.clear();
         sent.fresh = true;
     }
-}
-
-/// The generation of the pass in flight. rolldown calls a group's `test`
-/// without the pass's context, between `name` batches of the same pass, so
-/// the call names that pass and the host keeps its module infos.
-fn current_generation() -> u64 {
-    SENT.lock().unwrap().generation
 }
 
 type NameFn = dyn Fn(
@@ -339,39 +346,43 @@ type TestFn = dyn Fn(
 
 fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn> {
     Arc::new(move |ids: Vec<String>, ctx: &ChunkingContext| {
-        let (generation, infos) = infos_to_send(&ids, ctx);
+        let batch = infos_to_send(&ids, ctx);
         let host = Arc::clone(&host);
         let guard = Arc::clone(&guard);
         let ctx = ctx.clone();
         Box::pin(async move {
-            let mut answer = host
-                .call_start_fn_batch(handle, &ids, generation, infos.as_deref(), guard.dev, true)
-                .await;
-            // The engine was respawned since the pass sent its infos: once
-            // more, with them.
+            let call = |batch: Batch| {
+                let (host, ids, dev) = (Arc::clone(&host), ids.clone(), guard.dev);
+                async move {
+                    host.call_start_fn_batch(
+                        handle,
+                        &ids,
+                        batch.generation,
+                        batch.infos.as_deref(),
+                        dev,
+                        true,
+                        batch.fresh,
+                    )
+                    .await
+                }
+            };
+            let generation = batch.generation;
+            let mut answer = call(batch).await;
+            // The engine was respawned since the pass started: once more,
+            // from the pass's start.
             if answer
                 .as_ref()
                 .is_err_and(|e| e.contains(oj_server::plugins::STALE_CHUNK_INFOS))
             {
                 forget_sent(generation);
-                let (generation, infos) = infos_to_send(&ids, &ctx);
-                answer = host
-                    .call_start_fn_batch(
-                        handle,
-                        &ids,
-                        generation,
-                        infos.as_deref(),
-                        guard.dev,
-                        true,
-                    )
-                    .await;
+                answer = call(infos_to_send(&ids, &ctx)).await;
             }
             let out = match answer {
                 Ok(out) => guard.results(out),
                 Err(e) => {
                     // Whatever this batch carried may not have arrived.
                     forget_sent(generation);
-                    guard.step_aside("name", e, ids.len(), generation)?
+                    guard.step_aside("name", e, ids.len())?
                 }
             };
             Ok(out
@@ -384,16 +395,15 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
 
 fn test_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<TestFn> {
     Arc::new(move |ids: Vec<String>| {
-        let generation = current_generation();
         let host = Arc::clone(&host);
         let guard = Arc::clone(&guard);
         Box::pin(async move {
             let out = match host
-                .call_start_fn_batch(handle, &ids, generation, None, guard.dev, false)
+                .call_start_fn_batch(handle, &ids, 0, None, guard.dev, false, false)
                 .await
             {
                 Ok(out) => guard.results(out),
-                Err(e) => guard.step_aside("test", e, ids.len(), generation)?,
+                Err(e) => guard.step_aside("test", e, ids.len())?,
             };
             Ok(out
                 .into_iter()
@@ -480,46 +490,79 @@ mod tests {
         ids
     }
 
+    // What each `name` batch of a pass carries. The first sends what a
+    // walk from its ids reaches and starts the pass for the host; later
+    // ones send only what the host lacks, which may be a part of the graph
+    // no earlier batch reached, and do not start it over. A host that lost
+    // the pass (a respawned engine, a batch that failed) is sent it from the
+    // start by the next batch, which says so whether or not it has an info
+    // to carry.
     #[test]
-    fn module_infos_cover_the_graph_once_per_pass_and_test_calls_keep_the_pass() {
+    fn a_pass_sends_its_module_infos_once_and_starts_over_for_a_host_that_lost_them() {
+        // Two parts with no edge between them, as two entries make.
         let first = pass(&[("/entry", "/route"), ("/route", "/dep")], &["/lone"]);
-        // A name batch over one module sends what a walk from it reaches.
-        let (generation, json) = infos_to_send(&["/route".into()], &first);
-        assert_eq!(sent_ids(json), ["/dep", "/entry", "/route"]);
-        // A test call between name batches names the same pass, so the host
-        // keeps the infos (it resets them on a new generation).
-        assert_eq!(current_generation(), generation);
-        // Later batches of the pass send only what the host lacks.
-        let (again, json) = infos_to_send(&["/entry".into(), "/lone".into()], &first);
-        assert_eq!(again, generation);
-        assert_eq!(sent_ids(json), ["/lone"]);
-        // A new pass is a new generation and sends its own graph.
-        let second = pass(&[("/entry", "/route")], &[]);
-        let (next, json) = infos_to_send(&["/entry".into()], &second);
-        assert_ne!(next, generation);
-        assert_eq!(sent_ids(json), ["/entry", "/route"]);
+        let batch = infos_to_send(&["/route".into()], &first);
+        let generation = batch.generation;
+        assert!(batch.fresh, "the pass's first batch");
+        assert_eq!(sent_ids(batch.infos), ["/dep", "/entry", "/route"]);
+        // The other part: infos to carry, and still not the pass's start.
+        let batch = infos_to_send(&["/entry".into(), "/lone".into()], &first);
+        assert_eq!(batch.generation, generation);
+        assert!(!batch.fresh, "a later batch, though it carries infos");
+        assert_eq!(sent_ids(batch.infos), ["/lone"]);
+        assert_eq!(
+            infos_to_send(&["/lone".into()], &first),
+            Batch {
+                generation,
+                infos: None,
+                fresh: false
+            }
+        );
 
-        // The host lost what the pass sent (its engine was respawned): the
-        // pass's next batch sends the walk again, under the same generation.
-        let (_, json) = infos_to_send(&["/route".into()], &second);
-        assert_eq!(json, None, "nothing the host lacks");
+        // A new pass is a new generation and sends its own graph.
+        let second = pass(&[("/entry", "/route")], &["/lone"]);
+        let batch = infos_to_send(&["/entry".into()], &second);
+        let next = batch.generation;
+        assert_ne!(next, generation);
+        assert!(batch.fresh);
+        assert_eq!(sent_ids(batch.infos), ["/entry", "/route"]);
+
+        // Another pass's generation forgets nothing of this one.
         forget_sent(generation);
-        let (_, json) = infos_to_send(&["/route".into()], &second);
-        assert_eq!(json, None, "another pass's generation forgets nothing");
+        assert_eq!(
+            infos_to_send(&["/route".into()], &second),
+            Batch {
+                generation: next,
+                infos: None,
+                fresh: false
+            }
+        );
+        // The host lost the pass: the next batch starts it over, under the
+        // same generation, with the walk from its own ids. The part it does
+        // not reach follows with the batch that does, not as a start.
         forget_sent(next);
-        let (same, json) = infos_to_send(&["/route".into()], &second);
-        assert_eq!(same, next);
-        assert_eq!(sent_ids(json), ["/entry", "/route"]);
-        // The first batch after says the pass is new to the host even with
-        // no info to send, so the host does not take it for one it lost.
+        let batch = infos_to_send(&["/lone".into()], &second);
+        assert_eq!(batch.generation, next);
+        assert!(batch.fresh);
+        assert_eq!(sent_ids(batch.infos), ["/lone"]);
+        let batch = infos_to_send(&["/route".into()], &second);
+        assert!(!batch.fresh);
+        assert_eq!(sent_ids(batch.infos), ["/entry", "/route"]);
+
+        // A start with no info to carry is a start all the same.
         forget_sent(next);
-        let (_, json) = infos_to_send(&["/not-a-module".into()], &second);
-        assert_eq!(json.as_deref(), Some("[]"));
-        let (_, json) = infos_to_send(&["/not-a-module".into()], &second);
-        assert_eq!(json, None, "and only the first");
+        assert_eq!(
+            infos_to_send(&["/not-a-module".into()], &second),
+            Batch {
+                generation: next,
+                infos: None,
+                fresh: true
+            }
+        );
+        assert!(!infos_to_send(&["/not-a-module".into()], &second).fresh);
         let third = pass(&[("/entry", "/route")], &[]);
-        let (_, json) = infos_to_send(&["/not-a-module".into()], &third);
-        assert_eq!(json.as_deref(), Some("[]"), "a new pass's first batch too");
+        let batch = infos_to_send(&["/not-a-module".into()], &third);
+        assert!(batch.fresh && batch.infos.is_none() && batch.generation != next);
     }
 
     #[test]
@@ -534,17 +577,23 @@ mod tests {
         assert!(*guard.warned.lock().unwrap());
     }
 
+    fn host_failures(guard: &Guard) -> u64 {
+        guard
+            .host_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     #[test]
     fn a_host_that_cannot_run_the_function_steps_aside_under_dev_and_fails_a_build() {
         let dev = Guard::new("#0".into(), true);
         let out = dev
-            .step_aside("name", "oj: no config function #0".into(), 2, 1)
+            .step_aside("name", "oj: no config function #0".into(), 2)
             .expect("dev steps aside");
         assert_eq!(out, vec![None, None]);
-        assert_eq!(*dev.host_warned.lock().unwrap(), Some(1));
+        assert_eq!(host_failures(&dev), 1);
         let build = Guard::new("#0".into(), false);
         let err = build
-            .step_aside("name", "oj: no config function #0".into(), 2, 1)
+            .step_aside("name", "oj: no config function #0".into(), 2)
             .expect_err("a build stays loud");
         assert_eq!(
             err.to_string(),
@@ -552,13 +601,14 @@ mod tests {
         );
     }
 
-    // Stepping aside holds for the batch that failed and no longer: the
-    // next batch the host answers is used as it comes. A host that could
-    // not run the function is warned of once per chunking pass, whichever
-    // of the group's functions it was, apart from the one warning a
+    // Stepping aside holds for the call that failed and no longer: the next
+    // one the host answers is used as it comes. Each call the host could
+    // not run is warned of, a `test` as a `name`, pass after pass (a `test`
+    // that keeps failing keeps its `name` from ever being called, and each
+    // of those bundles lacks the group), apart from the one warning a
     // throwing function gets.
     #[test]
-    fn a_group_that_stepped_aside_answers_again_and_warns_once_a_pass() {
+    fn a_group_that_stepped_aside_answers_again_and_warns_of_every_call_the_host_missed() {
         let guard = Guard::new("vendor".into(), true);
         assert_eq!(
             guard.results(vec![json!("a"), json!(null)]),
@@ -566,36 +616,38 @@ mod tests {
             "answers pass through, a null one included"
         );
         assert!(!*guard.warned.lock().unwrap());
-        assert_eq!(*guard.host_warned.lock().unwrap(), None);
+        assert_eq!(host_failures(&guard), 0);
 
         assert_eq!(
             guard
-                .step_aside("test", "plugin host unresponsive".into(), 3, 7)
+                .step_aside("test", "plugin host unresponsive".into(), 3)
                 .unwrap(),
             vec![None, None, None],
             "a miss per id"
         );
-        assert_eq!(*guard.host_warned.lock().unwrap(), Some(7));
+        assert_eq!(host_failures(&guard), 1);
         assert!(!*guard.warned.lock().unwrap(), "not the throw's warning");
-        assert_eq!(
-            guard.step_aside("name", "again".into(), 0, 7).unwrap(),
-            Vec::<Option<Value>>::new()
-        );
-        assert_eq!(*guard.host_warned.lock().unwrap(), Some(7), "the same pass");
 
         assert_eq!(
             guard.results(vec![json!("b"), json!({ "$threw": "boom" }), json!(true)]),
             vec![Some(json!("b")), None, Some(json!(true))],
-            "the batch after is used as it comes"
+            "the call after is used as it comes"
         );
         assert!(*guard.warned.lock().unwrap());
-        assert_eq!(*guard.host_warned.lock().unwrap(), Some(7));
+        assert_eq!(host_failures(&guard), 1);
 
-        // The next pass's outage is warned of again, a throw or not before.
-        guard
-            .step_aside("name", "plugin host exited".into(), 1, 8)
-            .unwrap();
-        assert_eq!(*guard.host_warned.lock().unwrap(), Some(8));
+        // The same function failing pass after pass, and the other one.
+        for pass in 2..=4 {
+            guard
+                .step_aside("test", "plugin host exited".into(), 1)
+                .unwrap();
+            assert_eq!(host_failures(&guard), pass);
+        }
+        assert_eq!(
+            guard.step_aside("name", "again".into(), 0).unwrap(),
+            Vec::<Option<Value>>::new()
+        );
+        assert_eq!(host_failures(&guard), 5);
     }
 
     // A build names the group and which of its functions failed, for a
@@ -611,14 +663,9 @@ mod tests {
             ("#3", "name", "codeSplitting group #3 name: host gone"),
         ] {
             let build = Guard::new(label.into(), false);
-            let err = build
-                .step_aside(what, "host gone".into(), 1, 1)
-                .unwrap_err();
+            let err = build.step_aside(what, "host gone".into(), 1).unwrap_err();
             assert_eq!(err.to_string(), want);
-            assert!(
-                !*build.warned.lock().unwrap(),
-                "a build fails, it does not warn"
-            );
+            assert_eq!(host_failures(&build), 0, "a build fails, it does not warn");
         }
     }
 }

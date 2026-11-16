@@ -4,9 +4,10 @@ use std::sync::Arc;
 /// The host's own plugin container: the environment it boots in.
 pub(crate) const MAIN_CONTAINER: u32 = 0;
 
-/// The engine's answer to a group's `name` batch that came without module
-/// infos for a chunking pass it holds none of (plugin-host.mjs,
-/// `callStartFnBatch`): the infos were sent to an engine respawned since.
+/// The engine's answer to a group's `name` batch of a chunking pass it holds
+/// nothing of, when the batch does not start the pass over (plugin-host.mjs,
+/// `callStartFnBatch`): the pass's earlier infos went to an engine respawned
+/// since.
 pub const STALE_CHUNK_INFOS: &str = "oj: the chunking pass's module infos are not on this engine";
 /// The first id of the containers [`PluginHost::open_environment_container`]
 /// opens; worker containers count up from 1 below it.
@@ -1389,9 +1390,12 @@ impl PluginHost {
     /// as `{ "$threw": message }` for its id instead of failing the batch.
     /// `named`: the function is a group's `name`, called with the chunking
     /// context (`getModuleInfo`) after the id; a `test` gets the id alone.
-    /// A `name` batch without infos for a pass the engine holds nothing of
-    /// (it was respawned since they were sent) fails with
+    /// `fresh`: the batch starts the pass over for the engine, which holds
+    /// from then on what this batch and the ones after it carry. A `name`
+    /// batch that is not `fresh`, for a pass the engine holds nothing of (it
+    /// was respawned since the pass started), fails with
     /// [`STALE_CHUNK_INFOS`].
+    #[allow(clippy::too_many_arguments)]
     pub async fn call_start_fn_batch(
         &self,
         handle: u64,
@@ -1400,6 +1404,7 @@ impl PluginHost {
         infos: Option<&str>,
         tolerant: bool,
         named: bool,
+        fresh: bool,
     ) -> Result<Vec<serde_json::Value>, String> {
         let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
         let raw = self
@@ -1412,6 +1417,7 @@ impl PluginHost {
                     infos.unwrap_or(""),
                     if tolerant { "true" } else { "false" },
                     if named { "true" } else { "false" },
+                    if fresh { "true" } else { "false" },
                 ],
             )
             .await?
