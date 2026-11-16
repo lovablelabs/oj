@@ -2,25 +2,26 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The runtime env of a spawned `oj dev`, over its `/@oj/env`: what only a
-//! real process shows (a stop, a restart).
+//! real process shows (a restart, a refusal to start).
 
 #[allow(dead_code)]
 mod start_app;
 
 use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use start_app::Server;
 
-const KEYS: &str = "VITE_BACKEND_URL=url,VITE_BACKEND_KEY=anonKey";
-const BOUND: &str = r#"{"url":"/_port_8001","anonKey":"sb_publishable_x"}"#;
+const KEYS: &str = "VITE_BACKEND_URL,VITE_BACKEND_KEY";
+/// Every key, set.
+const BOUND: &str = r#"{"VITE_BACKEND_URL":"/_port_8001","VITE_BACKEND_KEY":"sb_publishable_x"}"#;
 
 /// A plain app reading both keys, with the literal of one in `.env`, and a
-/// values file beside it; removed on drop.
+/// directory beside it for what is not the app's; removed on drop.
 struct App {
     root: PathBuf,
-    values: PathBuf,
+    state: PathBuf,
 }
 
 impl App {
@@ -29,11 +30,11 @@ impl App {
             std::env::temp_dir().join(format!("oj-runtime-env-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("app/src")).unwrap();
-        std::fs::create_dir_all(dir.join("values")).unwrap();
+        std::fs::create_dir_all(dir.join("state")).unwrap();
         let dir = dir.canonicalize().unwrap();
         let app = App {
             root: dir.join("app"),
-            values: dir.join("values/env.json"),
+            state: dir.join("state"),
         };
         app.write(
             "index.html",
@@ -44,7 +45,6 @@ impl App {
             "src/main.js",
             "export const url = import.meta.env.VITE_BACKEND_URL;\nexport const key = import.meta.env.VITE_BACKEND_KEY;\n",
         );
-        std::fs::write(&app.values, BOUND).unwrap();
         app
     }
 
@@ -52,18 +52,9 @@ impl App {
         std::fs::write(self.root.join(rel), text).unwrap();
     }
 
-    /// `oj dev` with the keys, the values file and, when given, a ready file.
-    fn serve(&self, ready: Option<&Path>) -> Server {
-        let values = self.values.to_string_lossy().into_owned();
-        let ready = ready.map(|r| r.to_string_lossy().into_owned());
-        let mut env = vec![
-            ("OJ_RUNTIME_ENV_KEYS", KEYS),
-            ("OJ_RUNTIME_ENV_FILE", values.as_str()),
-        ];
-        if let Some(ready) = &ready {
-            env.push(("OJ_RUNTIME_ENV_READY_FILE", ready.as_str()));
-        }
-        Server::oj_dev_with(&self.root, &env)
+    /// `oj dev` with the keys.
+    fn serve(&self) -> Server {
+        Server::oj_dev_with(&self.root, &[("OJ_RUNTIME_ENV_KEYS", KEYS)])
     }
 }
 
@@ -135,36 +126,36 @@ fn status_after_restart(app: &App, server: &Server, marker: &str) -> serde_json:
     }
 }
 
-// The ready file says every key has a value in a running server: a server
-// told to stop removes it. Left behind, it said ready with nothing serving.
-#[test]
-fn the_ready_file_goes_when_the_server_is_stopped() {
-    let app = App::new("ready-stop");
-    let ready = app.values.with_file_name("ready");
-    let server = app.serve(Some(&ready));
-    let (_, status) = env(&server, None).expect("the server answers");
-    assert_eq!(status["state"], "bound", "{status}");
-    assert!(ready.exists(), "bound: ready");
-    drop(server);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while ready.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(!ready.exists(), "the stopped server left its ready file");
-}
-
 // A value set over `/@oj/env` lives in the server alone. An `.env` edit
 // restarts the server: the value is handed to the next image, where it is
-// still set over the file's.
+// still set, and a key that was not set still is not.
 #[test]
 fn a_set_value_outlives_a_restart_of_the_server() {
     let app = App::new("restart");
-    let server = app.serve(None);
+    let server = app.serve();
     set(&server, r#"{"VITE_BACKEND_URL":"/_port_9000"}"#);
     let status = status_after_restart(&app, &server, "1");
+    assert_eq!(status["state"], "partial", "{status}");
     assert_eq!(status["keys"][0]["value"], "/_port_9000", "{status}");
     assert_eq!(status["keys"][0]["source"], "set", "{status}");
-    assert_eq!(status["keys"][1]["source"], "file", "{status}");
+    assert_eq!(
+        status["keys"][1]["source"],
+        serde_json::Value::Null,
+        "{status}"
+    );
+}
+
+// Every key set: the next image is handed every value, so it is bound from
+// its first answer.
+#[test]
+fn a_bound_server_is_bound_again_after_a_restart() {
+    let app = App::new("restart-bound");
+    let server = app.serve();
+    set(&server, BOUND);
+    let status = status_after_restart(&app, &server, "1");
+    assert_eq!(status["state"], "bound", "{status}");
+    assert_eq!(status["keys"][0]["value"], "/_port_8001", "{status}");
+    assert_eq!(status["keys"][1]["value"], "sb_publishable_x", "{status}");
 }
 
 // What a restart hands over is what is set when it happens: a value unset
@@ -172,7 +163,7 @@ fn a_set_value_outlives_a_restart_of_the_server() {
 #[test]
 fn an_unset_value_is_not_brought_back_by_a_restart() {
     let app = App::new("restart-unset");
-    let server = app.serve(None);
+    let server = app.serve();
     set(
         &server,
         r#"{"VITE_BACKEND_URL":"/_port_9000","VITE_BACKEND_KEY":"k"}"#,
@@ -180,8 +171,8 @@ fn an_unset_value_is_not_brought_back_by_a_restart() {
     set(&server, r#"{"VITE_BACKEND_URL":null}"#);
 
     let status = status_after_restart(&app, &server, "1");
-    assert_eq!(status["keys"][0]["source"], "file", "{status}");
-    assert_eq!(status["keys"][0]["value"], "/_port_8001", "{status}");
+    assert_eq!(status["keys"][0]["source"], "fallback", "{status}");
+    assert_eq!(status["keys"][0]["value"], "https://baked.test", "{status}");
     assert_eq!(status["keys"][1]["source"], "set", "{status}");
     assert_eq!(status["keys"][1]["value"], "k", "{status}");
 
@@ -189,6 +180,125 @@ fn an_unset_value_is_not_brought_back_by_a_restart() {
     // hand-over is not the third image's.
     set(&server, r#"{"VITE_BACKEND_KEY":null}"#);
     let status = status_after_restart(&app, &server, "2");
-    assert_eq!(status["keys"][1]["source"], "file", "{status}");
-    assert_eq!(status["keys"][1]["value"], "sb_publishable_x", "{status}");
+    assert_eq!(status["state"], "unbound", "{status}");
+    assert_eq!(
+        status["keys"][1]["source"],
+        serde_json::Value::Null,
+        "{status}"
+    );
+}
+
+// `OJ_RUNTIME_ENV_FILE` is no setting: like any variable oj does not read,
+// it is no error and nothing is read from the file it names. The keys serve
+// their literals and the page is served.
+#[test]
+fn the_runtime_env_file_variable_is_ignored() {
+    let app = App::new("stray-file");
+    let stray = app.state.join("env.json");
+    std::fs::write(&stray, BOUND).unwrap();
+    let server = Server::oj_dev_with(
+        &app.root,
+        &[
+            ("OJ_RUNTIME_ENV_KEYS", KEYS),
+            ("OJ_RUNTIME_ENV_FILE", stray.to_str().unwrap()),
+        ],
+    );
+    let (code, status) = env(&server, None).expect("the server answers");
+    assert_eq!(code, 200, "{status}");
+    assert_eq!(status["state"], "unbound", "{status}");
+    assert_eq!(status["generation"], 0, "{status}");
+    assert!(status.get("file").is_none(), "{status}");
+    assert_eq!(status["keys"][0]["source"], "fallback", "{status}");
+    assert_eq!(
+        status["keys"][1]["source"],
+        serde_json::Value::Null,
+        "{status}"
+    );
+    let (code, page) = server.request("GET", "/", &[]);
+    assert_eq!(code, 200, "{page}");
+    assert!(page.contains("/src/main.js"), "{page}");
+}
+
+// `OJ_RUNTIME_ENV_READY_FILE` is no setting either: no file is written at
+// the path it names, with every key set or not, and the status names none.
+// `GET /@oj/env` answering `"state": "bound"` is the signal.
+#[test]
+fn the_runtime_env_ready_file_variable_is_ignored() {
+    let app = App::new("stray-ready");
+    let ready = app.state.join("ready");
+    let server = Server::oj_dev_with(
+        &app.root,
+        &[
+            ("OJ_RUNTIME_ENV_KEYS", KEYS),
+            ("OJ_RUNTIME_ENV_READY_FILE", ready.to_str().unwrap()),
+        ],
+    );
+    let (code, status) = env(&server, None).expect("the server answers");
+    assert_eq!(code, 200, "{status}");
+    assert_eq!(status["state"], "unbound", "{status}");
+
+    set(&server, BOUND);
+    let (_, status) = env(&server, None).expect("the server answers");
+    assert_eq!(status["state"], "bound", "{status}");
+    assert!(status.get("readyFile").is_none(), "{status}");
+    assert!(!ready.exists(), "no file is written at the path");
+    let mut fields: Vec<&str> = status
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["generation", "keys", "module", "state"],
+        "{status}"
+    );
+}
+
+// A key mapped to a field (`KEY=field`) is refused at startup, by name: the
+// server does not start with a key it would never serve.
+#[test]
+fn a_mapped_key_is_a_startup_error_naming_the_entry() {
+    let app = App::new("mapped-key");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("dev")
+        .arg(&app.root)
+        .args(["--port", &start_app::free_port().to_string()])
+        .env(
+            "OJ_RUNTIME_ENV_KEYS",
+            "VITE_BACKEND_KEY,VITE_BACKEND_URL=url",
+        )
+        .current_dir(&app.root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A server that took the entry would run for good: it is given a
+    // moment to refuse, then stopped, so the test fails instead of hanging.
+    let mut child = out;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("oj dev started with a mapped key instead of refusing it");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!status.success(), "{stderr}");
+    assert!(
+        stderr.contains("OJ_RUNTIME_ENV_KEYS: `VITE_BACKEND_URL=url`"),
+        "{stderr}"
+    );
 }

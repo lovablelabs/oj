@@ -728,7 +728,7 @@ struct Tag {
     inject_to: InjectTo,
 }
 
-pub(crate) fn escape_html(value: &str) -> String {
+fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('"', "&quot;")

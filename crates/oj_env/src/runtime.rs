@@ -1,48 +1,32 @@
 //! The `import.meta.env` keys whose values a dev server takes at request time
 //! (`OJ_RUNTIME_ENV_KEYS`) instead of baking them into compiled modules.
 
-/// One runtime key: the `import.meta.env` name client code reads, and the
-/// field of the runtime values file that supplies it (the key itself unless
-/// the spec maps it with `KEY=field`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeKey {
-    pub key: String,
-    pub field: String,
-}
-
-/// Parses `OJ_RUNTIME_ENV_KEYS`: comma-separated entries, each `KEY` or
-/// `KEY=field`, whitespace around either part ignored, empty entries skipped,
-/// a repeated key keeping its first mapping. A key must be a JavaScript
-/// identifier name, since it becomes an `import.meta.env.KEY` define; a
-/// field may be any non-empty text.
-pub fn parse_runtime_env_keys(spec: &str) -> Result<Vec<RuntimeKey>, String> {
-    let mut keys: Vec<RuntimeKey> = Vec::new();
+/// Parses `OJ_RUNTIME_ENV_KEYS`: comma-separated keys, whitespace around
+/// each ignored, empty entries skipped, a repeated key listed once. A key
+/// must be a JavaScript identifier name, since it becomes an
+/// `import.meta.env.KEY` define. An entry holding `=` is refused by name:
+/// there is no `KEY=field` mapping, and the entry would otherwise be taken
+/// for a misspelled key.
+pub fn parse_runtime_env_keys(spec: &str) -> Result<Vec<String>, String> {
+    let mut keys: Vec<String> = Vec::new();
     for entry in spec.split(',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
+        let key = entry.trim();
+        if key.is_empty() {
             continue;
         }
-        let (key, field) = match entry.split_once('=') {
-            Some((key, field)) => (key.trim(), field.trim()),
-            None => (entry, entry),
-        };
+        if key.contains('=') {
+            return Err(format!(
+                "OJ_RUNTIME_ENV_KEYS: `{key}` maps a key to a field, which is not supported; list the key alone and set its value with POST /@oj/env"
+            ));
+        }
         if !is_identifier_name(key) || key == "__proto__" {
             return Err(format!(
                 "OJ_RUNTIME_ENV_KEYS: `{key}` is not a valid import.meta.env key (an identifier name)"
             ));
         }
-        if field.is_empty() {
-            return Err(format!(
-                "OJ_RUNTIME_ENV_KEYS: `{entry}` names no field for `{key}`"
-            ));
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
         }
-        if keys.iter().any(|k| k.key == key) {
-            continue;
-        }
-        keys.push(RuntimeKey {
-            key: key.to_string(),
-            field: field.to_string(),
-        });
     }
     Ok(keys)
 }
@@ -74,66 +58,31 @@ fn is_identifier_name(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn keys(spec: &str) -> Vec<(String, String)> {
-        parse_runtime_env_keys(spec)
-            .unwrap()
-            .into_iter()
-            .map(|k| (k.key, k.field))
-            .collect()
+    fn keys(spec: &str) -> Vec<String> {
+        parse_runtime_env_keys(spec).unwrap()
     }
 
     #[test]
-    fn plain_keys_read_their_own_field() {
-        assert_eq!(
-            keys("VITE_A,VITE_B"),
-            [("VITE_A", "VITE_A"), ("VITE_B", "VITE_B")]
-                .map(|(k, f)| (k.to_string(), f.to_string()))
-        );
-    }
-
-    #[test]
-    fn mapped_keys_read_the_named_field() {
-        assert_eq!(
-            keys("VITE_SUPABASE_URL=url, VITE_SUPABASE_PUBLISHABLE_KEY = anonKey"),
-            [
-                ("VITE_SUPABASE_URL", "url"),
-                ("VITE_SUPABASE_PUBLISHABLE_KEY", "anonKey")
-            ]
-            .map(|(k, f)| (k.to_string(), f.to_string()))
-        );
+    fn keys_are_listed_in_order() {
+        assert_eq!(keys("VITE_A,VITE_B"), ["VITE_A", "VITE_B"]);
     }
 
     #[test]
     fn whitespace_and_empty_entries_are_skipped() {
-        assert_eq!(
-            keys(" , VITE_A , ,VITE_B,, "),
-            [("VITE_A", "VITE_A"), ("VITE_B", "VITE_B")]
-                .map(|(k, f)| (k.to_string(), f.to_string()))
-        );
+        assert_eq!(keys(" , VITE_A , ,VITE_B,, "), ["VITE_A", "VITE_B"]);
         assert!(keys("").is_empty());
         assert!(keys(" , , ").is_empty());
     }
 
     #[test]
-    fn a_repeated_key_keeps_its_first_mapping() {
-        assert_eq!(
-            keys("VITE_A=first,VITE_A=second,VITE_A"),
-            [("VITE_A", "first")].map(|(k, f)| (k.to_string(), f.to_string()))
-        );
+    fn a_repeated_key_is_listed_once() {
+        assert_eq!(keys("VITE_A,VITE_B, VITE_A"), ["VITE_A", "VITE_B"]);
     }
 
     #[test]
     fn a_key_that_is_not_an_identifier_is_refused() {
         // `__proto__` would be a prototype setter in the served object literal.
-        for bad in [
-            "VITE-A",
-            "1VITE",
-            "VITE A",
-            "VITE.A",
-            "=url",
-            "a/b",
-            "__proto__",
-        ] {
+        for bad in ["VITE-A", "1VITE", "VITE A", "VITE.A", "a/b", "__proto__"] {
             let err = parse_runtime_env_keys(bad).unwrap_err();
             assert!(err.contains("not a valid"), "{bad}: {err}");
         }
@@ -163,24 +112,22 @@ mod tests {
             "VITE_e\u{301}",
             "$_9",
         ] {
-            assert_eq!(keys(good), vec![(good.to_string(), good.to_string())]);
+            assert_eq!(keys(good), [good]);
         }
     }
 
+    // There is no `KEY=field` mapping: the entry is named, not read as a
+    // key called `VITE_A=field`.
     #[test]
-    fn an_empty_field_is_refused() {
-        let err = parse_runtime_env_keys("VITE_A=").unwrap_err();
-        assert!(err.contains("names no field"), "{err}");
-        let err = parse_runtime_env_keys("VITE_A=  ").unwrap_err();
-        assert!(err.contains("names no field"), "{err}");
-    }
-
-    #[test]
-    fn a_field_may_hold_any_text() {
-        assert_eq!(
-            keys("VITE_A=some.nested-field with spaces"),
-            [("VITE_A", "some.nested-field with spaces")]
-                .map(|(k, f)| (k.to_string(), f.to_string()))
-        );
+    fn a_mapped_entry_is_refused_by_name() {
+        for bad in ["VITE_A=field", "VITE_B, VITE_A = field", "VITE_A=", "=url"] {
+            let err = parse_runtime_env_keys(bad).unwrap_err();
+            assert!(err.starts_with("OJ_RUNTIME_ENV_KEYS: `"), "{bad}: {err}");
+            assert!(err.contains("not supported"), "{bad}: {err}");
+            assert!(
+                err.contains(bad.rsplit(',').next().unwrap().trim()),
+                "{bad}: {err}"
+            );
+        }
     }
 }

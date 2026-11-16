@@ -21,7 +21,7 @@ pub use defines::{
 pub use dotenv::{env_files, load, load_with, parse};
 pub use html::{html_env_map, replace_html_env};
 pub use knobs::Knobs;
-pub use runtime::{parse_runtime_env_keys, RuntimeKey};
+pub use runtime::parse_runtime_env_keys;
 pub use snapshot::{get, init, Env};
 
 #[cfg(test)]

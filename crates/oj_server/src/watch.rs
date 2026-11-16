@@ -673,8 +673,6 @@ pub fn restart_process(root: &Path, reason: &str) -> ! {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
     crate::otel::shutdown();
-    // Nothing serves until the next image is up: its ready file says so.
-    crate::runtime_env::clear_ready_files();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live
@@ -861,131 +859,14 @@ pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
 fn watch_served_dir(
     watchers: &mut Watchers,
     watched: &mut std::collections::HashSet<PathBuf>,
-    dir: &Path,
-) -> bool {
-    if watched.contains(dir) {
-        return true;
-    }
-    let ok = watchers
-        .watch(dir, notify::RecursiveMode::NonRecursive)
-        .is_ok();
-    if ok {
-        watched.insert(dir.to_path_buf());
-    }
-    ok
-}
-
-/// A served directory joins the watch. The runtime env values file's
-/// directory may not exist yet (a backend creates it after boot) and
-/// nothing re-sends it, so it is kept in `pending` and retried from the
-/// loop until the watch takes; once it does, the file is read, since a
-/// write that landed meanwhile raised no event.
-fn arm_served_dir(
-    state: &ServerState,
-    watchers: &mut Watchers,
-    watched: &mut std::collections::HashSet<PathBuf>,
-    pending: &mut Option<PathBuf>,
     dir: PathBuf,
 ) {
-    let runtime_dir = state
-        .runtime_env
-        .as_ref()
-        .and_then(|env| env.file())
-        .and_then(Path::parent)
-        == Some(dir.as_path());
-    let armed = watch_served_dir(watchers, watched, &dir);
-    if let Some(env) = state.runtime_env.as_ref().filter(|_| runtime_dir) {
-        if armed {
-            env.armed();
-        }
-        // Armed or not: a directory that went away took the file with it.
-        if env.load_file() {
-            crate::runtime_env::announce(state, env, "file changed");
-        }
-    }
-    if !armed && runtime_dir {
-        *pending = Some(dir);
-    }
-}
-
-/// How often the runtime env values directory is looked at: retried while
-/// it failed to watch, and watched again when it is not the directory that
-/// was (removed and created again, a watch on the old one sees nothing).
-const ARM_RETRY: Duration = Duration::from_secs(1);
-
-/// What tells a directory from another at the same path.
-fn dir_identity(dir: &Path) -> Option<(u64, u64)> {
-    let meta = std::fs::metadata(dir).ok().filter(|m| m.is_dir())?;
-    #[cfg(unix)]
+    if !watched.contains(&dir)
+        && watchers
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .is_ok()
     {
-        use std::os::unix::fs::MetadataExt;
-        // The creation time too, where the filesystem keeps one: a directory
-        // made right after another was removed may be given its inode.
-        let born = meta
-            .created()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_nanos() as u64);
-        Some((meta.dev(), meta.ino() ^ born.rotate_left(32)))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = meta;
-        Some((0, 0))
-    }
-}
-
-/// The runtime env values directory, looked at every [`ARM_RETRY`] whatever
-/// else the watcher is doing (a retry that waited for a quiet second never
-/// came while files under the root kept changing).
-struct ValuesDir {
-    dir: PathBuf,
-    identity: Option<(u64, u64)>,
-    next: std::time::Instant,
-}
-
-impl ValuesDir {
-    fn of(state: &ServerState, cache_base: &Path) -> Option<ValuesDir> {
-        let file = state.runtime_env.as_ref()?.file()?;
-        // Where the root's watch reaches, it covers the file. It does not
-        // reach `node_modules`, `dist`, `.git` or the cache dir, and what
-        // `server.watch.ignored` names is dropped from its events: a file
-        // there has its directory watched for itself, or it was read at
-        // boot and never again.
-        if watched_subtree(&state.watch_ignored, &state.root, cache_base, file) {
-            return None;
-        }
-        Some(ValuesDir {
-            dir: file.parent()?.to_path_buf(),
-            identity: None,
-            next: std::time::Instant::now(),
-        })
-    }
-
-    fn check(
-        &mut self,
-        state: &ServerState,
-        watchers: &mut Watchers,
-        watched: &mut std::collections::HashSet<PathBuf>,
-        pending: &mut Option<PathBuf>,
-    ) {
-        let now = std::time::Instant::now();
-        if now < self.next {
-            return;
-        }
-        self.next = now + ARM_RETRY;
-        let identity = dir_identity(&self.dir);
-        let retry = pending.take().is_some();
-        if !retry && identity == self.identity {
-            return;
-        }
-        self.identity = identity;
-        // An FSEvents stream follows the path; an inotify watch followed the
-        // directory that is gone.
-        if !cfg!(target_os = "macos") {
-            watched.remove(&self.dir);
-        }
-        arm_served_dir(state, watchers, watched, pending, self.dir.clone());
+        watched.insert(dir);
     }
 }
 
@@ -1217,13 +1098,6 @@ impl Watchers {
         );
         Ok(())
     }
-}
-
-/// The cache dir as the watcher reports paths under it: canonicalized, so a
-/// relative or symlinked `OJ_CACHE_DIR` still matches.
-fn canonical_cache_base(root: &Path) -> PathBuf {
-    let base = oj_cache::cache_base(root);
-    std::fs::canonicalize(&base).unwrap_or(base)
 }
 
 /// Top-level entries never watched: recursively watching node_modules/.oj-cache/dist/.git
@@ -1615,33 +1489,6 @@ fn handle_batch(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    // The runtime env values file is no module: a write to it re-reads the
-    // values and reloads the pages onto them, past the editor gate (the
-    // backend it names is what the pages wait for).
-    let runtime_values: Vec<PathBuf>;
-    let paths = match &state.runtime_env {
-        // Any write in its directory: a mounted volume replaces what the
-        // file's name points at without an event for the name.
-        Some(env) if paths.iter().any(|p| env.is_file(p) || env.beside_file(p)) => {
-            if env.load_file() {
-                crate::runtime_env::announce(state, env, "file changed");
-            }
-            // The rest goes on as any batch's paths do, minus what the
-            // watch would have left out had it not sat beside the file.
-            let cache_base = canonical_cache_base(&state.root);
-            let left_out = |p: &Path| {
-                p.starts_with(&state.root)
-                    && !watched_subtree(&state.watch_ignored, &state.root, &cache_base, p)
-            };
-            runtime_values = paths
-                .iter()
-                .filter(|p| !env.is_file(p) && !left_out(p))
-                .cloned()
-                .collect();
-            runtime_values.as_slice()
-        }
-        _ => paths,
-    };
     // Config/.env can't be hot-applied (read once at startup): restart, as
     // Vite does, naming the file relative to the launch dir as Vite's
     // "<file> changed, restarting server" does. Vite restarts from
@@ -1755,7 +1602,10 @@ pub(crate) fn spawn_watcher(
         let feed = state.watch_feed.clone();
         // Canonicalized so a relative or symlinked `OJ_CACHE_DIR` still
         // matches the absolute paths the watcher reports.
-        let cache_base = canonical_cache_base(&state.root);
+        let cache_base = {
+            let base = oj_cache::cache_base(&state.root);
+            std::fs::canonicalize(&base).unwrap_or(base)
+        };
         let (ignored, root, cache) = (
             state.watch_ignored.clone(),
             state.root.clone(),
@@ -1790,49 +1640,20 @@ pub(crate) fn spawn_watcher(
         // against its entries. Scanned after `ready`: events queue meanwhile.
         let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
-        let mut pending_dir: Option<PathBuf> = None;
-        let mut values_dir = ValuesDir::of(&state, &cache_base);
         loop {
-            let msg = match &values_dir {
-                Some(values) => {
-                    let wait = values
-                        .next
-                        .saturating_duration_since(std::time::Instant::now());
-                    match rx.recv_timeout(wait) {
-                        Ok(msg) => Some(msg),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    }
-                }
-                None => match rx.recv() {
-                    Ok(msg) => Some(msg),
-                    Err(_) => break,
-                },
-            };
-            if let Some(values) = &mut values_dir {
-                values.check(&state, &mut watchers, &mut served_dirs, &mut pending_dir);
-            }
-            let Some(msg) = msg else {
-                continue;
-            };
-            let first = match msg {
-                WatchMsg::Fs(Ok(ev)) => ev,
-                WatchMsg::Fs(Err(_)) => continue,
-                WatchMsg::Dir(dir) => {
-                    arm_served_dir(
-                        &state,
-                        &mut watchers,
-                        &mut served_dirs,
-                        &mut pending_dir,
-                        dir,
-                    );
+            let first = match rx.recv() {
+                Ok(WatchMsg::Fs(Ok(ev))) => ev,
+                Ok(WatchMsg::Fs(Err(_))) => continue,
+                Ok(WatchMsg::Dir(dir)) => {
+                    watch_served_dir(&mut watchers, &mut served_dirs, dir);
                     continue;
                 }
-                WatchMsg::Close(ack) => {
+                Ok(WatchMsg::Close(ack)) => {
                     drop(watchers);
                     let _ = ack.send(());
                     return;
                 }
+                Err(_) => break,
             };
             let mut batch = Batch::default();
             ingest_event(
@@ -1867,13 +1688,7 @@ pub(crate) fn spawn_watcher(
                     }
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => {
-                        arm_served_dir(
-                            &state,
-                            &mut watchers,
-                            &mut served_dirs,
-                            &mut pending_dir,
-                            dir,
-                        );
+                        watch_served_dir(&mut watchers, &mut served_dirs, dir)
                     }
                     Ok(WatchMsg::Close(ack)) => {
                         drop(watchers);
@@ -2027,17 +1842,7 @@ fn add_watched(
     batch: &mut Batch,
     ev: &notify::Event,
 ) -> bool {
-    // The runtime env values file and what sits beside it are kept wherever
-    // they are: `handle_batch` re-reads the values on them and drops the rest.
-    let values = |p: &PathBuf| {
-        state
-            .runtime_env
-            .as_ref()
-            .is_some_and(|env| env.is_file(p) || env.beside_file(p))
-    };
-    let excluded = |p: &PathBuf| {
-        watch_excluded(&state.watch_ignored, &state.root, cache_base, p) && !values(p)
-    };
+    let excluded = |p: &PathBuf| watch_excluded(&state.watch_ignored, &state.root, cache_base, p);
     if !ev.paths.iter().any(excluded) {
         return batch.add(changes, ev);
     }
