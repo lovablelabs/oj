@@ -2440,11 +2440,6 @@ impl DevServer {
                 ))
             },
         });
-        // The values file lives outside the root (a backend's state dir):
-        // its directory joins the watch, as a served file's would.
-        if let Some(file) = state.runtime_env.as_ref().and_then(|env| env.file()) {
-            watch::ensure_watched_file(&state, file);
-        }
         spawn_state_tasks(&state, watch_rx, watch_ready_tx);
         // A dep re-optimization that changed previously served chunks (or
         // whose batch failed) commits a new map: drop every compiled module

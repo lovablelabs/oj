@@ -14,9 +14,6 @@ pub(crate) async fn serve_html(
     original_url: &str,
     file: &Path,
 ) -> Response {
-    if let Some(hold) = state.runtime_env_hold() {
-        return hold;
-    }
     let raw = String::from_utf8_lossy(&bytes).into_owned();
     let html_env = state.html_env_now();
     let transformed = match state

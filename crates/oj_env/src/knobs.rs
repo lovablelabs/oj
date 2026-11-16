@@ -71,9 +71,6 @@ pub struct Knobs {
     /// `OJ_RUNTIME_ENV_KEYS`, as written: the `import.meta.env` keys a dev
     /// server serves at request time ([`crate::parse_runtime_env_keys`]).
     pub runtime_env_keys: Option<String>,
-    /// `OJ_RUNTIME_ENV_FILE`, when non-empty: the JSON file those keys' values
-    /// come from, watched while the server runs.
-    pub runtime_env_file: Option<PathBuf>,
     /// `OJ_RUNTIME_ENV_READY_FILE`, when non-empty: written while every
     /// runtime key has a value, removed otherwise.
     pub runtime_env_ready_file: Option<PathBuf>,
@@ -152,9 +149,6 @@ impl Knobs {
                 .map(PathBuf::from),
             stylex_cache_off: var("STYLEX_CACHE").as_deref() == Some("0"),
             runtime_env_keys: var("OJ_RUNTIME_ENV_KEYS").filter(|v| !v.trim().is_empty()),
-            runtime_env_file: get("OJ_RUNTIME_ENV_FILE")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from),
             runtime_env_ready_file: get("OJ_RUNTIME_ENV_READY_FILE")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
@@ -267,22 +261,17 @@ mod tests {
         assert!(!knobs(&[("STYLEX_CACHE", "false")]).stylex_cache_off);
         assert_eq!(knobs(&[("STYLEX_CACHE_DIR", "")]).stylex_cache_dir, None);
         // Runtime env: the key spec stays raw (its parser reports errors),
-        // blank is unset; the file paths are unset when empty.
+        // blank is unset; the ready file path is unset when empty.
         assert_eq!(knobs(&[]).runtime_env_keys, None);
         assert_eq!(
             knobs(&[("OJ_RUNTIME_ENV_KEYS", "  ")]).runtime_env_keys,
             None
         );
         assert_eq!(
-            knobs(&[("OJ_RUNTIME_ENV_KEYS", "VITE_A=url, VITE_B")])
+            knobs(&[("OJ_RUNTIME_ENV_KEYS", "VITE_A, VITE_B")])
                 .runtime_env_keys
                 .as_deref(),
-            Some("VITE_A=url, VITE_B")
-        );
-        assert_eq!(knobs(&[("OJ_RUNTIME_ENV_FILE", "")]).runtime_env_file, None);
-        assert_eq!(
-            knobs(&[("OJ_RUNTIME_ENV_FILE", "/persist/env.json")]).runtime_env_file,
-            Some(PathBuf::from("/persist/env.json"))
+            Some("VITE_A, VITE_B")
         );
         assert_eq!(knobs(&[]).runtime_env_set, None);
         assert_eq!(knobs(&[("OJ_RUNTIME_ENV_SET", "")]).runtime_env_set, None);
@@ -293,6 +282,10 @@ mod tests {
             Some("{\"A\":\"1\"}")
         );
         assert_eq!(knobs(&[]).runtime_env_ready_file, None);
+        assert_eq!(
+            knobs(&[("OJ_RUNTIME_ENV_READY_FILE", "")]).runtime_env_ready_file,
+            None
+        );
         assert_eq!(
             knobs(&[("OJ_RUNTIME_ENV_READY_FILE", "/run/ready")]).runtime_env_ready_file,
             Some(PathBuf::from("/run/ready"))
