@@ -393,6 +393,71 @@ async fn an_atomic_save_of_new_content_holds_the_target_alone() {
     );
 }
 
+/// An atomic save whose temporary file outlives the quiet window (the bytes
+/// are synced before the rename) spans two batches: the first holds the
+/// temporary file as a new file, the second sees it renamed away and drops
+/// that hold. Left with the target alone, a save of the same bytes holds
+/// nothing and a save of new bytes holds one path.
+async fn slow_rename_over(app: &App, server: &crate::Server, v: &str) {
+    let path = app.root.join(COLOR);
+    let tmp = path.with_extension("js.tmp");
+    std::fs::write(&tmp, color(v)).unwrap();
+    wait_pending(server, 1, "the temporary file, while it is there").await;
+    std::fs::rename(&tmp, &path).unwrap();
+    tokio::time::sleep(SETTLED).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_noop_atomic_save_holds_nothing_once_renamed() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    slow_rename_over(&app, &server, "X").await;
+    let status = server.text("/__hmr_gate").await;
+    assert_eq!(
+        pending(&server).await,
+        0,
+        "a slow rename over X with X was held: {status}"
+    );
+    assert_eq!(flush(&server).await, 0, "the flush released the save");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_atomic_save_of_new_content_holds_the_target_alone() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    slow_rename_over(&app, &server, "Y").await;
+    let status: serde_json::Value =
+        serde_json::from_str(&server.text("/__hmr_gate").await).unwrap();
+    let held: Vec<&String> = status["pending"].as_object().unwrap().keys().collect();
+    assert!(
+        held.len() == 1 && held[0].ends_with("/src/color.js"),
+        "the save held the target alone: {status}"
+    );
+    assert_eq!(flush(&server).await, 1, "the flush released the save");
+    assert!(
+        page_fetch(&server, 2).await.contains("\"Y\""),
+        "the page shows Y"
+    );
+}
+
+/// A file created under the gate, fetched by a page, then deleted stays
+/// held: a page has it, so its going is a change.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_created_module_a_page_fetched_then_deleted_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    app.write(&[("src/new.js", "export const fresh = true;\n")]);
+    wait_pending(&server, 1, "the new module").await;
+    assert!(server.text("/src/new.js").await.contains("fresh"));
+    std::fs::remove_file(app.root.join("src/new.js")).unwrap();
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(pending(&server).await, 1, "the deletion of a fetched file");
+    assert_eq!(flush(&server).await, 1, "the flush released it");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
     let (app, server) = gated_app().await;

@@ -1542,15 +1542,15 @@ fn handle_batch(
     // .html file reloads the page), and chokidar's `atomic` handling, on by
     // default off polling, hides the editor temporary names it knows (swap
     // files, `~` backups, Sublime's `.tmp`) before Vite hears of them at
-    // all. A known file that is gone (deleted, not born here) stays held:
-    // its importers need the reload. The watchers, watchChange and
-    // invalidation below still see both, as Vite's plugins do.
+    // all. A temporary file that outlives the quiet window (the save
+    // synced it before the rename) is held by the batch that made it, and
+    // the batch that sees it gone drops that hold again. A known file that
+    // is gone (deleted, not born under this hold) stays held: its importers
+    // need the reload. The watchers, watchChange and invalidation below
+    // still see both, as Vite's plugins do.
     let hot = match &state.hmr_gate {
         Some(gate) => {
-            let hot: Vec<PathBuf> = hot
-                .into_iter()
-                .filter(|p| !(created.contains(p) && std::fs::symlink_metadata(p).is_err()))
-                .collect();
+            let hot = gate.drop_born_and_gone(&state.content, hot, created);
             gate.drop_unchanged(&state.content, &hot)
         }
         None => hot,

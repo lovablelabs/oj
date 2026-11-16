@@ -165,6 +165,14 @@ impl ContentIndex {
         }
     }
 
+    /// Whether the server has served `path` at no point of this run: no page
+    /// can hold any content of it.
+    pub fn never_served(&self, path: &Path) -> bool {
+        self.lock()
+            .get(path)
+            .is_none_or(|f| f.served.last.is_none())
+    }
+
     /// Whether `path` reads as what `b` last settled on. A file `b` never
     /// settled, or settled while missing, is never unchanged. For the gate,
     /// every content served since its baseline must be that content too: a

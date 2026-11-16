@@ -687,6 +687,11 @@ pub(crate) struct HmrGate {
 #[derive(Default)]
 pub(crate) struct GateInner {
     pending: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
+    /// The paths a batch reported as created since the last flush and found
+    /// still there: files the pages were never brought to. One that is gone
+    /// again before the flush is no change to them
+    /// ([`HmrGate::drop_born_and_gone`]).
+    born: std::collections::BTreeSet<PathBuf>,
     /// When the last flush ran. A flush covers every write made before it, so
     /// a hold arriving later for one of those writes is already released; the
     /// cap timer compares against the same instant to know whether its hold
@@ -799,6 +804,7 @@ impl HmrGate {
                 .swap(false, std::sync::atomic::Ordering::SeqCst);
             inner.empty_flush_at =
                 (inner.pending.is_empty() && !held_reload).then(std::time::Instant::now);
+            inner.born.clear();
             (
                 std::mem::take(&mut inner.pending).into_iter().collect(),
                 held_reload,
@@ -843,6 +849,42 @@ impl HmrGate {
                 content.settle(p, crate::Baseline::Flushed);
             }
         }
+    }
+
+    /// `paths` minus the files that came and went without a page seeing
+    /// them: the temporary file of an atomic save, written beside its target
+    /// and renamed over it. Gone now, such a file is left out when this batch
+    /// saw it created (`created`), or when an earlier batch did and its hold
+    /// is still pending (the save took longer than the quiet window, so the
+    /// file was held as created and is only now renamed away); that hold is
+    /// dropped. A file the server served is kept, in either case: a page may
+    /// have it (a batch lasts as long as writes keep coming). So is
+    /// a file that was there at the last flush, or whose creation the gate
+    /// let through: the pages know it, and its importers need the reload.
+    pub(crate) fn drop_born_and_gone(
+        &self,
+        content: &ContentIndex,
+        paths: Vec<PathBuf>,
+        created: &std::collections::HashSet<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut inner = self.inner.lock().unwrap();
+        paths
+            .into_iter()
+            .filter(|p| {
+                if std::fs::symlink_metadata(p).is_ok() {
+                    if created.contains(p) {
+                        inner.born.insert(p.clone());
+                    }
+                    return true;
+                }
+                let born_held = inner.born.remove(p) && inner.pending.contains_key(p);
+                let unseen = (created.contains(p) || born_held) && content.never_served(p);
+                if unseen && born_held {
+                    inner.pending.remove(p);
+                }
+                !unseen
+            })
+            .collect()
     }
 
     /// `paths` minus the files whose content is what the pages have (a
