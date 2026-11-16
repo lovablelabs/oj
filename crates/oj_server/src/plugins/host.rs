@@ -2185,6 +2185,32 @@ impl PluginHost {
             .unwrap_or(1)
     }
 
+    /// Drops this handle's environment container from the host, for one
+    /// whose opener could not use it (a bundle that failed to read its
+    /// facts): the engine holds it no longer, a respawned one does not
+    /// reopen it, and the handle answers no more hooks. A container in use
+    /// is never dropped, and neither is the host's own.
+    pub async fn discard_environment_container(&self) {
+        if self.generation.is_some() || self.container == MAIN_CONTAINER {
+            return;
+        }
+        let id = self.container;
+        self.core
+            .environments
+            .lock()
+            .unwrap()
+            .retain(|(spec, _)| spec["id"] != id);
+        if !*self.core.host_gone.borrow() {
+            let _ = self.core.call(id, "closeContainer", &["environment"]).await;
+        }
+    }
+
+    /// How many environment containers the host keeps open, each reopened
+    /// on every engine it respawns.
+    pub fn environment_containers(&self) -> usize {
+        self.core.environments.lock().unwrap().len()
+    }
+
     /// Drops this handle's worker container from the host (its plugins answer
     /// no more hooks); the host's own and its environment containers are never closed.
     pub async fn close_container(&self) -> Result<(), String> {

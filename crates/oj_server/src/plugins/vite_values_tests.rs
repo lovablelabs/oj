@@ -3547,3 +3547,55 @@ async fn a_build_takes_from_a_groups_functions_what_rolldown_takes() {
         Ok(serde_json::json!({ "$threw": "boom" }))
     );
 }
+
+// An environment container whose opener could not use it is dropped for
+// good: the engine holds it no longer, the handle answers no more hooks,
+// and a respawned engine does not reopen it, while the containers in use
+// come back. The host's own container is never dropped.
+#[tokio::test]
+async fn a_discarded_environment_container_is_gone_from_every_engine() {
+    let config = format!(
+        r#"export default {{
+  plugins: [{BLOCKER}],
+  build: {{ rolldownOptions: {{ external: (id) => id.startsWith("external:") }} }},
+}};
+"#
+    );
+    let (_root, host, client) = start_fn_host("discarded", &config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let external = fn_handle(&facts["external"], &facts);
+    assert_eq!(host.environment_containers(), 1, "the client bundle's");
+
+    let unused = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("a second container opens");
+    assert_eq!(host.environment_containers(), 2);
+    assert_eq!(unused.start_facts().await.as_ref(), Ok(&facts));
+    unused.discard_environment_container().await;
+    assert_eq!(host.environment_containers(), 1);
+    let gone = unused.start_facts().await;
+    assert!(gone.is_err(), "the engine dropped it: {gone:?}");
+    // Dropping it twice, or the host's own, drops nothing more.
+    unused.discard_environment_container().await;
+    host.discard_environment_container().await;
+    assert_eq!(host.environment_containers(), 1);
+    assert_eq!(
+        host.load("/app/a.js").await,
+        Ok(None),
+        "the host's own answers"
+    );
+    assert_eq!(client.start_facts().await.as_ref(), Ok(&facts));
+
+    // A respawned engine reopens the one in use, and not the other.
+    wedge(&host).await;
+    assert_eq!(
+        client
+            .call_start_fn(external, &serde_json::json!(["external:a", null, false]))
+            .await,
+        Ok(serde_json::json!(true))
+    );
+    let gone = unused.start_facts().await;
+    assert!(gone.is_err(), "not reopened: {gone:?}");
+    assert_eq!(host.environment_containers(), 1);
+}
