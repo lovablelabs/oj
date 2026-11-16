@@ -125,7 +125,13 @@ impl RuntimeEnv {
             }
         }
         RuntimeEnv {
-            keys: cfg.keys,
+            // Each key once: the state counts them against the values set.
+            keys: cfg.keys.into_iter().fold(Vec::new(), |mut keys, key| {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+                keys
+            }),
             statics,
             fallbacks,
             module_url: dev_html::posix_join(&[base.unwrap_or("/"), MODULE_PATH]),
@@ -227,6 +233,14 @@ impl RuntimeEnv {
 
     pub(crate) fn generation(&self) -> u64 {
         self.inner.lock().unwrap().generation
+    }
+
+    /// What tells one inlining of the values from another, in any server:
+    /// the generation by the name of the image that counts it. A restarted
+    /// server's generation 1 holds other values than the last one's, and a
+    /// tag of the number alone answered a browser "not modified" for them.
+    pub(crate) fn inlined_stamp(&self) -> String {
+        format!("{}-{}", self.boot, self.generation())
     }
 
     /// The values set, by key.
@@ -598,7 +612,7 @@ pub(crate) async fn serve_env_control(
             }
             Err(e) => return (StatusCode::BAD_REQUEST, no_store(), e).into_response(),
         }
-    } else if method != axum::http::Method::GET {
+    } else if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     (

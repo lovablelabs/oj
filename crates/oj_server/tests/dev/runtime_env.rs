@@ -342,6 +342,11 @@ async fn the_control_endpoint_refuses_browsers_proxies_and_bad_bodies() {
         .request(Request::delete("/@oj/env").body(Body::empty()).unwrap())
         .await;
     assert_eq!(res.status, 405);
+    // HEAD asks what GET does.
+    let res = server
+        .request(Request::head("/@oj/env").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status, 200);
 
     let status = status(&server).await;
     assert_eq!(status["generation"], 0, "nothing refused applied: {status}");
@@ -915,6 +920,23 @@ async fn a_classic_script_gets_the_values_inline_not_an_import() {
     let moved = get(again).await;
     assert_eq!(moved.status, 200);
     assert!(moved.body.contains("\"/_port_9\""), "{}", moved.body);
+    let stale = header(&moved, "etag").unwrap().to_string();
+
+    // Another server counts its generations from zero again: its generation
+    // 1 holds other values, and a browser that kept the first server's
+    // script is not told it still stands.
+    let next = serve_with(&app).await;
+    let res = post(&next, r#"{"VITE_BACKEND_URL":"/_port_10"}"#, &[]).await;
+    assert_eq!(res.status, 200, "{}", res.body);
+    let req = axum::http::Request::get("/src/sw.js")
+        .header("sec-fetch-dest", "script")
+        .header("sec-fetch-mode", "no-cors")
+        .header("if-none-match", stale)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let res = next.request(req).await;
+    assert_eq!(res.status, 200, "the last server's tag is not this one's");
+    assert!(res.body.contains("\"/_port_10\""), "{}", res.body);
 }
 
 // Under a base, with nothing set: documents, modules, the env module and the

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The runtime env of a spawned `oj dev`, over its `/@oj/env`: what only a
-//! real process shows (a stop, a restart).
+//! real process shows (a restart, a refusal to start).
 
 #[allow(dead_code)]
 mod start_app;
@@ -270,10 +270,33 @@ fn a_mapped_key_is_a_startup_error_naming_the_entry() {
             "VITE_BACKEND_KEY,VITE_BACKEND_URL=url",
         )
         .current_dir(&app.root)
-        .output()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{stderr}");
+    // A server that took the entry would run for good: it is given a
+    // moment to refuse, then stopped, so the test fails instead of hanging.
+    let mut child = out;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("oj dev started with a mapped key instead of refusing it");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!status.success(), "{stderr}");
     assert!(
         stderr.contains("OJ_RUNTIME_ENV_KEYS: `VITE_BACKEND_URL=url`"),
         "{stderr}"

@@ -666,12 +666,13 @@ async fn serve_compiled_from(
     };
 
     // A classic script cannot hold the runtime env module's static import:
-    // it gets the values inline, so its tag names their generation too.
+    // it gets the values inline, so its tag names them too: the generation
+    // of this server, which counts from zero again in the next one.
     let inline_env = state.runtime_env.as_ref().filter(|env| {
         crate::runtime_env::classic_script_request(headers) && env.imported_by(&module.code)
     });
     let etag = match inline_env {
-        Some(env) => format!("\"{key}-env{}\"", env.generation()),
+        Some(env) => format!("\"{key}-env{}\"", env.inlined_stamp()),
         None => format!("\"{key}\""),
     };
     if query.is_none() && crate::etag::not_modified(headers, &etag) {

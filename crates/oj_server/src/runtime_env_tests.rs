@@ -42,6 +42,20 @@ fn env() -> RuntimeEnv {
     )
 }
 
+// A key listed twice is one key: every key set is still `bound`.
+#[test]
+fn a_key_given_twice_is_counted_once() {
+    let mut keys = supabase_keys();
+    keys.push(keys[0].clone());
+    let env = RuntimeEnv::new(RuntimeEnvConfig { keys }, &defines(), None);
+    env.set(bound()).unwrap();
+    assert_eq!(env.state(), Binding::Bound);
+    assert_eq!(
+        env.status()["keys"].as_array().unwrap().len(),
+        supabase_keys().len()
+    );
+}
+
 /// Every key, set.
 fn bound() -> BTreeMap<String, Option<String>> {
     updates(&[
@@ -397,7 +411,7 @@ fn the_config_comes_from_the_knobs() {
     );
 }
 
-// A key is no longer mapped to a field: the entry is a startup error that
+// A key is not mapped to a field: such an entry is a startup error that
 // names it, not a key called `VITE_A=field`.
 #[test]
 fn a_mapped_key_is_a_startup_error_naming_the_entry() {

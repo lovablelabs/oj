@@ -16,7 +16,7 @@ pub fn parse_runtime_env_keys(spec: &str) -> Result<Vec<String>, String> {
         }
         if key.contains('=') {
             return Err(format!(
-                "OJ_RUNTIME_ENV_KEYS: `{key}` maps a key to a field, which is no longer supported; list the key alone and set its value with POST /@oj/env"
+                "OJ_RUNTIME_ENV_KEYS: `{key}` maps a key to a field, which is not supported; list the key alone and set its value with POST /@oj/env"
             ));
         }
         if !is_identifier_name(key) || key == "__proto__" {
@@ -123,7 +123,7 @@ mod tests {
         for bad in ["VITE_A=field", "VITE_B, VITE_A = field", "VITE_A=", "=url"] {
             let err = parse_runtime_env_keys(bad).unwrap_err();
             assert!(err.starts_with("OJ_RUNTIME_ENV_KEYS: `"), "{bad}: {err}");
-            assert!(err.contains("no longer supported"), "{bad}: {err}");
+            assert!(err.contains("not supported"), "{bad}: {err}");
             assert!(
                 err.contains(bad.rsplit(',').next().unwrap().trim()),
                 "{bad}: {err}"

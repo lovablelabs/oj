@@ -53,7 +53,7 @@ Good to know:
 
 - The values set over HTTP are limited to 64 KB together.
 - Under the hood, a module that reads a key compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js`, which the server renders on each request. Workers are covered too.
-- This is for plain `oj dev` only, for now. `oj dev --ssr`, TanStack Start apps and `oj build` print a warning and keep the baked values.
+- This is for plain `oj dev` only, for now. `oj dev --ssr` and TanStack Start apps print a warning and keep the baked values. `oj build` always bakes them.
 
 ## TanStack Start
 
