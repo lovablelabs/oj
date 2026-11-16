@@ -1531,23 +1531,23 @@ fn handle_batch(
     let hot: Vec<PathBuf> = paths.iter().filter(|p| !restarts(p)).cloned().collect();
     // Behind the editor's gate, a rewrite of the bytes the pages already have
     // (as the last release brought them, and nothing else served since)
-    // reaches no page (HmrGate::drop_unchanged), and neither does a file born
-    // and gone within the batch: the temporary file of an atomic save,
-    // renamed over its target before the quiet window closed. No page fetched
-    // it and nothing can import it now, so holding it would only make the
-    // editor's next flush reload every page for a path that no longer exists
-    // (its target's own rewrite is judged on its own). Vite sends nothing
-    // for it either: its handleHMRUpdate hears the add and the unlink, finds
-    // no module for the file and returns at "[no modules matched]" (only an
-    // .html file reloads the page), and chokidar's `atomic` handling, on by
-    // default off polling, hides the editor temporary names it knows (swap
-    // files, `~` backups, Sublime's `.tmp`) before Vite hears of them at
-    // all. A temporary file that outlives the quiet window (the save
-    // synced it before the rename) is held by the batch that made it, and
-    // the batch that sees it gone drops that hold again. A known file that
-    // is gone (deleted, not born under this hold) stays held: its importers
-    // need the reload. The watchers, watchChange and invalidation below
-    // still see both, as Vite's plugins do.
+    // reaches no page (HmrGate::drop_unchanged), and neither does a file
+    // that came and went without a page having it: the temporary file of an
+    // atomic save, renamed over its target (HmrGate::drop_born_and_gone).
+    // Nothing can import it now, so holding it would only make the editor's
+    // next flush reload every page for a path that no longer exists; its
+    // target's own rewrite is judged on its own. A known file that is gone
+    // stays held: its importers need the reload. Vite sends the browser
+    // nothing for such a file either: handleHMRUpdate hears the add and the
+    // unlink, finds no module for the file and ends at "[no modules
+    // matched]" (an .html file reloads the page, and an add re-runs the
+    // modules whose imports had failed to resolve), and where chokidar's
+    // `atomic` handling is on (no polling, no fsevents) the editor temporary
+    // names it knows (swap files, `~` backups, Sublime's `.tmp`) never reach
+    // Vite at all. Vite's plugins do get hotUpdate for the add and the
+    // unlink; here the path is left out of what a flush or a batch the gate
+    // lets through hands to those hooks. The watchers, watchChange and
+    // invalidation below still see it.
     let hot = match &state.hmr_gate {
         Some(gate) => {
             let hot = gate.drop_born_and_gone(&state.content, hot, created);
@@ -1560,7 +1560,7 @@ fn handle_batch(
         && !state
             .hmr_gate
             .as_ref()
-            .is_some_and(|gate| gate.hold(state, &hot, false));
+            .is_some_and(|gate| gate.hold(state, &hot, created, false));
     // Let through, the batch reaches the pages without a flush: what the
     // gate compares rewrites against moves with it.
     if dispatch {

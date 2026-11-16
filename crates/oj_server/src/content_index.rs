@@ -165,8 +165,9 @@ impl ContentIndex {
         }
     }
 
-    /// Whether the server has served `path` at no point of this run: no page
-    /// can hold any content of it.
+    /// Whether the server has served `path` as a module at no point of this
+    /// run. Only the module pipeline records a serve: a file fetched raw, as
+    /// an asset or from `public/` does not count.
     pub fn never_served(&self, path: &Path) -> bool {
         self.lock()
             .get(path)

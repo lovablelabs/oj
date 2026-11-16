@@ -458,6 +458,33 @@ async fn a_created_module_a_page_fetched_then_deleted_is_held() {
     assert_eq!(flush(&server).await, 1, "the flush released it");
 }
 
+/// A file the pages were brought to, deleted under the gate, written back
+/// and deleted again stays held: the write-back is reported as a creation,
+/// but the hold began with the deletion of a file the pages know.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_known_file_deleted_written_back_and_deleted_again_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+    let extra = app.root.join("src/extra.js");
+    app.write(&[("src/extra.js", "export const extra = 1;\n")]);
+    wait_pending(&server, 1, "the new file").await;
+    assert_eq!(flush(&server).await, 1, "the flush released the new file");
+
+    std::fs::remove_file(&extra).unwrap();
+    wait_pending(&server, 1, "the deletion").await;
+    app.write(&[("src/extra.js", "export const extra = 2;\n")]);
+    tokio::time::sleep(SETTLED).await;
+    std::fs::remove_file(&extra).unwrap();
+    tokio::time::sleep(SETTLED).await;
+    let status = server.text("/__hmr_gate").await;
+    assert_eq!(
+        pending(&server).await,
+        1,
+        "the deletion stays held: {status}"
+    );
+    assert_eq!(flush(&server).await, 1, "the flush released the deletion");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
     let (app, server) = gated_app().await;
