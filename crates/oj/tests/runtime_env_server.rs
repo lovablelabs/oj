@@ -8,7 +8,7 @@
 mod start_app;
 
 use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use start_app::Server;
@@ -52,14 +52,9 @@ impl App {
         std::fs::write(self.root.join(rel), text).unwrap();
     }
 
-    /// `oj dev` with the keys and, when given, a ready file.
-    fn serve(&self, ready: Option<&Path>) -> Server {
-        let ready = ready.map(|r| r.to_string_lossy().into_owned());
-        let mut env = vec![("OJ_RUNTIME_ENV_KEYS", KEYS)];
-        if let Some(ready) = &ready {
-            env.push(("OJ_RUNTIME_ENV_READY_FILE", ready.as_str()));
-        }
-        Server::oj_dev_with(&self.root, &env)
+    /// `oj dev` with the keys.
+    fn serve(&self) -> Server {
+        Server::oj_dev_with(&self.root, &[("OJ_RUNTIME_ENV_KEYS", KEYS)])
     }
 }
 
@@ -131,45 +126,13 @@ fn status_after_restart(app: &App, server: &Server, marker: &str) -> serde_json:
     }
 }
 
-// The ready file says every key has a value in a running server: absent at
-// boot, written once every key is set, removed when one is unset, and
-// removed by a server told to stop. Left behind, it said ready with nothing
-// serving.
-#[test]
-fn the_ready_file_follows_the_binding_and_goes_when_the_server_is_stopped() {
-    let app = App::new("ready-stop");
-    let ready = app.state.join("ready");
-    // A previous run's: this server has nothing bound.
-    std::fs::write(&ready, "1\n").unwrap();
-    let server = app.serve(Some(&ready));
-    let (_, status) = env(&server, None).expect("the server answers");
-    assert_eq!(status["state"], "unbound", "{status}");
-    assert!(!ready.exists(), "unbound at boot");
-
-    set(&server, r#"{"VITE_BACKEND_URL":"/_port_8001"}"#);
-    assert!(!ready.exists(), "partial");
-    set(&server, BOUND);
-    assert!(ready.exists(), "bound: ready");
-    set(&server, r#"{"VITE_BACKEND_KEY":null}"#);
-    assert!(!ready.exists(), "a key unset: not ready");
-    set(&server, BOUND);
-    assert!(ready.exists(), "bound again");
-
-    drop(server);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while ready.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(!ready.exists(), "the stopped server left its ready file");
-}
-
 // A value set over `/@oj/env` lives in the server alone. An `.env` edit
 // restarts the server: the value is handed to the next image, where it is
 // still set, and a key that was not set still is not.
 #[test]
 fn a_set_value_outlives_a_restart_of_the_server() {
     let app = App::new("restart");
-    let server = app.serve(None);
+    let server = app.serve();
     set(&server, r#"{"VITE_BACKEND_URL":"/_port_9000"}"#);
     let status = status_after_restart(&app, &server, "1");
     assert_eq!(status["state"], "partial", "{status}");
@@ -182,20 +145,17 @@ fn a_set_value_outlives_a_restart_of_the_server() {
     );
 }
 
-// Every key set, with a ready file: the next image is handed every value,
-// so it is bound from its first answer and its ready file is there again.
+// Every key set: the next image is handed every value, so it is bound from
+// its first answer.
 #[test]
-fn a_bound_server_is_bound_and_ready_again_after_a_restart() {
-    let app = App::new("restart-ready");
-    let ready = app.state.join("ready");
-    let server = app.serve(Some(&ready));
+fn a_bound_server_is_bound_again_after_a_restart() {
+    let app = App::new("restart-bound");
+    let server = app.serve();
     set(&server, BOUND);
-    assert!(ready.exists(), "bound: ready");
     let status = status_after_restart(&app, &server, "1");
     assert_eq!(status["state"], "bound", "{status}");
     assert_eq!(status["keys"][0]["value"], "/_port_8001", "{status}");
     assert_eq!(status["keys"][1]["value"], "sb_publishable_x", "{status}");
-    assert!(ready.exists(), "the next image is bound and serving");
 }
 
 // What a restart hands over is what is set when it happens: a value unset
@@ -203,7 +163,7 @@ fn a_bound_server_is_bound_and_ready_again_after_a_restart() {
 #[test]
 fn an_unset_value_is_not_brought_back_by_a_restart() {
     let app = App::new("restart-unset");
-    let server = app.serve(None);
+    let server = app.serve();
     set(
         &server,
         r#"{"VITE_BACKEND_URL":"/_port_9000","VITE_BACKEND_KEY":"k"}"#,
@@ -257,6 +217,43 @@ fn the_runtime_env_file_variable_is_ignored() {
     let (code, page) = server.request("GET", "/", &[]);
     assert_eq!(code, 200, "{page}");
     assert!(page.contains("/src/main.js"), "{page}");
+}
+
+// `OJ_RUNTIME_ENV_READY_FILE` is no setting either: no file is written at
+// the path it names, with every key set or not, and the status names none.
+// `GET /@oj/env` answering `"state": "bound"` is the signal.
+#[test]
+fn the_runtime_env_ready_file_variable_is_ignored() {
+    let app = App::new("stray-ready");
+    let ready = app.state.join("ready");
+    let server = Server::oj_dev_with(
+        &app.root,
+        &[
+            ("OJ_RUNTIME_ENV_KEYS", KEYS),
+            ("OJ_RUNTIME_ENV_READY_FILE", ready.to_str().unwrap()),
+        ],
+    );
+    let (code, status) = env(&server, None).expect("the server answers");
+    assert_eq!(code, 200, "{status}");
+    assert_eq!(status["state"], "unbound", "{status}");
+
+    set(&server, BOUND);
+    let (_, status) = env(&server, None).expect("the server answers");
+    assert_eq!(status["state"], "bound", "{status}");
+    assert!(status.get("readyFile").is_none(), "{status}");
+    assert!(!ready.exists(), "no file is written at the path");
+    let mut fields: Vec<&str> = status
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["generation", "keys", "module", "state"],
+        "{status}"
+    );
 }
 
 // A key mapped to a field (`KEY=field`) is refused at startup, by name: the

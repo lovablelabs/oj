@@ -10,8 +10,7 @@
 //! route serves and nothing a compile emitted. The key list
 //! (`OJ_RUNTIME_ENV_KEYS`) is fixed at startup; a key's value comes from
 //! `POST /@oj/env`, a local-only control endpoint, and wins over the `.env`
-//! literal the key had. `OJ_RUNTIME_ENV_READY_FILE`, when named, exists
-//! exactly while every key has a value set.
+//! literal the key had.
 
 use super::*;
 use std::borrow::Cow;
@@ -27,34 +26,23 @@ pub(crate) const CONTROL_PATH: &str = "/@oj/env";
 /// strings.
 const MAX_SET_BYTES: u64 = 64 * 1024;
 
-/// What `oj dev` was told about runtime keys (`OJ_RUNTIME_ENV_*`).
+/// What `oj dev` was told about runtime keys (`OJ_RUNTIME_ENV_KEYS`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeEnvConfig {
     pub keys: Vec<String>,
-    /// Exists exactly while every key has a value set.
-    pub ready_file: Option<PathBuf>,
 }
 
 impl RuntimeEnvConfig {
-    /// From the process knobs; `None` when no keys are named. A ready file
-    /// without keys is an error, since it could never apply.
+    /// From the process knobs; `None` when no keys are named.
     pub fn from_knobs(knobs: &oj_env::Knobs) -> Result<Option<Self>, String> {
         let keys = match &knobs.runtime_env_keys {
             Some(spec) => oj_env::parse_runtime_env_keys(spec)?,
             None => Vec::new(),
         };
         if keys.is_empty() {
-            if knobs.runtime_env_ready_file.is_some() {
-                return Err(
-                    "OJ_RUNTIME_ENV_READY_FILE needs OJ_RUNTIME_ENV_KEYS to name the keys it serves".into(),
-                );
-            }
             return Ok(None);
         }
-        Ok(Some(RuntimeEnvConfig {
-            keys,
-            ready_file: knobs.runtime_env_ready_file.clone(),
-        }))
+        Ok(Some(RuntimeEnvConfig { keys }))
     }
 }
 
@@ -103,9 +91,6 @@ struct Inner {
 
 pub(crate) struct RuntimeEnv {
     keys: Vec<String>,
-    /// Whether the server listens yet ([`Self::serving`]).
-    serving: std::sync::atomic::AtomicBool,
-    ready_file: Option<PathBuf>,
     /// `import.meta.env.*` defines outside the runtime keys, name and the
     /// JavaScript expression the define replaces reads with.
     statics: Vec<(String, String)>,
@@ -139,21 +124,14 @@ impl RuntimeEnv {
                 statics.push((name.to_string(), v.clone()));
             }
         }
-        let env = RuntimeEnv {
+        RuntimeEnv {
             keys: cfg.keys,
-            serving: std::sync::atomic::AtomicBool::new(false),
-            // Absolute, so a later chdir (a plugin host moves to the app
-            // root) changes nothing.
-            ready_file: cfg.ready_file.as_deref().map(absolute),
             statics,
             fallbacks,
             module_url: dev_html::posix_join(&[base.unwrap_or("/"), MODULE_PATH]),
             boot: boot_id(),
             inner: Mutex::new(Inner::default()),
-        };
-        // A ready file a previous run left must go: nothing is bound yet.
-        env.publish_ready(env.state());
-        env
+        }
     }
 
     /// The startup line: the keys and where their values come from.
@@ -220,14 +198,12 @@ impl RuntimeEnv {
             ));
         }
         *carried().lock().unwrap() = (!set_values.is_empty()).then_some(handed);
-        // The generation moves when the values in force do, and the ready
-        // file follows the state.
+        // The generation moves when the values in force do.
         let changed = inner.set_values != set_values;
         inner.set_values = set_values;
         if changed {
             inner.generation += 1;
         }
-        self.publish_ready(state_of(&inner, &self.keys));
         Ok(changed)
     }
 
@@ -243,41 +219,6 @@ impl RuntimeEnv {
             .filter(|(key, _)| self.keys.contains(key))
             .collect();
         let _ = self.set(listed);
-    }
-
-    fn publish_ready(&self, state: Binding) {
-        let Some(ready) = &self.ready_file else {
-            return;
-        };
-        // Ready says a server answers with every value: not before it
-        // listens, and not once it was told to stop.
-        // Under the lock the stop's sweep takes: a write that saw the server
-        // running lands before the sweep, never after it.
-        let mut written = ready_files().lock().unwrap();
-        let serving = self.serving.load(std::sync::atomic::Ordering::SeqCst)
-            && !STOPPING.load(std::sync::atomic::Ordering::SeqCst);
-        let result = if state == Binding::Bound && serving {
-            written.insert(ready.clone());
-            std::fs::write(ready, b"1\n")
-        } else {
-            match std::fs::remove_file(ready) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-                _ => Ok(()),
-            }
-        };
-        if let Err(e) = result {
-            eprintln!("oj: runtime env ready file {}: {e}", ready.display());
-        }
-    }
-
-    /// The server listens: the ready file may say so from here on.
-    pub(crate) fn serving(&self) {
-        self.serving
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        // The state and the file under one lock, as every change publishes
-        // it: a change in between would have its removal written over.
-        let inner = self.inner.lock().unwrap();
-        self.publish_ready(state_of(&inner, &self.keys));
     }
 
     pub(crate) fn state(&self) -> Binding {
@@ -336,7 +277,6 @@ impl RuntimeEnv {
             "generation": inner.generation,
             "module": self.module_url,
             "keys": keys,
-            "readyFile": self.ready_file.as_ref().map(|f| f.display().to_string()),
         })
     }
 
@@ -430,38 +370,6 @@ pub(crate) fn carried_set() -> Option<String> {
     carried().lock().unwrap().clone()
 }
 
-/// The ready files this process wrote, for [`clear_ready_files`].
-fn ready_files() -> &'static Mutex<std::collections::BTreeSet<PathBuf>> {
-    static FILES: std::sync::OnceLock<Mutex<std::collections::BTreeSet<PathBuf>>> =
-        std::sync::OnceLock::new();
-    FILES.get_or_init(Default::default)
-}
-
-/// Set once the server is told to stop: a value bound after that writes no
-/// ready file.
-static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Removes every ready file this process wrote: a stopped server serves no
-/// value, so nothing is ready. Called when the server is told to stop; a
-/// process killed outright leaves the file, which the next start removes.
-pub fn clear_ready_files() {
-    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
-    let mut written = ready_files().lock().unwrap();
-    for file in std::mem::take(&mut *written) {
-        let _ = std::fs::remove_file(file);
-    }
-}
-
-impl Drop for RuntimeEnv {
-    fn drop(&mut self) {
-        if let Some(ready) = &self.ready_file {
-            if ready_files().lock().unwrap().remove(ready) {
-                let _ = std::fs::remove_file(ready);
-            }
-        }
-    }
-}
-
 /// A name no other server image has: the process and when it was asked.
 fn boot_id() -> String {
     let nanos = std::time::SystemTime::now()
@@ -472,10 +380,6 @@ fn boot_id() -> String {
 
 fn json_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
-}
-
-fn absolute(path: &Path) -> PathBuf {
-    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A key's value in force and where it came from; the literal when it has

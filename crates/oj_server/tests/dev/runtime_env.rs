@@ -6,7 +6,6 @@
 //! first; the values come from a local `POST /@oj/env`, a change reloads the
 //! pages, and the compiled modules never change across a rebind.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -39,16 +38,10 @@ fn keys() -> Vec<String> {
     vec!["VITE_BACKEND_URL".into(), "VITE_BACKEND_KEY".into()]
 }
 
-async fn serve_with(app: &App, ready: Option<PathBuf>) -> Server {
+async fn serve_with(app: &App) -> Server {
     let mut dev = app.dev();
-    dev.runtime_env = Some(RuntimeEnvConfig {
-        keys: keys(),
-        ready_file: ready,
-    });
-    let server = crate::serve(dev).await;
-    // As `bind_listener` does: the ready file is a listening server's.
-    server.built.runtime_env_serving();
-    server
+    dev.runtime_env = Some(RuntimeEnvConfig { keys: keys() });
+    crate::serve(dev).await
 }
 
 async fn post(server: &Server, body: &str, headers: &[(&str, &str)]) -> Response {
@@ -78,7 +71,7 @@ fn first_statement(code: &str) -> &str {
 #[tokio::test(flavor = "multi_thread")]
 async fn redirected_modules_import_the_env_module_and_serve_the_literal_until_bound() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
 
     let main = server.text("/src/main.js").await;
     assert_eq!(
@@ -147,7 +140,6 @@ async fn redirected_modules_import_the_env_module_and_serve_the_literal_until_bo
             {"key": "VITE_BACKEND_KEY", "value": null, "source": null},
         ])
     );
-    assert_eq!(status["readyFile"], serde_json::Value::Null);
     assert!(
         status.get("file").is_none(),
         "the status names no file: {status}"
@@ -159,7 +151,7 @@ async fn redirected_modules_import_the_env_module_and_serve_the_literal_until_bo
 #[tokio::test(flavor = "multi_thread")]
 async fn with_nothing_set_documents_are_served_as_without_runtime_keys() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let plain_app = self::app();
     let plain = plain_app.serve().await;
 
@@ -198,17 +190,13 @@ async fn with_nothing_set_documents_are_served_as_without_runtime_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn bound_values_reach_the_module_the_page_and_the_ready_file() {
+async fn bound_values_reach_the_module_and_the_page() {
     let app = app();
-    let ready = app.root.join("ready");
-    // One a previous run left: nothing is bound yet, so it goes at boot.
-    std::fs::write(&ready, "1\n").unwrap();
-    let server = serve_with(&app, Some(ready.clone())).await;
-    assert!(!ready.exists(), "unbound at boot");
+    let server = serve_with(&app).await;
 
     let res = post(&server, r#"{"VITE_BACKEND_URL":"/_port_8001"}"#, &[]).await;
     assert_eq!(res.status, 200, "{}", res.body);
-    assert!(!ready.exists(), "partial: one key has no value");
+    assert_eq!(status(&server).await["state"], "partial");
 
     let res = post(&server, BOUND, &[]).await;
     assert_eq!(res.status, 200, "{}", res.body);
@@ -234,22 +222,20 @@ async fn bound_values_reach_the_module_the_page_and_the_ready_file() {
     assert_eq!(status["generation"], 2);
     assert_eq!(status["keys"][0]["source"], "set");
     assert_eq!(status["keys"][1]["source"], "set");
-    assert_eq!(status["readyFile"], ready.display().to_string());
-    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "1\n");
 
-    // Unbound again: a key unset takes the ready file with it.
+    // A key unset: no longer bound, until it is set again.
     let res = post(&server, r#"{"VITE_BACKEND_KEY":null}"#, &[]).await;
     assert_eq!(res.status, 200, "{}", res.body);
-    assert!(!ready.exists(), "no longer bound");
+    assert_eq!(self::status(&server).await["state"], "partial");
     let res = post(&server, BOUND, &[]).await;
     assert_eq!(res.status, 200, "{}", res.body);
-    assert!(ready.exists(), "bound again");
+    assert_eq!(self::status(&server).await["state"], "bound");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_local_post_sets_values_and_reloads_the_pages() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let listening = server.listen().await;
     let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
 
@@ -310,7 +296,7 @@ async fn a_local_post_sets_values_and_reloads_the_pages() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_control_endpoint_refuses_browsers_proxies_and_bad_bodies() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let body = r#"{"VITE_BACKEND_URL":"/evil"}"#;
 
     let res = post(&server, body, &[("origin", "http://localhost:5199")]).await;
@@ -376,7 +362,7 @@ async fn the_control_endpoint_refuses_browsers_proxies_and_bad_bodies() {
 #[tokio::test(flavor = "multi_thread")]
 async fn compiled_modules_are_stable_across_a_rebind() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let before = server.text("/src/main.js").await;
     let env_before = server.text("/@oj/env.js").await;
     let res = post(
@@ -428,7 +414,7 @@ async fn under_a_base_the_env_module_is_imported_and_served_under_it() {
         ("index.html", INDEX),
         ("src/main.js", MAIN),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let main = server.text("/app/src/main.js").await;
     assert_eq!(
         first_statement(&main),
@@ -466,7 +452,7 @@ async fn an_inline_page_module_reads_through_the_global() {
             r#"<!doctype html><html><head></head><body><script type="module">window.__backend = import.meta.env.VITE_BACKEND_URL;</script></body></html>"#,
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let html = server.text("/").await;
     let proxy = regex::Regex::new(r#"src="([^"]*html-proxy[^"]*)""#)
         .unwrap()
@@ -504,7 +490,7 @@ async fn a_worker_module_reads_through_the_global() {
             "self.postMessage(import.meta.env.VITE_BACKEND_URL);\n",
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let worker = server.text("/src/worker.js?worker_file&type=module").await;
     assert!(worker.contains("import \"/@oj/env.js\";"), "{worker}");
     assert!(
@@ -524,7 +510,7 @@ async fn a_worker_module_reads_through_the_global() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_change_with_no_page_connected_is_found_by_the_generation_not_a_kept_reload() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let before = server.text("/@oj/env.js").await;
     assert!(before.contains("g === \"0\""), "{before}");
     assert_eq!(server.text("/@oj/env.js?generation").await, "0");
@@ -562,7 +548,7 @@ async fn a_values_change_passes_the_editor_hmr_gate_without_a_flush() {
         ("index.html", INDEX),
         ("src/main.js", MAIN),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let listening = server.listen().await;
     let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
 
@@ -595,7 +581,7 @@ async fn a_plugins_html_transform_sees_the_values_in_force() {
         ("index.html", INDEX),
         ("src/main.js", MAIN),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let html = server.text("/").await;
     assert!(
         html.contains(r#"<meta name="mark">"#),
@@ -625,7 +611,7 @@ async fn a_module_reading_an_unset_key_imports_the_env_module() {
             "export const dsn = import.meta.env.VITE_SENTRY_DSN;\n",
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let main = server.text("/src/main.js").await;
     assert_eq!(first_statement(&main), "import \"/@oj/env.js\";", "{main}");
     assert!(
@@ -642,7 +628,7 @@ async fn a_module_reading_an_unset_key_imports_the_env_module() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_control_endpoint_refuses_a_caller_on_another_machine() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let body = r#"{"VITE_BACKEND_URL":"/evil"}"#;
     let from = |ip: &str| oj_server::tls::ClientConn {
         addr: std::net::SocketAddr::new(ip.parse().unwrap(), 40000),
@@ -696,7 +682,7 @@ async fn a_classic_worker_loads_the_values_without_an_import() {
             "self.postMessage(import.meta.env.VITE_BACKEND_URL);\n",
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let worker = server.text("/src/worker.js?worker_file&type=classic").await;
     assert!(
         worker.contains("importScripts(\"/@oj/env.js?classic\");"),
@@ -750,7 +736,7 @@ async fn under_a_base_the_generation_and_the_classic_script_answer_under_it() {
             "self.postMessage(import.meta.env.VITE_BACKEND_URL);\n",
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     assert_eq!(server.text("/app/@oj/env.js?generation").await, "0");
     let module = server.text("/app/@oj/env.js").await;
     assert!(
@@ -780,7 +766,7 @@ async fn under_a_base_the_generation_and_the_classic_script_answer_under_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_control_endpoint_refuses_what_a_local_proxy_relays() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let body = r#"{"VITE_BACKEND_URL":"/evil"}"#;
     let local = oj_server::tls::ClientConn {
         addr: "127.0.0.1:40000".parse().unwrap(),
@@ -821,7 +807,7 @@ async fn the_control_endpoint_refuses_what_a_local_proxy_relays() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_set_of_the_value_in_force_reloads_nobody() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let listening = server.listen().await;
     let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
     let body = r#"{"VITE_BACKEND_URL":"/_port_9000"}"#;
@@ -850,7 +836,7 @@ async fn a_set_of_the_value_in_force_reloads_nobody() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_env_module_is_not_another_origins_to_load() {
     let app = app();
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     assert_eq!(post(&server, BOUND, &[]).await.status, 200);
     for url in ["/@oj/env.js", "/@oj/env.js?classic"] {
         let res = server.get(url).await;
@@ -881,7 +867,7 @@ async fn a_classic_script_gets_the_values_inline_not_an_import() {
             "self.backend = import.meta.env.VITE_BACKEND_URL;\n",
         ),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     let get = |headers: Vec<(&'static str, String)>| {
         let mut req = axum::http::Request::get("/src/sw.js");
         for (name, value) in headers {
@@ -944,7 +930,7 @@ async fn under_a_base_documents_are_served_with_nothing_set() {
         ("index.html", INDEX),
         ("src/main.js", MAIN),
     ]);
-    let server = serve_with(&app, None).await;
+    let server = serve_with(&app).await;
     for served in [
         "/app/",
         "/app/index.html",

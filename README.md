@@ -47,7 +47,7 @@ A value set this way wins over the `.env` literal. Set values survive a restart 
 
 The endpoint only answers a direct caller on the same machine. A request from another machine, from a browser or through a proxy is refused.
 
-To know when every key has a value, set `OJ_RUNTIME_ENV_READY_FILE` to a path. oj keeps a file there only while the server is running and every key is set. A server that is killed outright leaves it behind; the next start cleans it up.
+A script that waits for every key to be set can ask `GET /@oj/env`: it answers `"state": "bound"` once they all are.
 
 Good to know:
 

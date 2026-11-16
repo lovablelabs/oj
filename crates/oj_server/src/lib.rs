@@ -779,19 +779,9 @@ pub struct BuiltApp {
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     watch_ready: tokio::sync::watch::Receiver<bool>,
     typecheck: Option<Arc<typecheck::Typecheck>>,
-    runtime_env: Option<Arc<runtime_env::RuntimeEnv>>,
 }
 
 impl BuiltApp {
-    /// The server answers from here on: the runtime env's ready file may
-    /// say so. [`bind_listener`](Self::bind_listener) calls it; a caller
-    /// serving the router another way does.
-    pub fn runtime_env_serving(&self) {
-        if let Some(env) = &self.runtime_env {
-            env.serving();
-        }
-    }
-
     /// The Vite-protocol socket's keepalive interval for sockets that
     /// connect from now on (none: no pings), over `OJ_HMR_PING_MS`.
     pub fn set_hmr_ping(&self, ping: Option<Duration>) {
@@ -822,7 +812,6 @@ impl BuiltApp {
             self.https.is_some(),
             self.typecheck.is_some(),
         );
-        self.runtime_env_serving();
         Ok((listener, port))
     }
 
@@ -2525,7 +2514,6 @@ impl DevServer {
         let watch_feed = state.watch_feed.clone();
         let typecheck = state.typecheck.clone();
         let base = state.base.clone();
-        let runtime_env = state.runtime_env.clone();
         let (router, route_hook, dev_headers) = build_router(state, &server_cfg, &hmr.ws_path);
         Ok(BuiltApp {
             router,
@@ -2552,7 +2540,6 @@ impl DevServer {
             watch_tx,
             watch_ready,
             typecheck,
-            runtime_env,
         })
     }
 }
@@ -2631,7 +2618,6 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // From here the sweep below kills every child, a restart check's engine
     // job included: a check failing now failed because the server is stopping.
     watch::note_shutting_down();
-    runtime_env::clear_ready_files();
     // A signal during boot finds no host yet: skip the hooks, still sweep.
     if let Some(host) = host.get() {
         if tokio::time::timeout(Duration::from_secs(5), close_plugins(host))

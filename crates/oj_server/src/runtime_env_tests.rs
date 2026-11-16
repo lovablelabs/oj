@@ -32,26 +32,14 @@ fn defines() -> Vec<(String, String)> {
     ]
 }
 
-fn env_with(ready: Option<PathBuf>) -> RuntimeEnv {
-    let env = booting_env(ready);
-    env.serving();
-    env
-}
-
-/// As built, before the server listens.
-fn booting_env(ready: Option<PathBuf>) -> RuntimeEnv {
+fn env() -> RuntimeEnv {
     RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: supabase_keys(),
-            ready_file: ready,
         },
         &defines(),
         None,
     )
-}
-
-fn env() -> RuntimeEnv {
-    env_with(None)
 }
 
 /// Every key, set.
@@ -226,35 +214,6 @@ fn binding_states_follow_the_sets() {
     assert_eq!(env.state(), Binding::Unbound);
 }
 
-#[test]
-fn the_ready_file_exists_exactly_while_bound() {
-    let dir = tempfile::tempdir().unwrap();
-    let ready = dir.path().join("ready");
-    let env = env_with(Some(ready.clone()));
-    assert!(!ready.exists(), "unbound at boot");
-
-    env.set(updates(&[
-        ("VITE_SUPABASE_URL", Some("/a")),
-        ("VITE_SUPABASE_PUBLISHABLE_KEY", Some("k")),
-    ]))
-    .unwrap();
-    assert!(!ready.exists(), "partial: one key has no value");
-
-    env.set(updates(&[("VITE_SUPABASE_PROJECT_ID", Some("p"))]))
-        .unwrap();
-    assert_eq!(std::fs::read_to_string(&ready).unwrap(), "1\n");
-
-    env.set(updates(&[("VITE_SUPABASE_URL", None)])).unwrap();
-    assert!(!ready.exists());
-    // Removing an already removed ready file is fine.
-    env.set(updates(&[("VITE_SUPABASE_PUBLISHABLE_KEY", None)]))
-        .unwrap();
-    assert!(!ready.exists());
-
-    env.set(bound()).unwrap();
-    assert!(ready.exists(), "bound again");
-}
-
 // ---- the served module -----------------------------------------------------------
 
 #[test]
@@ -278,7 +237,6 @@ fn the_module_keeps_static_expressions_as_the_define_had_them() {
     let env = RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: keys(&["VITE_RT"]),
-            ready_file: None,
         },
         &[
             ("import.meta.env.FLAG".into(), "__FLAG__".into()),
@@ -299,7 +257,6 @@ fn the_module_url_follows_the_base() {
     let env = RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: keys(&["VITE_A"]),
-            ready_file: None,
         },
         &[],
         Some("/app/"),
@@ -316,7 +273,6 @@ fn an_empty_define_list_still_serves_a_valid_module() {
     let env = RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: keys(&["VITE_A"]),
-            ready_file: None,
         },
         &[],
         None,
@@ -330,18 +286,13 @@ fn an_empty_define_list_still_serves_a_valid_module() {
 
 #[test]
 fn the_status_names_every_key_its_value_and_its_source() {
-    let dir = tempfile::tempdir().unwrap();
-    let env = env_with(Some(dir.path().join("ready")));
+    let env = env();
     env.set(updates(&[("VITE_SUPABASE_PROJECT_ID", Some("p"))]))
         .unwrap();
     let status = env.status();
     assert_eq!(status["state"], "partial");
     assert_eq!(status["generation"], 1);
     assert_eq!(status["module"], "/@oj/env.js");
-    assert_eq!(
-        status["readyFile"],
-        dir.path().join("ready").display().to_string()
-    );
     let mut fields: Vec<&str> = status
         .as_object()
         .unwrap()
@@ -351,7 +302,7 @@ fn the_status_names_every_key_its_value_and_its_source() {
     fields.sort_unstable();
     assert_eq!(
         fields,
-        ["generation", "keys", "module", "readyFile", "state"],
+        ["generation", "keys", "module", "state"],
         "{status}"
     );
     let keys = status["keys"].as_array().unwrap();
@@ -389,7 +340,6 @@ fn the_status_follows_the_state() {
     let status = env.status();
     assert_eq!(status["state"], "unbound");
     assert_eq!(status["generation"], 0);
-    assert_eq!(status["readyFile"], serde_json::Value::Null);
     env.set(bound()).unwrap();
     let status = env.status();
     assert_eq!(status["state"], "bound");
@@ -430,21 +380,13 @@ fn the_config_comes_from_the_knobs() {
     let knobs =
         |vars: &[(&str, &str)]| oj_env::Env::from_vars(vars.iter().map(|(k, v)| (*k, *v))).knobs;
     assert_eq!(RuntimeEnvConfig::from_knobs(&knobs(&[])).unwrap(), None);
-    let cfg = RuntimeEnvConfig::from_knobs(&knobs(&[
-        ("OJ_RUNTIME_ENV_KEYS", "VITE_SUPABASE_URL, VITE_X"),
-        ("OJ_RUNTIME_ENV_READY_FILE", "/run/ready"),
-    ]))
+    let cfg = RuntimeEnvConfig::from_knobs(&knobs(&[(
+        "OJ_RUNTIME_ENV_KEYS",
+        "VITE_SUPABASE_URL, VITE_X",
+    )]))
     .unwrap()
     .unwrap();
     assert_eq!(cfg.keys, ["VITE_SUPABASE_URL", "VITE_X"]);
-    assert_eq!(cfg.ready_file.as_deref(), Some(Path::new("/run/ready")));
-
-    let err = RuntimeEnvConfig::from_knobs(&knobs(&[("OJ_RUNTIME_ENV_READY_FILE", "/run/ready")]))
-        .unwrap_err();
-    assert!(
-        err.contains("OJ_RUNTIME_ENV_KEYS"),
-        "a ready file without keys: {err}"
-    );
     let err =
         RuntimeEnvConfig::from_knobs(&knobs(&[("OJ_RUNTIME_ENV_KEYS", "not-a-key")])).unwrap_err();
     assert!(err.contains("not a valid"), "{err}");
@@ -471,36 +413,35 @@ fn a_mapped_key_is_a_startup_error_naming_the_entry() {
     assert!(err.contains("`VITE_A=field`"), "{err}");
 }
 
-// `OJ_RUNTIME_ENV_FILE` is no setting: like any variable oj does not read,
-// it changes nothing and is no error, with keys or without.
+// `OJ_RUNTIME_ENV_FILE` and `OJ_RUNTIME_ENV_READY_FILE` are no settings:
+// like any variable oj does not read, each changes nothing and is no error,
+// with keys or without.
 #[test]
-fn the_runtime_env_file_variable_is_ignored() {
+fn the_runtime_env_file_variables_are_ignored() {
     let knobs =
         |vars: &[(&str, &str)]| oj_env::Env::from_vars(vars.iter().map(|(k, v)| (*k, *v))).knobs;
-    let stray = ("OJ_RUNTIME_ENV_FILE", "/persist/env.json");
-    assert_eq!(
-        RuntimeEnvConfig::from_knobs(&knobs(&[stray])).unwrap(),
-        None
-    );
     let keyed = ("OJ_RUNTIME_ENV_KEYS", "VITE_A");
-    assert_eq!(
-        RuntimeEnvConfig::from_knobs(&knobs(&[keyed, stray])).unwrap(),
-        RuntimeEnvConfig::from_knobs(&knobs(&[keyed])).unwrap()
-    );
+    for stray in [
+        ("OJ_RUNTIME_ENV_FILE", "/persist/env.json"),
+        ("OJ_RUNTIME_ENV_READY_FILE", "/run/ready"),
+    ] {
+        assert_eq!(
+            RuntimeEnvConfig::from_knobs(&knobs(&[stray])).unwrap(),
+            None,
+            "{stray:?}"
+        );
+        assert_eq!(
+            RuntimeEnvConfig::from_knobs(&knobs(&[keyed, stray])).unwrap(),
+            RuntimeEnvConfig::from_knobs(&knobs(&[keyed])).unwrap(),
+            "{stray:?}"
+        );
+    }
 }
 
 #[test]
 fn the_cache_salt_follows_the_key_list_and_the_module_url() {
     let make = |names: &[&str], base: Option<&str>| {
-        RuntimeEnv::new(
-            RuntimeEnvConfig {
-                keys: keys(names),
-                ready_file: None,
-            },
-            &[],
-            base,
-        )
-        .cache_salt()
+        RuntimeEnv::new(RuntimeEnvConfig { keys: keys(names) }, &[], base).cache_salt()
     };
     let a = make(&["VITE_A"], None);
     assert_eq!(a, make(&["VITE_A"], None));
@@ -540,31 +481,6 @@ fn only_a_direct_local_caller_may_control_the_values() {
 }
 
 // ---- review follow-ups ---------------------------------------------------------------
-
-#[test]
-fn a_stale_ready_file_goes_at_boot() {
-    let dir = tempfile::tempdir().unwrap();
-    let ready = dir.path().join("ready");
-    std::fs::write(&ready, "1\n").unwrap();
-    let env = env_with(Some(ready.clone()));
-    assert_eq!(env.state(), Binding::Unbound);
-    assert!(
-        !ready.exists(),
-        "a previous run's ready file does not vouch for this one"
-    );
-    env.set(bound()).unwrap();
-    assert!(ready.exists());
-}
-
-#[test]
-fn a_relative_ready_file_is_taken_from_the_working_directory() {
-    let cwd = std::env::current_dir().unwrap();
-    let env = env_with(Some("state/ready".into()));
-    assert_eq!(
-        env.status()["readyFile"],
-        cwd.join("state/ready").display().to_string()
-    );
-}
 
 #[test]
 fn the_served_object_is_plain_so_a_field_assignment_does_not_throw() {
@@ -627,24 +543,6 @@ fn only_this_machine_and_no_browser_may_control_the_values() {
             "{name}: {value}"
         );
     }
-}
-
-// A stopped server serves no value: the ready file it wrote goes with it.
-#[test]
-fn the_ready_file_goes_when_the_server_does() {
-    let dir = tempfile::tempdir().unwrap();
-    let ready = dir.path().join("ready");
-    let env = env_with(Some(ready.clone()));
-    env.set(bound()).unwrap();
-    assert!(ready.exists());
-    drop(env);
-    assert!(!ready.exists(), "left behind, it said ready with no server");
-
-    // One that was never written is not this server's to remove.
-    let env = env_with(Some(ready.clone()));
-    std::fs::write(&ready, "someone else's\n").unwrap();
-    drop(env);
-    assert!(ready.exists());
 }
 
 // A classic worker cannot hold a static import: it loads the script form of
@@ -849,35 +747,16 @@ fn an_address_of_this_machine_is_a_local_caller() {
     ));
 }
 
-// Ready says a server answers with every value: it is not written before
-// the server listens (a consumer saw it and was refused the connection, and
-// a boot that failed left it behind).
-#[test]
-fn the_ready_file_waits_for_the_server_to_listen() {
-    let dir = tempfile::tempdir().unwrap();
-    let ready = dir.path().join("ready");
-    let env = booting_env(Some(ready.clone()));
-    // As a restart hands every value over, before the listener is up.
-    env.restore_set(&serde_json::json!(bound()).to_string());
-    assert_eq!(env.state(), Binding::Bound);
-    assert!(!ready.exists(), "bound, but nothing listens yet");
-    env.serving();
-    assert!(ready.exists());
-}
-
 // ---- more tests ------------------------------------------------------------------------
 
 fn based_env(base: &str) -> RuntimeEnv {
-    let env = RuntimeEnv::new(
+    RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: supabase_keys(),
-            ready_file: None,
         },
         &defines(),
         Some(base),
-    );
-    env.serving();
-    env
+    )
 }
 
 // Under a base every url the module and a worker's file name is under it:

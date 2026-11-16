@@ -673,8 +673,6 @@ pub fn restart_process(root: &Path, reason: &str) -> ! {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
     crate::otel::shutdown();
-    // Nothing serves until the next image is up: its ready file says so.
-    crate::runtime_env::clear_ready_files();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live
