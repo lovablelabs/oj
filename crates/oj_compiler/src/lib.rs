@@ -29,7 +29,7 @@ pub use compile::{
     COMPILE_STACK_SIZE,
 };
 pub(crate) use env::defines_for;
-pub use env::ImportMetaEnv;
+pub use env::{ImportMetaEnv, RuntimeDefines};
 pub(crate) use rewrite::rewrite_module_specifiers_pub;
 pub use scan::{exports, imports, rewrite_specifiers, specifier_edits, SpecifierEdits};
 pub(crate) use scan::{scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};

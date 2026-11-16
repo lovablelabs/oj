@@ -13,7 +13,7 @@ pub(crate) async fn serve_diagnostics(
     uri: Uri,
     State(state): State<Arc<ServerState>>,
 ) -> Response {
-    if headers.contains_key(header::ORIGIN) || headers.contains_key("x-forwarded-host") {
+    if !crate::runtime_env::local_caller(&headers) {
         return (StatusCode::FORBIDDEN, "").into_response();
     }
     let after = uri

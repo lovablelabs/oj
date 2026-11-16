@@ -24,6 +24,51 @@ Vite/Rollup-style plugins run through a persistent Node plugin host. Drop an `oj
 A TypeScript config (including one that imports local `.ts` files) is loaded via Vite's own config loader when Vite is installed, or bundled with the app's esbuild otherwise. From a `vite.config` oj also adopts the app's `base`, `server.port`/`host`, `define`, and `resolve.alias` for any field its own config
 leaves unset, alias entries resolve alongside tsconfig `paths`, in both `oj dev` and `oj build`.
 
+## Runtime env
+
+Normally an `import.meta.env` value is baked into the compiled code, so changing it means restarting the dev server. A runtime env key is read when the page loads instead. That helps when the dev server starts before its backend does (a preview whose database comes up later), or when it gets pointed at another backend while it runs.
+
+```sh
+OJ_RUNTIME_ENV_KEYS=VITE_API_URL,VITE_API_KEY \
+OJ_RUNTIME_ENV_FILE=/run/backend/env.json \
+oj dev
+```
+
+`OJ_RUNTIME_ENV_KEYS` lists the keys. `OJ_RUNTIME_ENV_FILE` is a JSON file holding their values, which oj watches:
+
+```json
+{ "VITE_API_URL": "/_port_8001", "VITE_API_KEY": "sb_publishable_x" }
+```
+
+If the file uses other field names, map them with `KEY=field`. For a backend that writes `{ "url": "...", "anonKey": "..." }`:
+
+```sh
+OJ_RUNTIME_ENV_KEYS=VITE_API_URL=url,VITE_API_KEY=anonKey
+```
+
+When a value changes, open pages reload and pick it up. Nothing is recompiled. `%KEY%` in index.html follows the values too.
+
+You can also set values over HTTP, from the same machine:
+
+```sh
+curl -X POST http://localhost:<port>/@oj/env -d '{"VITE_API_URL": "/_port_8001"}'   # null unsets a key
+curl http://localhost:<port>/@oj/env                                                # each key, its value and where it came from
+```
+
+A value set this way wins over the file's, and the file's wins over the `.env` literal. Set values survive a restart of the dev server (a config or `.env` edit). The endpoint only answers a direct caller on the same machine: a request from another machine, from a browser or through a proxy is refused.
+
+If the backend isn't ready yet:
+
+- Have it write `{"pending":true}` to the file first. While the file is there but missing values, pages answer 503 with a small page that retries every two seconds. Modules still load.
+- Set `OJ_RUNTIME_ENV_READY_FILE` to a path and oj keeps a file there only while the server is running and every key has a value. A server that is killed outright leaves it behind; the next start cleans it up.
+
+Good to know:
+
+- The values file can be a symlink (a mounted secret), and its directory can be created after the server starts.
+- The file, and the values set over HTTP, are limited to 64 KB each.
+- Under the hood, a module that reads a key compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js`, which the server renders on each request. Workers are covered too.
+- This is for plain `oj dev` only, for now. `oj dev --ssr`, TanStack Start apps and `oj build` print a warning and keep the baked values.
+
 ## TanStack Start
 
 Point oj at a TanStack Start app and it runs the framework directly, no source changes. It detects Start from the app itself:

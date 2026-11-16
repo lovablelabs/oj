@@ -367,6 +367,7 @@ pub async fn start_dev(
             lazy: false,
             typecheck,
             mode: Some(mode.clone()),
+            runtime_env: None,
             rolldown: rolldown.clone(),
         };
         async move {

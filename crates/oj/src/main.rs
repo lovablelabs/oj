@@ -654,9 +654,17 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             typecheck,
         } => {
             let root = root.unwrap_or_else(default_dev_root);
+            let runtime_env = oj_server::RuntimeEnvConfig::from_knobs(&oj_env::get().knobs)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(entry) = ssr {
+                if runtime_env.is_some() {
+                    eprintln!("oj: OJ_RUNTIME_ENV_KEYS is not applied by `oj dev --ssr` yet; the keys keep their literals");
+                }
                 ssr_dev::ssr_dev(root, entry, port, host, typecheck, rolldown).await
             } else if oj_server::is_tanstack_start_app(&root) {
+                if runtime_env.is_some() {
+                    eprintln!("oj: OJ_RUNTIME_ENV_KEYS is not applied to a TanStack Start app yet; the keys keep their literals");
+                }
                 start_dev::start_dev(root, port, host, config, mode, typecheck, rolldown).await
             } else {
                 oj_server::DevServer {
@@ -667,6 +675,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                     lazy,
                     typecheck,
                     mode,
+                    runtime_env,
                     rolldown,
                 }
                 .run()
