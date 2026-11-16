@@ -480,4 +480,68 @@ mod tests {
             "codeSplitting group #0 name: oj: no config function #0"
         );
     }
+
+    // Stepping aside holds for the batch that failed and no longer: the
+    // next batch the host answers is used as it comes, and the group warns
+    // once however it stepped aside (a throw, a host that could not run it,
+    // its name or its test).
+    #[test]
+    fn a_group_that_stepped_aside_answers_again_and_warns_once() {
+        let guard = Guard {
+            label: "vendor".into(),
+            dev: true,
+            warned: Mutex::new(false),
+        };
+        assert!(!*guard.warned.lock().unwrap());
+        assert_eq!(
+            guard.results(vec![json!("a"), json!(null)]),
+            vec![Some(json!("a")), Some(json!(null))],
+            "answers pass through, a null one included"
+        );
+        assert!(!*guard.warned.lock().unwrap(), "nothing to warn of yet");
+        assert_eq!(
+            guard
+                .step_aside("test", "plugin host unresponsive".into(), 3)
+                .unwrap(),
+            vec![None, None, None],
+            "a miss per id"
+        );
+        assert!(*guard.warned.lock().unwrap());
+        assert_eq!(
+            guard.step_aside("name", "again".into(), 0).unwrap(),
+            Vec::<Option<Value>>::new()
+        );
+        assert_eq!(
+            guard.results(vec![json!("b"), json!({ "$threw": "boom" }), json!(true)]),
+            vec![Some(json!("b")), None, Some(json!(true))],
+            "the batch after is used as it comes"
+        );
+        assert!(*guard.warned.lock().unwrap());
+    }
+
+    // A build names the group and which of its functions failed, for a
+    // group with a static name as for one without.
+    #[test]
+    fn a_build_names_the_group_and_the_function_that_could_not_run() {
+        for (label, what, want) in [
+            (
+                "vendor",
+                "test",
+                "codeSplitting group vendor test: host gone",
+            ),
+            ("#3", "name", "codeSplitting group #3 name: host gone"),
+        ] {
+            let build = Guard {
+                label: label.into(),
+                dev: false,
+                warned: Mutex::new(false),
+            };
+            let err = build.step_aside(what, "host gone".into(), 1).unwrap_err();
+            assert_eq!(err.to_string(), want);
+            assert!(
+                !*build.warned.lock().unwrap(),
+                "a build fails, it does not warn"
+            );
+        }
+    }
 }

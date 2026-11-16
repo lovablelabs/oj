@@ -6021,7 +6021,12 @@ async function startFacts(c) {
   const top = cfg.build?.rolldownOptions ?? cfg.build?.rollupOptions ?? {};
   const own = self.build?.rolldownOptions ?? {};
   const output = { ...(top.output ?? {}), ...(own.output ?? {}) };
-  const codeSplitting = output.codeSplitting ?? output.advancedChunks;
+  // rolldown's bindingifyCodeSplitting: an object `codeSplitting` is the
+  // policy and `false` turns splitting off, whatever the older
+  // `advancedChunks` says; `true` or nothing leaves it to `advancedChunks`.
+  const ownPolicy =
+    output.codeSplitting === false || (output.codeSplitting && typeof output.codeSplitting === "object");
+  const codeSplitting = ownPolicy ? output.codeSplitting : (output.advancedChunks ?? output.codeSplitting);
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
   const names = c.rawPlugins.map((p) => p && p.name);

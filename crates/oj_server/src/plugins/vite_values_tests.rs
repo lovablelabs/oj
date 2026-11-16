@@ -2413,3 +2413,332 @@ async fn config_function_handles_outlive_the_engine_that_handed_them_out() {
     host.shutdown();
     crate::plugins::test_roots::remove_root(&root);
 }
+
+/// A bundle host over `config_src` (a `vite.config.mjs`) with the dev client
+/// bundle's container open, as start_bundle::hosts::open opens it. The config
+/// may carry a `blocker` plugin whose `load` wedges the engine.
+async fn start_fn_host(
+    label: &str,
+    config_src: &str,
+) -> (
+    PathBuf,
+    std::sync::Arc<PluginHost>,
+    std::sync::Arc<PluginHost>,
+) {
+    let root = std::env::temp_dir().join(format!("oj-start-fn-{label}-{}", std::process::id()));
+    crate::plugins::test_roots::remove_root(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let config_file = root.join("vite.config.mjs");
+    std::fs::write(&config_file, config_src).unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "client", "mode": "dev" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+        "ojBundleHost": true,
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &config_file,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(500)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    let client = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("the client container opens");
+    (root, host, client)
+}
+
+/// Kills the engine under the `blocker` plugin's wedged `load`; the next
+/// call revives it.
+async fn wedge(host: &PluginHost) {
+    let err = host
+        .load("__block__")
+        .await
+        .expect_err("a synchronous wedge silences the probes");
+    assert!(
+        err.contains("unresponsive") || err.contains("exited"),
+        "the probe names the wedge: {err}"
+    );
+    clear_respawn_spacing(host);
+}
+
+const BLOCKER: &str = r#"{
+    name: "blocker",
+    load(id) {
+      if (id.includes("__block__")) for (;;) {}
+      return null;
+    },
+  }"#;
+
+// Every fact that carries a function hands it out as a handle, and each
+// handle names the same function on a revived engine: an alias's
+// `customResolver`, the `external` function, a group's `name` and `test`,
+// and the worker bundle's `external`, which the facts reach last, after
+// they wait on the Cloudflare environment's plugins. The facts read again on
+// the revived engine are the ones the bundle holds, handle for handle.
+#[tokio::test]
+async fn every_config_function_keeps_its_handle_across_a_revive() {
+    let config = format!(
+        r#"export default {{
+  plugins: [{BLOCKER}],
+  resolve: {{
+    alias: [{{ find: "@app", replacement: "/src", customResolver: (id) => id + "?custom" }}],
+  }},
+  worker: {{ rolldownOptions: {{ external: (id) => id.startsWith("worker-external:") }} }},
+  build: {{
+    rolldownOptions: {{
+      external: (id) => id.startsWith("external:"),
+      output: {{
+        codeSplitting: {{
+          groups: [{{
+            name: (id) => (id.includes("/vendor/") ? "vendor" : undefined),
+            test: (id) => id.includes("node_modules"),
+          }}],
+        }},
+      }},
+    }},
+  }},
+}};
+"#
+    );
+    let (root, host, client) = start_fn_host("every", &config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let handle = |v: &serde_json::Value, what: &str| {
+        v["$fn"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{what} is no handle: {facts}"))
+    };
+    let resolver = handle(&facts["alias"][0]["customResolver"], "the alias resolver");
+    let external = handle(&facts["external"], "external");
+    let name = handle(
+        &facts["codeSplitting"]["groups"][0]["name"],
+        "the group's name",
+    );
+    let test = handle(
+        &facts["codeSplitting"]["groups"][0]["test"],
+        "the group's test",
+    );
+    let worker = handle(&facts["worker"]["external"], "the worker's external");
+    let mut all = vec![resolver, external, name, test, worker];
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), 5, "five functions, five handles: {facts}");
+    assert!(worker > test, "the worker's is handed out last: {facts}");
+
+    let ids = [
+        "/app/vendor/a.js".to_string(),
+        "/app/node_modules/b.js".to_string(),
+    ];
+    let answers = |generation: u64| {
+        let client = client.clone();
+        let ids = ids.clone();
+        async move {
+            (
+                client
+                    .call_start_fn(resolver, &serde_json::json!(["x"]))
+                    .await,
+                client
+                    .call_start_fn(external, &serde_json::json!(["external:a", null, false]))
+                    .await,
+                client
+                    .call_start_fn(external, &serde_json::json!(["./local", null, false]))
+                    .await,
+                client
+                    .call_start_fn_batch(name, &ids, generation, None, true)
+                    .await,
+                client
+                    .call_start_fn_batch(test, &ids, generation, None, true)
+                    .await,
+                client
+                    .call_start_fn(worker, &serde_json::json!(["worker-external:a"]))
+                    .await,
+            )
+        }
+    };
+    let before = answers(1).await;
+    assert_eq!(
+        before,
+        (
+            Ok(serde_json::json!("x?custom")),
+            Ok(serde_json::json!(true)),
+            Ok(serde_json::json!(false)),
+            Ok(vec![serde_json::json!("vendor"), serde_json::Value::Null]),
+            Ok(vec![serde_json::json!(false), serde_json::json!(true)]),
+            Ok(serde_json::json!(true)),
+        )
+    );
+
+    // The last handle first: the revived engine has to read every fact
+    // before it can answer it.
+    wedge(&host).await;
+    assert_eq!(
+        client
+            .call_start_fn(worker, &serde_json::json!(["worker-external:a"]))
+            .await,
+        Ok(serde_json::json!(true)),
+        "the handle the facts reach last, first on the revived engine"
+    );
+    assert_eq!(answers(2).await, before, "every handle after the revive");
+    assert_eq!(
+        client.start_facts().await.expect("the facts, read again"),
+        facts,
+        "the revived engine's facts are the ones the bundle holds"
+    );
+    assert_eq!(
+        answers(3).await,
+        before,
+        "and after the facts were read again"
+    );
+
+    // A handle nothing handed out stays an error, on either engine.
+    let missing = client.call_start_fn(99, &serde_json::json!([])).await;
+    assert!(
+        missing
+            .as_ref()
+            .is_err_and(|e| e.contains("no config function #99")),
+        "{missing:?}"
+    );
+    wedge(&host).await;
+    let missing = client.call_start_fn_batch(99, &ids, 4, None, true).await;
+    assert!(
+        missing
+            .as_ref()
+            .is_err_and(|e| e.contains("no config function #99")),
+        "{missing:?}"
+    );
+    assert_eq!(
+        answers(5).await,
+        before,
+        "a missing handle cost the others nothing"
+    );
+    host.shutdown();
+    crate::plugins::test_roots::remove_root(&root);
+}
+
+// A chunking pass calls a group's `name` and `test` side by side. On a
+// revived engine both arrive before either has read the facts: each gets
+// its own function, and so does a call for the handle the facts reach last.
+#[tokio::test]
+async fn calls_racing_on_a_revived_engine_each_get_their_function() {
+    let config = format!(
+        r#"export default {{
+  plugins: [{BLOCKER}],
+  worker: {{ rolldownOptions: {{ external: (id) => id.startsWith("worker-external:") }} }},
+  build: {{
+    rolldownOptions: {{
+      output: {{
+        codeSplitting: {{
+          groups: [{{
+            name: (id) => (id.includes("/vendor/") ? "vendor" : undefined),
+            test: (id) => id.includes("node_modules"),
+          }}],
+        }},
+      }},
+    }},
+  }},
+}};
+"#
+    );
+    let (root, host, client) = start_fn_host("racing", &config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let name = facts["codeSplitting"]["groups"][0]["name"]["$fn"]
+        .as_u64()
+        .unwrap();
+    let test = facts["codeSplitting"]["groups"][0]["test"]["$fn"]
+        .as_u64()
+        .unwrap();
+    let worker = facts["worker"]["external"]["$fn"].as_u64().unwrap();
+    let ids = [
+        "/app/vendor/a.js".to_string(),
+        "/app/node_modules/b.js".to_string(),
+    ];
+    for round in 0..3u64 {
+        wedge(&host).await;
+        let worker_args = serde_json::json!(["worker-external:a"]);
+        let (names, tests, external, names_again) = tokio::join!(
+            client.call_start_fn_batch(name, &ids, 10 + round, None, true),
+            client.call_start_fn_batch(test, &ids, 10 + round, None, true),
+            client.call_start_fn(worker, &worker_args),
+            client.call_start_fn_batch(name, &ids, 10 + round, None, true),
+        );
+        let named = Ok(vec![serde_json::json!("vendor"), serde_json::Value::Null]);
+        assert_eq!(names, named, "round {round}");
+        assert_eq!(names_again, named, "round {round}");
+        assert_eq!(
+            tests,
+            Ok(vec![serde_json::json!(false), serde_json::json!(true)]),
+            "round {round}"
+        );
+        assert_eq!(external, Ok(serde_json::json!(true)), "round {round}");
+    }
+    host.shutdown();
+    crate::plugins::test_roots::remove_root(&root);
+}
+
+// Which of `output.codeSplitting` and the older `output.advancedChunks` a
+// bundle follows, as rolldown's `bindingifyCodeSplitting` decides it: an
+// object `codeSplitting` wins, `false` turns splitting off whatever the
+// other says, and `true` or nothing leaves it to `advancedChunks`.
+#[tokio::test]
+async fn the_code_splitting_fact_is_the_option_rolldown_would_follow() {
+    let newer = r#"{ groups: [{ name: "newer", test: /newer/ }] }"#;
+    let older = r#"{ groups: [{ name: "older", test: /older/ }] }"#;
+    let group = |name: &str| serde_json::json!({ "groups": [{ "name": name, "test": { "$regex": name, "flags": "" } }] });
+    let cases = [
+        (
+            "object-alone",
+            format!("codeSplitting: {newer}"),
+            group("newer"),
+        ),
+        (
+            "older-alone",
+            format!("advancedChunks: {older}"),
+            group("older"),
+        ),
+        (
+            "object-and-older",
+            format!("codeSplitting: {newer}, advancedChunks: {older}"),
+            group("newer"),
+        ),
+        (
+            "true-and-older",
+            format!("codeSplitting: true, advancedChunks: {older}"),
+            group("older"),
+        ),
+        (
+            "false-and-older",
+            format!("codeSplitting: false, advancedChunks: {older}"),
+            serde_json::json!(false),
+        ),
+        (
+            "true-alone",
+            "codeSplitting: true".to_string(),
+            serde_json::json!(true),
+        ),
+        (
+            "false-alone",
+            "codeSplitting: false".to_string(),
+            serde_json::json!(false),
+        ),
+        ("neither", String::new(), serde_json::Value::Null),
+    ];
+    for (label, output, want) in cases {
+        let config = format!(
+            "export default {{ build: {{ rolldownOptions: {{ output: {{ {output} }} }} }} }};\n"
+        );
+        let (root, host, client) = start_fn_host(&format!("precedence-{label}"), &config).await;
+        let facts = client.start_facts().await.expect("start facts are served");
+        assert_eq!(facts["codeSplitting"], want, "{label}: {facts}");
+        host.shutdown();
+        crate::plugins::test_roots::remove_root(&root);
+    }
+}
