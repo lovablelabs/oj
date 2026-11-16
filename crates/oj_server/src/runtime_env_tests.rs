@@ -1169,7 +1169,8 @@ fn set_values_handed_over_a_restart_are_set_again() {
 }
 
 // A server bound to one of the machine's own addresses is reached there by
-// `oj env`, so its connection comes from that address, not from loopback.
+// a command on this machine, so its connection comes from that address, not
+// from loopback.
 #[test]
 fn an_address_of_this_machine_is_a_local_caller() {
     let headers = HeaderMap::new();
