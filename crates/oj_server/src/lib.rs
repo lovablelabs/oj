@@ -85,7 +85,7 @@ pub fn is_dev_server_path(path: &str) -> bool {
 mod dev_html;
 mod html;
 mod runtime_env;
-pub use runtime_env::RuntimeEnvConfig;
+pub use runtime_env::{env_via_server, EnvRequestError, RuntimeEnvConfig};
 pub mod tls;
 pub use html::*;
 mod ssr;

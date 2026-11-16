@@ -180,6 +180,9 @@ impl Server {
                 .arg(root)
                 .args(["--port", &free_port().to_string()])
                 .args(args)
+                // A cache dir the test's own environment names would be
+                // every test server's: they would share one address file.
+                .env_remove("OJ_CACHE_DIR")
                 .envs(env.iter().copied())
                 .current_dir(root),
         );
