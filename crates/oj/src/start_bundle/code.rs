@@ -360,7 +360,7 @@ impl StartCodePlugin {
                 .strip_prefix(&self.root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| file.to_string_lossy().into_owned());
-            let modules = oj_compiler::server_fns::FsModules { root: &self.root };
+            let modules = oj_compiler::server_fns::FsModules::new(&self.root);
             let rewritten = match self.target {
                 CodeTarget::Client => {
                     oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)

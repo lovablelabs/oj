@@ -3395,6 +3395,11 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
                         "fileName": a.filename.to_string(),
                         "name": a.names.first(),
                         "names": a.names,
+                        // Rollup's OutputAsset: the source paths the asset was
+                        // emitted for, always an array (`originalFileName` is
+                        // its deprecated first entry, null when there is none).
+                        "originalFileName": a.original_file_names.first(),
+                        "originalFileNames": a.original_file_names,
                         "source": source,
                     }),
                 );
@@ -7486,6 +7491,9 @@ pub(crate) fn serialize_bundle_with_vite_manifest(
                 "type": "asset",
                 "fileName": ".vite/manifest.json",
                 "name": "manifest.json",
+                "names": ["manifest.json"],
+                "originalFileName": null,
+                "originalFileNames": [],
                 "source": manifest,
             }),
         );

@@ -9,8 +9,12 @@
 //! document was built with instead of a 404 and a blank page.
 //!
 //! The app is the Start fixture (see `start_app`) with a route that imports a
-//! module lazily, so the module gets a chunk of its own.
+//! module lazily, so the module gets a chunk of its own. The browser test
+//! skips without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
 
+#[path = "../../oj_server/tests/dev/browser.rs"]
+#[allow(dead_code)]
+mod browser;
 #[allow(dead_code)]
 mod start_app;
 
@@ -18,7 +22,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use start_app::{app, Server};
+use browser::Page;
+use start_app::{app, Server, WAIT};
 
 const LAZY_NOTE: &str = "src/lib/lazy-note.ts";
 
@@ -43,6 +48,33 @@ function About() {
     <main>
       <h1 className="fixture-heading">about-page-marker</h1>
       <p id="note">{note}</p>
+    </main>
+  );
+}
+"#;
+
+/// The home route with a link to the about route, in place of the fixture's
+/// (whose page exercises every plugin of the fixture; this one is for the
+/// navigation alone), and the hydration probe the browser tests wait for.
+const INDEX: &str = r#"import { createRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+
+import { rootRoute } from "./__root";
+
+export const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: Index,
+});
+
+function Index() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return (
+    <main>
+      <h1 className="fixture-heading">home</h1>
+      {mounted ? <span data-testid="client-mounted">client-mounted-ok</span> : null}
+      <Link to="/about" id="to-about">about</Link>
     </main>
   );
 }
@@ -267,14 +299,17 @@ fn a_failed_rebundle_keeps_every_served_chunk() {
     assert_eq!(page.gone_frames(), 0, "no chunk was reported gone");
 }
 
-// The window is the bundle store's: the current bundle and seven behind it.
-// A name older than that is not found, and the server says so to the open
-// pages, naming the chunk, so the page that asked reloads (its router caught
-// the failed import, so nothing else would tell it). A name still inside the
-// window answers, and asking for it tells the pages nothing.
+// A page is behind by as many bundles as were made since it loaded, which
+// under a held reload or a hot session is many: the chunks of a bundle eight
+// rebundles back are still served (the dev server kept seven bundles behind
+// the current one, the bundle store's window, and the eighth was a 404). A
+// name no bundle of this run ever had is not found, and the server says so
+// to the open pages, naming the chunk, so the page that asked reloads (its
+// router caught the failed import, so nothing else would tell it); a name
+// that is served tells the pages nothing.
 #[test]
-fn a_chunk_past_the_window_is_not_found_and_the_pages_are_told() {
-    let Some((app, dev, first, _)) = started("chunk-retention-window") else {
+fn a_chunk_of_the_bundle_eight_rebundles_back_is_still_served() {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-window") else {
         return;
     };
     let root = &app.0;
@@ -289,21 +324,24 @@ fn a_chunk_past_the_window_is_not_found_and_the_pages_are_told() {
     let unique: std::collections::HashSet<&String> = names.iter().collect();
     assert_eq!(unique.len(), names.len(), "every edit renamed the chunk");
 
-    // The second bundle is the oldest still served; the newest is current.
-    for name in [&names[1], &names[8]] {
-        assert_eq!(chunk(&dev, name).0, 200, "{name}\n{}", dev.output());
+    for name in &names {
+        let (status, body) = chunk(&dev, name);
+        assert_eq!(
+            status,
+            200,
+            "{name} after eight rebundles: {body}\n{}",
+            dev.output()
+        );
     }
+    assert_eq!(
+        chunk(&dev, &names[0]).1,
+        first_body,
+        "the first bundle's chunk serves the code it had"
+    );
+    std::thread::sleep(Duration::from_millis(500));
     assert_eq!(page.gone_frames(), 0, "a served chunk is not reported gone");
 
-    let (status, body) = chunk(&dev, &names[0]);
-    assert_eq!(status, 404, "the first bundle's chunk: {body}");
-    assert!(
-        page.told_gone(&names[0]),
-        "the pages were not told {} is gone: {:?}",
-        names[0],
-        page.frames.lock().unwrap()
-    );
-    // A name this run of the server never had is told too: a page left open
+    // A name this run of the server never had is told: a page left open
     // across a restart of the dev server names such chunks, and nothing else
     // reloads it (its stamp is another run's).
     let never = "lazy-note-AAAAAAAA.js";
@@ -315,13 +353,116 @@ fn a_chunk_past_the_window_is_not_found_and_the_pages_are_told() {
     );
     // A source map is the browser's tools asking, not a page.
     let before = page.gone_frames();
-    assert_eq!(chunk(&dev, &format!("{}.map", names[0])).0, 404);
+    assert_eq!(chunk(&dev, &format!("{never}.map")).0, 404);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(
         page.gone_frames(),
         before,
         "a missing source map is no page's chunk"
     );
+}
+
+/// A page whose reload the editor's gate holds (`OJ_HMR_GATE=1` with full
+/// reloads: every edit rebundles, the reload waits for the flush) stays on
+/// the entry it loaded while nine edits rebundle behind it. Its first
+/// navigation to the about route then imports the note's chunk by the name
+/// its entry has, the first bundle's, and the page renders it, where a 404
+/// left the page blank until a manual reload; a chunk of the second bundle,
+/// never loaded, imports too. The flush then reloads the page onto the
+/// current bundle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_held_behind_many_rebundles_loads_its_lazy_route() {
+    let Some(app) = app("chunk-retention-held") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
+    std::fs::write(root.join("src/routes/index.tsx"), INDEX).unwrap();
+    write_note(&root, "lazy-note-one");
+    let dev = Server::oj_dev_with(
+        &root,
+        &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")],
+    );
+    let first = wait_for_note_chunk(&dev, None);
+
+    let page = Page::open(&dev.url("/")).await;
+    page.wait_for(
+        "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'",
+        WAIT,
+    )
+    .await;
+    page.eval::<bool>("(window.__mark = 'kept', true)").await;
+
+    // Nine edits, each renaming the note's chunk; the gate holds the reload.
+    let mut names = vec![first];
+    for n in 2..=10 {
+        write_note(&root, &format!("lazy-note-{n}"));
+        let name = wait_for_note_chunk(&dev, names.last().map(String::as_str));
+        names.push(name);
+    }
+    assert!(
+        dev.output().contains("reload held for the editor's flush"),
+        "the gate held no reload\n{}",
+        dev.output()
+    );
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded while the gate held its reload"
+    );
+
+    // The page's own lazy route: its entry imports the first bundle's chunk.
+    page.eval::<bool>("(document.getElementById('to-about').click(), true)")
+        .await;
+    let note = "document.querySelector('#note')?.textContent";
+    page.wait_for(
+        &format!("({note} === 'lazy-note-one') || window.__mark !== 'kept'"),
+        WAIT,
+    )
+    .await;
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded for a chunk the dev server no longer served\n{}",
+        dev.output()
+    );
+    assert_eq!(
+        page.eval::<String>(note).await,
+        "lazy-note-one",
+        "the about route rendered the note of the bundle the page loaded"
+    );
+
+    // A chunk of the second bundle, which nothing on the page loaded yet.
+    let second = format!("/@oj-start/{}", names[1]);
+    page.eval::<bool>(&format!(
+        "(import({}).then(m => {{ window.__second = m.note }}, e => {{ window.__second = 'failed: ' + e.message }}), true)",
+        serde_json::to_string(&second).unwrap()
+    ))
+    .await;
+    page.wait_for(
+        "typeof window.__second === 'string' || window.__mark !== 'kept'",
+        WAIT,
+    )
+    .await;
+    assert_eq!(
+        page.eval::<serde_json::Value>("window.__second").await,
+        serde_json::json!("lazy-note-2"),
+        "the second bundle's chunk\n{}",
+        dev.output()
+    );
+
+    // The flush releases the reload: the page comes back on the current
+    // bundle, at the about route, with the current note.
+    let (status, body) = dev.request("POST", "/__hmr_flush", &[]);
+    assert_eq!(status, 200, "flush: {body}");
+    page.wait_for(&format!("{note} === 'lazy-note-10'"), WAIT)
+        .await;
+    assert!(
+        page.eval::<bool>("window.__mark === undefined").await,
+        "the flush reloaded the page"
+    );
+    page.close().await;
 }
 
 /// Removes every file under `dir` whose content is `content`.

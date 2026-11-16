@@ -241,7 +241,7 @@ impl CssEngine {
                 let attempts = self.revive_attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 let cause = match trigger {
                     EngineError::MemoryLimit => format!(
-                        "hit its JS memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB)",
+                        "hit its JS memory limit ({}MB; raise it with NODE_OPTIONS=--max-old-space-size)",
                         self.memory_limit_bytes / (1024 * 1024)
                     ),
                     _ => "shut down".to_string(),
@@ -345,8 +345,7 @@ impl CssEngine {
     }
 }
 
-/// The one heap cap for every embedded engine: OJ_PLUGIN_MEMORY_MB, then
-/// NODE_OPTIONS --max-old-space-size, then 4096MB.
+/// The one heap cap for every embedded engine (see `plugin_host_memory_mb`).
 fn shared_memory_limit() -> usize {
     crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }

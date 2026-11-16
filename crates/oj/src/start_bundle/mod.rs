@@ -364,6 +364,7 @@ pub(crate) fn write_server_fn_resolver(
     let mut manifest = String::new();
     let mut count = 0;
     let mut module_count = 0;
+    let app_modules = oj_compiler::server_fns::FsModules::new(root);
     for path in &files {
         let Ok(code) = std::fs::read_to_string(path) else {
             continue;
@@ -373,11 +374,7 @@ pub(crate) fn write_server_fn_resolver(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let fns = oj_compiler::server_fns::find_server_fns(
-            &code,
-            &rel,
-            &oj_compiler::server_fns::FsModules { root },
-        );
+        let fns = oj_compiler::server_fns::find_server_fns(&code, &rel, &app_modules);
         if fns.is_empty() {
             continue;
         }
@@ -388,10 +385,9 @@ pub(crate) fn write_server_fn_resolver(
         // edited, as the engine keeps the errored module (Vite's too).
         let var = format!("__m{module_count}");
         module_count += 1;
-        let spec = oj_compiler::glob::relative_import(cache, path);
+        let spec = server_fn_module(cache, path);
         modules.push_str(&format!(
-            "let {var};\nconst {var}_load = async () => ({var} ??= await import({}));\n",
-            json(&spec)
+            "let {var};\nconst {var}_load = async () => ({var} ??= await import({spec}));\n"
         ));
         // In dev each function answers to oj's id and to the one Start's
         // plugin gives it in Vite dev, which a file imported outside oj's
@@ -431,7 +427,50 @@ pub(crate) fn write_server_fn_resolver(
          return action;\n}}\n"
     );
     std::fs::write(cache.join(server_fn_resolver_file(dev)), out)?;
+    // The modules the scan read to answer (a builder's module, the modules
+    // re-exporting it): an edit to one may change which calls are server
+    // functions in a file that was not edited.
+    let mut reads = app_modules.reads();
+    reads.sort();
+    let mut asked: Vec<String> = app_modules
+        .asked()
+        .into_iter()
+        .map(|base| format!("{SERVER_FN_ASKED}{base}"))
+        .collect();
+    asked.sort();
+    reads.extend(asked);
+    let mut unresolved: Vec<String> = app_modules
+        .unresolved()
+        .into_iter()
+        .map(|(from, specifier)| format!("{SERVER_FN_UNRESOLVED}{from}\t{specifier}"))
+        .collect();
+    unresolved.sort();
+    reads.extend(unresolved);
+    std::fs::write(cache.join(server_fn_reads_file(dev)), reads.join("\n"))?;
     Ok(count)
+}
+
+/// What a line of the reads file starts with when it names a relative import
+/// the scan asked for, app-relative as written (no extension added).
+pub(crate) const SERVER_FN_ASKED: &str = "?";
+
+/// What a line of the reads file starts with when it names an import that
+/// is not relative and that nothing answered: the importer, a tab, the
+/// specifier.
+pub(crate) const SERVER_FN_UNRESOLVED: &str = "!";
+
+/// Beside the resolver, the app-relative paths of the modules its scan read
+/// for an imported builder or factory, one per line; then, each after
+/// [`SERVER_FN_ASKED`], the relative imports it asked for, which another
+/// file may come to answer (a file created where there was none, or one
+/// with an extension tried earlier); then, each after
+/// [`SERVER_FN_UNRESOLVED`], the other imports nothing answered.
+pub(crate) fn server_fn_reads_file(dev: bool) -> &'static str {
+    if dev {
+        "server-fn-resolver.reads"
+    } else {
+        "server-fn-resolver.build.reads"
+    }
 }
 
 /// The resolver's file in the Start cache: dev's, or the build's.
@@ -441,6 +480,12 @@ pub(crate) fn server_fn_resolver_file(dev: bool) -> &'static str {
     } else {
         "server-fn-resolver.build.mjs"
     }
+}
+
+/// The specifier the resolver in `cache` imports the module at `path`
+/// under, quoted as it is written there.
+pub(crate) fn server_fn_module(cache: &Path, path: &Path) -> String {
+    json(&oj_compiler::glob::relative_import(cache, path))
 }
 
 fn json(s: &str) -> String {

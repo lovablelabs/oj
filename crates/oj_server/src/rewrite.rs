@@ -346,6 +346,17 @@ pub(crate) fn url_of(root: &Path, file: &Path) -> String {
     }
 }
 
+/// The inverse of [`url_of`]: the file a served url names, its query and
+/// fragment dropped. Not a request-url resolution (no public dir, no
+/// decoding): for the urls oj itself made with `url_of`.
+pub(crate) fn file_of_url(root: &Path, url: &str) -> PathBuf {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    match path.strip_prefix("/@fs/") {
+        Some(abs) => PathBuf::from(format!("/{abs}")),
+        None => root.join(path.trim_start_matches('/')),
+    }
+}
+
 /// A `./` or `../` import that neither exists nor resolves. The query is dropped
 /// first: an unknown query on an existing file is not a missing module.
 pub(crate) fn relative_import_missing(dir: &Path, resolver: &OjResolver, spec: &str) -> bool {

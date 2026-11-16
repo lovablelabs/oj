@@ -481,6 +481,42 @@ struct ServerState {
     ws_token_check: bool,
 }
 
+impl ServerState {
+    /// Whether a plugin may make a plain `.svg` import a component (svgr),
+    /// so the import stays a module request rather than a `?url` asset. A
+    /// `load` hook counts as much as a `transform`: Vite offers every
+    /// plugin's load before `vite:asset`'s (plugins/asset.ts `load`, which
+    /// answers the URL module), and vite-plugin-svgr is a `pre` plugin whose
+    /// `load` reads the file itself, so with `include: "**/*.svg"` it claims
+    /// the plain id and the asset plugin never sees it. Whether the file was
+    /// claimed is decided after the hooks ran, on their output.
+    ///
+    /// A load hook is asked the way Vite's container asks it: by its filter
+    /// (`getCachedFilterForPlugin`), so a plugin whose `load` filter cannot
+    /// match the svg's id (a virtual-module plugin) leaves it the URL asset,
+    /// with no round trip to the host; and only if Vite runs the hook before
+    /// `vite:asset` (a hook with `order: "pre"`, else an `enforce: "pre"`
+    /// plugin), since a later plugin's `load` never sees a plain svg there.
+    /// A function-form `load` on a `pre` plugin (lovable-tagger's) is offered
+    /// every id, as under Vite.
+    pub(crate) fn svg_may_be_componentized(&self, file: &Path) -> bool {
+        if self.plugins_have_transform {
+            return true;
+        }
+        self.plugins_have_load
+            && self
+                .plugins
+                .as_ref()
+                .is_some_and(|host| host.hook_wants_load_before_asset(&file.to_string_lossy()))
+    }
+
+    /// [`Self::svg_may_be_componentized`] for a served url (the importer's
+    /// rewrite and the page's preloads see urls, not files).
+    pub(crate) fn svg_url_may_be_componentized(&self, url: &str) -> bool {
+        self.svg_may_be_componentized(&rewrite::file_of_url(&self.root, url))
+    }
+}
+
 /// Live plugin-host serve state (configureServer middleware port + whether runner-backed
 /// DevEnvironments serve the documents), read per request: a host whose init outlives the
 /// boot deadlines fills it late via [`spawn_late_plugin_serve`].

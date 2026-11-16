@@ -66,6 +66,16 @@ export function isReimplemented(name) {
   return name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 }
 
+// Start's manifest plugins: one captures the client bundle's chunks in its
+// generateBundle, the other answers the server bundle's
+// `tanstack-start-manifest:v` with the routes' preloads and scripts built
+// from them. A build runs them as Start ships them, so the manifest is the
+// installed Start's own and a plugin's transform sees the module under
+// Vite's id; dev keeps oj's manifest (theirs is a stub there).
+export function isStartManifest(name) {
+  return typeof name === "string" && name.startsWith("tanstack-start:start-manifest");
+}
+
 // Vite's asyncFlatten over arraify, falsy entries dropped: plugin options may
 // nest arrays and promises, and a promise may resolve to an array of plugins
 // (`Promise.resolve([tanstackStart()])`), so each round awaits what the last

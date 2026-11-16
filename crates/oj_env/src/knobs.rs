@@ -52,9 +52,6 @@ pub struct Knobs {
     /// `DEBUG` names `oj:hook-gate` (`--debug hook-gate`): gated-out RPC logs.
     pub debug_hook_gate: bool,
 
-    /// `OJ_PLUGIN_MEMORY_MB`, when positive.
-    pub plugin_memory_mb: Option<usize>,
-
     /// `OJ_START_MAX_BODY` bytes.
     pub start_max_body: Option<usize>,
     /// `OJ_START_RESPAWN_STALE`: how many stale module instances the Start
@@ -129,9 +126,6 @@ impl Knobs {
                 || var("CURSOR_EXTENSION_HOST_ROLE").as_deref() == Some("agent-exec"),
             debug_mem: debug_enabled(&debug, "oj:mem"),
             debug_hook_gate: debug_enabled(&debug, "oj:hook-gate"),
-            plugin_memory_mb: trimmed("OJ_PLUGIN_MEMORY_MB")
-                .map(|v| v as usize)
-                .filter(|v| *v > 0),
             start_max_body: var("OJ_START_MAX_BODY").and_then(|v| v.trim().parse().ok()),
             start_respawn_stale: var("OJ_START_RESPAWN_STALE")
                 .and_then(|v| v.trim().parse().ok())
@@ -271,10 +265,6 @@ mod tests {
             None
         );
         assert_eq!(knobs(&[]).start_respawn_stale, None);
-        assert_eq!(
-            knobs(&[("OJ_PLUGIN_MEMORY_MB", "0")]).plugin_memory_mb,
-            None
-        );
         assert_eq!(
             knobs(&[("OJ_MEMORY_CACHE_MB", " 0 ")]).memory_cache_mb,
             Some(0)

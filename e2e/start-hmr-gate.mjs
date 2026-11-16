@@ -187,6 +187,10 @@ await run("flush-during-rebuild", true, async (listener, log) => {
     !log().includes("oj start: rebuilt"),
     "race: the rebuild finished before the flush could land mid-rebuild; timing assumption broken",
   );
+  // The edit landed while the server was still warming its engine (a slow
+  // machine): the boot's revalidation finds it too, and must leave the reload
+  // to the watcher's run instead of sending one past the hold.
+  must(listener.reloads.length === 0, `race: a reload reached the page before the flush (${listener.reloads.length})`);
   const flushed = await (await fetch(`http://localhost:${PORT}/__hmr_flush`, { method: "POST" })).json();
   must(flushed.reload === true, `race: the mid-rebuild flush must consume the hold, got ${JSON.stringify(flushed)}`);
   await settles(() => log().includes("oj start: rebuilt"), { timeoutMs: 60000 });
@@ -205,6 +209,50 @@ await run("flush-during-rebuild", true, async (listener, log) => {
     `race: expected one reload for the flushed rebuild, got ${listener.reloads.length}`,
   );
   console.log("flush-during-rebuild: the flush waited for the rebuild, which reloaded once");
+});
+
+// 3b. A held change, then a second edit whose rebuild the flush lands in: the
+//     flush releases the held reload, and the rebuild in flight takes it, so
+//     the page reloads once, at that rebuild's end, onto its output. Released
+//     at the flush, the held reload took the page onto the bundle from before
+//     the second edit, and the rebuild's end reloaded it again (the boot's
+//     revalidation parks a reload the same way when an edit lands while the
+//     server warms, which is how a slow machine saw two reloads on step 3).
+await run("held-then-flush-during-rebuild", true, async (listener, log, touch) => {
+  await settles(() => log().includes("reload held"), { touch });
+  for (;;) {
+    const holds = log().split("reload held").length;
+    await sleep(2000);
+    if (log().split("reload held").length === holds) break;
+  }
+  must(
+    listener.reloads.length === 0,
+    `held-then-flush: a reload reached the page before the flush (${listener.reloads.length})`,
+  );
+  const rebuilds = log().split("oj start: rebuilding for").length;
+  const rebuilt = log().split("oj start: rebuilt").length;
+  fs.writeFileSync(aboutFile, original + "\n// gate probe held-then-flush 2\n");
+  const until = Date.now() + 30000;
+  while (log().split("oj start: rebuilding for").length === rebuilds) {
+    must(Date.now() < until, "held-then-flush: the second edit never started a rebuild");
+    await sleep(50);
+  }
+  must(
+    log().split("oj start: rebuilt").length === rebuilt,
+    "held-then-flush: the second rebuild finished before the flush could land mid-rebuild; timing assumption broken",
+  );
+  const flushed = await (await fetch(`http://localhost:${PORT}/__hmr_flush`, { method: "POST" })).json();
+  must(flushed.reload === true, `held-then-flush: the flush must consume the hold, got ${JSON.stringify(flushed)}`);
+  await settles(() => log().split("oj start: rebuilt").length > rebuilt, { timeoutMs: 60000 });
+  const reloadBy = Date.now() + 10000;
+  while (Date.now() < reloadBy && listener.reloads.length === 0) await sleep(100);
+  must(listener.reloads.length >= 1, "held-then-flush: no reload reached the page after the flushed rebuild");
+  await sleep(1500);
+  must(
+    listener.reloads.length === 1,
+    `held-then-flush: expected one reload, at the second rebuild's end, got ${listener.reloads.length}:\n${log().slice(-1200)}`,
+  );
+  console.log("held-then-flush-during-rebuild: the held reload went out once, with the rebuild in flight");
 });
 
 // 4. A page still loading when a reload goes out has no socket open to take

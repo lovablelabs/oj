@@ -240,7 +240,10 @@ impl StartCodegenStore {
         let rehashed = AtomicUsize::new(0);
         let infos = par_map(inputs, |p| {
             let known = memo.and_then(|m| m.files.get(&rel_key(&self.root, p)));
-            if let Some(info) = known.and_then(|k| memo_hit(p, k)) {
+            if let Some(mut info) = known.and_then(|k| memo_hit(p, k)) {
+                // A store without a marker keys every file, whatever a memo
+                // written while the kind had one says of it.
+                info.marked |= self.marker.is_none();
                 return Some(info);
             }
             rehashed.fetch_add(1, Ordering::Relaxed);
@@ -613,6 +616,38 @@ mod tests {
         fx.write("src/b.ts", "export const b = 1;");
         assert!(matches!(
             fx.marked_store().restore(&inputs, &outputs),
+            Err(Miss::NoEntryForKey(_))
+        ));
+    }
+
+    // A kind that had a marker and has none now (the server-fn resolver)
+    // finds the memo the marked store wrote, where an unmarked file is
+    // recorded so. Trusted, that kept the file out of the key until it was
+    // edited: deleting it left the key, and the entry restored, unchanged.
+    #[test]
+    fn a_memo_written_with_a_marker_does_not_keep_files_out_of_a_store_without_one() {
+        let fx = Fixture::new("marker-dropped");
+        fx.write("src/a.ts", "export const a = createServerFn().handler(x);");
+        fx.write("src/b.ts", "export const b = 1;");
+        fx.settle(&["src/a.ts", "src/b.ts"]);
+        fx.write("out.mjs", "// resolver-v1");
+        let out = fx.path("out.mjs");
+        let outputs = [("server-fn-resolver.mjs", out.as_path())];
+        let inputs = vec![fx.path("src/a.ts"), fx.path("src/b.ts")];
+        let marked_key = fx.marked_store().persist(&inputs, &outputs).unwrap();
+
+        let unmarked =
+            || StartCodegenStore::new(&fx.root, "server-fn", "0.0.1-test", b"script-v1", None);
+        match unmarked().restore(&inputs, &outputs) {
+            Err(Miss::NoEntryForKey(k)) => assert_ne!(k, marked_key),
+            other => panic!("every file keys the store: expected miss, got {other:?}"),
+        }
+        let key = unmarked().persist(&inputs, &outputs).unwrap();
+        let stats = unmarked().restore(&inputs, &outputs).unwrap();
+        assert_eq!((stats.key, stats.keyed_files, stats.rehashed), (key, 2, 0));
+        fx.write("src/b.ts", "export const b = 2;");
+        assert!(matches!(
+            unmarked().restore(&inputs, &outputs),
             Err(Miss::NoEntryForKey(_))
         ));
     }

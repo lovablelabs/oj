@@ -1647,3 +1647,576 @@ fn a_create_start_of_the_apps_own_makes_no_start_instance() {
         "the chain on the app's own object lost its .server(..) link"
     );
 }
+
+/// A builder (`createServerFn().middleware([..])`, the shared "authed"
+/// function of an app) exported by one module and finished with `.handler(..)`
+/// in another, the import spelled as apps spell it: through the tsconfig
+/// `paths` alias (`@app/lib/authed`), through the package.json `imports` map
+/// (`#lib/authed`), and as the module's default export. Start's compiler
+/// resolves each import with Vite's `this.resolve` and reads the module's
+/// exports, `default` included (`resolveImportKind`, `findExportInModule`),
+/// so the handler, and the `*.server.*` module only it uses, leave the
+/// client. A namespace import of the aliased module names what it exports,
+/// the factory it re-exports included (`kit.make(..)`, the compiler's
+/// `resolveCalleeKind`). The builder module is one file and the fixture's
+/// aliases both point at `src/lib`.
+const AUTHED_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export { createServerFn as make } from "@tanstack/react-start";
+export const authedFn = createServerFn({ method: "POST" });
+export default authedFn;
+"#;
+
+const ALIASED_FNS: &str = r##"import { authedFn } from "@app/lib/authed";
+import viaImports from "#lib/authed";
+import * as kit from "@app/lib/authed";
+import { check } from "./auth.server";
+
+export const viaPaths = authedFn.handler(async () => `via-paths:${check()}`);
+export const viaDefault = viaImports.handler(async () => `via-default:${check()}`);
+export const viaKit = kit.make({ method: "POST" }).handler(async () => `via-kit:${check()}`);
+export const viaMember = kit.authedFn.handler(async () => `via-member:${check()}`);
+"##;
+
+const AUTH_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const check = () => getRequestHeader("x-user") ?? "auth-server-secret";
+"#;
+
+/// Each function and the text only its handler holds.
+const ALIASED_NAMES: [(&str, &str); 4] = [
+    ("viaPaths", "via-paths:"),
+    ("viaDefault", "via-default:"),
+    ("viaKit", "via-kit:"),
+    ("viaMember", "via-member:"),
+];
+
+fn aliased_builder_files() -> [(&'static str, String); 4] {
+    [
+        ("src/lib/auth.server.ts", AUTH_SERVER.to_string()),
+        ("src/lib/authed.ts", AUTHED_BUILDER.to_string()),
+        ("src/lib/aliased.functions.ts", ALIASED_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { viaPaths, viaDefault, viaKit, viaMember } from \"../lib/aliased.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.all([viaPaths(), viaDefault(), viaKit(), viaMember()]).then(
+      (r) => setResult(r.join("|")),
+      (e) => setResult("error " + String(e)),
+    );
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_builder_imported_through_an_alias_or_as_default_keeps_its_handler_out_of_the_client() {
+    let Some(app) = app_with("sf-aliased-builder", &aliased_builder_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "auth-server-secret"),
+        "the client holds the server module"
+    );
+    for (name, handler_text) in ALIASED_NAMES {
+        assert!(
+            !client_has(&app.0, handler_text),
+            "the client holds the handler of {name}"
+        );
+        assert!(
+            client_has(
+                &app.0,
+                &oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name)
+            ),
+            "the client does not call {name} by its id"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_builder() {
+    let Some(app) = app_with("sf-aliased-builder-dev", &aliased_builder_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a server-only import\n{}",
+        dev.output()
+    );
+    // The server side registered each one under its id, with its handler.
+    for (name, handler_text) in ALIASED_NAMES {
+        let id = oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name);
+        let (status, body) = dev.call(&id);
+        assert!(
+            status == 200 && body.contains(&format!("{handler_text}auth-server-secret")),
+            "{name} answered {status} {body:?}\n{}",
+            dev.output()
+        );
+    }
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let answered = page
+        .poll(
+            r##"document.querySelector("#secret")?.textContent === "via-paths:auth-server-secret|via-default:auth-server-secret|via-kit:auth-server-secret|via-member:auth-server-secret""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let (console, errors) = (page.console(), page.errors());
+    let result: Option<String> = page
+        .eval("document.querySelector('#secret')?.textContent ?? null")
+        .await;
+    page.close().await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        answered,
+        "the page's calls answered {result:?}: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a server-only import: {console:?}"
+    );
+}
+
+/// A builder's module that is no source file under `src/` (a `.js` file of a
+/// `shared/` directory), edited while `oj dev` runs. Start's compiler, on a
+/// hot update, forgets the changed module and invalidates the modules
+/// importing it (`hotUpdate` in start-compiler-plugin), so a `.handler(..)`
+/// call in an importer becomes a server function once what it is called on
+/// becomes a builder, and stops being one when it no longer is. Under oj the
+/// server-fn resolver is regenerated for that edit, and the server's copy of
+/// the importer compiled again: the function's id answers after the edit,
+/// with no restart.
+const LATE_FNS: &str = r#"import { gate } from "../../shared/gate";
+
+export const late = gate.handler(async () => "late-answer");
+"#;
+
+const GATE_PLAIN: &str = "export const gate = { handler: (fn) => fn };\n";
+
+const GATE_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const gate = createServerFn({ method: "POST" });
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_follows_an_edit_to_a_builder_module_outside_src() {
+    let files = [
+        ("shared/gate.js", GATE_PLAIN.to_string()),
+        ("src/lib/late.functions.ts", LATE_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { late } from \"../lib/late.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.resolve(late()).then(setResult, (e) => setResult("error " + String(e)));
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ];
+    let Some(app) = app_with("sf-late-builder-dev", &files, None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    let id = oj_compiler::server_fns::server_fn_id("src/lib/late.functions.ts", "late");
+    let (status, body) = dev.call(&id);
+    assert_ne!(
+        status,
+        200,
+        "no server function yet, answered {body:?}\n{}",
+        dev.output()
+    );
+
+    let answers = |want: bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, body) = dev.call(&id);
+            let is = status == 200 && body.contains("late-answer");
+            if is == want || std::time::Instant::now() > deadline {
+                return (is, status, body);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    std::fs::write(app.0.join("shared/gate.js"), GATE_BUILDER).unwrap();
+    let (is, status, body) = answers(true);
+    assert!(
+        is,
+        "after the module exports a builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+    std::fs::write(app.0.join("shared/gate.js"), GATE_PLAIN).unwrap();
+    let (is, status, body) = answers(false);
+    assert!(
+        !is,
+        "after the module exports no builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+}
+
+/// A server function the root route calls from `beforeLoad` or `loader`, the
+/// way a country check or a session read sits above every page, declared in
+/// a `*.functions.ts` module that imports a `*.server.ts` module at its top
+/// level and uses it only inside the handler. The server module reaches
+/// `@tanstack/react-start/server` statically or with `await import()` inside
+/// a function. Start's compiler drops the handler on the client and, with its
+/// dead-code pass, the import only the handler used, so the client never
+/// imports the server module and import protection has nothing to deny.
+const BLOCKING_STATIC: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export type Country = string;
+
+export const countryOf = async (): Promise<Country> => getRequestHeader("x-country") ?? "blocking-server-secret";
+
+export default countryOf;
+"#;
+
+const BLOCKING_DYNAMIC: &str = r#"export type Country = string;
+
+export async function countryOf(): Promise<Country> {
+  const { getRequestHeader } = await import("@tanstack/react-start/server");
+  return getRequestHeader("x-country") ?? "blocking-server-secret";
+}
+
+export default countryOf;
+"#;
+
+/// The functions module in the shapes an app writes it: a named import used
+/// in the handler; the same with a plain helper the page renders with (so
+/// the module stays in the client graph on its own account); a namespace
+/// import; a default import; a type imported beside the value and used in an
+/// exported type; the handler as a module-level function passed by name; and
+/// a module-level helper loading the server module with `await import()`.
+const COUNTRY_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { countryOf } from "./blocking.server";
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async () => {
+  return { country: await countryOf() };
+});
+"#;
+
+const COUNTRY_FNS_HELPER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { countryOf } from "./blocking.server";
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async () => {
+  return { country: await countryOf() };
+});
+
+export const countryLabel = (country: string) => `country:${country}`;
+"#;
+
+const COUNTRY_FNS_NAMESPACE: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import * as blocking from "./blocking.server";
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async () => {
+  return { country: await blocking.countryOf() };
+});
+"#;
+
+const COUNTRY_FNS_DEFAULT: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import countryOf from "./blocking.server";
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async () => {
+  return { country: await countryOf() };
+});
+"#;
+
+const COUNTRY_FNS_TYPED: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { countryOf, Country } from "./blocking.server";
+
+export type CountryCheck = { country: Country };
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async (): Promise<CountryCheck> => {
+  return { country: await countryOf() };
+});
+"#;
+
+const COUNTRY_FNS_NAMED_HANDLER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { countryOf } from "./blocking.server";
+
+async function checkCountryHandler() {
+  return { country: await countryOf() };
+}
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(checkCountryHandler);
+"#;
+
+const COUNTRY_FNS_LOADER_HELPER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+const loadBlocking = () => import("./blocking.server");
+
+export const checkCountry = createServerFn({ method: "GET" }).handler(async () => {
+  const { countryOf } = await loadBlocking();
+  return { country: await countryOf() };
+});
+"#;
+
+/// The fixture's root route calling `checkCountry` from `hook` (`beforeLoad`
+/// or `loader`), with the answer rendered above every page. With `typed`,
+/// the root is made with `createRootRouteWithContext`.
+fn root_calling(hook: &str, typed: bool) -> String {
+    let (option, read) = match hook {
+        "beforeLoad" => (
+            "beforeLoad: async () => ({ country: (await checkCountry()).country }),",
+            "rootRoute.useRouteContext().country",
+        ),
+        "loader" => (
+            "loader: async () => checkCountry(),",
+            "rootRoute.useLoaderData().country",
+        ),
+        _ => unreachable!("{hook}"),
+    };
+    let (factory, call) = if typed {
+        (
+            "createRootRouteWithContext",
+            "createRootRouteWithContext<{ who: string }>()",
+        )
+    } else {
+        ("createRootRoute", "createRootRoute")
+    };
+    format!(
+        r#"import {{ {factory}, HeadContent, Outlet, Scripts }} from "@tanstack/react-router";
+import {{ checkCountry }} from "../lib/country.functions";
+
+export const rootRoute = {call}({{
+  {option}
+  head: () => ({{ meta: [{{ title: "oj start fixture" }}] }}),
+  component: RootComponent,
+}});
+
+function RootComponent() {{
+  const country = {read};
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <p id="country">{{country}}</p>
+        <Outlet />
+        <Scripts />
+      </body>
+    </html>
+  );
+}}
+"#
+    )
+}
+
+/// The chain's files: `server` as src/lib/blocking.server.ts, `fns` as
+/// src/lib/country.functions.ts, the root route calling the server function
+/// from `hook`, and the about page, rendering the functions module's helper
+/// when `fns` has one.
+fn root_server_fn_files(server: &str, fns: &str, hook: &str) -> [(&'static str, String); 4] {
+    let about = if fns.contains("countryLabel") {
+        about(
+            "import { countryLabel } from \"../lib/country.functions\";",
+            "const extra = <p id=\"label\">{countryLabel(\"se\")}</p>;",
+        )
+    } else {
+        about("", "const extra = null;")
+    };
+    let typed = fns.contains("CountryCheck");
+    [
+        ("src/lib/blocking.server.ts", server.to_string()),
+        ("src/lib/country.functions.ts", fns.to_string()),
+        ("src/routes/__root.tsx", root_calling(hook, typed)),
+        ("src/routes/about.tsx", about),
+    ]
+}
+
+/// `oj build` of the fixture with `files`: it passes, import protection says
+/// nothing, no client asset holds the server module, and the client keeps the
+/// functions module's plain helper when it has one.
+fn assert_root_server_fn_builds(name: &str, files: &[(&str, String)]) {
+    let Some(app) = app_with(name, files, None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "blocking-server-secret"),
+        "the client holds the server module"
+    );
+    if files.iter().any(|(_, body)| body.contains("countryLabel")) {
+        assert!(
+            client_has(&app.0, "country:"),
+            "the client lost the functions module's plain export"
+        );
+    }
+}
+
+/// `oj dev` of the fixture with `files`, import protection set to error (so
+/// a surviving import fails the bundle instead of being mocked away): the
+/// client entry bundles, the server rendered the root's answer (so the server
+/// function ran on the server, its server module included), and with Chrome
+/// the page hydrates showing it.
+async fn assert_root_server_fn_dev_is_clean(name: &str, files: &[(&str, String)]) {
+    let Some(app) = app_with(
+        name,
+        files,
+        Some("importProtection: { behavior: \"error\" }"),
+    ) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert_no_denial(&dev, "the first bundle");
+    let (status, html) = dev.request("GET", "/about", &[]);
+    assert!(
+        status == 200 && html.contains("blocking-server-secret"),
+        "the server render lacks the root's answer ({status}):\n{html}\n{}",
+        dev.output()
+    );
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let country: Option<String> = page
+        .eval("document.querySelector('#country')?.textContent ?? null")
+        .await;
+    let label: Option<String> = page
+        .eval("document.querySelector('#label')?.textContent ?? null")
+        .await;
+    let (console, errors) = (page.console(), page.errors());
+    page.close().await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert_eq!(
+        country.as_deref(),
+        Some("blocking-server-secret"),
+        "the hydrated page lost the root's answer: {errors:?} {console:?}"
+    );
+    if files.iter().any(|(_, body)| body.contains("countryLabel")) {
+        assert_eq!(
+            label.as_deref(),
+            Some("country:se"),
+            "the hydrated page lost the functions module's plain export: {errors:?}"
+        );
+    }
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a handler-only server import: {console:?}"
+    );
+}
+
+#[test]
+fn a_root_before_load_server_fn_over_a_static_server_import_builds() {
+    assert_root_server_fn_builds(
+        "ip-root-static",
+        &root_server_fn_files(BLOCKING_STATIC, COUNTRY_FNS, "beforeLoad"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_root_before_load_server_fn_over_a_static_server_import() {
+    assert_root_server_fn_dev_is_clean(
+        "ip-root-static-dev",
+        &root_server_fn_files(BLOCKING_STATIC, COUNTRY_FNS, "beforeLoad"),
+    )
+    .await;
+}
+
+#[test]
+fn a_root_loader_server_fn_over_a_dynamic_server_import_builds() {
+    assert_root_server_fn_builds(
+        "ip-root-dynamic",
+        &root_server_fn_files(BLOCKING_DYNAMIC, COUNTRY_FNS, "loader"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_root_loader_server_fn_over_a_dynamic_server_import() {
+    assert_root_server_fn_dev_is_clean(
+        "ip-root-dynamic-dev",
+        &root_server_fn_files(BLOCKING_DYNAMIC, COUNTRY_FNS, "loader"),
+    )
+    .await;
+}
+
+#[test]
+fn a_functions_module_the_page_also_uses_keeps_its_handler_only_server_import_out() {
+    assert_root_server_fn_builds(
+        "ip-root-helper",
+        &root_server_fn_files(BLOCKING_STATIC, COUNTRY_FNS_HELPER, "beforeLoad"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_using_a_functions_module_with_a_handler_only_server_import() {
+    assert_root_server_fn_dev_is_clean(
+        "ip-root-helper-dev",
+        &root_server_fn_files(BLOCKING_DYNAMIC, COUNTRY_FNS_HELPER, "loader"),
+    )
+    .await;
+}
+
+/// The other shapes of the functions module above, by name: each reaches the
+/// server module through a binding Start's dead-code pass drops with the
+/// handler (a namespace or default import, a value imported beside a type,
+/// a module-level handler or loader only the handler used).
+const OTHER_FNS_SHAPES: [(&str, &str); 5] = [
+    ("namespace", COUNTRY_FNS_NAMESPACE),
+    ("default", COUNTRY_FNS_DEFAULT),
+    ("typed", COUNTRY_FNS_TYPED),
+    ("named-handler", COUNTRY_FNS_NAMED_HANDLER),
+    ("loader-helper", COUNTRY_FNS_LOADER_HELPER),
+];
+
+#[test]
+fn every_shape_of_the_functions_module_keeps_its_handler_only_server_import_out_of_the_build() {
+    for (shape, fns) in OTHER_FNS_SHAPES {
+        assert_root_server_fn_builds(
+            &format!("ip-root-{shape}"),
+            &root_server_fn_files(BLOCKING_STATIC, fns, "beforeLoad"),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_every_shape_of_the_functions_module_with_a_handler_only_server_import() {
+    for (shape, fns) in OTHER_FNS_SHAPES {
+        assert_root_server_fn_dev_is_clean(
+            &format!("ip-root-{shape}-dev"),
+            &root_server_fn_files(BLOCKING_DYNAMIC, fns, "loader"),
+        )
+        .await;
+    }
+}
