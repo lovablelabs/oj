@@ -158,6 +158,10 @@ pub(crate) struct HostCore {
     /// them (their specs ride the boot seed), with the handles whose hook
     /// plans a respawn resets.
     pub(crate) environments: Mutex<Vec<(serde_json::Value, std::sync::Weak<PluginHost>)>>,
+    /// Environment containers discarded while no engine was up to drop
+    /// them (`discard_environment_container`): an engine being respawned
+    /// then may have taken one from its seed already.
+    pub(crate) discarded: Mutex<std::collections::HashSet<u32>>,
     next_environment: std::sync::atomic::AtomicU32,
 }
 
@@ -1205,6 +1209,7 @@ impl PluginHost {
             self_ref: std::sync::OnceLock::new(),
             main: std::sync::OnceLock::new(),
             environments: Mutex::new(Vec::new()),
+            discarded: Mutex::new(std::collections::HashSet::new()),
             next_environment: std::sync::atomic::AtomicU32::new(ENVIRONMENT_CONTAINERS),
         });
         let _ = core.self_ref.set(std::sync::Arc::downgrade(&core));
@@ -2038,6 +2043,18 @@ impl PluginHost {
         self.core.revive.lock().unwrap().generation
     }
 
+    /// [`PluginHost::engine_generation`] of an engine that is up: a host
+    /// found dead is respawned first, by a call that asks nothing of the
+    /// plugins, so that what runs next runs on the engine counted here. A
+    /// dead host's count is still its last engine's: read as it stands, the
+    /// next hook would respawn the host and run on an engine one later.
+    pub async fn live_engine_generation(&self) -> u64 {
+        if *self.core.host_gone.borrow() {
+            let _ = self.call_ok("getTopLevelPluginCount").await;
+        }
+        self.engine_generation()
+    }
+
     /// A worker container from an engine since revived: its id may name
     /// another bundle's container in the new one.
     fn is_stale(&self) -> bool {
@@ -2123,6 +2140,7 @@ impl PluginHost {
         leave_out: bool,
         bundle: bool,
     ) -> Result<std::sync::Arc<PluginHost>, String> {
+        self.core.drop_discarded().await;
         let (spec, handle) = self.core.declare_environment(name, leave_out, bundle);
         let id = handle.container;
         // Recorded first: a revive racing the open reopens it from the seed.
@@ -2200,9 +2218,13 @@ impl PluginHost {
             .lock()
             .unwrap()
             .retain(|(spec, _)| spec["id"] != id);
-        if !*self.core.host_gone.borrow() {
-            let _ = self.core.call(id, "closeContainer", &["environment"]).await;
-        }
+        // Its bundler-resolve route, and the task parked on it.
+        self.core.rpc_routes.lock().unwrap().remove(&id);
+        // An engine being respawned may have taken the container from the
+        // seed already: it is dropped there once the engine is up (the next
+        // environment container to open asks).
+        self.core.discarded.lock().unwrap().insert(id);
+        self.core.drop_discarded().await;
     }
 
     /// How many environment containers the host keeps open, each reopened
@@ -2226,6 +2248,12 @@ impl PluginHost {
             .lock()
             .unwrap()
             .remove(&self.container);
+        // A dead host's containers died with it: the call would respawn it
+        // to close an id the new engine never opened, or has since given
+        // to another bundle.
+        if *self.core.host_gone.borrow() {
+            return Ok(());
+        }
         self.call_unit("closeContainer", &[]).await
     }
 
@@ -2372,6 +2400,19 @@ impl HostCore {
             serde_json::json!({ "id": id, "name": name, "leaveOut": leave_out, "bundle": bundle });
         let handle = std::sync::Arc::new(PluginHost::over(std::sync::Arc::clone(self), id, None));
         (spec, handle)
+    }
+
+    /// Drops the discarded environment containers from the engine, when one
+    /// is up: a dead host is not respawned for it, and keeps them for the
+    /// engine that comes.
+    async fn drop_discarded(&self) {
+        if *self.host_gone.borrow() {
+            return;
+        }
+        let ids: Vec<u32> = self.discarded.lock().unwrap().drain().collect();
+        for id in ids {
+            let _ = self.call(id, "closeContainer", &["environment"]).await;
+        }
     }
 
     /// The host's own container, while a handle on it lives.

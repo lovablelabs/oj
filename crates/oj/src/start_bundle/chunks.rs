@@ -361,6 +361,57 @@ fn chunk_pass(fresh: bool, then: u64, now: u64) -> ChunkPass {
     }
 }
 
+/// Whether a `name` batch is sent again from its pass's start: the engine
+/// refused it (`stale`), or was respawned while the call was out (`before`
+/// and `after`, the engine's generation around it).
+fn starts_over(stale: bool, before: u64, after: u64) -> bool {
+    stale || before != after
+}
+
+/// How often a `name` batch is sent again from its pass's start.
+const RESENDS: usize = 3;
+
+/// Sends a `name` batch (`send`, with what the batch is to its pass on the
+/// engine running then), and again from the pass's start (`restart`) while
+/// the engine refuses it or is respawned under the call: the answer then
+/// came from an engine that knows nothing of the bundle and was not told
+/// so. `bundle_engine` is the engine the bundle's hooks ran on, `engine`
+/// the one running.
+async fn send_name_batch<Send, Sent>(
+    batch: Batch,
+    bundle_engine: u64,
+    engine: impl Fn() -> u64,
+    restart: impl Fn() -> Batch,
+    send: Send,
+) -> Result<Vec<Value>, String>
+where
+    Send: Fn(Batch, ChunkPass) -> Sent,
+    Sent: std::future::Future<Output = Result<Vec<Value>, String>>,
+{
+    let mut batch = batch;
+    let mut resent = 0;
+    loop {
+        let before = engine();
+        let pass = chunk_pass(batch.fresh, bundle_engine, before);
+        let answer = send(batch, pass).await;
+        let stale = answer
+            .as_ref()
+            .is_err_and(|e| e.contains(oj_server::plugins::STALE_CHUNK_INFOS));
+        if !starts_over(stale, before, engine()) {
+            return answer;
+        }
+        if resent == RESENDS {
+            // Not an answer to go by: no engine stayed up for the pass.
+            return Err(format!(
+                "the plugin host was respawned under the chunking pass {} times",
+                RESENDS + 1
+            ));
+        }
+        resent += 1;
+        batch = restart();
+    }
+}
+
 fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn> {
     Arc::new(move |ids: Vec<String>, ctx: &ChunkingContext| {
         let batch = infos_to_send(&ids, ctx);
@@ -368,33 +419,32 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
         let guard = Arc::clone(&guard);
         let ctx = ctx.clone();
         Box::pin(async move {
-            let call = |batch: Batch| {
-                let (host, ids, dev) = (Arc::clone(&host), ids.clone(), guard.dev);
-                let pass = chunk_pass(batch.fresh, guard.engine, host.engine_generation());
-                async move {
-                    host.call_start_fn_batch(
-                        handle,
-                        &ids,
-                        batch.generation,
-                        batch.infos.as_deref(),
-                        dev,
-                        true,
-                        pass,
-                    )
-                    .await
-                }
-            };
             let generation = batch.generation;
-            let mut answer = call(batch).await;
-            // The engine was respawned since the pass started: once more,
-            // from the pass's start.
-            if answer
-                .as_ref()
-                .is_err_and(|e| e.contains(oj_server::plugins::STALE_CHUNK_INFOS))
-            {
-                forget_sent(generation);
-                answer = call(infos_to_send(&ids, &ctx)).await;
-            }
+            let answer = send_name_batch(
+                batch,
+                guard.engine,
+                || host.engine_generation(),
+                || {
+                    forget_sent(generation);
+                    infos_to_send(&ids, &ctx)
+                },
+                |batch: Batch, pass| {
+                    let (host, ids, dev) = (Arc::clone(&host), ids.clone(), guard.dev);
+                    async move {
+                        host.call_start_fn_batch(
+                            handle,
+                            &ids,
+                            batch.generation,
+                            batch.infos.as_deref(),
+                            dev,
+                            true,
+                            pass,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await;
             let out = match answer {
                 Ok(out) => guard.results(out),
                 Err(e) => {
@@ -607,6 +657,183 @@ mod tests {
         assert_eq!(chunk_pass(false, 3, 3), ChunkPass::Continue);
         assert_eq!(chunk_pass(false, 3, 4), ChunkPass::Continue);
         assert_eq!(Guard::new("vendor".into(), true, 7).engine, 7);
+    }
+
+    // A batch goes out again from its pass's start when the engine refused
+    // it, and when the engine was respawned under the call: the answer then
+    // came from an engine told nothing of the bundle. Sent again, the batch
+    // starts the pass with the hooks' word gone, since the engine is no
+    // longer the bundle's.
+    #[test]
+    fn a_batch_whose_call_respawned_the_engine_starts_the_pass_over() {
+        assert!(!starts_over(false, 4, 4));
+        assert!(starts_over(true, 4, 4), "refused by the engine");
+        assert!(starts_over(false, 4, 5), "respawned under the call");
+        assert!(starts_over(true, 4, 5));
+        // The bundle's engine was 4: the batch sent again says what is lost.
+        assert_eq!(chunk_pass(true, 4, 5), ChunkPass::StartHooksLost);
+    }
+
+    /// A plugin host for [`send_name_batch`]: `script` is what each call
+    /// does in turn (answer, refuse as stale, or be respawned under the
+    /// call and answer from the new engine). Records what each call was
+    /// sent.
+    struct FakeHost {
+        engine: std::sync::atomic::AtomicU64,
+        script: Mutex<std::collections::VecDeque<&'static str>>,
+        sent: Mutex<Vec<(u64, ChunkPass, bool)>>,
+        restarts: std::sync::atomic::AtomicU64,
+    }
+
+    impl FakeHost {
+        fn new(engine: u64, script: &[&'static str]) -> Self {
+            Self {
+                engine: engine.into(),
+                script: Mutex::new(script.iter().copied().collect()),
+                sent: Mutex::new(Vec::new()),
+                restarts: 0.into(),
+            }
+        }
+
+        async fn run(&self, first: Batch, bundle_engine: u64) -> Result<Vec<Value>, String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            send_name_batch(
+                first,
+                bundle_engine,
+                || self.engine.load(SeqCst),
+                || {
+                    self.restarts.fetch_add(1, SeqCst);
+                    Batch {
+                        generation: 9,
+                        infos: Some("[]".into()),
+                        fresh: true,
+                    }
+                },
+                |batch: Batch, pass| async move {
+                    self.sent.lock().unwrap().push((
+                        self.engine.load(SeqCst),
+                        pass,
+                        batch.infos.is_some(),
+                    ));
+                    match self
+                        .script
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("a scripted call")
+                    {
+                        "answer" => Ok(vec![json!(format!("engine-{}", self.engine.load(SeqCst)))]),
+                        "stale" => Err(format!("Error: {}", oj_server::plugins::STALE_CHUNK_INFOS)),
+                        "respawn" => {
+                            let now = self.engine.fetch_add(1, SeqCst) + 1;
+                            Ok(vec![json!(format!("untold-engine-{now}"))])
+                        }
+                        "fail" => Err("plugin host exited".into()),
+                        other => panic!("{other}"),
+                    }
+                },
+            )
+            .await
+        }
+
+        fn sent(&self) -> Vec<(u64, ChunkPass, bool)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    fn later_batch() -> Batch {
+        Batch {
+            generation: 9,
+            infos: None,
+            fresh: false,
+        }
+    }
+
+    fn first_batch() -> Batch {
+        Batch {
+            generation: 9,
+            infos: Some("[]".into()),
+            fresh: true,
+        }
+    }
+
+    // A `name` batch as it goes to the host: once when the engine answers
+    // it; again from the pass's start when the engine refuses it, or was
+    // respawned under the call (the answer of an engine told nothing is not
+    // kept), each time as what the batch is on the engine then running; and
+    // not for ever.
+    #[tokio::test]
+    async fn a_name_batch_is_sent_again_until_an_engine_that_was_told_answers() {
+        use ChunkPass::{Continue, Start, StartHooksLost};
+        // The bundle's engine answers: one call, as the batch stands.
+        let host = FakeHost::new(4, &["answer"]);
+        assert_eq!(
+            host.run(first_batch(), 4).await,
+            Ok(vec![json!("engine-4")])
+        );
+        assert_eq!(host.sent(), [(4, Start, true)]);
+        let host = FakeHost::new(4, &["answer"]);
+        assert_eq!(
+            host.run(later_batch(), 4).await,
+            Ok(vec![json!("engine-4")])
+        );
+        assert_eq!(host.sent(), [(4, Continue, false)]);
+
+        // Respawned before the batch (by another hook): refused, and the
+        // pass starts over there with the hooks' word gone.
+        let host = FakeHost::new(5, &["stale", "answer"]);
+        assert_eq!(
+            host.run(later_batch(), 4).await,
+            Ok(vec![json!("engine-5")])
+        );
+        assert_eq!(
+            host.sent(),
+            [(5, Continue, false), (5, StartHooksLost, true)]
+        );
+        assert_eq!(host.restarts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Respawned under the call: the first answer is dropped though it
+        // is one, for it came from an engine told the pass was whole.
+        let host = FakeHost::new(4, &["respawn", "answer"]);
+        assert_eq!(
+            host.run(first_batch(), 4).await,
+            Ok(vec![json!("engine-5")])
+        );
+        assert_eq!(host.sent(), [(4, Start, true), (5, StartHooksLost, true)]);
+
+        // And under the call sent again.
+        let host = FakeHost::new(4, &["respawn", "respawn", "answer"]);
+        assert_eq!(
+            host.run(later_batch(), 4).await,
+            Ok(vec![json!("engine-6")])
+        );
+        assert_eq!(
+            host.sent(),
+            [
+                (4, Continue, false),
+                (5, StartHooksLost, true),
+                (6, StartHooksLost, true)
+            ]
+        );
+
+        // A host that failed otherwise is not asked again.
+        let host = FakeHost::new(4, &["fail"]);
+        assert_eq!(
+            host.run(first_batch(), 4).await,
+            Err("plugin host exited".into())
+        );
+        assert_eq!(host.sent().len(), 1);
+
+        // An engine that never stays up: an error, not the last answer.
+        let host = FakeHost::new(4, &["respawn"; 8]);
+        let gave_up = host.run(first_batch(), 4).await;
+        assert!(
+            gave_up
+                .as_ref()
+                .is_err_and(|e| e.contains("respawned under the chunking pass")),
+            "{gave_up:?}"
+        );
+        assert_eq!(host.sent().len(), RESENDS + 1);
     }
 
     fn host_failures(guard: &Guard) -> u64 {

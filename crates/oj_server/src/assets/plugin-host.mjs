@@ -859,6 +859,47 @@ function transformRequestFor(c) {
 // not the raw initial.config, so plugins reading resolved-only fields
 // (experimental, environments, plugins) don't throw; it is seeded with the
 // resolved environment config until runConfigHooks recomputes it.
+// A container's module infos, as `this.getModuleInfo` and `moduleParsed`
+// hand them out, each with the module's one `meta` object: what a plugin
+// writes to `info.meta` is what a chunk group's `getModuleInfo` reads, and
+// what `resolveId` said of a module is on the info made for it later, as
+// in rolldown, where both are views of the same module option.
+class ModuleInfoCache extends Map {
+  options = new Map();
+  option(id) {
+    let option = this.options.get(id);
+    if (!option) this.options.set(id, (option = { moduleSideEffects: null, meta: {} }));
+    return option;
+  }
+  // `info.meta` is the module's object, and stays it: a plugin that assigns
+  // a new one (`info.meta = { ...info.meta, mine: true }`) gives the object
+  // that content, as Vite's dev keeps what the plugin assigned and merges
+  // the hooks' later word onto it. Held as a plain property, the assigned
+  // object stood apart from the module's, and its older values were merged
+  // back over what a hook said after.
+  set(id, info) {
+    const { meta } = this.option(id);
+    const own = Object.getOwnPropertyDescriptor(info, "meta");
+    if (!own?.get) {
+      if (info.meta && info.meta !== meta) Object.assign(meta, info.meta);
+      Object.defineProperty(info, "meta", {
+        get: () => meta,
+        set(assigned) {
+          if (assigned === meta) return;
+          for (const key of Object.keys(meta)) delete meta[key];
+          if (assigned && typeof assigned === "object") Object.assign(meta, assigned);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return super.set(id, info);
+  }
+  clear() {
+    this.options.clear();
+    super.clear();
+  }
+}
 const main = createContainer(0, environment, environment.config);
 environment.transformRequest = transformRequestFor(main);
 
@@ -1885,10 +1926,7 @@ function createContainer(id, environment, resolvedConfig) {
     topLevelPlugins: [],
     emitted: [],
     chunkFileNames: new Map(),
-    moduleInfoCache: new Map(),
-    // What the hooks said of each module, as rolldown keeps it for
-    // `getModuleInfo` in a chunk group's `name` (moduleOption).
-    moduleOptions: new Map(),
+    moduleInfoCache: new ModuleInfoCache(),
     seenIds: new Set(),
     buildStartRun: null,
     buildStartFailureLogged: false,
@@ -2042,9 +2080,7 @@ function makeModuleInfo(id, code, extra) {
 // hook says, which the ModuleInfo of `this.getModuleInfo` does not tell (it
 // starts at true, as Rollup's).
 function moduleOption(c, id) {
-  let option = c.moduleOptions.get(id);
-  if (!option) c.moduleOptions.set(id, (option = { moduleSideEffects: null, meta: {} }));
-  return option;
+  return c.moduleInfoCache.option(id);
 }
 function noteModuleOption(c, id, result) {
   if (result.meta && typeof result.meta === "object") Object.assign(moduleOption(c, id).meta, result.meta);
@@ -2057,7 +2093,7 @@ function updateModuleInfo(c, id, result) {
   noteModuleOption(c, id, result);
   let info = c.moduleInfoCache.get(id);
   if (!info) c.moduleInfoCache.set(id, (info = makeModuleInfo(id, typeof result.code === "string" ? result.code : "")));
-  if (result.meta && typeof result.meta === "object") info.meta = { ...(info.meta ?? {}), ...result.meta };
+  // `meta` is the module's one object, which noteModuleOption merged into.
   if (result.moduleSideEffects != null) info.moduleSideEffects = result.moduleSideEffects;
   if (result.syntheticNamedExports != null) info.syntheticNamedExports = result.syntheticNamedExports;
 }

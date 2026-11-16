@@ -54,6 +54,9 @@ pub(crate) struct HotSession {
     pub engine: Arc<DevEngine>,
     /// The style epoch the session compiled its sheets under.
     pub epoch: u64,
+    /// The plugin host's engine the session's hooks run on
+    /// (`PluginHost::engine_generation`), 0 without a host.
+    pub host_engine: u64,
     pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
     pub glob_scopes: Arc<Mutex<Vec<GlobScope>>>,
     pub styles: Arc<DevStyleState>,
@@ -177,6 +180,7 @@ impl HotSession {
         Ok(HotSession {
             engine,
             epoch,
+            host_engine: 0,
             css_urls: parts.css_urls,
             glob_scopes: parts.glob_scopes,
             styles: parts.styles,
