@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `output.manualChunks` as a function groups the chunks when no `codeSplitting` or `advancedChunks` object does, as rolldown turns it into a group. It was ignored.
   - `codeSplitting: true` leaves the grouping to `advancedChunks` when both are set. The groups were dropped.
   - oj's own leniency under dev stays: a group whose function throws steps aside with one warning, since a function written for the build may read what a build-only plugin produces. A group whose function the host cannot run at all (the host's error, not the function's) now steps aside for that batch too, with a warning each chunking pass it happens in, instead of failing the bundle. A build stays loud either way.
-
 - TanStack Start dev: `tsconfig.json` reloads the page whenever it is saved, as Vite's `reloadOnTsconfigChange` does for a file of that name whatever it holds. Since 0.4.13 the page reloaded for it only when the server-fn resolver came out another one, so a changed `jsx` or `target`, or the file saved beside an edit a component accepts, left the page as it was. A `tsconfig.app.json` or a file a tsconfig extends still reloads only for a changed resolver, as under Vite it reloads nothing.
 - TanStack Start dev, what a batch of changes is to the server-fn resolver:
   - An edit of a builder's module that is not `.ts` or `.tsx` (`authed.mts`, a `.js` one outside `src/`) reloads the page as the same edit of `authed.ts` does. Since 0.4.13 it did only when the resolver changed.

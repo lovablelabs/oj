@@ -3,6 +3,11 @@ use std::sync::Arc;
 
 /// The host's own plugin container: the environment it boots in.
 pub(crate) const MAIN_CONTAINER: u32 = 0;
+
+/// The engine's answer to a group's `name` batch that came without module
+/// infos for a chunking pass it holds none of (plugin-host.mjs,
+/// `callStartFnBatch`): the infos were sent to an engine respawned since.
+pub const STALE_CHUNK_INFOS: &str = "oj: the chunking pass's module infos are not on this engine";
 /// The first id of the containers [`PluginHost::open_environment_container`]
 /// opens; worker containers count up from 1 below it.
 const ENVIRONMENT_CONTAINERS: u32 = 1 << 20;
@@ -1382,6 +1387,11 @@ impl PluginHost {
     /// per id). `infos` (module infos, as JSON) carries the ones this
     /// chunking `generation` has not sent yet. `tolerant`: a throw comes back
     /// as `{ "$threw": message }` for its id instead of failing the batch.
+    /// `named`: the function is a group's `name`, called with the chunking
+    /// context (`getModuleInfo`) after the id; a `test` gets the id alone.
+    /// A `name` batch without infos for a pass the engine holds nothing of
+    /// (it was respawned since they were sent) fails with
+    /// [`STALE_CHUNK_INFOS`].
     pub async fn call_start_fn_batch(
         &self,
         handle: u64,
@@ -1389,6 +1399,7 @@ impl PluginHost {
         generation: u64,
         infos: Option<&str>,
         tolerant: bool,
+        named: bool,
     ) -> Result<Vec<serde_json::Value>, String> {
         let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
         let raw = self
@@ -1400,6 +1411,7 @@ impl PluginHost {
                     &generation.to_string(),
                     infos.unwrap_or(""),
                     if tolerant { "true" } else { "false" },
+                    if named { "true" } else { "false" },
                 ],
             )
             .await?

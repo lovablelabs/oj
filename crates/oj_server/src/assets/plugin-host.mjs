@@ -6122,7 +6122,15 @@ async function startFacts(c) {
   // `advancedChunks` says; `true` or nothing leaves it to `advancedChunks`.
   const ownPolicy =
     output.codeSplitting === false || (output.codeSplitting && typeof output.codeSplitting === "object");
-  const codeSplitting = ownPolicy ? output.codeSplitting : (output.advancedChunks ?? output.codeSplitting);
+  let codeSplitting = ownPolicy ? output.codeSplitting : (output.advancedChunks ?? output.codeSplitting);
+  // With no policy object, a `manualChunks` function is one: a single group
+  // whose name it gives, as rolldown wraps it (it is ignored beside one).
+  const { manualChunks } = output;
+  if (typeof manualChunks === "function" && (codeSplitting == null || codeSplitting === true)) {
+    codeSplitting = {
+      groups: [{ name: (id, ctx) => manualChunks(id, { getModuleInfo: (x) => ctx.getModuleInfo(x) }) }],
+    };
+  }
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
   const names = c.rawPlugins.map((p) => p && p.name);
@@ -6231,22 +6239,36 @@ async function callStartFn(c, index, argsJson) {
   return JSON.stringify(r === undefined ? null : factValue(r, c.startFns));
 }
 // A codeSplitting group's `name` or `test` over a batch of module ids, each
-// called as rolldown calls it: `(id, { getModuleInfo })`. The module infos of
-// a chunking pass arrive once, with its first batch (`generation` names the
-// pass), and back `getModuleInfo` for every later batch of the same pass.
-// A throw in dev comes back as `{ $threw: message }` for that id: Vite's dev
-// server never evaluates these functions, so one written for the build (fed
-// by a build-only plugin) must not take the dev server down.
-async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolerant) {
+// called as rolldown calls it: `name(id, { getModuleInfo })` (`withCtx`),
+// `test(id)`. The module infos of a chunking pass arrive with its `name`
+// batches, the first one always carrying some (`generation` names the pass),
+// and back `getModuleInfo` for every later batch of the same pass. A `name`
+// batch of a pass this engine holds nothing of, sent without infos, is one
+// whose infos went to an engine since respawned: STALE_CHUNK_INFOS asks for
+// them again.
+// A throw in dev comes back as `{ $threw: message }` for that id. That is
+// oj's leniency, not Vite's: Vite hands these functions to rolldown in the
+// build and in bundled dev alike, and only its unbundled dev never calls
+// them. One written for the build (fed by a build-only plugin) must not take
+// oj's dev server down.
+const STALE_CHUNK_INFOS = "oj: the chunking pass's module infos are not on this engine";
+async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolerant, withCtx) {
   const fn = await startFn(c, index);
-  if (c.chunkInfos.generation !== generation) c.chunkInfos = { generation, byId: new Map() };
-  const { byId } = c.chunkInfos;
-  if (infosJson) for (const info of JSON.parse(infosJson)) byId.set(info.id, info);
-  const ctx = { getModuleInfo: (id) => byId.get(id) ?? null };
+  const named = withCtx === "true";
+  let ctx;
+  if (named) {
+    if (c.chunkInfos.generation !== generation) {
+      if (!infosJson) throw new Error(STALE_CHUNK_INFOS);
+      c.chunkInfos = { generation, byId: new Map() };
+    }
+    const { byId } = c.chunkInfos;
+    if (infosJson) for (const info of JSON.parse(infosJson)) byId.set(info.id, info);
+    ctx = { getModuleInfo: (id) => byId.get(id) ?? null };
+  }
   const out = [];
   for (const id of JSON.parse(idsJson)) {
     try {
-      const r = await fn(id, ctx);
+      const r = named ? await fn(id, ctx) : await fn(id);
       out.push(r === undefined ? null : r);
     } catch (e) {
       if (tolerant !== "true") throw e;
@@ -6851,7 +6873,7 @@ async function run(hook, args, c) {
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));
   if (hook === "startFacts") return startFacts(c);
   if (hook === "callStartFn") return callStartFn(c, args[0], args[1]);
-  if (hook === "callStartFnBatch") return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4]);
+  if (hook === "callStartFnBatch") return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4], args[5]);
   if (hook === "scanResolveId") return gateOnBuildStart(main).then(() => scanResolveId(args[0], args[1], args[2]));
   if (hook === "scanPluginHooks") return gateOnBuildStart(main).then(() => scanPluginHooks());
   if (hook === "scanPluginHook") return gateOnBuildStart(main).then(() => scanPluginHook(args[0], args[1]));
