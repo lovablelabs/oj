@@ -2391,7 +2391,7 @@ async fn config_function_handles_outlive_the_engine_that_handed_them_out() {
     assert_eq!(group["test"], serde_json::json!({ "$fn": 1 }), "{facts}");
     let ids = ["/app/vendor/a.js".to_string(), "/app/src/b.js".to_string()];
     let names = client
-        .call_start_fn_batch(0, &ids, 1, None, true, true, true)
+        .call_start_fn_batch(0, &ids, 1, None, true, true, ChunkPass::Start)
         .await
         .expect("the name function runs on the engine that handed it out");
     assert_eq!(
@@ -2411,7 +2411,7 @@ async fn config_function_handles_outlive_the_engine_that_handed_them_out() {
     clear_respawn_spacing(&host);
 
     let names = client
-        .call_start_fn_batch(0, &ids, 2, None, true, true, true)
+        .call_start_fn_batch(0, &ids, 2, None, true, true, ChunkPass::Start)
         .await
         .expect("the revived engine runs the name function behind the same handle");
     assert_eq!(
@@ -2429,7 +2429,7 @@ async fn config_function_handles_outlive_the_engine_that_handed_them_out() {
             None,
             true,
             false,
-            false,
+            ChunkPass::Continue,
         )
         .await
         .expect("and the test function behind its handle");
@@ -2479,15 +2479,36 @@ async fn start_fn_host_as(
     std::sync::Arc<PluginHost>,
     std::sync::Arc<PluginHost>,
 ) {
+    start_fn_host_for(label, config_src, bundle_host, "serve", "client").await
+}
+
+/// [`start_fn_host_as`] for `command` ("serve", "build"), with the bundle
+/// container of `environment` open.
+async fn start_fn_host_for(
+    label: &str,
+    config_src: &str,
+    bundle_host: bool,
+    command: &str,
+    environment: &str,
+) -> (
+    StartFnRoot,
+    std::sync::Arc<PluginHost>,
+    std::sync::Arc<PluginHost>,
+) {
+    let mode = if command == "build" {
+        "production"
+    } else {
+        "development"
+    };
     let root = std::env::temp_dir().join(format!("oj-start-fn-{label}-{}", std::process::id()));
     crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let config_file = root.join("vite.config.mjs");
     std::fs::write(&config_file, config_src).unwrap();
     let config = serde_json::json!({
-        "config": { "root": root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
-        "env": { "command": "serve", "mode": "development" },
-        "environment": { "name": "client", "mode": "dev" },
+        "config": { "root": root.display().to_string(), "base": "/", "mode": mode, "command": command },
+        "env": { "command": command, "mode": mode },
+        "environment": { "name": "client", "mode": if command == "build" { "build" } else { "dev" } },
         "pluginsFormat": "vite",
         "ojStartMode": true,
         "ojBundleHost": bundle_host,
@@ -2505,9 +2526,9 @@ async fn start_fn_host_as(
     .await
     .expect("the embedded engine spawns");
     let client = host
-        .open_environment_container("client", true, true)
+        .open_environment_container(environment, true, true)
         .await
-        .expect("the client container opens");
+        .expect("the bundle's container opens");
     (
         StartFnRoot(root, std::sync::Arc::clone(&host)),
         host,
@@ -2614,10 +2635,18 @@ async fn every_config_function_keeps_its_handle(bundle_host: bool) {
                     .call_start_fn(external, &serde_json::json!(["./local", null, false]))
                     .await,
                 client
-                    .call_start_fn_batch(name, &ids, generation, None, true, true, true)
+                    .call_start_fn_batch(name, &ids, generation, None, true, true, ChunkPass::Start)
                     .await,
                 client
-                    .call_start_fn_batch(test, &ids, generation, None, true, false, false)
+                    .call_start_fn_batch(
+                        test,
+                        &ids,
+                        generation,
+                        None,
+                        true,
+                        false,
+                        ChunkPass::Continue,
+                    )
                     .await,
                 client
                     .call_start_fn(worker, &serde_json::json!(["worker-external:a"]))
@@ -2670,7 +2699,7 @@ async fn every_config_function_keeps_its_handle(bundle_host: bool) {
     );
     wedge(&host).await;
     let missing = client
-        .call_start_fn_batch(99, &ids, 4, None, true, true, true)
+        .call_start_fn_batch(99, &ids, 4, None, true, true, ChunkPass::Start)
         .await;
     assert!(
         missing
@@ -2747,10 +2776,18 @@ export default {{
         let worker_args = serde_json::json!(["worker-external:a"]);
         let pick_args = serde_json::json!([41]);
         let (names, tests, external, names_again, picked, external_again) = tokio::join!(
-            client.call_start_fn_batch(name, &ids, 10 + round, None, true, true, true),
-            client.call_start_fn_batch(test, &ids, 10 + round, None, true, false, false),
+            client.call_start_fn_batch(name, &ids, 10 + round, None, true, true, ChunkPass::Start),
+            client.call_start_fn_batch(
+                test,
+                &ids,
+                10 + round,
+                None,
+                true,
+                false,
+                ChunkPass::Continue
+            ),
             client.call_start_fn(worker, &worker_args),
-            client.call_start_fn_batch(name, &ids, 10 + round, None, true, true, true),
+            client.call_start_fn_batch(name, &ids, 10 + round, None, true, true, ChunkPass::Start),
             client.call_start_fn(pick, &pick_args),
             client.call_start_fn(worker, &worker_args),
         );
@@ -2767,7 +2804,7 @@ export default {{
         // The facts read outright while calls come in.
         let (read, names, external) = tokio::join!(
             client.start_facts(),
-            client.call_start_fn_batch(name, &ids, 20 + round, None, true, true, true),
+            client.call_start_fn_batch(name, &ids, 20 + round, None, true, true, ChunkPass::Start),
             client.call_start_fn(worker, &worker_args),
         );
         assert_eq!(read.as_ref(), Ok(&facts), "round {round}");
@@ -2913,16 +2950,21 @@ async fn a_name_gets_the_chunking_context_a_test_the_id_alone() {
     let name_batch = |generation: u64, infos: Option<&str>, fresh: bool| {
         let (client, ids) = (client.clone(), ids.clone());
         let infos = infos.map(str::to_string);
+        let pass = if fresh {
+            ChunkPass::Start
+        } else {
+            ChunkPass::Continue
+        };
         async move {
             client
-                .call_start_fn_batch(name, &ids, generation, infos.as_deref(), true, true, fresh)
+                .call_start_fn_batch(name, &ids, generation, infos.as_deref(), true, true, pass)
                 .await
         }
     };
     let tested = Ok(vec![serde_json::json!(true), serde_json::json!(true)]);
     let test_batch = || async {
         client
-            .call_start_fn_batch(test, &ids, 0, None, true, false, false)
+            .call_start_fn_batch(test, &ids, 0, None, true, false, ChunkPass::Continue)
             .await
     };
 
@@ -3044,7 +3086,7 @@ async fn a_manual_chunks_function_is_the_group_rolldown_makes_of_it() {
             let named = Ok(vec![serde_json::json!("vendor-2"), serde_json::Value::Null]);
             assert_eq!(
                 client
-                    .call_start_fn_batch(0, &ids, 1, Some(&infos), true, true, true)
+                    .call_start_fn_batch(0, &ids, 1, Some(&infos), true, true, ChunkPass::Start)
                     .await,
                 named,
                 "{label}"
@@ -3053,7 +3095,7 @@ async fn a_manual_chunks_function_is_the_group_rolldown_makes_of_it() {
             wedge(&host).await;
             assert_eq!(
                 client
-                    .call_start_fn_batch(0, &ids, 2, Some(&infos), true, true, true)
+                    .call_start_fn_batch(0, &ids, 2, Some(&infos), true, true, ChunkPass::Start)
                     .await,
                 named,
                 "{label}, revived"
@@ -3062,66 +3104,146 @@ async fn a_manual_chunks_function_is_the_group_rolldown_makes_of_it() {
     }
 }
 
-// The combinations of `manualChunks` rolldown refuses are refused in its
-// words, where the bundle reads its facts and again behind a handle, on an
-// engine that has to read them itself.
+// What rolldown refuses of `manualChunks` (beside `codeSplitting: false` or
+// `inlineDynamicImports: true`, or as Rollup's object form) a build refuses
+// in rolldown's words, where the bundle reads its facts and again behind a
+// handle. A dev server reads the same config without a word, as Vite's
+// does unless it bundles: nothing is split, or the object is passed over.
+// So does the bundle of an environment that only inherits the top level's
+// `manualChunks` beside its own `inlineDynamicImports`.
 #[tokio::test]
-async fn manual_chunks_where_nothing_is_split_is_refused_as_rolldown_refuses_it() {
+async fn manual_chunks_rolldown_refuses_fails_a_build_and_no_dev_server() {
     let manual = r#"manualChunks: (id) => (id.includes("/vendor/") ? "vendor" : undefined)"#;
     let no_splitting =
         r#""output.manualChunks" cannot be used when "output.codeSplitting" is set to false"#;
-    for (label, output, message) in [
+    let inlined = r#"Invalid value "true" for option "output.inlineDynamicImports" - this option is not supported for "output.manualChunks""#;
+    let off = serde_json::json!(false);
+    let cases = [
         (
             "no-splitting",
-            format!("codeSplitting: false, {manual}"),
+            format!("output: {{ codeSplitting: false, {manual} }}"),
+            String::new(),
+            "client",
             no_splitting,
+            off.clone(),
         ),
         (
             "inlined",
-            format!("inlineDynamicImports: true, {manual}"),
-            r#"Invalid value "true" for option "output.inlineDynamicImports" - this option is not supported for "output.manualChunks""#,
+            format!("output: {{ inlineDynamicImports: true, {manual} }}"),
+            String::new(),
+            "client",
+            inlined,
+            off.clone(),
         ),
         (
             "an-object-and-no-splitting",
-            r#"codeSplitting: false, manualChunks: { vendor: ["react"] }"#.to_string(),
+            r#"output: { codeSplitting: false, manualChunks: { vendor: ["react"] } }"#.to_string(),
+            String::new(),
+            "client",
             no_splitting,
+            off.clone(),
         ),
-    ] {
+        (
+            "an-object",
+            r#"output: { manualChunks: { vendor: ["react"] } }"#.to_string(),
+            String::new(),
+            "client",
+            "manualChunks is not a function",
+            serde_json::Value::Null,
+        ),
+        // The client's `manualChunks`, at the top level, reaches the Worker
+        // environment's output too, beside what that environment set.
+        (
+            "inherited",
+            format!("output: {{ {manual} }}"),
+            "environments: { edge: { build: { rolldownOptions: { output: { inlineDynamicImports: true } } } } },"
+                .to_string(),
+            "edge",
+            inlined,
+            off.clone(),
+        ),
+    ];
+    for (label, output, environments, environment, message, dev_fact) in cases {
         let config = format!(
-            "export default {{ build: {{ rolldownOptions: {{ external: (id) => id === \"x\", output: {{ {output} }} }} }} }};\n"
+            "export default {{ {environments} build: {{ rolldownOptions: {{ external: (id) => id === \"x\", {output} }} }} }};\n"
         );
-        let (_root, _host, client) = start_fn_host(&format!("refused-{label}"), &config).await;
-        let refused = client.start_facts().await;
+        let (_root, _host, bundle) = start_fn_host_for(
+            &format!("refused-build-{label}"),
+            &config,
+            true,
+            "build",
+            environment,
+        )
+        .await;
+        let refused = bundle.start_facts().await;
         assert!(
             refused.as_ref().is_err_and(|e| e.contains(message)),
             "{label}: {refused:?}"
         );
         // A read that failed left no registry: the handle reads again, and
         // is refused the same way.
-        let called = client
+        let called = bundle
             .call_start_fn(0, &serde_json::json!(["x", null, false]))
             .await;
         assert!(
             called.as_ref().is_err_and(|e| e.contains(message)),
             "{label}: {called:?}"
         );
+
+        let (_root, _host, bundle) = start_fn_host_for(
+            &format!("refused-dev-{label}"),
+            &config,
+            true,
+            "serve",
+            environment,
+        )
+        .await;
+        let facts = bundle
+            .start_facts()
+            .await
+            .unwrap_or_else(|e| panic!("{label}: a dev server reads the config: {e}"));
+        assert_eq!(facts["codeSplitting"], dev_fact, "{label}: {facts}");
+        assert_eq!(
+            bundle
+                .call_start_fn(
+                    fn_handle(&facts["external"], &facts),
+                    &serde_json::json!(["x", null, false])
+                )
+                .await,
+            Ok(serde_json::json!(true)),
+            "{label}"
+        );
     }
 }
 
 // `getModuleInfo` in a group's `name` answers as rolldown's does: the
 // graph's facts the pass sent, with the module's `meta` and
-// `moduleSideEffects` as the plugins' hooks left them, an empty object and
-// null for a module no hook spoke of, and null for a module the pass does
-// not have.
+// `moduleSideEffects` as the plugins' hooks left them, from `resolveId`,
+// `load` and `transform`, merged into one `meta` the function may write to.
+// A module the hooks saw and said nothing of has an empty `meta` and a null
+// `moduleSideEffects`, as one no hook saw; a module the pass does not have
+// is null.
 #[tokio::test]
 async fn get_module_info_carries_what_the_hooks_said_of_the_module() {
     let config = r#"export default {
   plugins: [{
     name: "tagger",
+    resolveId(source) {
+      if (source === "shared") {
+        return { id: "/app/shared.js", moduleSideEffects: false, meta: { fromResolve: 1 } };
+      }
+      if (source === "bare") return "/app/bare.js";
+      return null;
+    },
     load(id) {
       if (id === "/app/tagged.js") {
-        return { code: "export default 1", meta: { tagger: { bucket: "i18n" } }, moduleSideEffects: false };
+        return { code: "export default 1", meta: { tagger: { bucket: "i18n" } }, moduleSideEffects: "no-treeshake" };
       }
+      return null;
+    },
+    transform(code, id) {
+      if (id === "/app/shared.js") return { code, meta: { fromTransform: 2 } };
+      if (id === "/app/seen.js") return { code };
       return null;
     },
   }],
@@ -3131,7 +3253,8 @@ async fn get_module_info_carries_what_the_hooks_said_of_the_module() {
         manualChunks(id, { getModuleInfo }) {
           const info = getModuleInfo(id);
           if (!info) return "unknown";
-          return [info.meta.tagger?.bucket ?? "none", String(info.moduleSideEffects), info.importers.length].join("|");
+          info.meta.visits = (info.meta.visits ?? 0) + 1;
+          return JSON.stringify([info.meta, info.moduleSideEffects, info.importers.length]);
         },
       },
     },
@@ -3141,28 +3264,286 @@ async fn get_module_info_carries_what_the_hooks_said_of_the_module() {
     let (_root, _host, client) = start_fn_host("module-meta", config).await;
     let facts = client.start_facts().await.expect("start facts are served");
     let name = fn_handle(&facts["codeSplitting"]["groups"][0]["name"], &facts);
+    assert_eq!(
+        client.resolve_id("shared", "").await,
+        Ok(Some("/app/shared.js".to_string()))
+    );
+    assert_eq!(
+        client.resolve_id("bare", "").await,
+        Ok(Some("/app/bare.js".to_string()))
+    );
     client
         .load("/app/tagged.js")
         .await
         .expect("the tagger loads the module");
-    let ids = [
-        "/app/tagged.js".to_string(),
-        "/app/plain.js".to_string(),
-        "/app/unsent.js".to_string(),
-    ];
-    let infos = serde_json::json!([
-        { "id": "/app/tagged.js", "importers": ["/app/entry.js"] },
-        { "id": "/app/plain.js", "importers": [] },
-    ])
+    for id in ["/app/shared.js", "/app/seen.js", "/app/silent.js"] {
+        client
+            .transform("export default 1", id, id)
+            .await
+            .unwrap_or_else(|e| panic!("{id} goes through transform: {e}"));
+    }
+    let ids: Vec<String> = [
+        "/app/shared.js",
+        "/app/tagged.js",
+        "/app/seen.js",
+        "/app/silent.js",
+        "/app/bare.js",
+        "/app/untouched.js",
+        "/app/unsent.js",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let infos = serde_json::Value::Array(
+        ids[..6]
+            .iter()
+            .map(|id| serde_json::json!({ "id": id, "importers": ["/app/entry.js"] }))
+            .collect(),
+    )
     .to_string();
+    let said = |visits: u64| {
+        let of = |meta: serde_json::Value, effects: serde_json::Value| {
+            let mut meta = meta;
+            meta["visits"] = visits.into();
+            serde_json::json!(serde_json::json!([meta, effects, 1]).to_string())
+        };
+        vec![
+            of(
+                serde_json::json!({ "fromResolve": 1, "fromTransform": 2 }),
+                false.into(),
+            ),
+            of(
+                serde_json::json!({ "tagger": { "bucket": "i18n" } }),
+                "no-treeshake".into(),
+            ),
+            // Through `transform`, which said nothing of them.
+            of(serde_json::json!({}), serde_json::Value::Null),
+            of(serde_json::json!({}), serde_json::Value::Null),
+            // Resolved to a bare id, and seen by no hook at all.
+            of(serde_json::json!({}), serde_json::Value::Null),
+            of(serde_json::json!({}), serde_json::Value::Null),
+            serde_json::json!("unknown"),
+        ]
+    };
     assert_eq!(
         client
-            .call_start_fn_batch(name, &ids, 1, Some(&infos), true, true, true)
+            .call_start_fn_batch(name, &ids, 1, Some(&infos), true, true, ChunkPass::Start)
             .await,
-        Ok(vec![
-            serde_json::json!("i18n|false|1"),
-            serde_json::json!("none|null|0"),
-            serde_json::json!("unknown"),
-        ])
+        Ok(said(1))
+    );
+    // What the function wrote to `meta` is there the next time, in the
+    // pass and in the one after.
+    assert_eq!(
+        client
+            .call_start_fn_batch(name, &ids, 1, None, true, true, ChunkPass::Continue)
+            .await,
+        Ok(said(2))
+    );
+    assert_eq!(
+        client
+            .call_start_fn_batch(name, &ids, 2, Some(&infos), true, true, ChunkPass::Start)
+            .await,
+        Ok(said(3))
+    );
+}
+
+// A bundle whose hooks ran on an engine since respawned has lost what they
+// said of its modules. A pass started so says it when a function reads
+// `meta` or `moduleSideEffects`, where an empty `meta` would have named the
+// chunks as if no hook had spoken; a function that reads the graph alone is
+// answered as ever. The next bundle's pass starts whole.
+#[tokio::test]
+async fn a_pass_whose_hooks_ran_on_a_dead_engine_says_so_when_meta_is_read() {
+    let config = r#"export default {
+  plugins: [{
+    name: "tagger",
+    load(id) {
+      return id === "/app/a.js" ? { code: "export default 1", meta: { bucket: "i18n" } } : null;
+    },
+  }],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: (id, { getModuleInfo }) => getModuleInfo(id).meta.bucket ?? "none" },
+            { name: (id, { getModuleInfo }) => String(getModuleInfo(id).moduleSideEffects) },
+            { name: (id, { getModuleInfo }) => `graph-${getModuleInfo(id).importers.length}` },
+            { name: (id, { getModuleInfo }) => Object.keys(getModuleInfo(id)).sort().join("+") },
+          ],
+        },
+      },
+    },
+  },
+};
+"#;
+    let (_root, _host, client) = start_fn_host("hooks-lost", config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let handle = |group: usize| fn_handle(&facts["codeSplitting"]["groups"][group]["name"], &facts);
+    client
+        .load("/app/a.js")
+        .await
+        .expect("the tagger loads the module");
+    let ids = ["/app/a.js".to_string()];
+    let infos = serde_json::json!([{ "id": "/app/a.js", "importers": ["/x", "/y"] }]).to_string();
+    let batch = |group: usize, generation: u64, pass: ChunkPass, tolerant: bool| {
+        let (client, ids, infos) = (client.clone(), ids.clone(), infos.clone());
+        let handle = handle(group);
+        async move {
+            let infos = (pass != ChunkPass::Continue).then_some(infos);
+            client
+                .call_start_fn_batch(
+                    handle,
+                    &ids,
+                    generation,
+                    infos.as_deref(),
+                    tolerant,
+                    true,
+                    pass,
+                )
+                .await
+        }
+    };
+    let lost = "respawned during this bundle";
+    let threw = |answer: Result<Vec<serde_json::Value>, String>| {
+        answer.is_ok_and(|out| out[0]["$threw"].as_str().is_some_and(|m| m.contains(lost)))
+    };
+
+    assert_eq!(
+        batch(0, 1, ChunkPass::Start, true).await,
+        Ok(vec![serde_json::json!("i18n")])
+    );
+    // The pass of a bundle whose hooks the engine did not run.
+    assert!(threw(batch(0, 2, ChunkPass::StartHooksLost, true).await));
+    assert!(
+        threw(batch(1, 2, ChunkPass::Continue, true).await),
+        "for the pass"
+    );
+    assert_eq!(
+        batch(2, 2, ChunkPass::Continue, true).await,
+        Ok(vec![serde_json::json!("graph-2")])
+    );
+    assert_eq!(
+        batch(3, 2, ChunkPass::Continue, true).await,
+        Ok(vec![serde_json::json!(
+            "id+importers+meta+moduleSideEffects"
+        )]),
+        "the info names what it cannot give"
+    );
+    // A build fails on it.
+    let failed = batch(0, 3, ChunkPass::StartHooksLost, false).await;
+    assert!(
+        failed.as_ref().is_err_and(|e| e.contains(lost)),
+        "{failed:?}"
+    );
+    // The next bundle's pass is whole again.
+    assert_eq!(
+        batch(0, 4, ChunkPass::Start, true).await,
+        Ok(vec![serde_json::json!("i18n")])
+    );
+    assert_eq!(
+        batch(1, 4, ChunkPass::Continue, true).await,
+        Ok(vec![serde_json::json!("null")])
+    );
+}
+
+// A build takes from a group's functions what rolldown takes, and fails in
+// rolldown's words on the rest: a string or nothing from `name`, a boolean
+// or nothing from `test`, and no promise of either. oj's dev takes a result
+// as it comes.
+#[tokio::test]
+async fn a_build_takes_from_a_groups_functions_what_rolldown_takes() {
+    let config = r#"export default {
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: () => "vendor", test: () => true },
+            { name: () => "", test: () => false },
+            { name: () => null, test: () => null },
+            { name: () => undefined, test: () => undefined },
+            { name: () => 5, test: () => 1 },
+            { name: () => true, test: () => "yes" },
+            { name: () => ({}), test: () => 0 },
+            { name: async () => "later", test: async () => true },
+            { name: () => { throw new Error("boom"); }, test: () => "" },
+          ],
+        },
+      },
+    },
+  },
+};
+"#;
+    let (_root, _host, client) = start_fn_host("returns", config).await;
+    let facts = client.start_facts().await.expect("start facts are served");
+    let ids = ["/app/a.js".to_string()];
+    let call = |group: usize, which: &'static str, tolerant: bool| {
+        let (client, ids) = (client.clone(), ids.clone());
+        let handle = fn_handle(&facts["codeSplitting"]["groups"][group][which], &facts);
+        async move {
+            let named = which == "name";
+            let pass = if named {
+                ChunkPass::Start
+            } else {
+                ChunkPass::Continue
+            };
+            client
+                .call_start_fn_batch(handle, &ids, 1, None, tolerant, named, pass)
+                .await
+                .map(|out| out[0].clone())
+        }
+    };
+    let null = serde_json::Value::Null;
+    // (group, a build's name, a build's test): the value, or the type
+    // rolldown names in its refusal.
+    type Taken = Result<serde_json::Value, &'static str>;
+    let builds: [(usize, Taken, Taken); 8] = [
+        (0, Ok("vendor".into()), Ok(true.into())),
+        (1, Ok("".into()), Ok(false.into())),
+        (2, Ok(null.clone()), Ok(null.clone())),
+        (3, Ok(null.clone()), Ok(null.clone())),
+        (4, Err("number"), Err("number")),
+        (5, Err("boolean"), Err("string")),
+        (6, Err("object"), Err("number")),
+        (7, Err("object"), Err("object")),
+    ];
+    for (group, name, test) in builds {
+        for (which, expected, want) in [("name", "string", &name), ("test", "boolean", &test)] {
+            let got = call(group, which, false).await;
+            match want {
+                Ok(value) => assert_eq!(got.as_ref(), Ok(value), "group {group} {which}"),
+                Err(returned) => {
+                    let message = format!(
+                        "advancedChunks group {which} option: The function returned `{returned}`, but expected `{expected}`."
+                    );
+                    assert!(
+                        got.as_ref().is_err_and(|e| e.contains(&message)),
+                        "group {group} {which}: {got:?}"
+                    );
+                }
+            }
+        }
+    }
+    let thrown = call(8, "name", false).await;
+    assert!(
+        thrown.as_ref().is_err_and(|e| e.contains("boom")),
+        "{thrown:?}"
+    );
+    let refused = call(8, "test", false).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.contains("returned `string`")),
+        "an empty string is no boolean: {refused:?}"
+    );
+
+    // Dev: as it comes, a promise awaited, a throw named.
+    assert_eq!(call(4, "name", true).await, Ok(5.into()));
+    assert_eq!(call(5, "test", true).await, Ok("yes".into()));
+    assert_eq!(call(7, "name", true).await, Ok("later".into()));
+    assert_eq!(call(7, "test", true).await, Ok(true.into()));
+    assert_eq!(
+        call(8, "name", true).await,
+        Ok(serde_json::json!({ "$threw": "boom" }))
     );
 }

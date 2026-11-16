@@ -94,7 +94,16 @@ pub(crate) async fn open(dev: &PluginHost, env_name: &str) -> anyhow::Result<Bun
         .map_err(|e| anyhow::anyhow!("the {env_name} plugin container failed to open: {e}"))?;
     host.build_hook_plan().await;
     let ctx = serve_bundler_resolve(&host);
-    let (facts, defines, env_delta) = read_facts(&host, env_name).await?;
+    // A bundle that cannot read its facts is asked for again (the next
+    // bundle, the next page): the container it opened goes with the
+    // failure, or each try would leave one on the engine.
+    let (facts, defines, env_delta) = match read_facts(&host, env_name).await {
+        Ok(read) => read,
+        Err(e) => {
+            let _ = host.close_container().await;
+            return Err(e);
+        }
+    };
     Ok(BundleHost {
         host,
         ctx,

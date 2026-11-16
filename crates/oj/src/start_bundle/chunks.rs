@@ -18,7 +18,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use oj_server::plugins::PluginHost;
+use oj_server::plugins::{ChunkPass, PluginHost};
 use rolldown_common::{
     ChunkOptimizationOption, ChunkOptimizationOptions, ChunkingContext, CodeSplittingMode,
     ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
@@ -98,7 +98,7 @@ fn manual(
             Some(Value::String(s)) => s.clone(),
             _ => format!("#{index}"),
         };
-        let guard = Arc::new(Guard::new(label.clone(), dev));
+        let guard = Arc::new(Guard::new(label.clone(), dev, host.engine_generation()));
         let name = match g.get("name") {
             Some(Value::String(s)) => MatchGroupName::Static(s.clone()),
             Some(f) if fn_handle(f).is_some() => MatchGroupName::Dynamic(name_fn(
@@ -163,16 +163,21 @@ fn manual(
 struct Guard {
     label: String,
     dev: bool,
+    /// The host's engine when the bundle's policy was made, before any of
+    /// the bundle's hooks ran: a `name` called on another one is of a
+    /// bundle whose hooks' word on the modules is gone.
+    engine: u64,
     warned: Mutex<bool>,
     /// The calls the host could not run.
     host_failures: std::sync::atomic::AtomicU64,
 }
 
 impl Guard {
-    fn new(label: String, dev: bool) -> Self {
+    fn new(label: String, dev: bool, engine: u64) -> Self {
         Self {
             label,
             dev,
+            engine,
             warned: Mutex::new(false),
             host_failures: Default::default(),
         }
@@ -184,7 +189,7 @@ impl Guard {
             .map(|r| match r.get("$threw").and_then(Value::as_str) {
                 Some(message) => {
                     self.warn_once(&format!(
-                        "threw under dev and steps aside (a build-only plugin it expects did not run): {message}"
+                        "threw under dev and steps aside (it may expect a build-only plugin, which did not run): {message}"
                     ));
                     None
                 }
@@ -344,6 +349,18 @@ type TestFn = dyn Fn(
     > + Send
     + Sync;
 
+/// What a `name` batch is to its pass, for the engine running now: a batch
+/// that starts the pass over (`fresh`) on an engine other than the one the
+/// bundle's hooks ran on (`then`) starts it with their word on the modules
+/// gone.
+fn chunk_pass(fresh: bool, then: u64, now: u64) -> ChunkPass {
+    match (fresh, then == now) {
+        (false, _) => ChunkPass::Continue,
+        (true, true) => ChunkPass::Start,
+        (true, false) => ChunkPass::StartHooksLost,
+    }
+}
+
 fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn> {
     Arc::new(move |ids: Vec<String>, ctx: &ChunkingContext| {
         let batch = infos_to_send(&ids, ctx);
@@ -353,6 +370,7 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
         Box::pin(async move {
             let call = |batch: Batch| {
                 let (host, ids, dev) = (Arc::clone(&host), ids.clone(), guard.dev);
+                let pass = chunk_pass(batch.fresh, guard.engine, host.engine_generation());
                 async move {
                     host.call_start_fn_batch(
                         handle,
@@ -361,7 +379,7 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
                         batch.infos.as_deref(),
                         dev,
                         true,
-                        batch.fresh,
+                        pass,
                     )
                     .await
                 }
@@ -399,7 +417,7 @@ fn test_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<TestFn>
         let guard = Arc::clone(&guard);
         Box::pin(async move {
             let out = match host
-                .call_start_fn_batch(handle, &ids, 0, None, guard.dev, false, false)
+                .call_start_fn_batch(handle, &ids, 0, None, guard.dev, false, ChunkPass::Continue)
                 .await
             {
                 Ok(out) => guard.results(out),
@@ -567,7 +585,7 @@ mod tests {
 
     #[test]
     fn dev_throws_step_aside_once() {
-        let guard = Guard::new("vendor".into(), true);
+        let guard = Guard::new("vendor".into(), true, 0);
         let out = guard.results(vec![
             json!("a"),
             json!({ "$threw": "boom" }),
@@ -575,6 +593,20 @@ mod tests {
         ]);
         assert_eq!(out, vec![Some(json!("a")), None, None]);
         assert!(*guard.warned.lock().unwrap());
+    }
+
+    // A batch that starts its pass over does so with the hooks' word on
+    // the modules gone when the engine is no longer the one the bundle's
+    // hooks ran on; a later batch of a pass only continues it, and is
+    // refused by an engine that holds nothing of it.
+    #[test]
+    fn a_pass_started_on_another_engine_has_lost_what_the_hooks_said() {
+        assert_eq!(chunk_pass(true, 3, 3), ChunkPass::Start);
+        assert_eq!(chunk_pass(true, 3, 4), ChunkPass::StartHooksLost);
+        assert_eq!(chunk_pass(true, 0, 2), ChunkPass::StartHooksLost);
+        assert_eq!(chunk_pass(false, 3, 3), ChunkPass::Continue);
+        assert_eq!(chunk_pass(false, 3, 4), ChunkPass::Continue);
+        assert_eq!(Guard::new("vendor".into(), true, 7).engine, 7);
     }
 
     fn host_failures(guard: &Guard) -> u64 {
@@ -585,13 +617,13 @@ mod tests {
 
     #[test]
     fn a_host_that_cannot_run_the_function_steps_aside_under_dev_and_fails_a_build() {
-        let dev = Guard::new("#0".into(), true);
+        let dev = Guard::new("#0".into(), true, 0);
         let out = dev
             .step_aside("name", "oj: no config function #0".into(), 2)
             .expect("dev steps aside");
         assert_eq!(out, vec![None, None]);
         assert_eq!(host_failures(&dev), 1);
-        let build = Guard::new("#0".into(), false);
+        let build = Guard::new("#0".into(), false, 0);
         let err = build
             .step_aside("name", "oj: no config function #0".into(), 2)
             .expect_err("a build stays loud");
@@ -609,7 +641,7 @@ mod tests {
     // throwing function gets.
     #[test]
     fn a_group_that_stepped_aside_answers_again_and_warns_of_every_call_the_host_missed() {
-        let guard = Guard::new("vendor".into(), true);
+        let guard = Guard::new("vendor".into(), true, 0);
         assert_eq!(
             guard.results(vec![json!("a"), json!(null)]),
             vec![Some(json!("a")), Some(json!(null))],
@@ -662,7 +694,7 @@ mod tests {
             ),
             ("#3", "name", "codeSplitting group #3 name: host gone"),
         ] {
-            let build = Guard::new(label.into(), false);
+            let build = Guard::new(label.into(), false, 0);
             let err = build.step_aside(what, "host gone".into(), 1).unwrap_err();
             assert_eq!(err.to_string(), want);
             assert_eq!(host_failures(&build), 0, "a build fails, it does not warn");

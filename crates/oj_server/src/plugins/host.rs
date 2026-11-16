@@ -9,6 +9,31 @@ pub(crate) const MAIN_CONTAINER: u32 = 0;
 /// `callStartFnBatch`): the pass's earlier infos went to an engine respawned
 /// since.
 pub const STALE_CHUNK_INFOS: &str = "oj: the chunking pass's module infos are not on this engine";
+
+/// What a group's `name` batch is to its chunking pass, for the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkPass {
+    /// A later batch of a pass the engine holds.
+    Continue,
+    /// The batch starts the pass over for the engine, which holds from then
+    /// on what this batch and the ones after it carry.
+    Start,
+    /// [`ChunkPass::Start`], of a bundle whose hooks ran on an engine since
+    /// respawned: what they said of the modules (`meta`,
+    /// `moduleSideEffects`) went with it, and `getModuleInfo` says so when
+    /// either is read.
+    StartHooksLost,
+}
+
+impl ChunkPass {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChunkPass::Continue => "continue",
+            ChunkPass::Start => "start",
+            ChunkPass::StartHooksLost => "start-hooks-lost",
+        }
+    }
+}
 /// The first id of the containers [`PluginHost::open_environment_container`]
 /// opens; worker containers count up from 1 below it.
 const ENVIRONMENT_CONTAINERS: u32 = 1 << 20;
@@ -1388,13 +1413,13 @@ impl PluginHost {
     /// per id). `infos` (module infos, as JSON) carries the ones this
     /// chunking `generation` has not sent yet. `tolerant`: a throw comes back
     /// as `{ "$threw": message }` for its id instead of failing the batch.
+    /// A build (not `tolerant`) takes what rolldown takes from the function
+    /// and fails in its words on anything else.
     /// `named`: the function is a group's `name`, called with the chunking
-    /// context (`getModuleInfo`) after the id; a `test` gets the id alone.
-    /// `fresh`: the batch starts the pass over for the engine, which holds
-    /// from then on what this batch and the ones after it carry. A `name`
-    /// batch that is not `fresh`, for a pass the engine holds nothing of (it
-    /// was respawned since the pass started), fails with
-    /// [`STALE_CHUNK_INFOS`].
+    /// context (`getModuleInfo`) after the id; a `test` gets the id alone,
+    /// and `pass` is nothing to it. A `name` batch that does not start its
+    /// pass, for a pass the engine holds nothing of (it was respawned since
+    /// the pass started), fails with [`STALE_CHUNK_INFOS`].
     #[allow(clippy::too_many_arguments)]
     pub async fn call_start_fn_batch(
         &self,
@@ -1404,7 +1429,7 @@ impl PluginHost {
         infos: Option<&str>,
         tolerant: bool,
         named: bool,
-        fresh: bool,
+        pass: ChunkPass,
     ) -> Result<Vec<serde_json::Value>, String> {
         let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
         let raw = self
@@ -1417,7 +1442,7 @@ impl PluginHost {
                     infos.unwrap_or(""),
                     if tolerant { "true" } else { "false" },
                     if named { "true" } else { "false" },
-                    if fresh { "true" } else { "false" },
+                    pass.as_str(),
                 ],
             )
             .await?
@@ -2004,6 +2029,13 @@ impl PluginHost {
             ));
         }
         self.core.call(self.container, hook, args).await
+    }
+
+    /// Which of the host's engines is the one running: it goes up each time
+    /// the engine is respawned. What an engine held (what its hooks said of
+    /// the modules they saw) is gone with it.
+    pub fn engine_generation(&self) -> u64 {
+        self.core.revive.lock().unwrap().generation
     }
 
     /// A worker container from an engine since revived: its id may name
