@@ -29,15 +29,21 @@ leaves unset, alias entries resolve alongside tsconfig `paths`, in both `oj dev`
 Normally an `import.meta.env` value is baked into the compiled code, so changing it means restarting the dev server. A runtime env key is read when the page loads instead. That helps when the dev server starts before its backend does (a preview whose database comes up later), or when it gets pointed at another backend while it runs.
 
 ```sh
-OJ_RUNTIME_ENV_KEYS=VITE_API_URL,VITE_API_KEY=anonKey \
+OJ_RUNTIME_ENV_KEYS=VITE_API_URL,VITE_API_KEY \
 OJ_RUNTIME_ENV_FILE=/run/backend/env.json \
 oj dev
 ```
 
-`OJ_RUNTIME_ENV_KEYS` lists the keys. `OJ_RUNTIME_ENV_FILE` is a JSON file holding their values, which oj watches. A key reads the field with its own name unless you map it: `VITE_API_KEY=anonKey` reads `anonKey`.
+`OJ_RUNTIME_ENV_KEYS` lists the keys. `OJ_RUNTIME_ENV_FILE` is a JSON file holding their values, which oj watches:
 
 ```json
-{ "VITE_API_URL": "/_port_8001", "anonKey": "sb_publishable_x" }
+{ "VITE_API_URL": "/_port_8001", "VITE_API_KEY": "sb_publishable_x" }
+```
+
+If the file uses other field names, map them with `KEY=field`. For a backend that writes `{ "url": "...", "anonKey": "..." }`:
+
+```sh
+OJ_RUNTIME_ENV_KEYS=VITE_API_URL=url,VITE_API_KEY=anonKey
 ```
 
 When a value changes, open pages reload and pick it up. Nothing is recompiled. `%KEY%` in index.html follows the values too.
