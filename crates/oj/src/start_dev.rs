@@ -3511,6 +3511,11 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         let overlay = state.live_reload.with_file_name("error-overlay.js");
         return serve_js(&overlay, "error overlay").await;
     }
+    // The app's routes, for a host UI's route picker: oj's own answer, never
+    // the app's router (which has no such route and would render its 404).
+    if path == crate::start_routes::PATH {
+        return routes_json(&state, req.method()).await;
+    }
     if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
         return state.bundler.hot.serve(name);
     }
@@ -4135,6 +4140,34 @@ fn render_live_reload(
         "__OJ_PING_MS__",
         &ping.map_or(0, |p| p.as_millis()).to_string(),
     )
+}
+
+/// `GET /@oj/tanstack/routes.json`: the generated route tree's routes, read
+/// when asked (the generator rewrites the file as routes come and go).
+async fn routes_json(state: &StartState, method: &Method) -> Response {
+    if *method != Method::GET && *method != Method::HEAD {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD")],
+            "oj start: the route list answers GET",
+        )
+            .into_response();
+    }
+    let (tree, root) = (
+        state.routes.tree.clone(),
+        state.bundler.root().to_path_buf(),
+    );
+    let body = tokio::task::spawn_blocking(move || crate::start_routes::body(&tree, &root))
+        .await
+        .unwrap_or_else(|_| r#"{"routes":[]}"#.to_string());
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 async fn serve_js(path: &Path, what: &str) -> Response {
