@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime env, from review: `/@oj/env.js` answers `Cross-Origin-Resource-Policy: same-origin`, so another site's `<script src>` of the classic form cannot read the values; a values file where the root's watch does not reach (`dist`, `node_modules`, a path `server.watch.ignored` names) has its directory watched for itself, where it was read at boot and never again; a key in `OJ_RUNTIME_ENV_KEYS` that is no identifier to the compiler (`VITE_x²`) is refused by name, where it silently turned off every define.
 - Runtime env, from review, further: a module that only writes a baked key (`import.meta.env.MODE = "test"`) or reads with a comment between the parts (`import.meta /* c */ .env.KEY`) imports `/@oj/env.js`, by what the compile wrote and not the source's text alone; a compiled file loaded as a classic `<script src>` or as a service worker gets the values inline where the import stood, its ETag following them; a values file seen half written (truncated, then written) is read again before it counts as invalid, so pages no longer reload onto the 503 page and back; the values set over `/@oj/env` together stay under the file's 64 KB, since a restart hands them on as one environment variable; the reload-once guard is per server, so a restarted server's generations are not mistaken for the last one's; the ready file is written and swept under one lock.
 
+### Fixed
+
+- TanStack Start dev: `tsconfig.json` reloads the page whenever it is saved, as Vite's `reloadOnTsconfigChange` does for a file of that name whatever it holds. Since 0.4.13 the page reloaded for it only when the server-fn resolver came out another one, so a changed `jsx` or `target`, or the file saved beside an edit a component accepts, left the page as it was. A `tsconfig.app.json` or a file a tsconfig extends still reloads only for a changed resolver, as under Vite it reloads nothing.
+- TanStack Start dev, what a batch of changes is to the server-fn resolver:
+  - An edit of a builder's module that is not `.ts` or `.tsx` (`authed.mts`, a `.js` one outside `src/`) reloads the page as the same edit of `authed.ts` does. Since 0.4.13 it did only when the resolver changed.
+  - A `.cts` file answers an import of `./x.cjs`, as Vite's resolver has it.
+  - A source file whose last server function was taken out regenerates the resolver, which kept importing the file for a function it no longer has.
+  - A directory the watcher names alone for the files that came or went with it (a rename, `rm -r`) regenerates the resolver, which kept importing the old paths.
+  - The cached resolver is keyed on the package.json, tsconfig.json and jsconfig.json nearest each module it read, not the root's alone: a nested package's `imports` pointed at another module brought the old resolver back from the cache.
+  - A module the scan read is matched when the watcher names it through a symlinked directory of the app, or in the disk's letter case where the import used another.
+  - A resolver that could not be made again reloads the page, as it did before 0.4.13, rather than leave it on functions that may be gone.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
