@@ -153,9 +153,20 @@ fn wait_for_group_chunk(server: &Server, root: &Path, not: Option<&str>) -> Stri
     }
 }
 
-/// The chunk by name, as the page loads it.
+/// The chunk by name, as the page loads it, once the server serves it. The
+/// name comes from the manifest the bundle writes to the cache, and the bundle
+/// writes that before the server takes the bundle as the one it serves, so
+/// for a moment after an edit the server answers 404 for a name the file
+/// already has. The answer after 30 seconds is returned as it stands.
 fn chunk(server: &Server, name: &str) -> (u16, String) {
-    server.request("GET", &format!("/@oj-start/{name}"), &[])
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let answer = server.request("GET", &format!("/@oj-start/{name}"), &[]);
+        if answer.0 != 404 || Instant::now() >= deadline {
+            return answer;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// The group's `name` and `test` functions run on the first bundle, on the
