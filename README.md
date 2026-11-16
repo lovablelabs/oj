@@ -26,7 +26,7 @@ leaves unset, alias entries resolve alongside tsconfig `paths`, in both `oj dev`
 
 ## Runtime env
 
-`import.meta.env` keys a page should take at request time, instead of the literal a compile bakes in: a dev server that outlives the backend it points at (a preview rebound to a database that comes up later), or one serving several backends over its lifetime.
+Normally an `import.meta.env` value is baked into the compiled code, so changing it means restarting the dev server. A runtime env key is read when the page loads instead. That helps when the dev server starts before its backend does (a preview whose database comes up later), or when it gets pointed at another backend while it runs.
 
 ```sh
 OJ_RUNTIME_ENV_KEYS=VITE_API_URL,VITE_API_KEY=anonKey \
@@ -34,7 +34,34 @@ OJ_RUNTIME_ENV_FILE=/run/backend/env.json \
 oj dev
 ```
 
-A module that reads one of the keys compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force; `%KEY%` in index.html follows them too. Values come from the file (a JSON object, watched; `KEY=field` reads another field of it) and from `POST /@oj/env` with `{"VITE_API_URL": "/_port_8001"}` (`null` unsets), for a caller on this machine that is not a browser (a connection from another machine, a request with `Origin`, `Sec-Fetch-Site` or `X-Forwarded-Host` is refused); `GET /@oj/env` reports every key, its value and its source, under the same rule. A change reloads the pages and changes nothing a compile emitted. While the file is on disk but incomplete (a backend publishes `{"pending":true}` until it is ready), documents answer 503 with a page that asks again every two seconds, and modules still serve. `OJ_RUNTIME_ENV_READY_FILE` exists exactly while every key has a value in a running server: a server told to stop removes it (one killed outright leaves it, and the next start removes it). The file is a regular file or a symlink to one (a mounted secret), its directory watched and watched again when it is removed and created; inside the app root, it must not be under `node_modules` or a `server.watch.ignored` path, which the watcher skips. A classic worker loads the values with `importScripts`. Plain `oj dev` only for now: `oj dev --ssr`, a TanStack Start app and `oj build` warn and keep the literals.
+`OJ_RUNTIME_ENV_KEYS` lists the keys. `OJ_RUNTIME_ENV_FILE` is a JSON file holding their values, which oj watches. A key reads the field with its own name unless you map it: `VITE_API_KEY=anonKey` reads `anonKey`.
+
+```json
+{ "VITE_API_URL": "/_port_8001", "anonKey": "sb_publishable_x" }
+```
+
+When a value changes, open pages reload and pick it up. Nothing is recompiled. `%KEY%` in index.html follows the values too.
+
+You can also set values over HTTP, from the same machine:
+
+```sh
+curl -X POST http://localhost:<port>/@oj/env -d '{"VITE_API_URL": "/_port_8001"}'   # null unsets a key
+curl http://localhost:<port>/@oj/env                                                # each key, its value and where it came from
+```
+
+A value set this way wins over the file's, and the file's wins over the `.env` literal. Set values survive a restart of the dev server (a config or `.env` edit). The endpoint only answers a direct caller on the same machine: a request from another machine, from a browser or through a proxy is refused.
+
+If the backend isn't ready yet:
+
+- Have it write `{"pending":true}` to the file first. While the file is there but missing values, pages answer 503 with a small page that retries every two seconds. Modules still load.
+- Set `OJ_RUNTIME_ENV_READY_FILE` to a path and oj keeps a file there only while the server is running and every key has a value. A server that is killed outright leaves it behind; the next start cleans it up.
+
+Good to know:
+
+- The values file can be a symlink (a mounted secret), and its directory can be created after the server starts.
+- The file, and the values set over HTTP, are limited to 64 KB each.
+- Under the hood, a module that reads a key compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js`, which the server renders on each request. Workers are covered too.
+- This is for plain `oj dev` only, for now. `oj dev --ssr`, TanStack Start apps and `oj build` print a warning and keep the baked values.
 
 `oj env` is the command line to the same endpoint, for the app's running dev server (found as `oj dev-typecheck` finds it):
 
