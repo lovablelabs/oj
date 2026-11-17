@@ -229,8 +229,15 @@ impl InteropRewriter<'_> {
                 ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
                     out.push_str(&format!("const {} = {cjs};", s.local.name));
                 }
+                // Vite's transformCjsImport: the namespace of a CommonJS dep
+                // is module.exports spread beside `default`, so a name the
+                // dep only assigns at runtime (a UMD wrapper) is a member. A
+                // module that exports names of its own already is one.
                 ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                    out.push_str(&format!("const {} = {ns};", s.local.name));
+                    out.push_str(&format!(
+                        "const {} = {ns}.__cjs_exports === undefined && Object.keys({ns}).some((k) => k !== \"default\") ? {ns} : {{ ...((typeof {cjs} === \"object\" && !Array.isArray({cjs})) || typeof {cjs} === \"function\" ? {cjs} : {{}}), default: {cjs} }};",
+                        s.local.name
+                    ));
                 }
                 ImportDeclarationSpecifier::ImportSpecifier(s) => {
                     let key = json_key(&export_name(&s.imported));
@@ -460,7 +467,16 @@ mod tests {
     #[test]
     fn namespace_import_binds_module_exports() {
         let out = run(r#"import * as ns from "cjs-dep";"#);
-        assert!(out.contains("const ns = __ojns0;"), "{out}");
+        assert!(
+            out.contains(r#"? __ojcjs0 : {}), default: __ojcjs0 };"#),
+            "the namespace is module.exports beside default: {out}"
+        );
+        assert!(
+            out.contains(
+                "const ns = __ojns0.__cjs_exports === undefined && Object.keys(__ojns0).some("
+            ),
+            "a module with names of its own stays its namespace: {out}"
+        );
     }
 
     #[test]

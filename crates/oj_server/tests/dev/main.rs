@@ -73,6 +73,7 @@ mod optimize_linked;
 mod optimize_plan;
 mod optimize_reload;
 mod optimize_rerun_reload;
+mod optimize_umd_namespace;
 mod plugin_claimed_extensions;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
