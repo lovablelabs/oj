@@ -42,6 +42,12 @@ pub struct ModuleNode {
     /// Per imported module, the binding names this module uses from it
     /// (Vite's `importedBindings`); `*` marks namespace/dynamic use.
     pub imported_bindings: HashMap<PathBuf, HashSet<String>>,
+    /// Per imported module this module names by a url that is not the
+    /// node's path (`/src/a.md?raw` for `/src/a.md`), every url it names it
+    /// by: the query says which module of the file the import is, so what
+    /// asks for the import ahead of the module (a page's preload) asks for
+    /// these, never the bare path.
+    pub import_urls: HashMap<PathBuf, Vec<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +137,49 @@ impl ModuleGraph {
         self.ensure_module(path).imported_bindings = bindings
             .map(|(p, names)| (p.to_path_buf(), names.iter().cloned().collect()))
             .collect();
+    }
+
+    /// Records the url of each import as the module names it (see
+    /// [`ModuleNode::import_urls`]) from a re-scannable borrowed iterator of
+    /// (node path, url) pairs; the unchanged case allocates nothing, as
+    /// [`Self::set_imported_bindings`].
+    pub fn set_import_urls<'a, I>(&mut self, path: &Path, urls: I)
+    where
+        I: Iterator<Item = (&'a Path, &'a str)> + Clone,
+    {
+        let unchanged = self.modules.get(path).is_some_and(|node| {
+            let map = &node.import_urls;
+            let mut distinct = 0usize;
+            for (idx, (p, url)) in urls.clone().enumerate() {
+                match map.get(p) {
+                    Some(named) if named.iter().any(|n| n == url) => {
+                        if !urls.clone().take(idx).any(|prev| prev == (p, url)) {
+                            distinct += 1;
+                        }
+                    }
+                    None if p.to_str() == Some(url) => {}
+                    _ => return false,
+                }
+            }
+            distinct == map.values().map(Vec::len).sum::<usize>()
+        });
+        if unchanged {
+            return;
+        }
+        let mut map: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        for (p, url) in urls.clone() {
+            if p.to_str() != Some(url) {
+                map.entry(p.to_path_buf()).or_default();
+            }
+        }
+        for (p, url) in urls {
+            if let Some(named) = map.get_mut(p) {
+                if !named.iter().any(|n| n == url) {
+                    named.push(url.to_string());
+                }
+            }
+        }
+        self.ensure_module(path).import_urls = map;
     }
 
     /// Record a module's imports, returning the dependencies it no longer

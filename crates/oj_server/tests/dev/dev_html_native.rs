@@ -192,14 +192,80 @@ async fn a_dev_page_preloads_its_static_graph_only() {
     .unwrap();
     assert_eq!(
         snapshot.iter().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "/src/b.js",
-            "/src/data.json",
-            "/src/pic.png",
-            "/src/style.css",
-            "/src/a.js"
-        ]
+        ROOT_PRELOADS
     );
+}
+
+/// An import named with a query is preloaded under that url, the one its
+/// importer asks for: `?raw` of a Markdown or CSV file (a static import and
+/// each member of an eager glob), of a script, and a stylesheet's `?inline`.
+/// The bare path is another module (the script's own) or no module at all:
+/// the page used to preload `/src/notes.md`, which the browser refused as a
+/// script, or, where a plugin's hooks take every id, the server compiled as
+/// JavaScript and answered 500 with a parse error.
+///
+/// Vite's dev page has no preloads: the browser asks only for the urls
+/// vite:import-analysis wrote into the importer, each with its query, and
+/// vite:asset's load answers `?raw` with the file's text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queried_import_is_preloaded_under_its_query() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"raw-preloads","version":"1.0.0"}"#),
+        (
+            "index.html",
+            r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        ),
+        ("src/notes.md", "# Notes\n\nSome *text* with a {brace.\n"),
+        ("src/accounts.csv", "id,name\n1,\"Acme, Inc.\"\n"),
+        ("src/posts/one.md", "# One\n"),
+        ("src/posts/two.md", "# Two\n"),
+        ("src/util.js", "export const util = 1;\n"),
+        ("src/style.css", ".x { color: blue; }\n"),
+        (
+            "src/main.js",
+            "import notes from \"./notes.md?raw\";\n\
+             import accounts from \"./accounts.csv?raw\";\n\
+             import { util } from \"./util.js\";\n\
+             import utilText from \"./util.js?raw\";\n\
+             import css from \"./style.css?inline\";\n\
+             const posts = import.meta.glob(\"./posts/*.md\", { query: \"?raw\", import: \"default\", eager: true });\n\
+             window.__MAIN = [notes, accounts, util, utilText, css, posts];\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    let html = server.text("/").await;
+    let links = preloads(&html);
+    assert_eq!(
+        links,
+        [
+            "/src/accounts.csv?raw",
+            "/src/notes.md?raw",
+            "/src/posts/one.md?raw",
+            "/src/posts/two.md?raw",
+            "/src/style.css?inline",
+            "/src/util.js",
+            "/src/util.js?raw",
+        ],
+        "{html}"
+    );
+    for url in &links {
+        let req = axum::http::Request::get(url.as_str())
+            .header("sec-fetch-dest", "script")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = server.request(req).await;
+        assert_eq!(res.status, 200, "{url}");
+        assert_eq!(res.headers["content-type"], "text/javascript", "{url}");
+    }
+    // The next boot's preloads, before its crawl is done: the same urls.
+    let snapshot: Vec<String> = serde_json::from_slice(
+        &std::fs::read(oj_cache::cache_root(&app.root).join("graph-snapshot.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot, links);
 }
 
 /// Each page preloads its own graph: `about.html`, once its script has been

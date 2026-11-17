@@ -102,6 +102,33 @@ fn re_recording_identical_edges_allocates_nothing() {
         0,
         "the no-bindings common case is free"
     );
+    // The urls the imports are named by, re-recorded unchanged: a queried
+    // one (`./util.ts?raw` beside `./util.ts`), a repeat, and bare ones the
+    // graph keeps nothing for.
+    let urls = [
+        (imports[0].as_path(), "/src/Button.tsx"),
+        (imports[1].as_path(), "/src/util.ts"),
+        (imports[1].as_path(), "/src/util.ts?raw"),
+        (imports[1].as_path(), "/src/util.ts?raw"),
+        (imports[2].as_path(), "/src/a.css?import"),
+    ];
+    g.set_import_urls(&app, urls.iter().copied());
+    let named = &g.node(&app).unwrap().import_urls;
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert_eq!(named[&imports[1]], ["/src/util.ts", "/src/util.ts?raw"]);
+    assert_eq!(named[&imports[2]], ["/src/a.css?import"]);
+    assert_eq!(
+        allocations(|| g.set_import_urls(&app, urls.iter().copied())),
+        0
+    );
+    assert_eq!(
+        allocations(|| g.set_import_urls(&imports[0], std::iter::empty::<(&Path, &str)>())),
+        0,
+        "the no-imports common case is free"
+    );
+    // An import no longer named with its query is forgotten.
+    g.set_import_urls(&app, urls[..2].iter().copied());
+    assert!(g.node(&app).unwrap().import_urls.is_empty());
     // ensure_module of a known module no longer builds an owned key.
     assert_eq!(
         allocations(|| {

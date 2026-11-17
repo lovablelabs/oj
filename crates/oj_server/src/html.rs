@@ -261,10 +261,12 @@ pub(crate) async fn serve_fallback(
 }
 
 /// The preload href: the exact URL the importer names, so preload and import
-/// share one cache entry. `?import` for styles; a pre-bundled entry's current
-/// URL from `entries` (file name to URL), whose version moves with every
-/// rerun; anything else under `/@oj-deps/` bare, as dep files import their
-/// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
+/// share one cache entry. A url the graph kept with its query (`?raw`,
+/// `?inline`) is that url. Of a bare path (a snapshot written before the
+/// graph kept them): `?import` for styles; a pre-bundled entry's current URL
+/// from `entries` (file name to URL), whose version moves with every rerun;
+/// anything else under `/@oj-deps/` bare, as dep files import their chunks.
+/// An app asset is imported as `?url` (an `.svg` stays bare when
 /// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
 pub(crate) fn preload_href(
     root: &Path,
@@ -272,7 +274,9 @@ pub(crate) fn preload_href(
     entries: &HashMap<String, String>,
     svg_compiled: bool,
 ) -> String {
-    if is_style_url(path) {
+    if path.contains('?') {
+        path.to_string()
+    } else if is_style_url(path) {
         format!("{path}?import")
     } else if !path.starts_with("/@")
         && !path.contains("/node_modules/")
@@ -296,7 +300,9 @@ pub(crate) fn preload_href(
 /// imports only). Never what only an `import()` reaches (a lazy route loads
 /// when it is used, even once the graph knows it), another page's modules,
 /// the page's own inline style (its compile is no module the page imports),
-/// the files a stylesheet inlined, or oj's own runtime.
+/// the files a stylesheet inlined, or oj's own runtime. An import named with
+/// a query is listed under that url (`/src/a.md?raw`): the bare path is
+/// another module, or none (a Markdown or CSV file is no script).
 ///
 /// Vite's dev page carries no modulepreload: it walks the same imports one
 /// round trip per level. Over HTTP/2 with latency that waterfall costs a page
@@ -304,6 +310,7 @@ pub(crate) fn preload_href(
 pub(crate) fn static_preloads(graph: &oj_graph::ModuleGraph, entries: &[String]) -> Vec<String> {
     let skip = |url: &str| url.starts_with("/@oj/") || url.contains("html-proxy");
     let mut seen: std::collections::HashSet<String> = entries.iter().cloned().collect();
+    let mut listed = seen.clone();
     let mut queue: std::collections::VecDeque<String> = entries.iter().cloned().collect();
     let mut out = Vec::new();
     while let Some(url) = queue.pop_front() {
@@ -321,11 +328,18 @@ pub(crate) fn static_preloads(graph: &oj_graph::ModuleGraph, entries: &[String])
             .collect();
         imports.sort();
         for import in imports {
-            if skip(&import) || !seen.insert(import.clone()) {
+            if skip(&import) {
                 continue;
             }
-            out.push(import.clone());
-            queue.push_back(import);
+            let named = node.import_urls.get(Path::new(&import));
+            for url in named.map_or(std::slice::from_ref(&import), Vec::as_slice) {
+                if listed.insert(url.clone()) {
+                    out.push(url.clone());
+                }
+            }
+            if seen.insert(import.clone()) {
+                queue.push_back(import);
+            }
         }
     }
     out
