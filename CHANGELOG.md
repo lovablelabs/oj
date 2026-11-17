@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: Vite's default `cacheDir` is found past a `package.json` Vite cannot load. Vite's `findNearestPackageData` walks on to the parent directory when the file is empty, is not JSON, holds `null` or has a `sideEffects` array with a member that is no string; oj took the nearest file that existed, so an app with such a `package.json` under a workspace's looked for Vite's optimized deps in `<app>/node_modules/.vite` where Vite keeps them in `<workspace>/node_modules/.vite`.
+- Dev server: an app whose `package.json` beside the config is not JSON has its config evaluated, which reports the error as Vite does (rolldown reads that file to bundle the config and fails the load). A literal config was read in Rust and the server started.
+
 ## [0.4.14] - 2026-11-16
 
 ### Added

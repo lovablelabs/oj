@@ -39,7 +39,8 @@ pub fn public_dir(config: &OjConfig, root: &Path) -> Option<PathBuf> {
 /// Vite's `cacheDir`, absolute (resolveConfig in config.ts): the config's
 /// value resolved against the root; else `node_modules/.vite` under the
 /// nearest directory at or above the root holding a package.json (Vite's
-/// findNearestPackageData, so a root inside a package caches above itself);
+/// findNearestPackageData, so a root inside a package caches above itself;
+/// a package.json Vite cannot load is passed over for the next one up);
 /// else, with no manifest anywhere, under the root's node_modules when it
 /// has one and `<root>/.vite` otherwise. An empty string is unset, as Vite's
 /// `if (config.cacheDir)` reads it.
@@ -47,10 +48,40 @@ pub fn cache_dir(config: &OjConfig, root: &Path) -> PathBuf {
     if let Some(dir) = config.cache_dir.as_deref().filter(|d| !d.is_empty()) {
         return root.join(dir);
     }
-    match root.ancestors().find(|d| d.join("package.json").is_file()) {
+    match root
+        .ancestors()
+        .find(|d| manifest_loads(&d.join("package.json")))
+    {
         Some(pkg) => pkg.join("node_modules/.vite"),
         None if root.join("node_modules").is_dir() => root.join("node_modules/.vite"),
         None => root.join(".vite"),
+    }
+}
+
+/// Whether Vite's `loadPackageData` returns for this package.json.
+/// `findNearestPackageData` catches its throw and walks on to the parent
+/// directory, so a file that is empty, is not JSON or holds `null` is no
+/// manifest to it. Read as Vite reads it: bytes decoded leniently, a leading
+/// BOM dropped, any JSON value but `null` accepted (`const { sideEffects } =
+/// data` throws for `null` alone), and a `sideEffects` array whose member has
+/// no `includes` (anything but a string or an array) throwing too.
+fn manifest_loads(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Err(_) | Ok(serde_json::Value::Null) => false,
+        Ok(data) => match data.get("sideEffects") {
+            Some(serde_json::Value::Array(members)) => {
+                members.iter().all(|m| m.is_string() || m.is_array())
+            }
+            _ => true,
+        },
     }
 }
 
@@ -317,5 +348,85 @@ mod cache_dir_tests {
             root.join("node_modules/.vite"),
             "the root's own manifest is the nearest"
         );
+    }
+
+    /// Vite's findNearestPackageData catches what loadPackageData throws and
+    /// goes on to the parent directory.
+    #[test]
+    fn a_package_json_vite_cannot_load_is_passed_over() {
+        let none = config("{}");
+        let above = |manifest: &[u8]| {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("ws/app");
+            std::fs::create_dir_all(root.join("node_modules")).unwrap();
+            std::fs::write(dir.path().join("ws/package.json"), r#"{"name":"ws"}"#).unwrap();
+            std::fs::write(root.join("package.json"), manifest).unwrap();
+            let got = cache_dir(&none, &root);
+            if got == dir.path().join("ws/node_modules/.vite") {
+                true
+            } else {
+                assert_eq!(got, root.join("node_modules/.vite"));
+                false
+            }
+        };
+        for unloadable in [
+            &b""[..],
+            b"   \n",
+            b"{",
+            b"{\"name\": \"app\",}",
+            b"null",
+            b"// a comment\n{}",
+            br#"{"sideEffects":[1]}"#,
+            br#"{"sideEffects":[null]}"#,
+            br#"{"sideEffects":[{}]}"#,
+        ] {
+            assert!(
+                above(unloadable),
+                "{:?} is no manifest to Vite",
+                String::from_utf8_lossy(unloadable)
+            );
+        }
+        for loadable in [
+            &b"{}"[..],
+            b"\xef\xbb\xbf{}",
+            b"[]",
+            b"1",
+            b"\"text\"",
+            b"true",
+            b"{\"name\": \"caf\xe9\"}",
+            br#"{"sideEffects":false}"#,
+            br#"{"sideEffects":[]}"#,
+            br#"{"sideEffects":["*.css",["a"]]}"#,
+            br#"{"sideEffects":"x"}"#,
+            br#"{"sideEffects":null}"#,
+        ] {
+            assert!(
+                !above(loadable),
+                "{:?} is a manifest to Vite",
+                String::from_utf8_lossy(loadable)
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_json_that_is_a_directory_or_unloadable_all_the_way_up_is_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        std::fs::create_dir_all(root.join("package.json")).unwrap();
+        // Nothing above a temp dir is expected to hold a package.json.
+        if dir
+            .path()
+            .ancestors()
+            .any(|d| d.join("package.json").exists())
+        {
+            return;
+        }
+        let none = config("{}");
+        assert_eq!(cache_dir(&none, &root), root.join(".vite"));
+        std::fs::remove_dir(root.join("package.json")).unwrap();
+        std::fs::write(root.join("package.json"), "").unwrap();
+        assert_eq!(cache_dir(&none, &root), root.join(".vite"));
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        assert_eq!(cache_dir(&none, &root), root.join("node_modules/.vite"));
     }
 }

@@ -93,6 +93,23 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
     // Vite bundles the config from its real path, so `__dirname` and
     // `import.meta.dirname` are a symlinked config's target directory.
     let real = vite.canonicalize().map_err(unreadable)?;
+    // Vite bundles the config with rolldown, which reads the package.json
+    // nearest the config for its module type and fails the load on one that
+    // is not JSON. Evaluation reports that as Vite does.
+    if let Some(manifest) = real
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("package.json"))
+        .find(|file| file.is_file())
+    {
+        let text = std::fs::read(&manifest)
+            .map_err(|e| format!("{} unreadable: {e}", manifest.display()))?;
+        let text = String::from_utf8_lossy(&text);
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        if serde_json::from_str::<Value>(text).is_err() {
+            return Err(format!("{} is not JSON", manifest.display()));
+        }
+    }
     let config = read_config(&source, &real).ok_or(
         "config is outside the literal shape (a statement, key or value only evaluation reads)",
     )?;

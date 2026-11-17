@@ -190,6 +190,102 @@ export default { plugins: [react()], resolve: { alias: { "@": path.resolve(impor
     assert_eq!(evaluated["alias"]["@"], target.to_string_lossy().as_ref());
 }
 
+/// Vite's default `cacheDir` sits under the nearest package.json it can
+/// load (findNearestPackageData walks past one that throws), else under the
+/// root. The reader and the engine must agree wherever the manifest is. A
+/// package.json that is not JSON beside the config fails Vite's config load
+/// (rolldown reads it to bundle the config), so the reader leaves such an app
+/// to the engine, which reports it.
+#[test]
+fn the_default_cache_dir_follows_the_manifest_vite_finds() {
+    let Some(fixture) = fixture() else {
+        return;
+    };
+    oj_server::plugins::engine_jobs_via_subprocess(PathBuf::from(env!("CARGO_BIN_EXE_oj")));
+    #[derive(Debug)]
+    enum Vite {
+        /// The cache dir is under the app.
+        App,
+        /// The cache dir is under the directory above the app.
+        Above,
+        /// The config does not load.
+        Fails,
+    }
+    // oj's engine refuses to boot under a package.json that starts with a
+    // BOM ("Malformed package.json"), where Node and Vite read past it. That
+    // app is read in Rust alone.
+    let engine_boots = |own: Option<&[u8]>| !matches!(own, Some(b"\xef\xbb\xbf{}"));
+    // (the app's package.json or none, one in the directory above or none)
+    let cases: &[(Option<&[u8]>, bool, Vite)] = &[
+        // Not JSON: the config load fails.
+        (Some(b""), true, Vite::Fails),
+        (Some(b"{ not json"), true, Vite::Fails),
+        (Some(b""), false, Vite::Fails),
+        // JSON loadPackageData throws on: the manifest above is the nearest.
+        (Some(b"null"), true, Vite::Above),
+        (Some(br#"{"sideEffects":[1]}"#), true, Vite::Above),
+        // Loadable, whatever it holds.
+        (Some(b"\xef\xbb\xbf{}"), true, Vite::App),
+        (Some(b"[]"), true, Vite::App),
+        (Some(br#"{"sideEffects":["*.css",["a"]]}"#), true, Vite::App),
+        // No manifest in the app.
+        (None, true, Vite::Above),
+        // None Vite can load anywhere: the app's node_modules.
+        (Some(b"null"), false, Vite::App),
+        (None, false, Vite::App),
+    ];
+    for (own, above, vite_does) in cases {
+        let what = format!(
+            "app package.json {:?}, one above: {above}",
+            own.map(String::from_utf8_lossy)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        if !above && top.ancestors().any(|d| d.join("package.json").exists()) {
+            eprintln!("skipping ({what}): a package.json above the temp dir");
+            continue;
+        }
+        let (root, vite) = app(&fixture, &top, "vite.config.mjs", CONFIGS[0].2);
+        std::fs::remove_file(root.join("package.json")).unwrap();
+        if let Some(own) = own {
+            std::fs::write(root.join("package.json"), own).unwrap();
+        }
+        if *above {
+            std::fs::write(top.join("package.json"), r#"{"name":"ws"}"#).unwrap();
+        }
+        let want = match vite_does {
+            Vite::App => root.join("node_modules/.vite"),
+            Vite::Above => top.join("node_modules/.vite"),
+            Vite::Fails => {
+                let (read, evaluated) =
+                    oj_server::plugins::static_and_engine_extraction(&root, &vite);
+                assert!(evaluated.is_none(), "the engine loaded the config, {what}");
+                assert!(read.is_none(), "Rust read a config Vite fails on, {what}");
+                continue;
+            }
+        };
+        if !engine_boots(*own) {
+            // Vite's answer here is from running it under Node.
+            let (read, evaluated) = oj_server::plugins::static_and_engine_extraction(&root, &vite);
+            assert!(
+                evaluated.is_none(),
+                "the engine boots now, {what}: compare it"
+            );
+            let read = read.unwrap_or_else(|| panic!("Rust declined the config, {what}"));
+            assert_eq!(read["cacheDir"], want.to_string_lossy().as_ref(), "{what}");
+            continue;
+        }
+        let (read, evaluated) = both(&root, &vite);
+        assert_eq!(
+            evaluated["cacheDir"],
+            want.to_string_lossy().as_ref(),
+            "the engine, {what}"
+        );
+        let read = read.unwrap_or_else(|| panic!("Rust declined the config, {what}"));
+        assert_eq!(read, evaluated, "{what}");
+    }
+}
+
 /// The template holds one Vite's defaults (8.0 had another `fs.deny`), so a
 /// Vite other than the one it was taken from goes to the engine.
 #[test]
