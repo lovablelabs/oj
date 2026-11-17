@@ -55,8 +55,19 @@ impl StartBundleStore {
         // The same sources bundled again to other chunks: the bundle just
         // built takes the key. The stored one was built from something the
         // key does not cover, and kept, every restore would bring it back.
+        // Renamed aside before it is deleted: a restore in another process
+        // finds the generation whole or not at all.
         if entry.is_dir() && read_manifest(&entry).as_ref() != Some(&manifest) {
-            let _ = fs::remove_dir_all(&entry);
+            let aside = self.dir.join(format!(
+                ".tmp-replaced-{}-{}",
+                key.get(..16)?,
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&aside);
+            if fs::rename(&entry, &aside).is_err() {
+                let _ = fs::remove_dir_all(&entry);
+            }
+            let _ = fs::remove_dir_all(&aside);
         }
         if !entry.is_dir() {
             self.commit_generation(start_dir, &key, &manifest, &entry)?;

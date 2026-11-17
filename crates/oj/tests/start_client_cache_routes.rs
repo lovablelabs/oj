@@ -296,48 +296,57 @@ fn defines_from_config_imports_and_the_env_key_the_restored_client_bundle() {
     );
 }
 
-/// The home route as the bundler reads it, and as it is saved while the
-/// bundle is still building.
-const INDEX_BEFORE_SAVE: &str = r#"import { createFileRoute } from "@tanstack/react-router";
-import { late } from "../late";
+/// The home route of the apps below: what it shows comes from `src/text.ts`.
+const TEXT_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { text } from "../text";
 
 export const Route = createFileRoute("/")({
-  component: () => <p id="home">built-before-the-save {late}</p>,
+  component: () => <p id="home">{text}</p>,
 });
 "#;
 
-/// A plugin that saves the home route the moment the client bundle reaches
-/// the module the route imports: after the bundler read the route, before
-/// the bundle is written and cached. An editor's save lands there by chance;
-/// this one lands there every time, once (the file `save-armed` arms it).
+/// A plugin that saves files the moment the client bundle reaches
+/// `src/late.ts`, the last module of a chain of imports: every module above
+/// it has been read by then, and the bundle is not yet written or cached.
+/// An editor's save lands there by chance; this one lands there every time,
+/// once: `save-armed.json` arms it, with the files to write and to remove,
+/// at once or `after` so many milliseconds.
 const SAVE_WHILE_BUNDLING: &str = r#"{
       name: "fixture-save-while-bundling",
       transform(_code: string, id: string) {
         if (!id.endsWith("/src/late.ts") || this.environment?.name !== "client") return;
-        const armed = `${process.cwd()}/save-armed`;
+        const armed = `${process.cwd()}/save-armed.json`;
         if (!saveFs.existsSync(armed)) return;
+        const plan = JSON.parse(saveFs.readFileSync(armed, "utf8"));
         saveFs.rmSync(armed);
-        const route = `${process.cwd()}/src/routes/index.tsx`;
-        const saved = saveFs.readFileSync(route, "utf8").replace("built-before-the-save", "saved-while-bundling");
-        saveFs.writeFileSync(route, saved);
+        const save = () => {
+          for (const [file, text] of Object.entries(plan.write ?? {})) {
+            saveFs.writeFileSync(`${process.cwd()}/${file}`, text as string);
+          }
+          for (const file of plan.remove ?? []) saveFs.rmSync(`${process.cwd()}/${file}`);
+        };
+        if (plan.after) setTimeout(save, plan.after);
+        else save();
       },
     },
     "#;
 
-/// A source file saved while the client bundle is building is not in that
-/// bundle, and the bundle must not be cached as if it were. The store keys a
-/// bundle by its files' contents once it is written: the save keyed the old
-/// code by the new contents, so every later boot restored the old code for
-/// the new source (the server rendered the new one) until `.oj-cache` was
-/// deleted. Vite keeps a transform only when its module was not invalidated
-/// while it ran (`loadAndTransform`), and caches no app module across starts.
-#[test]
-fn a_file_saved_while_the_bundle_builds_is_not_cached_as_built() {
-    let Some(app) = file_routed("client-cache-saved-mid-build") else {
-        return;
-    };
+/// `src/text.ts`, which the home route shows, importing `import`.
+fn text_module(text: &str, import: &str) -> String {
+    format!("import {{ late }} from \"./{import}\";\nexport const text = \"{text}\" + late;\n")
+}
+
+/// A file-routed app whose home route shows `src/text.ts`, which imports
+/// `src/late.ts`, with the saving plugin in its config.
+fn app_saving_while_bundling(name: &str) -> Option<start_app::App> {
+    let app = file_routed(name)?;
     let root = &app.0;
-    std::fs::write(root.join("src/routes/index.tsx"), INDEX_BEFORE_SAVE).unwrap();
+    std::fs::write(root.join("src/routes/index.tsx"), TEXT_INDEX).unwrap();
+    std::fs::write(
+        root.join("src/text.ts"),
+        text_module("built-before-the-save", "late"),
+    )
+    .unwrap();
     std::fs::write(root.join("src/late.ts"), "export const late = 1;\n").unwrap();
     let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
     assert!(config.contains("plugins: [\n"), "{config}");
@@ -350,27 +359,221 @@ fn a_file_saved_while_the_bundle_builds_is_not_cached_as_built() {
         )
     );
     std::fs::write(root.join("vite.config.ts"), config).unwrap();
-    std::fs::write(root.join("save-armed"), "").unwrap();
+    Some(app)
+}
 
-    let (_, log) = boot(root);
-    let source = std::fs::read_to_string(root.join("src/routes/index.tsx")).unwrap();
-    assert!(
-        source.contains("saved-while-bundling") && !root.join("save-armed").exists(),
-        "the route was not saved during the bundle\n{log}"
+fn arm(root: &Path, plan: serde_json::Value) {
+    std::fs::write(root.join("save-armed.json"), plan.to_string()).unwrap();
+}
+
+/// A source file saved while the client bundle is building is not in that
+/// bundle, and the bundle must not be cached as if it were. The store keys a
+/// bundle by its files' contents once it is written: the save keyed the old
+/// code by the new contents, so every later boot restored the old code for
+/// the new source (the server rendered the new one) until `.oj-cache` was
+/// deleted. Vite keeps a transform only when its module was not invalidated
+/// while it ran (`loadAndTransform`), and caches no app module across starts.
+///
+/// `src/text.ts` is read once, before the bundle can reach the module it
+/// imports, so the bundle of the first boot holds it as it was whatever
+/// order the bundler works in.
+#[test]
+fn a_file_saved_while_the_bundle_builds_is_not_cached_as_built() {
+    let Some(app) = app_saving_while_bundling("client-cache-saved-mid-build") else {
+        return;
+    };
+    let root = &app.0;
+    arm(
+        root,
+        serde_json::json!({
+            "write": { "src/text.ts": text_module("saved-while-bundling", "late") },
+        }),
     );
 
-    // The next boot serves the route as saved, restored or rebuilt.
+    let (_, log) = boot(root);
+    let source = std::fs::read_to_string(root.join("src/text.ts")).unwrap();
+    assert!(
+        source.contains("saved-while-bundling") && !root.join("save-armed.json").exists(),
+        "the module was not saved during the bundle\n{log}"
+    );
+
+    // The next boot serves the module as saved, restored or rebuilt.
     let (bundle, log) = boot(root);
     assert!(
         bundle.contains("saved-while-bundling") && !bundle.contains("built-before-the-save"),
-        "the client bundle holds the route as it was before the save\n{log}"
+        "the client bundle holds the module as it was before the save\n{log}"
     );
 
-    // And the bundle of the saved route is cached like any other.
+    // And the bundle of the saved module is cached like any other.
     let (bundle, log) = boot(root);
     assert!(
         log.contains("client bundle restored from cache"),
         "an unchanged app rebuilt its client bundle\n{log}"
     );
     assert!(bundle.contains("saved-while-bundling"), "{log}");
+}
+
+/// The same for a save that lands while a running server writes a new
+/// output. The engine that builds the dev bundle watches its modules, and
+/// once an output is done it loads a module saved meanwhile again, for the
+/// next hot update, through the same plugins. Here an edit to `src/late.ts`
+/// starts a rebundle, and `src/text.ts` is saved a moment later, while the
+/// engine generates the output from the modules it already holds: the save
+/// is queued behind that output, and the engine reloads the module the
+/// instant the output is done, ahead of the dev server caching it. The
+/// output is judged by what was loaded for it: judged by the engine's
+/// modules as loaded by then, the save compared equal to itself and the old
+/// output was cached as the new source. The server is stopped as soon as the
+/// rebundle is done, as a restart right after a save stops it, before the
+/// save's own rebundle can store the right bundle.
+#[test]
+fn a_file_the_hot_engine_reloads_after_its_output_is_not_cached_as_built() {
+    let Some(app) = app_saving_while_bundling("client-cache-saved-hot") else {
+        return;
+    };
+    let root = &app.0;
+    {
+        let dev = Server::oj_dev(root);
+        let (status, _) = dev.request("GET", "/", &[]);
+        assert_eq!(status, 200, "the page\n{}", dev.output());
+        assert!(client_bundle(&dev).contains("built-before-the-save"));
+        arm(
+            root,
+            serde_json::json!({
+                "write": { "src/text.ts": text_module("saved-while-bundling", "late") },
+                "after": 150,
+            }),
+        );
+        std::fs::write(root.join("src/late.ts"), "export const late = 2;\n").unwrap();
+        assert!(logged(&dev, "oj start: rebuilt", 1), "{}", dev.output());
+    }
+    let source = std::fs::read_to_string(root.join("src/text.ts")).unwrap();
+    assert!(
+        source.contains("saved-while-bundling"),
+        "the module was not saved during the rebundle"
+    );
+
+    let (bundle, log) = boot(root);
+    assert!(
+        bundle.contains("saved-while-bundling") && !bundle.contains("built-before-the-save"),
+        "the client bundle holds the module as it was before the save\n{log}"
+    );
+}
+
+/// A component deleted, and its import dropped, while the bundle builds: the
+/// bundle holds the component, and the closure (existing files only) does
+/// not list it, so the bundle was stored under the key of the sources
+/// without it and every later boot served the deleted component.
+#[test]
+fn a_component_deleted_while_the_bundle_builds_is_not_in_the_next_boots_bundle() {
+    let Some(app) = app_saving_while_bundling("client-cache-deleted-mid-build") else {
+        return;
+    };
+    let root = &app.0;
+    // text.ts -> gone.ts -> late.ts: both are read before late.ts is reached.
+    std::fs::write(
+        root.join("src/text.ts"),
+        text_module("built-before-the-save", "gone"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/gone.ts"),
+        "import { late as last } from \"./late\";\nexport const late = \"deleted-component\" + last;\n",
+    )
+    .unwrap();
+    arm(
+        root,
+        serde_json::json!({
+            "write": { "src/text.ts": text_module("saved-without-the-component", "late") },
+            "remove": ["src/gone.ts"],
+        }),
+    );
+
+    let (_, log) = boot(root);
+    assert!(
+        !root.join("src/gone.ts").exists() && !root.join("save-armed.json").exists(),
+        "the component was not deleted during the bundle\n{log}"
+    );
+
+    let (bundle, log) = boot(root);
+    assert!(
+        bundle.contains("saved-without-the-component") && !bundle.contains("deleted-component"),
+        "the client bundle holds the deleted component\n{log}"
+    );
+}
+
+/// How many times the server's log has `needle`, once it has it `times`.
+fn logged(dev: &Server, needle: &str, times: usize) -> bool {
+    let deadline = std::time::Instant::now() + start_app::WAIT;
+    while dev.output().matches(needle).count() < times {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+/// A component deleted while the server runs, its import dropped with it,
+/// leaves the session's later bundles cacheable: the bundle after the
+/// deletion holds no module of the deleted file, so the file has no say in
+/// whether that bundle is as built, and the next boot restores it.
+#[test]
+fn a_component_deleted_in_a_session_leaves_later_bundles_cached() {
+    let Some(app) = app_saving_while_bundling("client-cache-deleted-in-session") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(
+        root.join("src/text.ts"),
+        text_module("with-the-component", "gone"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/gone.ts"),
+        "import { late as last } from \"./late\";\nexport const late = \"deleted-component\" + last;\n",
+    )
+    .unwrap();
+
+    {
+        let dev = Server::oj_dev(root);
+        let (status, _) = dev.request("GET", "/", &[]);
+        assert_eq!(status, 200, "the page\n{}", dev.output());
+        assert!(client_bundle(&dev).contains("deleted-component"));
+
+        std::fs::write(
+            root.join("src/text.ts"),
+            text_module("without-the-component", "late"),
+        )
+        .unwrap();
+        std::fs::remove_file(root.join("src/gone.ts")).unwrap();
+        assert!(logged(&dev, "oj start: rebuilt", 1), "{}", dev.output());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::fs::write(
+            root.join("src/text.ts"),
+            text_module("edited-after-the-deletion", "late"),
+        )
+        .unwrap();
+        assert!(logged(&dev, "oj start: rebuilt", 2), "{}", dev.output());
+        let bundle = client_bundle(&dev);
+        let log = dev.output();
+        assert!(
+            bundle.contains("edited-after-the-deletion") && !bundle.contains("deleted-component"),
+            "{log}"
+        );
+        assert!(
+            !log.contains("client bundle not cached"),
+            "a bundle after the deletion was refused the cache\n{log}"
+        );
+    }
+
+    let (bundle, log) = boot(root);
+    assert!(
+        log.contains("client bundle restored from cache"),
+        "the bundle after the deletion was not cached\n{log}"
+    );
+    assert!(
+        bundle.contains("edited-after-the-deletion") && !bundle.contains("deleted-component"),
+        "{log}"
+    );
 }
