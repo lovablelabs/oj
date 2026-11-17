@@ -30,6 +30,7 @@ use super::errors::{unresolved_import_in, BundleError};
 use super::host::StartHostPlugin;
 use super::hosts::{self, BundleHost};
 use super::hot::{EngineSlot, HotSession, SessionParts};
+use super::inputs::{LoadedInputs, RecordLoadedInputs};
 use super::refresh::{RefreshPreamble, RefreshTransform, RefreshWrapper};
 use super::shims::NodeBuiltinShims;
 use super::StartConfig;
@@ -73,6 +74,8 @@ pub(crate) struct DevBundler {
     /// The module ids of the last bundle written, whose StyleX rules a cached
     /// copy of it carries.
     bundle_modules: Mutex<Vec<String>>,
+    /// Each module's file as it was when the bundler loaded it.
+    loaded: Arc<LoadedInputs>,
 }
 
 /// Whether the client bundle hot-updates under the editor's HMR gate as the
@@ -115,6 +118,7 @@ impl DevBundler {
             clients: Mutex::new(PageSockets::default()),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
+            loaded: Arc::default(),
         }
     }
 
@@ -215,6 +219,15 @@ impl DevBundler {
     /// under the key that session computes.
     pub(crate) fn cacheable(&self) -> bool {
         !self.host_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether the files of the last bundle written are still as the
+    /// bundler loaded them. One saved since (while the bundle was building,
+    /// or before the engine took the change) is not what the bundle holds,
+    /// so its contents now must not key that bundle in the cache.
+    pub(crate) fn inputs_as_built(&self) -> bool {
+        let modules = self.bundle_modules.lock().unwrap();
+        self.loaded.unchanged(modules.iter().map(String::as_str))
     }
 
     pub(crate) fn style_epoch(&self) -> u64 {
@@ -562,7 +575,12 @@ impl DevBundler {
         let styles = Arc::new(DevStyleState::default());
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
         let entry = start.cache.join("client-entry.tsx");
-        let mut plugins: Vec<SharedPluginable> = Vec::new();
+        // First, so each module's file is noted before anything reads it; a
+        // bundle that starts over loads every module again.
+        self.loaded.clear();
+        let mut plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(RecordLoadedInputs(
+            Arc::clone(&self.loaded),
+        ))];
         if let Some(plugin) = &start.stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }

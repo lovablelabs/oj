@@ -295,3 +295,82 @@ fn defines_from_config_imports_and_the_env_key_the_restored_client_bundle() {
         "an unchanged app rebuilt its client bundle\n{log}"
     );
 }
+
+/// The home route as the bundler reads it, and as it is saved while the
+/// bundle is still building.
+const INDEX_BEFORE_SAVE: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { late } from "../late";
+
+export const Route = createFileRoute("/")({
+  component: () => <p id="home">built-before-the-save {late}</p>,
+});
+"#;
+
+/// A plugin that saves the home route the moment the client bundle reaches
+/// the module the route imports: after the bundler read the route, before
+/// the bundle is written and cached. An editor's save lands there by chance;
+/// this one lands there every time, once (the file `save-armed` arms it).
+const SAVE_WHILE_BUNDLING: &str = r#"{
+      name: "fixture-save-while-bundling",
+      transform(_code: string, id: string) {
+        if (!id.endsWith("/src/late.ts") || this.environment?.name !== "client") return;
+        const armed = `${process.cwd()}/save-armed`;
+        if (!saveFs.existsSync(armed)) return;
+        saveFs.rmSync(armed);
+        const route = `${process.cwd()}/src/routes/index.tsx`;
+        const saved = saveFs.readFileSync(route, "utf8").replace("built-before-the-save", "saved-while-bundling");
+        saveFs.writeFileSync(route, saved);
+      },
+    },
+    "#;
+
+/// A source file saved while the client bundle is building is not in that
+/// bundle, and the bundle must not be cached as if it were. The store keys a
+/// bundle by its files' contents once it is written: the save keyed the old
+/// code by the new contents, so every later boot restored the old code for
+/// the new source (the server rendered the new one) until `.oj-cache` was
+/// deleted. Vite keeps a transform only when its module was not invalidated
+/// while it ran (`loadAndTransform`), and caches no app module across starts.
+#[test]
+fn a_file_saved_while_the_bundle_builds_is_not_cached_as_built() {
+    let Some(app) = file_routed("client-cache-saved-mid-build") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/routes/index.tsx"), INDEX_BEFORE_SAVE).unwrap();
+    std::fs::write(root.join("src/late.ts"), "export const late = 1;\n").unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    assert!(config.contains("plugins: [\n"), "{config}");
+    let config = format!(
+        "import saveFs from \"node:fs\";\n{}",
+        config.replacen(
+            "plugins: [\n",
+            &format!("plugins: [\n    {SAVE_WHILE_BUNDLING}"),
+            1
+        )
+    );
+    std::fs::write(root.join("vite.config.ts"), config).unwrap();
+    std::fs::write(root.join("save-armed"), "").unwrap();
+
+    let (_, log) = boot(root);
+    let source = std::fs::read_to_string(root.join("src/routes/index.tsx")).unwrap();
+    assert!(
+        source.contains("saved-while-bundling") && !root.join("save-armed").exists(),
+        "the route was not saved during the bundle\n{log}"
+    );
+
+    // The next boot serves the route as saved, restored or rebuilt.
+    let (bundle, log) = boot(root);
+    assert!(
+        bundle.contains("saved-while-bundling") && !bundle.contains("built-before-the-save"),
+        "the client bundle holds the route as it was before the save\n{log}"
+    );
+
+    // And the bundle of the saved route is cached like any other.
+    let (bundle, log) = boot(root);
+    assert!(
+        log.contains("client bundle restored from cache"),
+        "an unchanged app rebuilt its client bundle\n{log}"
+    );
+    assert!(bundle.contains("saved-while-bundling"), "{log}");
+}

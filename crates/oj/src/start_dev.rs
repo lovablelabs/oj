@@ -2106,7 +2106,7 @@ fn pinned_output(
     if !bundler.cacheable() {
         return oj_cache::start_bundle::PinnedBundle::from_build_dir(cache);
     }
-    match keyed_bundle_store(bundler, root, mode).persist(cache) {
+    match persist_as_built(bundler, &keyed_bundle_store(bundler, root, mode), cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
             save_generated_sheets(bundler, cache, &key);
@@ -3248,6 +3248,29 @@ fn keyed_bundle_store(
         .keyed_by("hot", if bundler.hot_bundle() { "1" } else { "0" })
 }
 
+/// Caches the bundle just written, unless a file it was built from was saved
+/// since the bundler read it: the store keys a bundle by its files' contents
+/// as they are now, and that key would name sources this bundle does not
+/// hold (every later boot would restore it for them). The save's own
+/// rebundle, or the next boot, caches the bundle that does. Vite keeps a
+/// transform result only when its module was not invalidated while it ran
+/// (`loadAndTransform`).
+fn persist_as_built(
+    bundler: &ClientBundler,
+    store: &oj_cache::start_bundle::StartBundleStore,
+    cache: &Path,
+) -> Option<(String, oj_cache::start_bundle::PinnedBundle)> {
+    let mut as_built = true;
+    let stored = store.persist_if(cache, || {
+        as_built = bundler.inputs_as_built();
+        as_built
+    });
+    if !as_built {
+        println!("  oj start: client bundle not cached (a source file changed while it was built)");
+    }
+    stored
+}
+
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
@@ -3288,7 +3311,7 @@ fn bundle_client_entry_cached(
     bundler.bundle(&[], false)?;
     if !bundler.cacheable() {
         println!("  oj start: client bundle not cached (built without the app's plugin host)");
-    } else if let Some((key, pinned)) = store.persist(cache) {
+    } else if let Some((key, pinned)) = persist_as_built(bundler, &store, cache) {
         save_stylex_rules(bundler, cache, &key);
         save_generated_sheets(bundler, cache, &key);
         println!(
