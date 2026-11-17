@@ -121,3 +121,60 @@ async fn stylesheet_imports_serve_compiled_css_and_svg_is_a_url_module() {
         content_type(&img)
     );
 }
+
+/// A page on a plain-http origin other than localhost (a LAN address, a
+/// custom host name) sends no `Sec-Fetch-Dest`, so its `<link
+/// rel="stylesheet" href="/src/a.css">` is known only by its `Accept`, as
+/// Vite's transformMiddleware knows it. A server-rendered document links a
+/// `styles.css?url` import that way.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_request_without_fetch_metadata_gets_the_stylesheet() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"csslink-app","version":"1.0.0"}"#,
+        ),
+        ("src/a.css", ".a {\n  color: blue;\n}\n"),
+        ("src/main.js", "import \"./a.css\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let get_accept = |accept: &'static str| {
+        server.request(
+            Request::get("/src/a.css")
+                .header("accept", accept)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+
+    let linked = get_accept("text/css,*/*;q=0.1").await;
+    assert_eq!(linked.status, 200, "link request:\n{}", linked.body);
+    assert!(
+        content_type(&linked).contains("text/css"),
+        "a stylesheet request is answered with {}:\n{}",
+        content_type(&linked),
+        linked.body
+    );
+    assert!(
+        linked.body.contains(".a {") && !linked.body.contains("updateStyle"),
+        "link request body:\n{}",
+        linked.body
+    );
+    let vary: Vec<&str> = linked
+        .headers
+        .get_all("vary")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    assert!(vary.contains(&"accept"), "vary: {vary:?}");
+
+    // The same url imported by a module is still the module.
+    let imported = get_accept("*/*").await;
+    assert!(
+        content_type(&imported).contains("javascript") && imported.body.contains("updateStyle"),
+        "import request ({}):\n{}",
+        content_type(&imported),
+        imported.body
+    );
+}

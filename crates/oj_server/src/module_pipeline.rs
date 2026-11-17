@@ -1985,6 +1985,16 @@ pub(crate) fn wants_raw_resource(headers: &HeaderMap) -> bool {
     )
 }
 
+/// A request whose `Accept` names `text/css`: a `<link rel="stylesheet">`
+/// (`text/css,*/*;q=0.1`), never a module import (`*/*`). Vite's
+/// transformMiddleware answers it with the stylesheet (`?direct`).
+pub(crate) fn accepts_css(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/css"))
+}
+
 // Assets that resolve to a URL-exporting module when imported from JS. svg is
 // excluded: it routes through compile so svgr can componentize it.
 pub fn is_importable_asset_ext(ext: &str) -> bool {

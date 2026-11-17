@@ -387,7 +387,11 @@ async fn serve_file(
         return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
-        return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
+        let mut response = vary_on_fetch_dest(serve_style(state, headers, file, query).await);
+        response
+            .headers_mut()
+            .append(header::VARY, header::HeaderValue::from_static("accept"));
+        return response;
     }
     if in_public {
         // A public asset a module imports by its url: Vite's
@@ -522,10 +526,15 @@ async fn serve_style(
 ) -> Response {
     let url = url_of(&state.root, file);
     if has_query_flag(query, "direct")
+        || accepts_css(headers)
         || (wants_raw_resource(headers) && !has_query_flag(query, "import"))
     {
         // `<link href>`, fetch() of a `?url` stylesheet, or `?direct`: compiled
-        // CSS text, not the preprocessor source and not the JS wrapper.
+        // CSS text, not the preprocessor source and not the JS wrapper. A
+        // `<link>` is known by its `Accept: text/css` as well as by its
+        // `Sec-Fetch-Dest`, as Vite's transformMiddleware knows it: a browser
+        // sends no `Sec-Fetch-*` header from a page on a plain-http origin
+        // other than localhost (a LAN address, a custom host name).
         return serve_css_direct(state, file, &url).await;
     }
     serve_css_wrapper(state, file, &url).await

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: a `<link rel="stylesheet">` to a stylesheet under the root (`/src/styles.css`) gets the stylesheet when the request has no `Sec-Fetch-Dest` header. A browser sends that header only from a trustworthy origin, so a page opened over plain http by a LAN address or a custom host name got the JavaScript module a script's import of the file gets, and the link applied no style: a server-rendered document that links `import appCss from "./styles.css?url"` (a TanStack Start root route under a worker environment prints `/src/styles.css`) was unstyled until the client rendered its own link, and stayed unstyled where it did not. The request is now known by its `Accept: text/css` too, as in Vite's `transformMiddleware`, and the response varies on `Accept`.
+
 ## [0.4.15] - 2026-11-17
 
 ### Fixed
