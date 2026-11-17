@@ -199,7 +199,10 @@ impl StartConfig {
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, "client"));
         out.extend(plugin_defines.iter().cloned());
-        out
+        // Later layers win, and an `import.meta.env.X` they define joins the
+        // `import.meta.env` object, as Vite's define plugin folds the user's
+        // env defines into the object it replaces `import.meta.env` with.
+        oj_env::fold_env_keys_into_object(out)
     }
 
     /// The server bundle's defines: NODE_ENV and the server-fn base the
@@ -230,7 +233,7 @@ impl StartConfig {
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, env_name));
         out.extend(plugin_defines.iter().cloned());
-        out
+        oj_env::fold_env_keys_into_object(out)
     }
 
     /// The client bundle's banner: the `process` / `global` globals the
