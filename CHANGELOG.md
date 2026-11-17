@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-17
+
 ### Fixed
 
 - Dev server: Vite's default `cacheDir` is found past a `package.json` Vite cannot load. Vite's `findNearestPackageData` walks on to the parent directory when the file is empty, is not JSON, holds `null` or has a `sideEffects` array with a member that is neither a string nor an array; oj took the nearest file that existed, so an app with such a `package.json` under a workspace's looked for Vite's optimized deps in `<app>/node_modules/.vite` where Vite keeps them in `<workspace>/node_modules/.vite`. The file is read as `JSON.parse` reads it, so one with a lone surrogate escape, a number past a double or deep nesting still counts.
