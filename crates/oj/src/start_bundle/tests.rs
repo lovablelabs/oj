@@ -1773,3 +1773,58 @@ async fn the_refresh_preamble_evaluates_before_every_wrapped_module() {
         "{entry_name} evaluates the runtime chunk {runtime_chunk}:\n{entry_code}"
     );
 }
+
+// A `define` of `import.meta.env.X` (the config's, an environment's, a
+// plugin's) is in the `import.meta.env` object of the bundle it applies to,
+// as Vite's define plugin folds the user's env defines into the object per
+// environment; the SSR object keeps `SSR: true` and the client's never takes
+// the ssr environment's key.
+#[test]
+fn a_defined_env_key_joins_the_bundles_import_meta_env_object() {
+    let app = App::new(&[("package.json", r#"{"name":"define-env"}"#)]);
+    let mut start = app.start();
+    start.config = serde_json::from_value(serde_json::json!({
+        "define": { "import.meta.env.VITE_API_URL": "\"https://api.example\"" },
+        "environments": { "ssr": { "define": { "import.meta.env.VITE_SIDE": "\"server\"" } } }
+    }))
+    .unwrap();
+    let object = |defines: &[(String, String)]| {
+        defines
+            .iter()
+            .find(|(k, _)| k == "import.meta.env")
+            .map(|(_, v)| v.clone())
+            .expect("an import.meta.env define")
+    };
+    let plugin = [(
+        "import.meta.env.VITE_PLUGIN".to_string(),
+        "\"plugin\"".to_string(),
+    )];
+
+    let client = object(&start.client_defines(&[], &plugin));
+    for key in [
+        r#""VITE_API_URL":"https://api.example""#,
+        r#""VITE_PLUGIN":"plugin""#,
+        r#""SSR":false"#,
+    ] {
+        assert!(
+            client.contains(key),
+            "{key} missing from the client object:\n{client}"
+        );
+    }
+    assert!(
+        !client.contains("VITE_SIDE"),
+        "the ssr environment's define reached the client object:\n{client}"
+    );
+
+    let server = object(&start.server_defines("ssr", &[], &[]));
+    for key in [
+        r#""VITE_API_URL":"https://api.example""#,
+        r#""VITE_SIDE":"server""#,
+        r#""SSR":true"#,
+    ] {
+        assert!(
+            server.contains(key),
+            "{key} missing from the server object:\n{server}"
+        );
+    }
+}
