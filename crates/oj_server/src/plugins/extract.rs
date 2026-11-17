@@ -797,6 +797,12 @@ pub fn static_extraction(root: &Path, vite: &Path) -> Option<serde_json::Value> 
     super::static_config::static_extraction(root, vite, "serve", "development")
 }
 
+/// Why Rust's reading of `vite` declines it, when it does.
+#[doc(hidden)]
+pub fn static_extraction_declined(root: &Path, vite: &Path) -> Option<String> {
+    super::static_config::read_static(root, vite, "serve", "development").err()
+}
+
 #[doc(hidden)]
 pub fn static_and_engine_extraction(
     root: &Path,

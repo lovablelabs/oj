@@ -40,7 +40,14 @@ fn app(fixture: &Path, dir: &Path, file: &str, config: &str) -> (PathBuf, PathBu
 
 fn both(root: &Path, vite: &Path) -> (Option<serde_json::Value>, serde_json::Value) {
     let (read, evaluated) = oj_server::plugins::static_and_engine_extraction(root, vite);
-    let mut evaluated = evaluated.expect("the engine evaluates the config");
+    (
+        read,
+        strip(evaluated.expect("the engine evaluates the config")),
+    )
+}
+
+/// The engine's output without what it records for the cache.
+fn strip(mut evaluated: serde_json::Value) -> serde_json::Value {
     let fields = evaluated.as_object_mut().unwrap();
     fields.remove("__deps");
     fields.remove("__depsTruncated");
@@ -50,7 +57,7 @@ fn both(root: &Path, vite: &Path) -> (Option<serde_json::Value>, serde_json::Val
     fields.remove("__envPrefixes");
     // The transcript, stored apart from the values in the cache.
     fields.remove("__stderr");
-    (read, evaluated)
+    evaluated
 }
 
 const CONFIGS: &[(&str, &str, &str)] = &[
@@ -190,99 +197,348 @@ export default { plugins: [react()], resolve: { alias: { "@": path.resolve(impor
     assert_eq!(evaluated["alias"]["@"], target.to_string_lossy().as_ref());
 }
 
+/// What Vite makes of an app, by the package.json files around its config.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Vite {
+    /// It loads, and the cache dir is under the app.
+    App,
+    /// It loads, and the cache dir is under the directory above the app.
+    Above,
+    /// The config does not load.
+    Fails,
+}
+
+/// Where oj's two readings stand beside Vite's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Oj {
+    /// The reader and the engine both do as Vite does.
+    AsVite,
+    /// oj's engine does not boot under this package.json (one with a BOM,
+    /// or a broken one further up) though Node runs Vite there, so the
+    /// reader is held to Vite's answer alone.
+    EngineFails,
+    /// oj's engine loads the config where Node refuses the package.json
+    /// (its `require` is laxer than Node's). The reader declines, as it must
+    /// where Vite fails, so the day the engine refuses too the app fails as
+    /// under Vite.
+    EngineLoads,
+    /// Vite loads the config; the reader declines it (JSON serde's `Value`
+    /// cannot hold) and oj's engine does not boot under it.
+    NeitherLoads,
+}
+
+/// An app at `top/ws/app`, its config in the app or a symlink there to one
+/// in `top/shared`.
+struct Layout {
+    file: &'static str,
+    /// The app's package.json.
+    own: Option<&'static [u8]>,
+    /// The one in the directory above the app.
+    above: Option<&'static [u8]>,
+    /// With the config a symlink into `top/shared`: that directory's
+    /// package.json.
+    shared: Option<Option<&'static [u8]>>,
+    /// The app's package.json cannot be read.
+    unreadable: bool,
+}
+
+const MJS: &str = "vite.config.mjs";
+const TS: &str = "vite.config.ts";
+
+fn layout(file: &'static str, own: Option<&'static [u8]>, above: Option<&'static [u8]>) -> Layout {
+    Layout {
+        file,
+        own,
+        above,
+        shared: None,
+        unreadable: false,
+    }
+}
+
+fn linked(file: &'static str, own: &'static [u8], shared: Option<&'static [u8]>) -> Layout {
+    Layout {
+        shared: Some(shared),
+        ..layout(file, Some(own), Some(b"{}"))
+    }
+}
+
 /// Vite's default `cacheDir` sits under the nearest package.json it can
 /// load (findNearestPackageData walks past one that throws), else under the
-/// root. The reader and the engine must agree wherever the manifest is. A
-/// package.json that is not JSON beside the config fails Vite's config load
-/// (rolldown reads it to bundle the config), so the reader leaves such an app
-/// to the engine, which reports it.
+/// root, and its config load fails on a package.json rolldown or Node
+/// refuses. The reader must give the engine's answer where Vite loads the
+/// config and leave the app to the engine where Vite fails. Each row's
+/// `Vite` is what Vite 8.3.5 did with the layout under Node 24.
 #[test]
-fn the_default_cache_dir_follows_the_manifest_vite_finds() {
+fn the_reader_follows_vite_through_the_package_json_files_around_a_config() {
     let Some(fixture) = fixture() else {
         return;
     };
     oj_server::plugins::engine_jobs_via_subprocess(PathBuf::from(env!("CARGO_BIN_EXE_oj")));
-    #[derive(Debug)]
-    enum Vite {
-        /// The cache dir is under the app.
-        App,
-        /// The cache dir is under the directory above the app.
-        Above,
-        /// The config does not load.
-        Fails,
-    }
-    // oj's engine refuses to boot under a package.json that starts with a
-    // BOM ("Malformed package.json"), where Node and Vite read past it. That
-    // app is read in Rust alone.
-    let engine_boots = |own: Option<&[u8]>| !matches!(own, Some(b"\xef\xbb\xbf{}"));
-    // (the app's package.json or none, one in the directory above or none)
-    let cases: &[(Option<&[u8]>, bool, Vite)] = &[
-        // Not JSON: the config load fails.
-        (Some(b""), true, Vite::Fails),
-        (Some(b"{ not json"), true, Vite::Fails),
-        (Some(b""), false, Vite::Fails),
+    const OBJECT: Option<&[u8]> = Some(b"{}");
+    const MODULE: Option<&[u8]> = Some(br#"{"type":"module"}"#);
+    let cases: Vec<(Layout, Vite, Oj)> = vec![
+        // Not JSON to rolldown, which bundles the config: the load fails.
+        (layout(MJS, Some(b""), OBJECT), Vite::Fails, Oj::AsVite),
+        (
+            layout(MJS, Some(b"{ not json"), OBJECT),
+            Vite::Fails,
+            Oj::AsVite,
+        ),
+        (layout(MJS, Some(b""), None), Vite::Fails, Oj::AsVite),
+        (
+            layout(MJS, None, Some(b"{ not json")),
+            Vite::Fails,
+            Oj::AsVite,
+        ),
+        // Bytes that are not UTF-8: rolldown refuses what JSON.parse reads.
+        (
+            layout(MJS, Some(b"{\"n\":\"\xe9\"}"), OBJECT),
+            Vite::Fails,
+            Oj::AsVite,
+        ),
+        // Only the nearest one is read.
+        (
+            layout(MJS, OBJECT, Some(b"{ not json")),
+            Vite::App,
+            Oj::EngineFails,
+        ),
         // JSON loadPackageData throws on: the manifest above is the nearest.
-        (Some(b"null"), true, Vite::Above),
-        (Some(br#"{"sideEffects":[1]}"#), true, Vite::Above),
+        (layout(MJS, Some(b"null"), OBJECT), Vite::Above, Oj::AsVite),
+        (
+            layout(MJS, Some(br#"{"sideEffects":[1]}"#), OBJECT),
+            Vite::Above,
+            Oj::AsVite,
+        ),
         // Loadable, whatever it holds.
-        (Some(b"\xef\xbb\xbf{}"), true, Vite::App),
-        (Some(b"[]"), true, Vite::App),
-        (Some(br#"{"sideEffects":["*.css",["a"]]}"#), true, Vite::App),
+        (
+            layout(MJS, Some(b"\xef\xbb\xbf{}"), OBJECT),
+            Vite::App,
+            Oj::EngineFails,
+        ),
+        (layout(MJS, Some(b"[]"), OBJECT), Vite::App, Oj::AsVite),
+        (
+            layout(MJS, Some(br#"{"name":1}"#), OBJECT),
+            Vite::App,
+            Oj::AsVite,
+        ),
+        (
+            layout(MJS, Some(br#"{"sideEffects":["*.css",["a"]]}"#), OBJECT),
+            Vite::App,
+            Oj::AsVite,
+        ),
+        // JSON serde's Value cannot hold: read by Vite, left to the engine.
+        (
+            layout(MJS, Some(br#"{"n":"\ud800"}"#), OBJECT),
+            Vite::App,
+            Oj::NeitherLoads,
+        ),
         // No manifest in the app.
-        (None, true, Vite::Above),
+        (layout(MJS, None, OBJECT), Vite::Above, Oj::AsVite),
         // None Vite can load anywhere: the app's node_modules.
-        (Some(b"null"), false, Vite::App),
-        (None, false, Vite::App),
+        (layout(MJS, Some(b"null"), None), Vite::App, Oj::AsVite),
+        (layout(MJS, None, None), Vite::App, Oj::AsVite),
+        // One that cannot be read is passed over, by rolldown too.
+        (
+            Layout {
+                unreadable: true,
+                ..layout(MJS, OBJECT, OBJECT)
+            },
+            Vite::Above,
+            Oj::AsVite,
+        ),
+        (
+            Layout {
+                unreadable: true,
+                ..layout(MJS, OBJECT, Some(b"{ not json"))
+            },
+            Vite::Fails,
+            Oj::AsVite,
+        ),
+        // A symlinked config: rolldown reads the package.json by the link.
+        (linked(MJS, b"{ not json", OBJECT), Vite::Fails, Oj::AsVite),
+        (
+            linked(MJS, b"{}", Some(b"{ not json")),
+            Vite::App,
+            Oj::AsVite,
+        ),
+        (linked(MJS, b"{}", Some(b"null")), Vite::App, Oj::AsVite),
+        // A CommonJS config (no "type": "module" in the nearest loadable
+        // package.json): its require of the plugin has Node read the
+        // nearest package.json, which must be a package config.
+        (layout(TS, OBJECT, OBJECT), Vite::App, Oj::AsVite),
+        (
+            layout(TS, Some(b"null"), OBJECT),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(b"[]"), OBJECT),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(br#"{"name":1}"#), OBJECT),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(br#"{"name":null}"#), OBJECT),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(br#"{"type":1}"#), OBJECT),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(br#"{"type":"weird"}"#), OBJECT),
+            Vite::App,
+            Oj::AsVite,
+        ),
+        // `null` is passed over for the module above: an ES module config.
+        (layout(TS, Some(b"null"), MODULE), Vite::Above, Oj::AsVite),
+        // `[]` loads, so it is the nearest and the config is CommonJS.
+        (
+            layout(TS, Some(b"[]"), MODULE),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            layout(TS, Some(br#"{"type":"module","name":1}"#), OBJECT),
+            Vite::App,
+            Oj::AsVite,
+        ),
+        // Node reads by the file it runs: the symlink's target.
+        (
+            linked(TS, b"{}", Some(b"null")),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            linked(TS, b"{}", Some(br#"{"name":1}"#)),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (
+            linked(TS, b"{}", Some(b"{ not json")),
+            Vite::Fails,
+            Oj::EngineLoads,
+        ),
+        (linked(TS, b"null", OBJECT), Vite::Above, Oj::AsVite),
+        (
+            linked(TS, br#"{"type":"module"}"#, Some(b"null")),
+            Vite::App,
+            Oj::AsVite,
+        ),
     ];
-    for (own, above, vite_does) in cases {
+    let config = |file: &str| {
+        CONFIGS
+            .iter()
+            .find(|(name, of, _)| *of == file && (file == MJS || name.starts_with("the Lovable")))
+            .unwrap()
+            .2
+    };
+    let text = |bytes: Option<&[u8]>| bytes.map(|b| String::from_utf8_lossy(b).into_owned());
+    for (at, (layout, vite_does, oj)) in cases.iter().enumerate() {
         let what = format!(
-            "app package.json {:?}, one above: {above}",
-            own.map(String::from_utf8_lossy)
+            "#{at} {}: app {:?}{}, above {:?}{}",
+            layout.file,
+            text(layout.own),
+            if layout.unreadable {
+                " (unreadable)"
+            } else {
+                ""
+            },
+            text(layout.above),
+            match layout.shared {
+                Some(shared) => format!(", config linked beside {:?}", text(shared)),
+                None => String::new(),
+            },
         );
         let dir = tempfile::tempdir().unwrap();
         let top = dir.path().canonicalize().unwrap();
-        if !above && top.ancestors().any(|d| d.join("package.json").exists()) {
+        if layout.above.is_none() && top.ancestors().any(|d| d.join("package.json").exists()) {
             eprintln!("skipping ({what}): a package.json above the temp dir");
             continue;
         }
-        let (root, vite) = app(&fixture, &top, "vite.config.mjs", CONFIGS[0].2);
+        let ws = top.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let (root, vite) = app(&fixture, &ws, layout.file, config(layout.file));
         std::fs::remove_file(root.join("package.json")).unwrap();
-        if let Some(own) = own {
+        if let Some(own) = layout.own {
             std::fs::write(root.join("package.json"), own).unwrap();
         }
-        if *above {
-            std::fs::write(top.join("package.json"), r#"{"name":"ws"}"#).unwrap();
+        if let Some(above) = layout.above {
+            std::fs::write(ws.join("package.json"), above).unwrap();
         }
-        let want = match vite_does {
-            Vite::App => root.join("node_modules/.vite"),
-            Vite::Above => top.join("node_modules/.vite"),
-            Vite::Fails => {
-                let (read, evaluated) =
-                    oj_server::plugins::static_and_engine_extraction(&root, &vite);
-                assert!(evaluated.is_none(), "the engine loaded the config, {what}");
-                assert!(read.is_none(), "Rust read a config Vite fails on, {what}");
+        if let Some(manifest) = layout.shared {
+            let shared = top.join("shared");
+            std::fs::create_dir_all(&shared).unwrap();
+            std::os::unix::fs::symlink(fixture.join("node_modules"), shared.join("node_modules"))
+                .unwrap();
+            if let Some(manifest) = manifest {
+                std::fs::write(shared.join("package.json"), manifest).unwrap();
+            }
+            std::fs::rename(&vite, shared.join(layout.file)).unwrap();
+            std::os::unix::fs::symlink(shared.join(layout.file), &vite).unwrap();
+        }
+        if layout.unreadable {
+            use std::os::unix::fs::PermissionsExt;
+            let manifest = root.join("package.json");
+            std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&manifest).is_ok() {
+                eprintln!("skipping ({what}): this user reads a file without read permission");
                 continue;
             }
-        };
-        if !engine_boots(*own) {
-            // Vite's answer here is from running it under Node.
-            let (read, evaluated) = oj_server::plugins::static_and_engine_extraction(&root, &vite);
-            assert!(
-                evaluated.is_none(),
-                "the engine boots now, {what}: compare it"
-            );
-            let read = read.unwrap_or_else(|| panic!("Rust declined the config, {what}"));
-            assert_eq!(read["cacheDir"], want.to_string_lossy().as_ref(), "{what}");
-            continue;
         }
-        let (read, evaluated) = both(&root, &vite);
-        assert_eq!(
-            evaluated["cacheDir"],
-            want.to_string_lossy().as_ref(),
-            "the engine, {what}"
-        );
-        let read = read.unwrap_or_else(|| panic!("Rust declined the config, {what}"));
-        assert_eq!(read, evaluated, "{what}");
+        let declined = oj_server::plugins::static_extraction_declined(&root, &vite);
+        let (read, evaluated) = oj_server::plugins::static_and_engine_extraction(&root, &vite);
+        let want = match vite_does {
+            Vite::App => Some(root.join("node_modules/.vite")),
+            Vite::Above => Some(ws.join("node_modules/.vite")),
+            Vite::Fails => None,
+        };
+        let cache_dir = |v: &serde_json::Value| PathBuf::from(v["cacheDir"].as_str().unwrap());
+        let Some(want) = want else {
+            // Vite fails: the reader leaves the app to the engine, for the
+            // package.json and nothing else.
+            let reason =
+                declined.unwrap_or_else(|| panic!("Rust read a config Vite fails on, {what}"));
+            assert!(
+                reason.contains("package.json")
+                    && (reason.contains("is not JSON") || reason.contains("no package config")),
+                "declined for another reason ({reason}), {what}"
+            );
+            assert!(read.is_none(), "{what}");
+            match oj {
+                Oj::AsVite => assert!(evaluated.is_none(), "the engine loaded the config, {what}"),
+                Oj::EngineLoads => {
+                    assert!(evaluated.is_some(), "the engine fails now, {what}: AsVite")
+                }
+                other => panic!("{other:?} is not for a config Vite fails on, {what}"),
+            }
+            continue;
+        };
+        match oj {
+            Oj::AsVite => {
+                let evaluated =
+                    strip(evaluated.unwrap_or_else(|| panic!("the engine failed, {what}")));
+                assert_eq!(cache_dir(&evaluated), want, "the engine, {what}");
+                let read = read.unwrap_or_else(|| panic!("Rust declined ({declined:?}), {what}"));
+                assert_eq!(read, evaluated, "{what}");
+            }
+            Oj::EngineFails => {
+                assert!(evaluated.is_none(), "the engine boots now, {what}: AsVite");
+                let read = read.unwrap_or_else(|| panic!("Rust declined ({declined:?}), {what}"));
+                assert_eq!(cache_dir(&read), want, "{what}");
+            }
+            Oj::NeitherLoads => {
+                assert!(evaluated.is_none(), "the engine boots now, {what}");
+                assert!(read.is_none(), "Rust reads it now, {what}");
+            }
+            Oj::EngineLoads => panic!("EngineLoads is for a config Vite fails on, {what}"),
+        }
     }
 }
 

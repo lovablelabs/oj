@@ -48,14 +48,18 @@ pub fn cache_dir(config: &OjConfig, root: &Path) -> PathBuf {
     if let Some(dir) = config.cache_dir.as_deref().filter(|d| !d.is_empty()) {
         return root.join(dir);
     }
-    match root
-        .ancestors()
-        .find(|d| manifest_loads(&d.join("package.json")))
-    {
+    match nearest_package_dir(root) {
         Some(pkg) => pkg.join("node_modules/.vite"),
         None if root.join("node_modules").is_dir() => root.join("node_modules/.vite"),
         None => root.join(".vite"),
     }
+}
+
+/// The directory Vite's `findNearestPackageData` answers with for `dir`: the
+/// nearest at or above it whose package.json Vite can load.
+pub fn nearest_package_dir(dir: &Path) -> Option<&Path> {
+    dir.ancestors()
+        .find(|d| manifest_loads(&d.join("package.json")))
 }
 
 /// Whether Vite's `loadPackageData` returns for this package.json.
@@ -74,14 +78,23 @@ fn manifest_loads(path: &Path) -> bool {
     };
     let text = String::from_utf8_lossy(&bytes);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    // The grammar alone, as `JSON.parse` holds it: no limit on nesting, on a
+    // number's size or on what a `\u` escape names.
+    if serde_json::from_str::<serde::de::IgnoredAny>(text).is_err() {
+        return false;
+    }
     match serde_json::from_str::<serde_json::Value>(text) {
-        Err(_) | Ok(serde_json::Value::Null) => false,
+        Ok(serde_json::Value::Null) => false,
         Ok(data) => match data.get("sideEffects") {
             Some(serde_json::Value::Array(members)) => {
                 members.iter().all(|m| m.is_string() || m.is_array())
             }
             _ => true,
         },
+        // JSON a `Value` cannot hold (a lone surrogate escape, 1e999, nesting
+        // past serde's limit), which `JSON.parse` takes. Its `sideEffects`
+        // are not looked at.
+        Err(_) => true,
     }
 }
 
@@ -369,6 +382,7 @@ mod cache_dir_tests {
                 false
             }
         };
+        let deep = format!("{}{}", "[".repeat(300), "]".repeat(300));
         for unloadable in [
             &b""[..],
             b"   \n",
@@ -379,6 +393,10 @@ mod cache_dir_tests {
             br#"{"sideEffects":[1]}"#,
             br#"{"sideEffects":[null]}"#,
             br#"{"sideEffects":[{}]}"#,
+            br#"{"sideEffects":[true]}"#,
+            b"\xef\xbb\xbf\xef\xbb\xbf{}",
+            b"{\"a\":1}\xe9",
+            b"[[[",
         ] {
             assert!(
                 above(unloadable),
@@ -399,6 +417,11 @@ mod cache_dir_tests {
             br#"{"sideEffects":["*.css",["a"]]}"#,
             br#"{"sideEffects":"x"}"#,
             br#"{"sideEffects":null}"#,
+            br#"{"sideEffects":[[1]]}"#,
+            // JSON.parse takes these; serde's Value does not.
+            br#"{"name":"\ud800"}"#,
+            br#"{"big":1e999}"#,
+            deep.as_bytes(),
         ] {
             assert!(
                 !above(loadable),

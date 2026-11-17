@@ -61,7 +61,95 @@ pub(crate) fn static_extraction(
     }
 }
 
-fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Value, String> {
+/// The package.json nearest `file` that is there at all, parsed: what
+/// rolldown's resolver and Node's module loader go by (both stop at the
+/// first one, valid or not, and pass over one they cannot read, as over a
+/// directory of that name). `Err` holds the path of one that is not JSON to
+/// both: bytes that are not UTF-8 included, which they refuse where
+/// `JSON.parse` on Node's lenient decoding does not. A leading BOM is read
+/// past by both.
+fn nearest_manifest(file: &Path) -> Result<Option<(PathBuf, Value)>, PathBuf> {
+    for dir in file.ancestors().skip(1) {
+        let path = dir.join("package.json");
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let parsed = std::str::from_utf8(&bytes).ok().and_then(|text| {
+            serde_json::from_str::<Value>(text.strip_prefix('\u{feff}').unwrap_or(text)).ok()
+        });
+        return match parsed {
+            Some(data) => Ok(Some((path, data))),
+            None => Err(path),
+        };
+    }
+    Ok(None)
+}
+
+/// Why Vite's own load of this config fails on the package.json files
+/// around it, when it does. Evaluation then reports it as Vite does; the
+/// reader would start a server Vite refuses.
+///
+/// - Vite bundles the config with rolldown, whose resolver reads the
+///   package.json nearest the config (by the path it was given, not a
+///   symlink's target) and fails the build on one that is not JSON.
+/// - A config Vite takes for CommonJS (`.cjs`/`.cts`, or neither `.mjs` nor
+///   `.mts` under a nearest loadable package.json without `"type":
+///   "module"`) is run through `require`, and its `require` of a plugin has
+///   Node read the package.json nearest the file it runs, the symlink's
+///   target: one that is no object, or whose `name` or `type` is no string,
+///   is an "Invalid package config" there.
+///
+/// JSON that serde's `Value` cannot hold (a lone surrogate escape, nesting
+/// past its limit) is declined too, though rolldown reads it: the cost is an
+/// evaluation.
+fn config_load_fails(vite: &Path, real: &Path) -> Option<String> {
+    let not_json = |path: PathBuf| format!("{} is not JSON", path.display());
+    if let Err(path) = nearest_manifest(vite) {
+        return Some(not_json(path));
+    }
+    let extension = vite.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let esm = match extension {
+        "mjs" | "mts" => true,
+        "cjs" | "cts" => false,
+        // Vite's isFilePathESM: the nearest package.json it can load.
+        _ => vite
+            .parent()
+            .and_then(oj_config::nearest_package_dir)
+            .and_then(|dir| std::fs::read(dir.join("package.json")).ok())
+            .and_then(|bytes| {
+                let text = String::from_utf8_lossy(&bytes);
+                let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+                serde_json::from_str::<Value>(text).ok()
+            })
+            .is_some_and(|data| data.get("type").and_then(Value::as_str) == Some("module")),
+    };
+    if esm {
+        return None;
+    }
+    match nearest_manifest(real) {
+        Err(path) => Some(not_json(path)),
+        Ok(None) => None,
+        Ok(Some((path, data))) => {
+            let text_or_absent = |key: &str| data.get(key).is_none_or(Value::is_string);
+            (!data.is_object() || !text_or_absent("name") || !text_or_absent("type")).then(|| {
+                format!(
+                    "{} is no package config to Node, which a CommonJS config's require reads",
+                    path.display()
+                )
+            })
+        }
+    }
+}
+
+pub(crate) fn read_static(
+    root: &Path,
+    vite: &Path,
+    command: &str,
+    mode: &str,
+) -> Result<Value, String> {
     let env = oj_env::get();
     if command != "serve" || mode != "development" {
         return Err(format!("{command} in {mode} mode, not a development serve"));
@@ -93,22 +181,8 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
     // Vite bundles the config from its real path, so `__dirname` and
     // `import.meta.dirname` are a symlinked config's target directory.
     let real = vite.canonicalize().map_err(unreadable)?;
-    // Vite bundles the config with rolldown, which reads the package.json
-    // nearest the config for its module type and fails the load on one that
-    // is not JSON. Evaluation reports that as Vite does.
-    if let Some(manifest) = real
-        .ancestors()
-        .skip(1)
-        .map(|dir| dir.join("package.json"))
-        .find(|file| file.is_file())
-    {
-        let text = std::fs::read(&manifest)
-            .map_err(|e| format!("{} unreadable: {e}", manifest.display()))?;
-        let text = String::from_utf8_lossy(&text);
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        if serde_json::from_str::<Value>(text).is_err() {
-            return Err(format!("{} is not JSON", manifest.display()));
-        }
+    if let Some(reason) = config_load_fails(vite, &real) {
+        return Err(reason);
     }
     let config = read_config(&source, &real).ok_or(
         "config is outside the literal shape (a statement, key or value only evaluation reads)",
