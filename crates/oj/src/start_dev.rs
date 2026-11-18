@@ -404,8 +404,25 @@ pub async fn start_dev(
         let routes = routes.clone();
         tokio::task::spawn_blocking(move || generate_route_tree(&root, &routes, &cache, &env))
     };
-    route_tree.await??;
-    oj_server::boot_phase("route tree ready");
+    // A tree the generator cannot write is the app's to fix, not a reason
+    // to have no dev server: under Vite the router plugin logs the error and
+    // the server stays up on whatever tree is on disk (its
+    // `generate().catch` in router-plugin's router-generator plugin). The
+    // generator has printed its error, and the tree is written again once
+    // the route files change (the watcher's regeneration, and the router
+    // plugin's own in the plugin host). Failing to run the generator at all
+    // still ends boot.
+    match route_tree.await? {
+        Ok(()) => oj_server::boot_phase("route tree ready"),
+        Err(e) if e.is::<ScriptFailed>() => {
+            eprintln!(
+                "{}: {e}; serving with the route tree as it is on disk until a route file changes",
+                oj_server::oj_brand()
+            );
+            oj_server::boot_phase("route tree stale");
+        }
+        Err(e) => return Err(e),
+    }
     let resolver = {
         let (root, cache) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, true))
@@ -3160,10 +3177,23 @@ fn run_script_process(
         .map_err(|e| anyhow::anyhow!("could not wait for {what}: {e}"))?;
     oj_server::boot_phase(&format!("{what}: child exited ({status})"));
     if !status.success() {
-        anyhow::bail!("{what} failed");
+        return Err(ScriptFailed(format!("{what} failed")).into());
     }
     Ok(())
 }
+
+/// A script that ran and exited with a failure (it has printed why), as
+/// opposed to one that could not be run.
+#[derive(Debug)]
+struct ScriptFailed(String);
+
+impl std::fmt::Display for ScriptFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ScriptFailed {}
 
 /// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.

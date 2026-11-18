@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: `oj dev` stays up when the route tree cannot be generated at boot. A route file that does not parse, or two route files claiming one path ("Conflicting configuration paths were found"), ended the process ("route tree generation failed"), so a dev server restarted over such a file never came back: a supervisor retried it until it gave up, with no server left to show the error or pick up the fix. Under `vite dev` the router plugin logs the generator's error and the server runs on whatever tree is on disk, and so does oj now: with two files on one path the pages keep rendering from the last tree written, with a file that does not parse they answer 500 until it is fixed, and the tree is written again once the route files allow it. A generator that cannot be run at all still ends boot, and `oj build` still fails.
+
 ## [0.4.15] - 2026-11-17
 
 ### Fixed
