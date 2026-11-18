@@ -2106,7 +2106,7 @@ fn pinned_output(
     if !bundler.cacheable() {
         return oj_cache::start_bundle::PinnedBundle::from_build_dir(cache);
     }
-    match keyed_bundle_store(bundler, root, mode).persist(cache) {
+    match persist_as_built(bundler, &keyed_bundle_store(bundler, root, mode), cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
             save_generated_sheets(bundler, cache, &key);
@@ -3248,6 +3248,29 @@ fn keyed_bundle_store(
         .keyed_by("hot", if bundler.hot_bundle() { "1" } else { "0" })
 }
 
+/// Caches the bundle just written, unless a file it was built from was saved
+/// since the bundler read it: the store keys a bundle by its files' contents
+/// as they are now, and that key would name sources this bundle does not
+/// hold (every later boot would restore it for them). The save's own
+/// rebundle, or the next boot, caches the bundle that does. Vite keeps a
+/// transform result only when its module was not invalidated while it ran
+/// (`loadAndTransform`).
+fn persist_as_built(
+    bundler: &ClientBundler,
+    store: &oj_cache::start_bundle::StartBundleStore,
+    cache: &Path,
+) -> Option<(String, oj_cache::start_bundle::PinnedBundle)> {
+    let mut as_built = true;
+    let stored = store.persist_if(cache, || {
+        as_built = bundler.inputs_as_built();
+        as_built
+    });
+    if !as_built {
+        println!("  oj start: client bundle not cached (a source file changed since the bundler read it)");
+    }
+    stored
+}
+
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
@@ -3288,7 +3311,7 @@ fn bundle_client_entry_cached(
     bundler.bundle(&[], false)?;
     if !bundler.cacheable() {
         println!("  oj start: client bundle not cached (built without the app's plugin host)");
-    } else if let Some((key, pinned)) = store.persist(cache) {
+    } else if let Some((key, pinned)) = persist_as_built(bundler, &store, cache) {
         save_stylex_rules(bundler, cache, &key);
         save_generated_sheets(bundler, cache, &key);
         println!(
@@ -4009,6 +4032,22 @@ fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     }
 }
 
+/// A served chunk's bytes. One pinned from the store is checked against the
+/// size the store recorded. One pinned from the build dir (a bundle that was
+/// not cached) has no hash, and its size is the file's when it was pinned:
+/// the next bundle swaps a new entry in under the same fixed name before it
+/// is installed as current, so another size there is that bundle's entry,
+/// whole (it is renamed into place), and not a damaged file to refuse.
+fn read_chunk(
+    path: &Path,
+    expected: &oj_cache::integrity::ExpectedFile,
+) -> Result<Vec<u8>, oj_cache::integrity::VerifyError> {
+    if expected.hash.is_empty() {
+        return std::fs::read(path).map_err(oj_cache::integrity::VerifyError::Io);
+    }
+    oj_cache::integrity::verified_read(path, expected, oj_cache::integrity::VerifyMode::Standard)
+}
+
 async fn serve_client_chunk(
     state: &StartState,
     req: &axum::http::HeaderMap,
@@ -4038,15 +4077,7 @@ async fn serve_client_chunk(
     let what = name.clone();
     let retained = !served.current;
     let read = move || async move {
-        match tokio::task::spawn_blocking(move || {
-            oj_cache::integrity::verified_read(
-                &path,
-                &expected,
-                oj_cache::integrity::VerifyMode::Standard,
-            )
-        })
-        .await
-        {
+        match tokio::task::spawn_blocking(move || read_chunk(&path, &expected)).await {
             Ok(Ok(bytes)) => Ok(axum::body::Bytes::from(bytes)),
             // An earlier bundle's chunk file the store has swept (or a build
             // dir the next bundle rewrote): the page is too old to serve,
@@ -4966,6 +4997,35 @@ mod tests {
     // The route tree's footer names the start entry, so a tree cached without
     // one must not restore once src/start.ts exists (and the reverse). Edits to
     // the entry's content keep the key. The server-fn resolver never reads it.
+    // A bundle that was not cached is served from the build dir, where the
+    // next bundle replaces the entry under its fixed name before it becomes
+    // the current one: a request in between gets that entry, not a 500.
+    #[test]
+    fn a_build_dir_entry_the_next_bundle_replaced_is_still_served() {
+        let dir = std::env::temp_dir().join(format!("oj-read-chunk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("client-entry.js");
+        std::fs::write(&entry, "first bundle").unwrap();
+        let pinned = |hash: &str| oj_cache::integrity::ExpectedFile {
+            size: "first bundle".len() as u64,
+            hash: hash.to_string(),
+        };
+        assert_eq!(read_chunk(&entry, &pinned("")).unwrap(), b"first bundle");
+
+        std::fs::write(&entry, "the next bundle's entry").unwrap();
+        assert_eq!(
+            read_chunk(&entry, &pinned("")).unwrap(),
+            b"the next bundle's entry"
+        );
+        // A store blob of another size than recorded is still refused.
+        assert!(matches!(
+            read_chunk(&entry, &pinned("abc")),
+            Err(oj_cache::integrity::VerifyError::WrongSize { .. })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn route_tree_cache_keys_on_the_start_entry() {
         let root = std::env::temp_dir().join(format!("oj-treekey-{}", std::process::id()));

@@ -251,6 +251,54 @@ fn source_edit_changes_key_and_misses_until_repersisted() {
     assert_eq!(fx.store().restore(&fx.start, no_globs).unwrap().0.key, key2);
 }
 
+// The key is the closure's contents at the persist, and a file saved while
+// its bundle was building is hashed as saved: the bundle of the old code
+// would be stored under the new code's key, the one every later restore
+// computes. Such a bundle is not stored.
+#[test]
+fn a_bundle_whose_sources_moved_while_it_built_is_not_stored() {
+    let fx = Fixture::new("moved-while-built");
+    let (first, _) = fx.store().persist(&fx.start).unwrap();
+    // bundle-v2 read the first a.tsx; this save lands before the persist.
+    fx.write_build("bundle-v2");
+    fx.write_module("a.tsx", "export const a = 'saved while bundling';");
+    assert!(fx.store().persist_if(&fx.start, || false).is_none());
+    fx.clear_start_dir();
+    match fx.store().restore(&fx.start, no_globs) {
+        Err(Miss::NoEntryForKey(key)) => assert_ne!(key, first),
+        other => panic!("the saved source restored a bundle: {other:?}"),
+    }
+
+    // The save's own rebundle is the bundle of those contents.
+    fx.write_build("bundle-v3");
+    let (key, _) = fx.store().persist_if(&fx.start, || true).unwrap();
+    fx.clear_start_dir();
+    let (stats, pinned) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(fx.entry_bytes(&pinned), "bundle-v3");
+}
+
+// A generation already stored under the key of a newer bundle was built from
+// something the key does not cover: the newer bundle replaces it, or the old
+// chunks would restore on every boot until the cache directory was deleted.
+#[test]
+fn a_rebuild_of_the_same_sources_replaces_the_stored_bundle() {
+    let fx = Fixture::new("same-key-rebuild");
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    fx.write_build("bundle-v2");
+    let (again, pinned) = fx.store().persist(&fx.start).unwrap();
+    assert_eq!(again, key);
+    assert_eq!(fx.entry_bytes(&pinned), "bundle-v2");
+    fx.clear_start_dir();
+    let (stats, pinned) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(fx.entry_bytes(&pinned), "bundle-v2");
+    assert_eq!(
+        fs::read_to_string(fx.start.join("manifest.ts")).unwrap(),
+        "// bundle-v2"
+    );
+}
+
 #[test]
 fn reverting_an_edit_pins_the_older_generation() {
     let fx = Fixture::new("revert");

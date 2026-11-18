@@ -148,7 +148,7 @@ impl PinnedBundle {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct GenerationManifest {
     format: u32,
@@ -157,7 +157,7 @@ struct GenerationManifest {
     files: BTreeMap<String, ManifestFile>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq)]
 struct ManifestFile {
     hash: String,
     size: u64,

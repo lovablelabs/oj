@@ -7,13 +7,29 @@ use std::path::{Path, PathBuf};
 
 use super::memo::{build_memo, read_memo, verified_digests, write_memo};
 use super::{
-    hash_file, par_map, read_chunk_index, read_closure, read_css_urls, read_current, touch,
-    ChunkIndexFile, GenerationManifest, ManifestFile, PinnedBundle, StartBundleStore, ARTIFACTS,
-    BLOBS_DIR, CHUNKS_DIR, CLOSURE_FILE, KEEP_GENERATIONS, MANIFEST_FILE, START_BUNDLE_FORMAT,
+    hash_file, par_map, read_chunk_index, read_closure, read_css_urls, read_current, read_manifest,
+    touch, ChunkIndexFile, GenerationManifest, ManifestFile, PinnedBundle, StartBundleStore,
+    ARTIFACTS, BLOBS_DIR, CHUNKS_DIR, CLOSURE_FILE, KEEP_GENERATIONS, MANIFEST_FILE,
+    START_BUNDLE_FORMAT,
 };
 
 impl StartBundleStore {
     pub fn persist(&self, start_dir: &Path) -> Option<(String, PinnedBundle)> {
+        self.persist_if(start_dir, || true)
+    }
+
+    /// [`persist`](Self::persist) for a bundle whose inputs may have moved
+    /// while it was built. The key is the closure's contents as they are
+    /// now, which stand for what the bundle was built from only when no file
+    /// changed since the bundler read it: `as_built` says so, asked once the
+    /// contents are hashed (a later save cannot change the key any more).
+    /// Nothing is stored when it says no, since the key would name sources
+    /// the bundle does not hold.
+    pub fn persist_if(
+        &self,
+        start_dir: &Path,
+        as_built: impl FnOnce() -> bool,
+    ) -> Option<(String, PinnedBundle)> {
         let files = read_closure(&start_dir.join(CLOSURE_FILE))?;
         // A dev rebundle persists after every edit: files the current
         // generation's memo still vouches for (same size and mtime, settled
@@ -21,6 +37,9 @@ impl StartBundleStore {
         let memo = read_current(&self.dir).and_then(|key| read_memo(&self.dir.join(key)));
         let digests = verified_digests(&files, memo.as_ref());
         let key = self.key_from(&files, &digests.hashes).ok()?;
+        if !as_built() {
+            return None;
+        }
         let index = read_chunk_index(start_dir)?;
         let css_urls = read_css_urls(start_dir);
         let chunk_dir = start_dir.join(CHUNKS_DIR);
@@ -33,6 +52,23 @@ impl StartBundleStore {
             files: manifest_files,
         };
         let entry = self.dir.join(&key);
+        // The same sources bundled again to other chunks: the bundle just
+        // built takes the key. The stored one was built from something the
+        // key does not cover, and kept, every restore would bring it back.
+        // Renamed aside before it is deleted: a restore in another process
+        // finds the generation whole or not at all.
+        if entry.is_dir() && read_manifest(&entry).as_ref() != Some(&manifest) {
+            let aside = self.dir.join(format!(
+                ".tmp-replaced-{}-{}",
+                key.get(..16)?,
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&aside);
+            if fs::rename(&entry, &aside).is_err() {
+                let _ = fs::remove_dir_all(&entry);
+            }
+            let _ = fs::remove_dir_all(&aside);
+        }
         if !entry.is_dir() {
             self.commit_generation(start_dir, &key, &manifest, &entry)?;
         }

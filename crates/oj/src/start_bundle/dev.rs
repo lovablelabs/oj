@@ -30,6 +30,7 @@ use super::errors::{unresolved_import_in, BundleError};
 use super::host::StartHostPlugin;
 use super::hosts::{self, BundleHost};
 use super::hot::{EngineSlot, HotSession, SessionParts};
+use super::inputs::{BuiltInputs, LoadedInputs, Notes, RecordLoadedInputs};
 use super::refresh::{RefreshPreamble, RefreshTransform, RefreshWrapper};
 use super::shims::NodeBuiltinShims;
 use super::StartConfig;
@@ -73,6 +74,11 @@ pub(crate) struct DevBundler {
     /// The module ids of the last bundle written, whose StyleX rules a cached
     /// copy of it carries.
     bundle_modules: Mutex<Vec<String>>,
+    /// Each module's file as the bundler loaded it, as loading goes on.
+    loaded: Arc<LoadedInputs>,
+    /// The files of the last bundle written, as they were when its output
+    /// was produced.
+    built: Mutex<BuiltInputs>,
 }
 
 /// Whether the client bundle hot-updates under the editor's HMR gate as the
@@ -100,6 +106,7 @@ impl DevBundler {
             serde_json::Value::String(entry).to_string(),
         );
         let hot_enabled = hot_under_config(&start.config);
+        let loaded = Arc::new(LoadedInputs::new(&start.root));
         DevBundler {
             start: Arc::new(start),
             config_file,
@@ -115,6 +122,8 @@ impl DevBundler {
             clients: Mutex::new(PageSockets::default()),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
+            loaded,
+            built: Mutex::default(),
         }
     }
 
@@ -215,6 +224,32 @@ impl DevBundler {
     /// under the key that session computes.
     pub(crate) fn cacheable(&self) -> bool {
         !self.host_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether the files of the last bundle written are still as the
+    /// bundler loaded them for it. One saved since (while the bundle was
+    /// building, or after its output and before it is cached) is not what
+    /// the bundle holds, so its contents now must not key that bundle in the
+    /// cache.
+    pub(crate) fn inputs_as_built(&self) -> bool {
+        let built = self.built.lock().unwrap().clone();
+        super::inputs::unchanged(&built)
+    }
+
+    /// Takes `notes`, the load notes as they were when `outputs` was
+    /// produced, as what the bundle about to be written was built from: the
+    /// modules of its chunks, which the bundle cache keys it by.
+    fn note_built(&self, notes: &Notes, outputs: &[rolldown_common::Output]) {
+        let modules = outputs.iter().filter_map(|out| match out {
+            rolldown_common::Output::Chunk(c) => Some(c.modules.keys.iter()),
+            rolldown_common::Output::Asset(_) => None,
+        });
+        let built = super::inputs::built_inputs(
+            notes,
+            modules.flatten().map(|id| id.as_str()),
+            left_out_of_closure(&self.start.cache),
+        );
+        *self.built.lock().unwrap() = built;
     }
 
     pub(crate) fn style_epoch(&self) -> u64 {
@@ -471,7 +506,8 @@ impl DevBundler {
             *session = Some(live);
         }
         let live = session.as_ref().expect("a live session");
-        let output = live.latest_output().await?;
+        let (output, notes) = live.latest_output().await?;
+        self.note_built(&notes, &output);
         let module_ids: Vec<String> = live
             .engine
             .get_module_ids()
@@ -562,7 +598,12 @@ impl DevBundler {
         let styles = Arc::new(DevStyleState::default());
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
         let entry = start.cache.join("client-entry.tsx");
-        let mut plugins: Vec<SharedPluginable> = Vec::new();
+        // First, so each module's file is noted before anything reads it; a
+        // bundle that starts over loads every module again.
+        self.loaded.clear();
+        let mut plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(RecordLoadedInputs(
+            Arc::clone(&self.loaded),
+        ))];
         if let Some(plugin) = &start.stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }
@@ -714,6 +755,7 @@ impl DevBundler {
         Ok(SessionParts {
             options,
             plugins,
+            loaded: Arc::clone(&self.loaded),
             css_urls,
             glob_scopes,
             styles,
@@ -729,8 +771,10 @@ impl DevBundler {
             .with_options(parts.options)
             .build()
             .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
-        let (generated, module_ids) = on_rolldown(&start.rolldown, async {
+        let (generated, module_ids, notes) = on_rolldown(&start.rolldown, async {
             let generated = bundler.generate().await;
+            // Every module is loaded by now, and nothing loads after.
+            let notes = self.loaded.snapshot();
             let module_ids: Vec<String> = bundler
                 .module_infos()
                 .iter()
@@ -738,7 +782,7 @@ impl DevBundler {
                 .chain(bundler.watch_files().iter().map(|f| f.to_string()))
                 .collect();
             let _ = bundler.close().await;
-            (generated, module_ids)
+            (generated, module_ids, notes)
         })
         .await;
         let output = generated.map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
@@ -750,6 +794,7 @@ impl DevBundler {
             None => Vec::new(),
         };
         *self.bundle_modules.lock().unwrap() = module_ids.clone();
+        self.note_built(&notes, &output.assets);
         let css_urls = parts
             .css_urls
             .lock()
@@ -976,25 +1021,9 @@ pub(crate) fn write_inputs<'a>(
 pub(crate) fn closure_files(start: &StartConfig, ids: Vec<String>) -> Vec<String> {
     let left_out = left_out_of_closure(&start.cache);
     let mut out: Vec<String> = ids
-        .into_iter()
-        .map(|id| {
-            let id = if id.starts_with("\0oj-") {
-                id.split_once(':')
-                    .map_or(String::new(), |(_, rest)| rest.to_string())
-            } else {
-                id
-            };
-            id.split('?').next().unwrap_or("").to_string()
-        })
-        .filter(|p| !p.is_empty() && !p.starts_with('\0'))
-        .map(|p| {
-            let path = Path::new(&p);
-            if path.is_absolute() {
-                p
-            } else {
-                start.root.join(path).to_string_lossy().into_owned()
-            }
-        })
+        .iter()
+        .filter_map(|id| module_file(&start.root, id))
+        .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| {
             let path = Path::new(p);
             !left_out(path) && path.is_file()
@@ -1003,6 +1032,26 @@ pub(crate) fn closure_files(start: &StartConfig, ids: Vec<String>) -> Vec<String
     out.sort();
     out.dedup();
     out
+}
+
+/// The file a module id names, under `root` when the id is relative: its
+/// query aside, and a wrapped id of oj's own (`\0oj-<kind>:<path>`) by the
+/// file it wraps. None for any other virtual id.
+pub(crate) fn module_file(root: &Path, id: &str) -> Option<PathBuf> {
+    let id = match id.strip_prefix("\0oj-") {
+        Some(rest) => rest.split_once(':')?.1,
+        None => id,
+    };
+    let file = id.split('?').next().unwrap_or("");
+    if file.is_empty() || file.starts_with('\0') {
+        return None;
+    }
+    let path = Path::new(file);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    })
 }
 
 /// What [`closure_files`] leaves out, which a restore's glob check has to
