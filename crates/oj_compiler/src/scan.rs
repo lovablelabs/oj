@@ -205,6 +205,21 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// A template literal without a substitution is a literal specifier;
+    /// one with a substitution is not.
+    #[test]
+    fn a_no_substitution_template_literal_is_rewritten_as_a_literal() {
+        let out = rewrite_specifiers(
+            "const a = import(`dep`);\nconst b = import(`dep-${x}`);\nconst c = import(\"dep\");\n",
+            Path::new("/src/a.js"),
+            |spec| (spec == "dep").then(|| "/@deps/dep.mjs".to_string()),
+        );
+        assert_eq!(
+            out.as_deref(),
+            Some("const a = import(\"/@deps/dep.mjs\");\nconst b = import(`dep-${x}`);\nconst c = import(\"/@deps/dep.mjs\");\n")
+        );
+    }
+
     #[test]
     fn imports_collects_static_specifiers_deduped() {
         let src = r#"

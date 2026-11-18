@@ -89,6 +89,9 @@ import { probe } from "../legacy/probe.js";
 import * as star from "./star.js";
 import * as builtin from "node:fs";
 import "side-effect-only";
+import { typed } from "./typed.ts";
+import * as undef from "undef-cjs";
+import undefDefault from "undef-cjs";
 import builtinDefault, { readFile } from "node:fs";
 
 const keys = (o) => Object.keys(o).sort().join(",");
@@ -156,6 +159,8 @@ await run("templateLiteralEsm", async () => {
   const m = await import(`plain-esm`);
   return [keys(m), m.value];
 });
+await run("typeOnlyImport", () => typed(1));
+await run("undefinedExports", () => [keys(undef), String(undef.default), String(undefDefault)]);
 await run("emptyEntry", () =>
   import("./empty.js").then(
     (m) => ["loaded: " + keys(m), globalThis.__sideEffect],
@@ -332,6 +337,24 @@ fn packages() -> Vec<(&'static str, &'static str)> {
             r#"{"name":"direct-umd","version":"3.0.0","main":"build/kit.js"}"#,
         ),
         ("node_modules/direct-umd/build/kit.js", UMD),
+        // A types-only entry, as tsup and esbuild emit one: an empty file.
+        (
+            "node_modules/types-only-pkg/package.json",
+            r#"{"name":"types-only-pkg","version":"1.0.0","type":"module","main":"index.js","types":"index.d.ts"}"#,
+        ),
+        ("node_modules/types-only-pkg/index.js", ""),
+        (
+            "node_modules/types-only-pkg/index.d.ts",
+            "export interface Foo { a: number }\nexport interface Bar { b: number }\ndeclare const Whole: Foo;\nexport default Whole;\n",
+        ),
+        (
+            "node_modules/undef-cjs/package.json",
+            r#"{"name":"undef-cjs","version":"1.0.0","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/undef-cjs/index.js",
+            "module.exports = undefined;\n",
+        ),
         (
             "node_modules/plain-esm/package.json",
             r#"{"name":"plain-esm","version":"1.0.0","type":"module","main":"index.js"}"#,
@@ -398,7 +421,7 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         // served file by file instead of from a pre-bundle.
         (
             "oj.config.json",
-            r#"{"optimizeDeps":{"needsInterop":["esm-kit","esm-names"],"exclude":["direct-cjs","direct-umd"]}}"#,
+            r#"{"optimizeDeps":{"needsInterop":["esm-kit","esm-names"],"exclude":["direct-cjs","direct-umd","undef-cjs"]}}"#,
         ),
         ("index.html", INDEX),
         ("src/main.js", MAIN),
@@ -412,6 +435,10 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         ("legacy/probe.js", PROBE),
         ("legacy/reexport.js", LEGACY_REEXPORT),
         ("src/star.js", "export * from \"umd-kit\";\n"),
+        (
+            "src/typed.ts",
+            "import { Foo } from \"types-only-pkg\";\nimport Whole, * as All from \"types-only-pkg\";\nexport const typed = (x: Foo | Whole | All.Bar): string => \"typed:\" + typeof x;\n",
+        ),
         (
             "src/empty.js",
             "import * as empty from \"side-effect-only\";\nexport const keys = Object.keys(empty);\n",
@@ -539,6 +566,17 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         "templateLiteralEsm",
         json!(["value", "plain-esm"]),
         "a template literal names an ES dep that needs no interop too",
+    );
+    case(
+        "typeOnlyImport",
+        json!("typed:number"),
+        "a TypeScript import used only as a type, of a package whose entry is empty, is \
+         dropped as the TypeScript transform drops it: the module links",
+    );
+    case(
+        "undefinedExports",
+        json!(["default", "undefined", "undefined"]),
+        "a dep served file by file whose module.exports is undefined is read as that",
     );
     case(
         "emptyEntry",

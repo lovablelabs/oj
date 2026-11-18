@@ -174,6 +174,10 @@ pub fn rewrite_cjs_interop_logged(
         warn,
         path,
         source,
+        program: &parsed.program,
+        typescript: source_type.is_typescript(),
+        jsx: source_type.is_jsx(),
+        scoping: std::cell::OnceCell::new(),
         format,
         edits: Vec::new(),
         hoisted: String::new(),
@@ -239,7 +243,7 @@ fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
         return start;
     };
     let first = oxc_span::GetSpan::span(first).start as usize;
-    program
+    let pragma = program
         .comments
         .iter()
         .map(|comment| {
@@ -251,16 +255,47 @@ fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
         })
         .take_while(|(_, from, _)| *from < first)
         .filter(|(_, from, to)| *from >= start && source[*from..*to].contains("@jsx"))
-        .last()
-        .map_or(start, |(comment, _, to)| {
-            if comment.is_line() {
-                source[to..]
-                    .find('\n')
-                    .map_or(source.len(), |nl| to + nl + 1)
-            } else {
-                to
-            }
-        })
+        .last();
+    let Some((comment, from, to)) = pragma else {
+        return start;
+    };
+    // Right after a block comment that starts its line: a statement
+    // boundary. One that follows code on its line (`'use strict' /** @jsx h
+    // */`) may sit inside a statement, so the bindings go to the start of
+    // the next line, as after a `//` comment; when the first statement is
+    // on that same line there is no place both after the pragma and between
+    // statements, and Vite's position is kept.
+    let line_start = source[..from].rfind(is_line_terminator).map_or(0, |at| {
+        at + source[at..].chars().next().map_or(1, char::len_utf8)
+    });
+    let leads_its_line = source[line_start.max(start)..from]
+        .chars()
+        .all(|c| c.is_whitespace() || c == '\u{feff}');
+    if !comment.is_line() && leads_its_line {
+        return to;
+    }
+    match next_line_start(source, to) {
+        Some(at) if at <= first => at,
+        _ => start,
+    }
+}
+
+fn is_line_terminator(c: char) -> bool {
+    matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}')
+}
+
+/// The offset after the first line terminator at or after `from` (`\r\n`
+/// as one).
+fn next_line_start(source: &str, from: usize) -> Option<usize> {
+    let (at, c) = source[from..]
+        .char_indices()
+        .find(|(_, c)| is_line_terminator(*c))?;
+    let at = from + at;
+    Some(if c == '\r' && source[at + 1..].starts_with('\n') {
+        at + 2
+    } else {
+        at + c.len_utf8()
+    })
 }
 
 /// Vite's `getFileStartIndex`: the length of a leading hashbang line with
@@ -270,12 +305,7 @@ fn file_start_index(source: &str) -> usize {
     if !source.starts_with("#!") {
         return 0;
     }
-    let is_terminator = |c: char| matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}');
-    match source.char_indices().find(|(_, c)| is_terminator(*c)) {
-        None => source.len(),
-        Some((at, '\r')) if source[at + 1..].starts_with('\n') => at + 2,
-        Some((at, c)) => at + c.len_utf8(),
-    }
+    next_line_start(source, 0).unwrap_or(source.len())
 }
 
 struct Edit {
@@ -309,6 +339,14 @@ struct InteropRewriter<'r> {
     warn: &'r mut dyn FnMut(String),
     path: &'r Path,
     source: &'r str,
+    program: &'r oxc_ast::ast::Program<'r>,
+    /// A TypeScript source: its transform, which runs after this pass,
+    /// removes the import bindings no value refers to.
+    typescript: bool,
+    jsx: bool,
+    /// The module's symbols and references, built for the first import that
+    /// asks.
+    scoping: std::cell::OnceCell<oxc_semantic::Scoping>,
     format: ImporterFormat,
     edits: Vec<Edit>,
     hoisted: String,
@@ -337,6 +375,39 @@ impl InteropRewriter<'_> {
             Statement::ExportAllDeclaration(decl) => self.export_all(decl),
             _ => {}
         }
+    }
+
+    /// Whether the TypeScript transform keeps the import binding `local`: one
+    /// a value refers to (oxc's `has_value_reference`: any reference that is
+    /// not a type position), or one the JSX transform may refer to without
+    /// the source saying so (`React`, a name a `@jsx` pragma gives). Always,
+    /// outside TypeScript.
+    fn keeps(&self, local: &oxc_ast::ast::BindingIdentifier) -> bool {
+        if !self.typescript {
+            return true;
+        }
+        let scoping = self.scoping.get_or_init(|| {
+            oxc_semantic::SemanticBuilder::new()
+                .build(self.program)
+                .semantic
+                .into_scoping()
+        });
+        let Some(symbol) = local.symbol_id.get() else {
+            return true;
+        };
+        if scoping
+            .get_resolved_references(symbol)
+            .any(|reference| !reference.is_type())
+        {
+            return true;
+        }
+        let name = local.name.as_str();
+        self.jsx
+            && (name == "React"
+                || self.program.comments.iter().any(|comment| {
+                    let text = &self.source[comment.span.start as usize..comment.span.end as usize];
+                    text.contains("@jsx") && text.contains(name)
+                }))
     }
 
     /// Vite's default import of a dep that needs interop (transformCjsImport):
@@ -380,8 +451,19 @@ impl InteropRewriter<'_> {
             self.push(decl.source.span, json_str(&target.url));
             return;
         }
-        let specs: Vec<&ImportDeclarationSpecifier> =
-            all.iter().filter(|spec| !is_type(spec)).collect();
+        // So is a binding no value refers to (`import { T } from "dep"`, `T`
+        // used only as a type, or not at all): that transform removes it,
+        // and the whole declaration when none is left. Vite's import
+        // analysis runs on what remains.
+        let specs: Vec<&ImportDeclarationSpecifier> = all
+            .iter()
+            .filter(|spec| !is_type(spec) && self.keeps(spec.local()))
+            .collect();
+        if !all.is_empty() && specs.is_empty() {
+            self.next_idx();
+            self.push(decl.span, String::new());
+            return;
+        }
         let named = specs
             .iter()
             .any(|s| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)));
@@ -794,40 +876,79 @@ mod tests {
         assert_eq!(run(r#"import type { T } from "cjs-dep";"#), None);
         assert_eq!(run(r#"export type { T } from "cjs-dep";"#), None);
         // A value beside a type: the value alone is bound.
-        let out = run(r#"import d, { type T, a } from "cjs-dep";"#).unwrap();
+        let out = run("import d, { type T, a } from \"cjs-dep\";\nd(a);\n").unwrap();
         assert_eq!(
             out,
             format!(
-                "const d = __ojcjs0;const {{ a: a }} = __ojcjs0;import __ojcjs0 from \"{URL}\";"
+                "const d = __ojcjs0;const {{ a: a }} = __ojcjs0;import __ojcjs0 from \"{URL}\";\nd(a);\n"
             )
         );
-        // A value-syntax import that TypeScript would elide for being used
-        // only as a type is not told apart here: it stays a binding, and
-        // the import of the dep stays with it.
-        let out = run("import { T } from \"cjs-dep\";\nlet x: T;\n").unwrap();
-        assert!(out.starts_with("const { T: T } = __ojcjs0;"), "{out}");
     }
 
-    /// The forms of a module oj serves itself read the same value as a
-    /// pre-bundle's: the default by the importer, the namespace by the
-    /// helper.
+    /// oxc's TypeScript transform removes an import binding no value refers
+    /// to, and the declaration when none is left (`has_value_reference`):
+    /// Vite's import analysis runs on what remains, so this pass, which runs
+    /// first, leaves the same.
     #[test]
-    fn a_served_module_follows_the_importer_and_the_helper_too() {
-        let out = run_as(
-            r#"import d, * as ns from "cjs-dep";"#,
-            InteropKind::Served,
-            NOT_ESM,
+    fn a_binding_used_only_as_a_type_is_dropped_as_typescript_drops_it() {
+        let run = |src: &str, file: &str| {
+            rewrite_cjs_interop(src, Path::new(file), &target(InteropKind::PreBundle))
+        };
+        let import = format!("import __ojcjs0 from \"{URL}\";");
+        // Used only as a type, or not at all: nothing is left, on its line.
+        for src in [
+            "import { T } from \"cjs-dep\";\nlet x: T;\n",
+            "import { T } from \"cjs-dep\";\nexport type { T };\n",
+            "import d, { T } from \"cjs-dep\";\nlet x: T | typeof d;\n",
+            "import * as ns from \"cjs-dep\";\nlet x: ns.T;\n",
+            "import { unused } from \"cjs-dep\";\nlet x = 1;\n",
+        ] {
+            let rest = src.split_once('\n').unwrap().1;
+            assert_eq!(run(src, "m.ts"), Some(format!("\n{rest}")), "{src}");
+        }
+        // One value use beside a type use: the value binding alone is read.
+        assert_eq!(
+            run("import { a, T } from \"cjs-dep\";\nlet x: T = a;\n", "m.ts"),
+            Some(format!(
+                "const {{ a: a }} = __ojcjs0;{import}\nlet x: T = a;\n"
+            ))
+        );
+        assert_eq!(
+            run("import d, { T } from \"cjs-dep\";\nlet x: T = d;\n", "m.ts"),
+            Some(format!("const d = __ojcjs0;{import}\nlet x: T = d;\n"))
+        );
+        // A value position that is also read as a type keeps the binding.
+        assert_eq!(
+            run(
+                "import { C } from \"cjs-dep\";\nlet x: C = new C();\n",
+                "m.ts"
+            ),
+            Some(format!(
+                "const {{ C: C }} = __ojcjs0;{import}\nlet x: C = new C();\n"
+            ))
+        );
+        // JavaScript elides nothing.
+        assert_eq!(
+            run("import { unused } from \"cjs-dep\";\n", "m.js"),
+            Some(format!("const {{ unused: unused }} = __ojcjs0;{import}\n"))
+        );
+        // The JSX transform refers to its factory without the source saying
+        // so: `React`, and a name a pragma gives, stay.
+        assert_eq!(
+            run(
+                "import React from \"cjs-dep\";\nexport const el = <p />;\n",
+                "m.tsx"
+            ),
+            Some(format!(
+                "const React = __ojcjs0;{import}\nexport const el = <p />;\n"
+            ))
+        );
+        let out = run(
+            "/** @jsx h */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n",
+            "m.tsx",
         )
         .unwrap();
-        assert!(
-            out.contains("const d = (!__ojcjs0.__esModule ? __ojcjs0 : __ojcjs0.default);"),
-            "{out}"
-        );
-        assert!(
-            out.contains("const ns = __oj_dyn_interop(__ojcjs0, 0);"),
-            "{out}"
-        );
-        assert!(out.starts_with("const __oj_dyn_interop = "), "{out}");
+        assert!(out.contains("const { h: h } = __ojcjs0;"), "{out}");
     }
 
     #[test]
@@ -1094,7 +1215,7 @@ mod tests {
         ] {
             let src = format!("{start}{import}");
             let out =
-                rewrite_cjs_interop(&src, Path::new("m.tsx"), &target(InteropKind::PreBundle))
+                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle))
                     .unwrap_or_else(|| panic!("{src}"));
             assert_eq!(
                 out,
@@ -1129,10 +1250,32 @@ mod tests {
         ] {
             let src = format!("{before}{after}{import}");
             let out =
-                rewrite_cjs_interop(&src, Path::new("m.tsx"), &target(InteropKind::PreBundle))
+                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle))
                     .unwrap_or_else(|| panic!("{src}"));
             assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src}");
         }
+        // A pragma comment after code on its line may sit inside a
+        // statement: the bindings go to the next line, whatever ends it.
+        for (before, after) in [
+            ("'use strict' /** @jsx h */\n", ""),
+            ("'use strict' /** @jsx h */ /** @jsxFrag F */\r\n", ""),
+            ("/** @jsx h */ /** @jsxFrag F */\n", ""),
+            ("'use strict' // @jsx h\r", ""),
+            ("// @jsx h\u{2028}", ""),
+        ] {
+            let src = format!("{before}{after}{import}");
+            let out =
+                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle))
+                    .unwrap_or_else(|| panic!("{src}"));
+            assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src:?}");
+        }
+        // No place after the pragma and between statements: Vite's.
+        let src = format!("'use strict'; /** @jsx h */ {import}");
+        let out = rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle));
+        assert_eq!(
+            out,
+            Some(format!("{head}'use strict'; /** @jsx h */ {rewritten}"))
+        );
         // A pragma after the first statement is no pragma: byte 0.
         let src = format!("{import}/** @jsxImportSource custom */\n");
         let out = run(&src);
