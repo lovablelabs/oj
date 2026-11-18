@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-11-18
+
 ### Fixed
 
 - TanStack Start dev: `oj dev` stays up when the app's routes cannot make a route tree at boot. A route file the generator cannot transform, or two route files claiming one path ("Conflicting configuration paths were found"), ended the process ("route tree generation failed"), so a dev server restarted over such a file never came back: a supervisor retried it until it gave up, with no server left to show the error or pick up the fix. Under `vite dev` the router plugin logs the generator's error and the server runs on whatever tree is on disk, and so does oj now: with two files on one path the pages keep rendering from the last tree written, and with a file that does not compile they answer 500 until it is fixed. The client is refused meanwhile, as Start's client tree plugin fails the tree's load under Vite: the client bundle fails with what the generator said, which the overlay shows, in place of a client built on the tree left on disk (which, unpruned, carried routes with only `server` options to the browser; a generation failing while the server ran had the same effect). The tree is generated again as soon as the route files are not the ones the generator failed on, whether or not the set of routes changed, a fix written while the server was still booting included. Only the generator's own verdict on the routes is survived: one that is killed or fails any other way still ends boot, and `oj build` still fails, as `vite build` does. With no tree on disk at all the pages keep answering 500 after the fix until the server restarts, as under Vite.
