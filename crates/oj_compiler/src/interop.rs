@@ -308,8 +308,7 @@ impl JsxPragmas {
             ("@jsxFrag", &self.frag),
             ("@jsxImportSource", &self.import_source),
         ] {
-            // A value from a `//` comment could close this one.
-            if let Some(value) = value.as_ref().filter(|v| !v.contains("*/")) {
+            if let Some(value) = value {
                 parts.push(format!("{keyword} {value}"));
             }
         }
@@ -338,6 +337,13 @@ fn jsx_pragmas(source: &str, program: &oxc_ast::ast::Program) -> JsxPragmas {
     {
         let mut text = comment.content_span().source_text(source);
         while let Some((keyword, value, rest)) = find_jsx_pragma(text) {
+            text = rest;
+            // A value from a `//` comment that would close the comment the
+            // pragmas are restated in is not restated, so the transform
+            // never sees it: it is no pragma here either.
+            if value.contains("*/") {
+                continue;
+            }
             match keyword {
                 "" => pragmas.jsx = Some(value.to_string()),
                 "Frag" => pragmas.frag = Some(value.to_string()),
@@ -348,7 +354,6 @@ fn jsx_pragmas(source: &str, program: &oxc_ast::ast::Program) -> JsxPragmas {
                     _ => {}
                 },
             }
-            text = rest;
         }
     }
     pragmas
@@ -487,20 +492,40 @@ fn jsx_identifiers(
         names.push(root(comment_frag.as_deref().unwrap_or("React")));
     }
     if classic {
-        let factory = comment_pragma
-            .as_deref()
-            .or(later.jsx_pragma.as_deref())
-            .unwrap_or("React.createElement");
-        names.push(root(factory));
+        let factory = comment_pragma.as_deref().or(later.jsx_pragma.as_deref());
+        names.extend(classic_pragma_root(factory));
         if jsx.fragment {
-            let fragment = comment_frag
-                .as_deref()
-                .or(later.jsx_pragma_frag.as_deref())
-                .unwrap_or("React.Fragment");
-            names.push(root(fragment));
+            let fragment = comment_frag.as_deref().or(later.jsx_pragma_frag.as_deref());
+            names.extend(classic_pragma_root(fragment));
         }
     }
     names
+}
+
+/// The identifier oxc's classic JSX transform refers to for a `pragma` or
+/// `pragmaFrag` (oxc_transformer 0.158, `jsx/jsx_impl.rs`, `Pragma::parse`):
+/// the root of a dotted path of identifier names that is no reserved word;
+/// none for `this.x` and `import.meta.x`; and `React`, the default's root,
+/// for no value, an empty one, or one that does not parse (`1x`, `class`).
+fn classic_pragma_root(pragma: Option<&str>) -> Option<String> {
+    use oxc_syntax::{identifier::is_identifier_name, keyword::is_reserved_keyword};
+    let default = || Some("React".to_string());
+    let Some(pragma) = pragma.filter(|pragma| !pragma.is_empty()) else {
+        return default();
+    };
+    let mut parts = pragma.split('.');
+    let root = parts.next().unwrap_or(pragma);
+    let tail: Vec<&str> = parts.collect();
+    let tail_names = |tail: &[&str]| tail.iter().all(|part| is_identifier_name(part));
+    match root {
+        "this" if tail_names(&tail) => None,
+        "import" if tail.first() == Some(&"meta") && tail_names(&tail[1..]) => None,
+        "this" | "import" => default(),
+        _ if is_reserved_keyword(root) || !is_identifier_name(root) || !tail_names(&tail) => {
+            default()
+        }
+        _ => Some(root.to_string()),
+    }
 }
 
 /// The line breaks of a replaced span, appended to its one-line replacement
@@ -580,20 +605,67 @@ impl InteropRewriter<'_> {
         };
         // oxc's `has_value_reference`: an import redeclared as a value
         // (`import { Status } from "dep"; const Status = ...`, legal when
-        // the import is only a type) is shadowed, and removed.
+        // the import is only a type) is shadowed, and removed. The transform
+        // decides after its own passes have changed some symbols' flags, so
+        // an `enum` or an instantiated `namespace` declared with the
+        // import's name can come out the other way there; either way such a
+        // module declares the name twice at runtime and does not load.
         if (scoping.symbol_flags(symbol) - oxc_semantic::SymbolFlags::Import).is_value() {
             return false;
         }
-        if scoping
-            .get_resolved_references(symbol)
-            .any(|reference| !reference.is_type())
-        {
+        if self.has_value_reference(scoping, symbol) {
             return true;
         }
         self.jsx_use
             .get_or_init(|| jsx_identifiers(self.source, self.program, self.later))
             .iter()
             .any(|name| name == local.name.as_str())
+    }
+
+    /// Whether a reference outside a type position refers to `symbol`. The
+    /// right-hand side of `import X = ns.Y` refers to `ns` only while `X`
+    /// itself is referred to as a value: the transform removes an alias
+    /// used as a type alone, and its reference with it.
+    fn has_value_reference(
+        &self,
+        scoping: &oxc_semantic::Scoping,
+        symbol: oxc_semantic::SymbolId,
+    ) -> bool {
+        use oxc_ast::ast::{TSModuleReference, TSTypeName};
+        scoping
+            .get_resolved_reference_ids(symbol)
+            .iter()
+            .any(|&id| {
+                if scoping.get_reference(id).is_type() {
+                    return false;
+                }
+                // The alias whose right-hand side starts with this reference.
+                let alias = self.program.body.iter().find_map(|stmt| {
+                    let Statement::TSImportEqualsDeclaration(decl) = stmt else {
+                        return None;
+                    };
+                    let mut name = match &decl.module_reference {
+                        TSModuleReference::IdentifierReference(ident) => {
+                            return (ident.reference_id.get() == Some(id)).then_some(&decl.id);
+                        }
+                        TSModuleReference::QualifiedName(qualified) => &qualified.left,
+                        TSModuleReference::ExternalModuleReference(_) => return None,
+                    };
+                    loop {
+                        match name {
+                            TSTypeName::IdentifierReference(ident) => {
+                                return (ident.reference_id.get() == Some(id)).then_some(&decl.id);
+                            }
+                            TSTypeName::QualifiedName(qualified) => name = &qualified.left,
+                            TSTypeName::ThisExpression(_) => return None,
+                        }
+                    }
+                });
+                match alias.and_then(|alias| alias.symbol_id.get()) {
+                    Some(alias) => self.has_value_reference(scoping, alias),
+                    None => true,
+                }
+            })
     }
 
     /// Vite's default import of a dep that needs interop (transformCjsImport):
@@ -1694,7 +1766,7 @@ mod tests {
     }
 
     /// The import bindings of `"cjs-dep"` left in what the real transform
-    /// (the compile, with the options the dev server builds) makes of `src`.
+    /// (the compile, through its public entry) makes of `src`.
     fn bindings_oxc_keeps(src: &str, file: &str, opts: &crate::CompileOptions) -> Vec<String> {
         let out = crate::compile::compile(Path::new(file), src, opts)
             .unwrap_or_else(|e| panic!("{file} does not compile: {e:?}\n{src}"));
@@ -1745,8 +1817,27 @@ mod tests {
             ("m.ts", "import { a } from \"cjs-dep\";\nexport function f(a: number) { return a; }\n"),
             ("m.ts", "import { a } from \"cjs-dep\";\nexport function f(a: number) { return a; }\nf(a);\n"),
             // Redeclared as a value: the import was only a type.
-            ("m.ts", "import { Status } from \"cjs-dep\";\nconst Status = { ok: 1 };\nexport const s: Status = Status as any;\n"),
-            ("m.ts", "import { Kind } from \"cjs-dep\";\nfunction Kind() { return 1; }\nexport const k = Kind();\n"),
+            // (`REDECLARED` marks them: see the skips below.)
+            ("m.ts", "import { Status } from \"cjs-dep\";\nconst Status = { ok: 1 }; // REDECLARED\nexport const s: Status = Status as any;\n"),
+            ("m.ts", "import { Kind } from \"cjs-dep\";\nfunction Kind() { return 1; } // REDECLARED\nexport const k = Kind();\n"),
+            ("m.ts", "import { K } from \"cjs-dep\";\nclass K {} // REDECLARED\nexport const k = new K();\n"),
+            // Redeclared as a type only, or as an ambient value.
+            ("m.ts", "import { I } from \"cjs-dep\";\ninterface I { a: number }\nexport const i: I = { a: 1 };\n"),
+            ("m.ts", "import { A } from \"cjs-dep\";\ntype A = number;\nexport const a: A = 1;\n"),
+            ("m.ts", "import { D } from \"cjs-dep\";\ndeclare const D: number;\nexport const d = D;\n"),
+            ("m.ts", "import { N } from \"cjs-dep\";\nnamespace N { export type T = number }\nexport const n: N.T = 1;\n"),
+            // `import x = ns.y`.
+            ("m.ts", "import * as ns from \"cjs-dep\";\nimport x = ns.y;\nexport const v = x;\n"),
+            ("m.ts", "import * as ns from \"cjs-dep\";\nimport X = ns.Y;\nexport let v: X;\n"),
+            // Another module extension.
+            ("m.mts", "import { a, T } from \"cjs-dep\";\nexport let x: T = a;\n"),
+            // A member tag is a value use; an intrinsic of the same name is not.
+            ("m.tsx", "import * as ns from \"cjs-dep\";\nexport const el = <ns.X />;\n"),
+            ("m.tsx", "import { a } from \"cjs-dep\";\nexport const el = <a />;\n"),
+            // An invalid classic factory falls back to React.createElement.
+            ("m.tsx", "/** @jsxRuntime classic @jsx 1x */\nimport React, { x } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxRuntime classic @jsx class */\nimport React from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxRuntime classic @jsx this.h */\nimport React from \"cjs-dep\";\nexport const el = <p />;\n"),
             // JSX.
             ("m.tsx", "import { Foo } from \"cjs-dep\";\nexport const el = <Foo />;\n"),
             ("m.tsx", "import React from \"cjs-dep\";\nexport const el = <p />;\n"),
@@ -1790,17 +1881,16 @@ mod tests {
                 },
             ),
         ];
-        let mut cases = 0;
+        let (mut cases, mut skipped) = (0, Vec::new());
         for (file, src) in SOURCES {
             for (label, jsx) in &configs {
-                // A pragma comment asks for a runtime the compile rejects
-                // with this configuration's options: not a case.
                 for verbatim in [false, true] {
                     let mut opts = crate::CompileOptions::prod();
                     opts.jsx = jsx.clone();
                     opts.verbatim_module_syntax = Some(verbatim);
                     opts.class_field_set_semantics = Some(false);
                     if crate::compile::compile(Path::new(file), src, &opts).is_err() {
+                        skipped.push((*src, *label, verbatim));
                         continue;
                     }
                     let later = LaterTransforms {
@@ -1818,9 +1908,19 @@ mod tests {
                 }
             }
         }
-        // Every source under at least the automatic runtime, both settings.
-        assert!(cases >= SOURCES.len() * 2, "{cases} cases ran");
-        eprintln!("differential cases: {cases}");
+        // The only combinations that do not compile: an import redeclared
+        // as a value, under `verbatimModuleSyntax`, where the transform
+        // keeps the import beside the module's own declaration and the
+        // compile rejects the name declared twice. So that rule is held to
+        // the transform with the option off alone.
+        let expected: Vec<_> = SOURCES
+            .iter()
+            .filter(|(_, src)| src.contains("REDECLARED"))
+            .flat_map(|(_, src)| configs.iter().map(move |(label, _)| (*src, *label, true)))
+            .collect();
+        assert_eq!(skipped, expected, "the combinations that do not compile");
+        assert_eq!(cases, SOURCES.len() * configs.len() * 2 - expected.len());
+        eprintln!("differential cases: {cases}, skipped: {}", skipped.len());
     }
 
     /// oxc's `find_jsx_pragma`, case by case.
