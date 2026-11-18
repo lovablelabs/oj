@@ -262,12 +262,15 @@ pub(crate) async fn serve_fallback(
 
 /// The preload href: the exact URL the importer names, so preload and import
 /// share one cache entry. A url the graph kept with its query (`?raw`,
-/// `?inline`) is that url. Of a bare path (a snapshot written before the
-/// graph kept them): `?import` for styles; a pre-bundled entry's current URL
-/// from `entries` (file name to URL), whose version moves with every rerun;
+/// `?inline`, a sheet's `?import`, an asset's `?url`) is that url. A bare
+/// path is an import named by its node's path (a script, JSON, a file a
+/// plugin makes a module of) or a pre-bundled dependency, which the graph
+/// keeps without its version: a pre-bundled entry's current URL from
+/// `entries` (file name to URL), whose version moves with every rerun;
 /// anything else under `/@oj-deps/` bare, as dep files import their chunks.
-/// An app asset is imported as `?url` (an `.svg` stays bare when
-/// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
+/// The sheet and asset rules for a bare path (`?import`; `?url`, an `.svg`
+/// staying bare when `svg_compiled`, for svgr, never the url its `<img src>`
+/// fetches) are what the graph's own urls say, for a list without them.
 pub(crate) fn preload_href(
     root: &Path,
     path: &str,
@@ -327,12 +330,19 @@ pub(crate) fn static_preloads(graph: &oj_graph::ModuleGraph, entries: &[String])
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         imports.sort();
+        let mut named: HashMap<&Path, Vec<&String>> = HashMap::new();
+        for (path, url) in &node.import_urls {
+            named.entry(path).or_default().push(url);
+        }
         for import in imports {
             if skip(&import) {
                 continue;
             }
-            let named = node.import_urls.get(Path::new(&import));
-            for url in named.map_or(std::slice::from_ref(&import), Vec::as_slice) {
+            let urls = match named.get(Path::new(&import)) {
+                Some(urls) => urls.clone(),
+                None => vec![&import],
+            };
+            for url in urls {
                 if listed.insert(url.clone()) {
                     out.push(url.clone());
                 }
@@ -378,6 +388,17 @@ pub(crate) fn page_module_entries(html: &str, base: &str) -> Vec<String> {
     entries
 }
 
+/// One preload tag. The href is an import's url, query included (`?a&b`, or
+/// whatever a plugin's `resolveId` answered), so it is escaped as any
+/// attribute value: the browser decodes it back to the url the import asks
+/// for.
+pub(crate) fn preload_link(href: &str, nonce: &str) -> String {
+    format!(
+        "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
+        crate::dev_html::escape_html(href)
+    )
+}
+
 /// The page's preloads, before its `</head>`: its static graph once the crawl
 /// has walked it, else, for the app's own `index.html`, what the last
 /// session's crawl found for it. A `cspNonce` page's links carry the nonce,
@@ -404,14 +425,14 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
     let links: String = paths
         .iter()
         .map(|p| {
-            format!(
-                "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
-                preload_href(
+            preload_link(
+                &preload_href(
                     &state.root,
                     p,
                     &entries,
-                    state.svg_url_may_be_componentized(p)
-                )
+                    state.svg_url_may_be_componentized(p),
+                ),
+                &nonce,
             )
         })
         .collect();

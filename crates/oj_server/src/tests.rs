@@ -2959,6 +2959,63 @@ fn a_page_preloads_what_its_scripts_import_statically() {
     );
 }
 
+/// An import is listed under each url a module names it by, once: the bare
+/// path only where a module names it so.
+#[test]
+fn a_page_preloads_a_queried_import_under_the_urls_naming_it() {
+    let mut graph = graph_of(&[
+        ("/src/main.js", &["/src/a.md", "/src/b.js", "/src/util.js"]),
+        ("/src/b.js", &["/src/a.md", "/src/util.js"]),
+    ]);
+    let p = Path::new;
+    graph.set_import_urls(
+        p("/src/main.js"),
+        [
+            (p("/src/a.md"), "/src/a.md?raw"),
+            (p("/src/b.js"), "/src/b.js"),
+            (p("/src/util.js"), "/src/util.js"),
+        ]
+        .into_iter(),
+    );
+    graph.set_import_urls(
+        p("/src/b.js"),
+        [
+            (p("/src/a.md"), "/src/a.md?raw"),
+            (p("/src/a.md"), "/src/a.md?url"),
+            (p("/src/util.js"), "/src/util.js?raw"),
+        ]
+        .into_iter(),
+    );
+    assert_eq!(
+        static_preloads(&graph, &["/src/main.js".to_string()]),
+        [
+            "/src/a.md?raw",
+            "/src/b.js",
+            "/src/util.js",
+            "/src/a.md?url",
+            "/src/util.js?raw"
+        ]
+    );
+}
+
+/// A preload's href is escaped as an attribute value, so the browser reads
+/// back the url the import asks for, whatever its query holds.
+#[test]
+fn a_preload_href_is_an_escaped_attribute_value() {
+    assert_eq!(
+        preload_link("/src/a.png?w=72&format=webp", ""),
+        "<link rel=\"modulepreload\" href=\"/src/a.png?w=72&amp;format=webp\" />\n"
+    );
+    assert_eq!(
+        preload_link("/src/a.md?raw&x=\"><script>", " nonce=\"n\""),
+        "<link rel=\"modulepreload\" href=\"/src/a.md?raw&amp;x=&quot;&gt;&lt;script&gt;\" nonce=\"n\" />\n"
+    );
+    assert_eq!(
+        preload_link("/src/notes.md?raw", ""),
+        "<link rel=\"modulepreload\" href=\"/src/notes.md?raw\" />\n"
+    );
+}
+
 /// The page's module scripts as the graph names them: without the base or a
 /// query oj adds, its own inline modules as served, never oj's runtime or a
 /// classic script.

@@ -30,7 +30,7 @@ fn snapshot(root: &Path) -> Option<PathBuf> {
     let cache = oj_cache::cache_root(root);
     cache
         .starts_with(root)
-        .then(|| cache.join("graph-snapshot.json"))
+        .then(|| cache.join("preload-snapshot.json"))
 }
 
 async fn serves_on_demand(server: &Server) {

@@ -176,7 +176,7 @@ async fn inlined_files_are_never_crawled_as_modules() {
     let server = app.serve().await;
     if crate::crawled(&app.root).await {
         let snapshot =
-            std::fs::read_to_string(oj_cache::cache_root(&app.root).join("graph-snapshot.json"))
+            std::fs::read_to_string(oj_cache::cache_root(&app.root).join("preload-snapshot.json"))
                 .unwrap();
         assert!(snapshot.contains("/src/index.css"), "{snapshot}");
         assert!(
