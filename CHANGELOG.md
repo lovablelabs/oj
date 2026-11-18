@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev and `oj build`: a server function declared in a `.js`, `.jsx`, `.mjs`, `.mts`, `.cjs` or `.cts` module, in a module under `tanstackStart({ srcDirectory })`, or in a directory of the project outside `src/` that a `resolve.alias` entry (`"@shared": "/shared"` included) or a tsconfig `paths` entry (`@shared/*` → `./shared/*`) names, can be called. The server-fn resolver scanned `.ts` and `.tsx` files under `src/` alone, so the page had the function's client stub and the call answered `Server function info not found`; an edit to such a module or one created while the server ran was not picked up either. The scan now covers every module Start's server-fn compiler transforms (`.[cm]?[tj]sx?`) under `src/`, Start's source and routes directories and the in-project directories an alias names, never the project root itself, `node_modules`, hidden directories or the build output, and without following symlinked directories.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed
