@@ -61,7 +61,7 @@ async fn dev_resolves_the_development_export_and_wraps_cjs_dynamic_imports() {
         &served[..served.len().min(300)]
     );
     assert!(
-        Regex::new(r#"import\("[^"]+"\)\.then\(__oj_dyn_interop\)"#)
+        Regex::new(r#"import\("[^"]+"\)\.then\(\(m\) => __oj_dyn_interop\(m, [01]\)\)"#)
             .unwrap()
             .is_match(&main),
         "dynamic import of a CJS dep is not interop-wrapped:\n{main}"

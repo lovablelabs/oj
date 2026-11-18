@@ -137,6 +137,7 @@ pub(crate) async fn ensure_module_as(
     let CompileKey {
         key,
         class_field_semantics,
+        importer_format,
     } = compile_key(
         state,
         file,
@@ -308,6 +309,7 @@ pub(crate) async fn ensure_module_as(
         is_server,
         is_svelte,
         class_field_semantics,
+        importer_format,
         css,
         plugin_maps: transformed.maps,
         dep_map,
@@ -604,6 +606,8 @@ struct CompileKey {
     /// tsconfig class-field semantics, decided ONCE from the real path: the
     /// compile may run on a synthetic one (`x.svg` -> `x.svg.tsx`).
     class_field_semantics: bool,
+    /// How Node reads the file, decided from the real path too.
+    importer_format: oj_compiler::interop::ImporterFormat,
 }
 
 /// The newest HMR stamp among a module's imports, by their served urls: what
@@ -668,6 +672,14 @@ fn compile_key(
     if class_field_semantics {
         mode_key.push_str("+setcf");
     }
+    // So does the importer's package type: the interop of a namespace or
+    // dynamic import of a CommonJS dep follows it.
+    let importer_format = importer_format(&state.package_type_memo, file);
+    if importer_format.esm {
+        mode_key.push_str("+esm");
+    } else if importer_format.explicit {
+        mode_key.push_str("+cjs");
+    }
     // The pre-bundle's browser version salts the key: a dep re-optimization
     // changes the optimized URLs, so modules compiled against the old map
     // must miss (Vite invalidates its whole module graph on that reload).
@@ -694,6 +706,7 @@ fn compile_key(
     CompileKey {
         key,
         class_field_semantics,
+        importer_format,
     }
 }
 
@@ -1150,6 +1163,7 @@ struct CompileJob {
     is_server: bool,
     is_svelte: bool,
     class_field_semantics: bool,
+    importer_format: oj_compiler::interop::ImporterFormat,
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
@@ -1286,6 +1300,7 @@ impl CompileJob {
             oj_compiler::interop::rewrite_cjs_interop_logged(
                 source,
                 file,
+                self.importer_format,
                 &interop,
                 &mut warn_interop_once,
             )
@@ -1310,6 +1325,7 @@ impl CompileJob {
         let interopped = oj_compiler::interop::rewrite_cjs_interop_logged(
             &self.source,
             &self.file,
+            self.importer_format,
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );

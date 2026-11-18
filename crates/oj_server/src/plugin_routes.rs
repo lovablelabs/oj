@@ -336,6 +336,69 @@ pub(crate) fn is_cjs_dep_file(memo: &Mutex<HashMap<PathBuf, bool>>, path: &Path)
     v
 }
 
+/// Per directory: the package.json nearest it, that file's stamp when it was
+/// read, and its `type`.
+pub(crate) type PackageTypeMemo =
+    Mutex<HashMap<PathBuf, (PathBuf, Option<std::time::SystemTime>, Option<String>)>>;
+
+/// How Node reads `file`, for the interop of its imports of CommonJS deps:
+/// Vite's `isFilePathESM` and `isFilePathFormatExplicit` (utils.ts), by the
+/// extension, else by the `type` of the nearest package.json Vite can load.
+/// The lookup is kept per directory and redone when that package.json's
+/// modification time moves.
+pub(crate) fn importer_format(
+    memo: &PackageTypeMemo,
+    file: &Path,
+) -> oj_compiler::interop::ImporterFormat {
+    use oj_compiler::interop::ImporterFormat;
+    match file.extension().and_then(|e| e.to_str()) {
+        Some("mjs" | "mts") => return ImporterFormat::ESM,
+        Some("cjs" | "cts") => {
+            return ImporterFormat {
+                esm: false,
+                explicit: true,
+            }
+        }
+        _ => {}
+    }
+    let none = ImporterFormat {
+        esm: false,
+        explicit: false,
+    };
+    let Some(dir) = file.parent().filter(|_| file.is_absolute()) else {
+        return none;
+    };
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let known = memo.lock().unwrap().get(dir).cloned();
+    let kind = match known {
+        Some((manifest, stamp, kind)) if mtime(&manifest) == stamp => kind,
+        _ => {
+            let Some(manifest) =
+                oj_config::nearest_package_dir(dir).map(|d| d.join("package.json"))
+            else {
+                return none;
+            };
+            let stamp = mtime(&manifest);
+            let kind = std::fs::read(&manifest)
+                .ok()
+                .and_then(|bytes| {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+                    serde_json::from_str::<serde_json::Value>(text).ok()
+                })
+                .and_then(|data| data.get("type")?.as_str().map(str::to_string));
+            memo.lock()
+                .unwrap()
+                .insert(dir.to_path_buf(), (manifest, stamp, kind.clone()));
+            kind
+        }
+    };
+    ImporterFormat {
+        esm: kind.as_deref() == Some("module"),
+        explicit: matches!(kind.as_deref(), Some("module" | "commonjs")),
+    }
+}
+
 pub(crate) fn warn_lingui_macro_shim_once() {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {

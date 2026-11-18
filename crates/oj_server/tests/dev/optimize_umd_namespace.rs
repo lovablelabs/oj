@@ -15,6 +15,12 @@
 //! A dynamic `import()` and `export * as ns from` of the same dep give the
 //! same members (Vite's `interopNamedImports` wraps the dynamic import in the
 //! same helper).
+//!
+//! A `module.exports` flagged `__esModule` is the namespace as it is when the
+//! importer is not an ES module to Node (Vite's `isFilePathESM` for a static
+//! import, `isFilePathFormatExplicit` for a dynamic one): `legacy/` here has
+//! a package.json without `type`, so `(await import(dep)).default` is the
+//! package's own `default` there, as `React.lazy(() => import(dep))` needs.
 
 use std::time::Duration;
 
@@ -72,6 +78,7 @@ import * as direct from "direct-cjs";
 import directDefault from "direct-cjs";
 import * as re from "./reexport.js";
 import { shadowed } from "./shadowed.js";
+import { legacy } from "../legacy/probe.js";
 
 const keys = (o) => Object.keys(o).sort().join(",");
 const out = {};
@@ -112,9 +119,39 @@ await run("dynamicFlaggedEsm", async () => {
   const m = await import("esm-kit");
   return [keys(m), m.default, m.named];
 });
+await run("dynamicTranspiled", async () => {
+  const m = await import("transpiled-cjs");
+  return [keys(m), typeof m.default, m.default.default()];
+});
+await run("legacyDynamic", async () => (await legacy()).dynamic);
+await run("legacyNamespace", async () => (await legacy()).namespace);
 await run("exportStarAs", () => [keys(re.kit), re.kit.default === kitDefault]);
 await run("shadowed", () => shadowed());
 window.__result = JSON.stringify(out);
+"#;
+
+/// An importer under a package.json without `type`.
+const LEGACY: &str = r#"import * as kit from "umd-kit";
+import * as transpiled from "transpiled-cjs";
+import * as plain from "plain-cjs";
+const keys = (o) => Object.keys(o).sort().join(",");
+export const legacy = async () => {
+  const [t, k, p] = await Promise.all([
+    import("transpiled-cjs"),
+    import("umd-kit"),
+    import("plain-cjs"),
+  ]);
+  return {
+    dynamic: [keys(t), typeof t.default, t.default(), keys(k), typeof k.Options, keys(p)],
+    namespace: [
+      keys(transpiled),
+      typeof transpiled.default,
+      keys(kit),
+      typeof kit.Options,
+      keys(plain),
+    ],
+  };
+};
 "#;
 
 const REEXPORT: &str = "export * as kit from \"umd-kit\";\n";
@@ -149,6 +186,16 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         ("src/main.js", MAIN),
         ("src/reexport.js", REEXPORT),
         ("src/shadowed.js", SHADOWED),
+        (
+            "legacy/package.json",
+            r#"{"name":"legacy","version":"1.0.0"}"#,
+        ),
+        ("legacy/probe.js", LEGACY),
+        (
+            "node_modules/transpiled-cjs/package.json",
+            r#"{"name":"transpiled-cjs","version":"1.0.0","main":"index.js"}"#,
+        ),
+        ("node_modules/transpiled-cjs/index.js", TRANSPILED),
         (
             "node_modules/umd-kit/package.json",
             r#"{"name":"umd-kit","version":"3.0.0","main":"build/kit.js"}"#,
@@ -201,7 +248,13 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
     page.close().await;
     let result: Value = serde_json::from_str(&result).unwrap();
     let pre_bundled = |dep: &str| urls.iter().any(|u| u.contains(&format!("/@oj-deps/{dep}")));
-    for dep in ["umd-kit", "plain-cjs", "fn-cjs", "esm-kit"] {
+    for dep in [
+        "umd-kit",
+        "plain-cjs",
+        "fn-cjs",
+        "esm-kit",
+        "transpiled-cjs",
+    ] {
         assert!(pre_bundled(dep), "{dep} is pre-bundled: {urls:#?}");
     }
     assert!(
@@ -267,6 +320,37 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         "dynamicFlaggedEsm",
         json!(["default,named", "esm-default", "esm-named"]),
         "a dynamic import of an ES module flagged for interop is its ES namespace",
+    );
+    case(
+        "dynamicTranspiled",
+        json!(["default,named", "object", "comp"]),
+        "in a \"type\": \"module\" package, a dynamic import's `default` is module.exports \
+         though it is flagged __esModule",
+    );
+    case(
+        "legacyDynamic",
+        json!([
+            "default,named",
+            "function",
+            "comp",
+            "Options,current,version",
+            "object",
+            "a,b,default"
+        ]),
+        "under a package.json without `type`, a dynamic import of a dep flagged __esModule \
+         is its module.exports, so `default` is the package's own; an unflagged one is \
+         spread beside `default`",
+    );
+    case(
+        "legacyNamespace",
+        json!([
+            "default,named",
+            "function",
+            "Options,current,version",
+            "object",
+            "a,b,default"
+        ]),
+        "the same for a namespace import",
     );
     case(
         "exportStarAs",
