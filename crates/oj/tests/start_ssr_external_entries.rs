@@ -198,6 +198,20 @@ fn packages() -> Vec<(String, String)> {
             r#"{"name":"webpack-umd","main":"build/kit.js"}"#,
         ),
         ("webpack-umd/build/kit.js", WEBPACK_UMD),
+        // A TypeScript-compiled barrel re-exporting names that are reserved
+        // words to the engine's wrapper (`get`, `set`).
+        (
+            "ts-barrel/package.json",
+            r#"{"name":"ts-barrel","main":"index.js"}"#,
+        ),
+        (
+            "ts-barrel/index.js",
+            "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nexports.set = exports.get = void 0;\nvar ops_1 = require(\"./ops\");\nObject.defineProperty(exports, \"get\", { enumerable: true, get: function () { return ops_1.get; } });\nObject.defineProperty(exports, \"set\", { enumerable: true, get: function () { return ops_1.set; } });\n",
+        ),
+        (
+            "ts-barrel/ops.js",
+            "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nexports.set = exports.get = void 0;\nexports.get = function () { return \"got\"; };\nexports.set = function () { return \"set\"; };\n",
+        ),
         // An ESM `module` with a `require` of its own.
         (
             "creates-require/package.json",
@@ -279,6 +293,10 @@ const PAGES: &[(&str, &str)] = &[
         "creates-require",
         "import { which } from \"creates-require\";\nexport const run = () => which();\n",
     ),
+    (
+        "ts-barrel",
+        "import { get, set } from \"ts-barrel\";\nexport const run = () => get() + \":\" + set();\n",
+    ),
     // The pdf.js setup line at the top of a module, then what the namespace
     // holds.
     (
@@ -316,6 +334,8 @@ const DEV: &[(&str, &str, Option<&str>)] = &[
     ),
     ("umd-main", "umd-main-module-entry", None),
     ("creates-require", "creates-require-module:helper", None),
+    // Names the engine's wrapper exports through an alias are exported once.
+    ("ts-barrel", "got:set", Some("got:set")),
     // Node's namespace for the file, as the lexer of Node 24.17 reads it:
     // the names assigned through `exports.` anywhere in the file (one of
     // them, `internalOnly`, is not on module.exports, and the UMD header's
@@ -487,6 +507,7 @@ fn the_build_bundles_each_external() {
         ("nested-copy", "nested-module:nested-copy-module-entry:HI"),
         ("subdirectory", "deep-module-entry:HI"),
         ("umd-main", "umd-main-module-entry"),
+        ("ts-barrel", "got:set"),
         // Bundled, so the namespace is module.exports beside `default`.
         (
             "webpack-umd",
