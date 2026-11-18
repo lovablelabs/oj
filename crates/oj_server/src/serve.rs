@@ -387,7 +387,11 @@ async fn serve_file(
         return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
-        return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
+        let mut response = vary_on_fetch_dest(serve_style(state, headers, file, query).await);
+        response
+            .headers_mut()
+            .append(header::VARY, header::HeaderValue::from_static("accept"));
+        return response;
     }
     if in_public {
         // A public asset a module imports by its url: Vite's
@@ -522,10 +526,20 @@ async fn serve_style(
 ) -> Response {
     let url = url_of(&state.root, file);
     if has_query_flag(query, "direct")
+        || accepts_css(headers)
         || (wants_raw_resource(headers) && !has_query_flag(query, "import"))
     {
         // `<link href>`, fetch() of a `?url` stylesheet, or `?direct`: compiled
-        // CSS text, not the preprocessor source and not the JS wrapper.
+        // CSS text, not the preprocessor source and not the JS wrapper. A
+        // `<link>` is known by its `Accept: text/css` as well as by its
+        // `Sec-Fetch-Dest`, as Vite's transformMiddleware knows it, since not
+        // every stylesheet request has fetch metadata: a browser sends
+        // `Sec-Fetch-*` only where the request's url is potentially
+        // trustworthy (https, `localhost`, `127.0.0.1`, `[::1]`; not a LAN
+        // address or a custom host name over plain http), Safari before 16.4
+        // sends none, and a proxy may drop them. The `Accept` decides for
+        // `?import` too (`/src/a.css?import` from a `<link>` is the sheet):
+        // Vite's `removeImportQuery` runs before its `Accept` test.
         return serve_css_direct(state, file, &url).await;
     }
     serve_css_wrapper(state, file, &url).await
@@ -586,6 +600,8 @@ fn read_error(err: std::io::Error) -> Response {
 
 /// One url, two bodies picked by the request's `Sec-Fetch-Dest`: a cache must
 /// key on it or it hands a module import the image bytes (or the reverse).
+/// A stylesheet's body is picked by the request's `Accept` as well
+/// (serve_style), and its response varies on that too.
 fn vary_on_fetch_dest(mut response: Response) -> Response {
     response.headers_mut().append(
         header::VARY,

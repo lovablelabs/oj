@@ -102,6 +102,60 @@ fn re_recording_identical_edges_allocates_nothing() {
         0,
         "the no-bindings common case is free"
     );
+    // The urls the imports are named by, re-recorded unchanged: a queried
+    // one (`./util.ts?raw` beside `./util.ts`), a repeat, and bare ones the
+    // graph keeps nothing for.
+    let urls = [
+        (imports[0].as_path(), "/src/Button.tsx"),
+        (imports[1].as_path(), "/src/util.ts"),
+        (imports[1].as_path(), "/src/util.ts?raw"),
+        (imports[1].as_path(), "/src/util.ts?raw"),
+        (imports[2].as_path(), "/src/a.css?import"),
+    ];
+    g.set_import_urls(&app, urls.iter().copied());
+    let named: Vec<(&Path, &str)> = g
+        .node(&app)
+        .unwrap()
+        .import_urls
+        .iter()
+        .map(|(p, url)| (p.as_path(), url.as_str()))
+        .collect();
+    assert_eq!(named, urls[1..]);
+    assert_eq!(
+        allocations(|| g.set_import_urls(&app, urls.iter().copied())),
+        0
+    );
+    assert_eq!(
+        allocations(|| g.set_import_urls(&imports[0], std::iter::empty::<(&Path, &str)>())),
+        0,
+        "the no-imports common case is free"
+    );
+    // A bare url that is stored (its node has a queried one too) is not
+    // taken for one that is not: dropping the queried url is a change, and
+    // an import no longer named with its query is forgotten.
+    g.set_import_urls(&app, urls[..2].iter().copied());
+    assert!(g.node(&app).unwrap().import_urls.is_empty());
+    // A node first named by its path, then with a query: both are kept.
+    g.set_import_urls(&app, urls[..3].iter().copied());
+    assert_eq!(g.node(&app).unwrap().import_urls.len(), 2);
+    // An eager glob's worth of queried imports re-records in one pass.
+    let members: Vec<(PathBuf, String)> = (0..20_000)
+        .map(|i| {
+            (
+                p(&format!("/src/posts/{i}.md")),
+                format!("/src/posts/{i}.md?raw"),
+            )
+        })
+        .collect();
+    let glob = || members.iter().map(|(p, url)| (p.as_path(), url.as_str()));
+    g.set_import_urls(&app, glob());
+    let started = std::time::Instant::now();
+    assert_eq!(allocations(|| g.set_import_urls(&app, glob())), 0);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "re-recording 20000 unchanged urls took {:?}",
+        started.elapsed()
+    );
     // ensure_module of a known module no longer builds an owned key.
     assert_eq!(
         allocations(|| {

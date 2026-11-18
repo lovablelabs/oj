@@ -1861,13 +1861,25 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
         }
     }
     let mut graph = state.graph.lock().unwrap();
+    let local = |s: &&String| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s);
     let local_imports: Vec<PathBuf> = module
         .imports
         .iter()
-        .filter(|s| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s))
+        .filter(local)
         .map(|s| import_node(s))
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
+    // The url each import is named by, which a page's preload of it asks for
+    // (`/src/a.md?raw`, never the bare file). Not a pre-bundled dependency's:
+    // its `?v=` moves with every rerun, and the page looks its url up.
+    let named = module
+        .imports
+        .iter()
+        .filter(local)
+        .zip(&local_imports)
+        .filter(|(s, _)| !s.starts_with("/@oj-deps/"))
+        .map(|(s, node)| (node.as_path(), s.as_str()));
+    graph.set_import_urls(Path::new(url), named);
     if !pruned.is_empty() {
         // Dropped deps nothing imports any more: the client runs their `hot.prune`
         // callbacks, stamped so a re-import re-runs them (Vite's handlePrunedModules).
@@ -1983,6 +1995,18 @@ pub(crate) fn wants_raw_resource(headers: &HeaderMap) -> bool {
         headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()),
         Some("style" | "image" | "font" | "audio" | "video" | "track" | "object" | "embed")
     )
+}
+
+/// A request whose `Accept` names `text/css`: a `<link rel="stylesheet">`
+/// (`text/css,*/*;q=0.1`), never a module import (`*/*`). Vite's
+/// transformMiddleware answers it with the stylesheet (`?direct`). Every
+/// `Accept` line counts, as Node joins repeated ones into the value Vite reads.
+pub(crate) fn accepts_css(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|accept| accept.contains("text/css"))
 }
 
 // Assets that resolve to a URL-exporting module when imported from JS. svg is

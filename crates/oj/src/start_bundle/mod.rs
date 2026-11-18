@@ -22,6 +22,7 @@ pub(crate) mod facts;
 pub(crate) mod host;
 pub(crate) mod hosts;
 pub(crate) mod hot;
+pub(crate) mod inputs;
 pub(crate) mod prod;
 pub(crate) mod refresh;
 pub(crate) mod route_tree;

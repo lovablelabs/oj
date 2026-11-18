@@ -23,6 +23,7 @@ use rolldown_utils::pattern_filter::StringOrRegex;
 use super::assets::DevStyleState;
 use super::code::GlobScope;
 use super::errors::{unresolved_import, unresolved_import_in, BundleError};
+use super::inputs::{LoadedInputs, Notes};
 use crate::start_hot::{HotUpdates, Patch};
 
 /// What the engine's watcher made of a changed file since the last rebundle.
@@ -38,13 +39,19 @@ enum Seen {
 /// The app's declared externals a client bundle may import as written.
 pub(crate) type Declared = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// An output of the engine (or the error of its build) and the load notes
+/// taken with it.
+type NotedOutput = (Result<Vec<Output>, BundleError>, Notes);
+
 #[derive(Default)]
 struct Events {
     seen: Mutex<HashMap<String, Seen>>,
     /// The engine's last failed update (a syntax error), for the rebundle
     /// that reports it.
     error: Mutex<Option<BundleError>>,
-    output: Mutex<Option<Result<Vec<Output>, BundleError>>>,
+    /// The engine's last output, with the load notes as they were when it
+    /// was produced (the engine loads again after it, for the next patch).
+    output: Mutex<Option<NotedOutput>>,
     outputs: AtomicU64,
     changed: tokio::sync::Notify,
 }
@@ -89,6 +96,8 @@ pub(crate) struct SessionParts {
     pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
     pub glob_scopes: Arc<Mutex<Vec<GlobScope>>>,
     pub styles: Arc<DevStyleState>,
+    /// The bundler's load notes, which each output takes a copy of.
+    pub loaded: Arc<LoadedInputs>,
 }
 
 impl HotSession {
@@ -136,6 +145,7 @@ impl HotSession {
         };
         let on_output = {
             let events = Arc::clone(&events);
+            let loaded = Arc::clone(&parts.loaded);
             let declared = Arc::clone(&declared);
             Arc::new(
                 move |result: rolldown_error::BuildResult<rolldown_dev::BundleOutput>| {
@@ -148,7 +158,9 @@ impl HotSession {
                         },
                         Err(errs) => Err(BundleError::from_diagnostics(&errs.into_vec())),
                     };
-                    *events.output.lock().unwrap() = Some(recorded);
+                    // Inside the engine's build task, before a queued update
+                    // can load a module the build read.
+                    *events.output.lock().unwrap() = Some((recorded, loaded.snapshot()));
                     events.outputs.fetch_add(1, Ordering::SeqCst);
                     events.changed.notify_waiters();
                 },
@@ -270,7 +282,7 @@ impl HotSession {
     /// the bundle cache. Waits out a build the engine still owes; after a
     /// failed update, forces the full build that recovers it (Vite does when
     /// a page needs the output).
-    pub async fn latest_output(&self) -> Result<Vec<Output>, BundleError> {
+    pub async fn latest_output(&self) -> Result<(Vec<Output>, Notes), BundleError> {
         let before = self.events.outputs.load(Ordering::SeqCst);
         let _ = self.engine.wait_for_ongoing_bundle().await;
         let state = self
@@ -302,7 +314,7 @@ impl HotSession {
             }
         }
         match self.events.output.lock().unwrap().clone() {
-            Some(result) => result,
+            Some((result, notes)) => result.map(|output| (output, notes)),
             None => Err(BundleError::from_message(
                 "the client bundle produced no output",
             )),

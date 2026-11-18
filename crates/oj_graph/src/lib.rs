@@ -42,6 +42,13 @@ pub struct ModuleNode {
     /// Per imported module, the binding names this module uses from it
     /// (Vite's `importedBindings`); `*` marks namespace/dynamic use.
     pub imported_bindings: HashMap<PathBuf, HashSet<String>>,
+    /// The imports this module names by a url that is not the node's path
+    /// (`/src/a.md?raw` for `/src/a.md`), as (node path, url) pairs in the
+    /// module's order, with every other url it names the same node by: the
+    /// query says which module of the file the import is, so what asks for
+    /// the import ahead of the module (a page's preload) asks for these,
+    /// never the bare path.
+    pub import_urls: Vec<(PathBuf, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +138,48 @@ impl ModuleGraph {
         self.ensure_module(path).imported_bindings = bindings
             .map(|(p, names)| (p.to_path_buf(), names.iter().cloned().collect()))
             .collect();
+    }
+
+    /// Records the url of each import as the module names it (see
+    /// [`ModuleNode::import_urls`]) from a re-scannable borrowed iterator of
+    /// (node path, url) pairs. The unchanged case is one pass against the
+    /// stored pairs and allocates nothing, as [`Self::set_imported_bindings`]:
+    /// every hand-out of a module re-records them, an eager glob's thousands
+    /// of members included.
+    pub fn set_import_urls<'a, I>(&mut self, path: &Path, urls: I)
+    where
+        I: Iterator<Item = (&'a Path, &'a str)> + Clone,
+    {
+        let bare = |p: &Path, url: &str| p.to_str() == Some(url);
+        let unchanged = self.modules.get(path).is_some_and(|node| {
+            // The stored pairs are the handed-over ones minus the nodes named
+            // by their path alone, in order: a pair is the next stored one,
+            // or such a node's.
+            let mut stored = node.import_urls.iter().peekable();
+            for (p, url) in urls.clone() {
+                match stored.peek() {
+                    Some((sp, surl)) if sp == p && surl == url => {
+                        stored.next();
+                    }
+                    _ if bare(p, url) => {}
+                    _ => return false,
+                }
+            }
+            stored.next().is_none()
+        });
+        if unchanged {
+            return;
+        }
+        let queried: HashSet<&Path> = urls
+            .clone()
+            .filter(|(p, url)| !bare(p, url))
+            .map(|(p, _)| p)
+            .collect();
+        let named = urls
+            .filter(|(p, _)| queried.contains(p))
+            .map(|(p, url)| (p.to_path_buf(), url.to_string()))
+            .collect();
+        self.ensure_module(path).import_urls = named;
     }
 
     /// Record a module's imports, returning the dependencies it no longer
