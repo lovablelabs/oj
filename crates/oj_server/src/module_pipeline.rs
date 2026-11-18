@@ -1,4 +1,5 @@
 use super::*;
+use oj_compiler::interop::{InteropKind, InteropTarget};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::SystemTime;
@@ -146,6 +147,7 @@ pub(crate) async fn ensure_module_as(
         is_server,
         stamp,
         imports_stamp,
+        None,
     );
 
     if let Some(module) = memory_hit(state, url, &key) {
@@ -350,7 +352,17 @@ pub(crate) async fn ensure_module_as(
     // re-keyed.
     let baked = imports_stamp_of(state, &module.imports);
     let key = if !is_dep && baked != imports_stamp {
-        compile_key(state, file, url, &source_hash, is_server, stamp, baked).key
+        compile_key(
+            state,
+            file,
+            url,
+            &source_hash,
+            is_server,
+            stamp,
+            baked,
+            Some(importer_format),
+        )
+        .key
     } else {
         key
     };
@@ -652,6 +664,7 @@ fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
 /// [`imports_stamp_of`]), folded in so an unchanged importer recompiles after
 /// a dep update and its import carries the new `?t=`, and so a cached compile
 /// is found only under the stamps it bakes in.
+#[allow(clippy::too_many_arguments)]
 fn compile_key(
     state: &ServerState,
     file: &Path,
@@ -660,6 +673,9 @@ fn compile_key(
     is_server: bool,
     stamp: Option<FileStamp>,
     imports_stamp: u64,
+    // The importer format a compile already ran under: its re-key must not
+    // read a package.json that changed since.
+    importer_format: Option<oj_compiler::interop::ImporterFormat>,
 ) -> CompileKey {
     let mode = if is_server { "server" } else { "dev" };
     let invalidated = state
@@ -684,7 +700,12 @@ fn compile_key(
     }
     // So does the importer's package type: the interop of a namespace or
     // dynamic import of a CommonJS dep follows it.
-    let importer_format = importer_format(&state.importer_formats, file);
+    let importer_format = importer_format.unwrap_or_else(|| {
+        crate::plugin_routes::importer_format(
+            &state.importer_formats,
+            &crate::plugin_routes::importer_id(file, url),
+        )
+    });
     state.importer_formats.compiled(url, importer_format);
     if importer_format.esm {
         mode_key.push_str("+esm");
@@ -1576,13 +1597,13 @@ impl ImportRewrite<'_> {
 
     /// Specifiers whose named imports must read off the CJS value (module.exports)
     /// instead of linking as ESM bindings; shared by app source and served ESM deps.
-    fn cjs_interop_url(&self, spec: &str) -> Option<String> {
-        let url = self.cjs_interop_target(spec)?;
-        self.interop_urls.borrow_mut().insert(url.clone());
-        Some(url)
+    fn cjs_interop_url(&self, spec: &str) -> Option<InteropTarget> {
+        let target = self.cjs_interop_target(spec)?;
+        self.interop_urls.borrow_mut().insert(target.url.clone());
+        Some(target)
     }
 
-    fn cjs_interop_target(&self, spec: &str) -> Option<String> {
+    fn cjs_interop_target(&self, spec: &str) -> Option<InteropTarget> {
         let job = self.job;
         // A Vite optimized-dep URL is the dep's own import (Vite's import
         // analysis interops a named import of its optimized file the same way).
@@ -1596,7 +1617,7 @@ impl ImportRewrite<'_> {
                 .and_then(|file| job.state.optimized.entry_by_file(file))
                 .or_else(|| self.resolver_answer_dep(spec, answer))
             {
-                return meta.needs_interop.then_some(meta.url);
+                return meta.needs_interop.then(|| dep_target(meta));
             }
             let path = Path::new(&answer.id);
             let cjs = !answer.external
@@ -1604,12 +1625,17 @@ impl ImportRewrite<'_> {
                 && path.components().any(|c| c.as_os_str() == "node_modules")
                 && (is_cjs_dep_file(&job.state.cjs_dep_memo, path)
                     || job.state.optimize_view.needs_forced_interop(path));
-            return cjs.then(|| self.pre_resolved_url(&answer.id));
+            return cjs.then(|| {
+                InteropTarget::new(self.pre_resolved_url(&answer.id), InteropKind::Served)
+            });
         }
         // Builtins are browser-externalized to a stub with no named exports;
         // interop so named imports read undefined instead of failing to link.
         if is_node_builtin(spec) {
-            return Some(format!("/@id/{}", hex_encode(spec)));
+            return Some(InteropTarget::new(
+                format!("/@id/{}", hex_encode(spec)),
+                InteropKind::BrowserExternal,
+            ));
         }
         // lingui macro entrypoints go to the shim (which has real
         // named exports), never through default-access interop.
@@ -1624,7 +1650,7 @@ impl ImportRewrite<'_> {
             .cloned()
             .or_else(|| job.state.optimized.meta_now(spec))
         {
-            return m.needs_interop.then_some(m.url);
+            return m.needs_interop.then(|| dep_target(m));
         }
         if !is_bare_specifier(spec) {
             return None;
@@ -1632,7 +1658,7 @@ impl ImportRewrite<'_> {
         // A CJS dep missing from the pre-bundle registers here too (Vite's
         // registerMissingImport): the destructure reads off the FUTURE bundle.
         if let Some(m) = self.register_missing_dep(spec, &job.state.resolver) {
-            return m.needs_interop.then_some(m.url);
+            return m.needs_interop.then(|| dep_target(m));
         }
         let resolved = job.state.resolver.resolve_from(&job.file, spec).ok()?;
         let in_node_modules = resolved
@@ -1647,7 +1673,10 @@ impl ImportRewrite<'_> {
                 || job.state.optimize_view.needs_forced_interop(&resolved))
         {
             allow_root(&job.state.fs_allow, package_root(&resolved));
-            return Some(url_of(&job.state.root, &resolved));
+            return Some(InteropTarget::new(
+                url_of(&job.state.root, &resolved),
+                InteropKind::Served,
+            ));
         }
         None
     }
@@ -2171,12 +2200,29 @@ pub(crate) fn warn_interop_once(msg: String) {
     }
 }
 
+/// How an optimized dep that needs interop is read: its pre-bundle exports
+/// module.exports as `default`; the named-export facade of a react-family
+/// dep is oj's own module, with `__cjs_exports`.
+fn dep_target(meta: optimize::DepMeta) -> InteropTarget {
+    let kind = if meta.file.ends_with("__oj_named.mjs") {
+        InteropKind::Served
+    } else {
+        InteropKind::PreBundle
+    };
+    InteropTarget::new(meta.url, kind)
+}
+
 pub(crate) fn interop_node_builtins(source: &str, file: &Path) -> Option<String> {
     if !source.contains("node:") {
         return None;
     }
     oj_compiler::interop::rewrite_cjs_interop(source, file, &|spec| {
-        is_node_builtin(spec).then(|| format!("/@id/{}", hex_encode(spec)))
+        is_node_builtin(spec).then(|| {
+            InteropTarget::new(
+                format!("/@id/{}", hex_encode(spec)),
+                InteropKind::BrowserExternal,
+            )
+        })
     })
 }
 

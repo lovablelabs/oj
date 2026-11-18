@@ -1897,6 +1897,23 @@ fn merge_adopts_ssr_block_when_unset() {
     assert_eq!(r.is_external("sharp", true), Some(true));
 }
 
+// The extractor reports the resolved config's `legacy` flags in `serverFlags`.
+#[test]
+fn merge_adopts_the_legacy_flags() {
+    let mut config = oj_config::OjConfig::default();
+    let v = ViteValues {
+        server_flags: Some(serde_json::json!({
+            "skipWebSocketTokenCheck": true,
+            "inconsistentCjsInterop": true
+        })),
+        ..Default::default()
+    };
+    merge_vite_values(&mut config, v);
+    let legacy = config.legacy.as_ref().unwrap();
+    assert_eq!(legacy.skip_web_socket_token_check, Some(true));
+    assert_eq!(legacy.inconsistent_cjs_interop, Some(true));
+}
+
 #[test]
 fn merge_adopts_resolve_server_css_env_and_mode() {
     let mut config = oj_config::OjConfig::default();

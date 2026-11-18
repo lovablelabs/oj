@@ -86,6 +86,9 @@ import reDefault from "./reexport.js";
 import { shadowed } from "./shadowed.js";
 import { early } from "./hoisted.js";
 import { probe } from "../legacy/probe.js";
+import * as star from "./star.js";
+import * as builtin from "node:fs";
+import builtinDefault, { readFile } from "node:fs";
 
 const keys = (o) => Object.keys(o).sort().join(",");
 const out = {};
@@ -137,6 +140,36 @@ await run("dynamicTranspiled", async () => {
   return [keys(m), typeof m.default, m.default.default()];
 });
 await run("exportStarAs", () => [keys(re.kit), re.kit.default === kitDefault]);
+await run("exportStarAsServed", () => [
+  keys(re.direct),
+  re.direct.default === directDefault,
+  keys(re.directUmd),
+  typeof re.directUmd.Options,
+]);
+await run("bareExportStar", () => [keys(star)]);
+await run("templateLiteral", async () => {
+  const m = await import(`umd-kit`);
+  return [keys(m), m.default === kitDefault];
+});
+await run("flaggedWithoutDefault", () =>
+  import("./names.js").then(
+    (m) => "loaded: " + keys(m),
+    (e) => e.constructor.name,
+  ),
+);
+await run("builtin", async () => [
+  typeof builtinDefault,
+  typeof readFile,
+  typeof builtin.default,
+  typeof (await import("node:fs")).default,
+]);
+await run("instances", () =>
+  performance
+    .getEntriesByType("resource")
+    .map((e) => new URL(e.name).pathname)
+    .filter((path) => path.includes("umd-kit"))
+    .sort(),
+);
 await run("shadowed", () => shadowed());
 await run("hoisted", () => early);
 const legacy = await probe();
@@ -221,7 +254,10 @@ fn probe_cases() -> [(&'static str, Value, &'static str); 3] {
     ]
 }
 
-const REEXPORT: &str =
+const REEXPORT: &str = "export * as kit from \"umd-kit\";\nexport * as direct from \"direct-cjs\";\nexport * as directUmd from \"direct-umd\";\nexport { default } from \"transpiled-cjs\";\n";
+
+/// The legacy importer's re-export, without the excluded deps.
+const LEGACY_REEXPORT: &str =
     "export * as kit from \"umd-kit\";\nexport { default } from \"transpiled-cjs\";\n";
 
 /// A module whose own top-level bindings are called `Object` and `Array`.
@@ -281,6 +317,19 @@ fn packages() -> Vec<(&'static str, &'static str)> {
         ),
         ("node_modules/direct-cjs/index.js", TRANSPILED),
         (
+            "node_modules/direct-umd/package.json",
+            r#"{"name":"direct-umd","version":"3.0.0","main":"build/kit.js"}"#,
+        ),
+        ("node_modules/direct-umd/build/kit.js", UMD),
+        (
+            "node_modules/esm-names/package.json",
+            r#"{"name":"esm-names","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/esm-names/index.js",
+            "export const one = 1;\nexport const two = 2;\n",
+        ),
+        (
             "node_modules/transpiled-cjs/package.json",
             r#"{"name":"transpiled-cjs","version":"1.0.0","main":"index.js"}"#,
         ),
@@ -322,7 +371,7 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         // served file by file instead of from a pre-bundle.
         (
             "oj.config.json",
-            r#"{"optimizeDeps":{"needsInterop":["esm-kit"],"exclude":["direct-cjs"]}}"#,
+            r#"{"optimizeDeps":{"needsInterop":["esm-kit","esm-names"],"exclude":["direct-cjs","direct-umd"]}}"#,
         ),
         ("index.html", INDEX),
         ("src/main.js", MAIN),
@@ -334,7 +383,12 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
             r#"{"name":"legacy","version":"1.0.0"}"#,
         ),
         ("legacy/probe.js", PROBE),
-        ("legacy/reexport.js", REEXPORT),
+        ("legacy/reexport.js", LEGACY_REEXPORT),
+        ("src/star.js", "export * from \"umd-kit\";\n"),
+        (
+            "src/names.js",
+            "import * as names from \"esm-names\";\nexport const one = names.one;\n",
+        ),
     ]);
     app.write(&packages());
     let (result, errors, urls) = load(&app).await;
@@ -429,6 +483,46 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
          which is module.exports",
     );
     case(
+        "exportStarAsServed",
+        json!([
+            "default,named",
+            true,
+            "Options,current,default,version",
+            "object"
+        ]),
+        "`export * as` of a dep served file by file is built from module.exports: no \
+         `__cjs_exports` member, `default` is module.exports, a UMD's runtime names are there",
+    );
+    case(
+        "bareExportStar",
+        json!([""]),
+        "a bare `export * from` a pre-bundled CommonJS dep re-exports nothing, as in Vite: \
+         the pre-bundle's only export is `default`",
+    );
+    case(
+        "templateLiteral",
+        json!(["Options,current,default,version", true]),
+        "a template literal without a substitution names the dep as a string literal does",
+    );
+    case(
+        "flaggedWithoutDefault",
+        json!("SyntaxError"),
+        "an ES module listed in optimizeDeps.needsInterop that has no `default` export \
+         does not link, as in Vite (\"does not provide an export named 'default'\")",
+    );
+    case(
+        "builtin",
+        json!(["object", "undefined", "object", "object"]),
+        "a Node builtin's stub",
+    );
+    assert_eq!(
+        result["instances"]
+            .as_array()
+            .map(|urls| urls.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+        Some(vec!["/@oj-deps/umd-kit.mjs"]),
+        "the dep is loaded once, from its pre-bundle, whatever form names it"
+    );
+    case(
         "hoisted",
         json!(["object", "object", "3.0.0"]),
         "a function declared in the module and called above the import statement reads \
@@ -463,8 +557,8 @@ async fn legacy_inconsistent_cjs_interop_reads_a_flagged_dep_as_without_a_packag
             r#"{"name":"cjs-legacy-interop","version":"1.0.0","type":"module"}"#,
         ),
         (
-            "oj.config.json",
-            r#"{"legacy":{"inconsistentCjsInterop":true}}"#,
+            "vite.config.js",
+            "export default { legacy: { inconsistentCjsInterop: true } };\n",
         ),
         ("index.html", INDEX),
         (
@@ -472,7 +566,7 @@ async fn legacy_inconsistent_cjs_interop_reads_a_flagged_dep_as_without_a_packag
             "import { probe } from \"./probe.js\";\nwindow.__result = JSON.stringify(await probe());\n",
         ),
         ("src/probe.js", PROBE),
-        ("src/reexport.js", REEXPORT),
+        ("src/reexport.js", LEGACY_REEXPORT),
     ]);
     app.write(&packages());
     let (result, errors, _) = load(&app).await;
@@ -518,15 +612,15 @@ async fn a_package_json_created_beside_an_importer_takes_effect_on_its_next_requ
         };
         (
             code.contains("const d = __ojcjs0;"),
-            flag(r"const ns = __oj_dyn_interop\(__ojns1, ([01])\);"),
-            flag(r"\.then\(\(m\) => __oj_dyn_interop\(m, ([01])\)\)"),
+            flag(r"const ns = __oj_dyn_interop\(__ojcjs1, ([01])\);"),
+            flag(r"\.then\(\(m\) => __oj_dyn_interop\(m\.default, ([01])\)\)"),
         )
     };
     let served = |label: &'static str| {
         let server = &server;
         async move {
             let code = server.text("/sub/probe.js").await;
-            assert!(code.contains("__ojns0"), "{label}:\n{code}");
+            assert!(code.contains("__ojcjs0"), "{label}:\n{code}");
             code
         }
     };
@@ -619,6 +713,21 @@ export function thrower() { throw new Error("here"); }
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} in the source"))
     };
+    // The bindings sit at the start of the file, on the comment's line, so
+    // the first statement keeps its line and its column too.
+    let (line, text) = code
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "init();")
+        .unwrap_or_else(|| panic!("the first statement in:\n{code}"));
+    let token = map
+        .lookup_token(&table, line as u32, text.find("init").unwrap() as u32)
+        .expect("a mapping for the first statement");
+    assert_eq!(
+        (token.get_src_line(), token.get_src_col()),
+        (1, 0),
+        "the first statement maps to its source line and column:\n{code}"
+    );
     for needle in ["const lazy", "function init", "marker", "thrower"] {
         let (line, text) = code
             .lines()
@@ -635,4 +744,42 @@ export function thrower() { throw new Error("here"); }
             "`{needle}` maps to its source line (0-based):\n{code}"
         );
     }
+}
+
+// The bindings start the file, before a leading comment: a JSX pragma
+// comment still decides the module's JSX runtime.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"cjs-pragma","version":"1.0.0","type":"module"}"#,
+        ),
+        ("index.html", INDEX),
+        ("src/main.js", "import \"./pragma.jsx\";\n"),
+        (
+            "src/pragma.jsx",
+            "/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        (
+            "node_modules/custom-jsx/package.json",
+            r#"{"name":"custom-jsx","version":"1.0.0","type":"module","exports":{"./jsx-dev-runtime":"./jsx-dev-runtime.js","./jsx-runtime":"./jsx-dev-runtime.js"}}"#,
+        ),
+        (
+            "node_modules/custom-jsx/jsx-dev-runtime.js",
+            "export const jsxDEV = (type, props) => ({ type, props });\nexport const jsx = jsxDEV;\nexport const jsxs = jsxDEV;\nexport const Fragment = \"fragment\";\n",
+        ),
+    ]);
+    app.write(&packages());
+    let server = app.serve().await;
+    crate::crawled(&app.root).await;
+    let code = server.text("/src/pragma.jsx").await;
+    assert!(
+        code.contains("const kit = __oj_dyn_interop(__ojcjs0, 1);"),
+        "the namespace import is rewritten:\n{code}"
+    );
+    assert!(
+        code.contains("custom-jsx") && !code.contains("react"),
+        "the pragma names the JSX runtime:\n{code}"
+    );
 }

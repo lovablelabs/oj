@@ -373,23 +373,35 @@ impl ImporterFormats {
     /// Whether `url`'s last compile was under the format `file` has now.
     pub(crate) fn current(&self, url: &str, file: &Path) -> bool {
         let last = self.compiled.lock().unwrap().get(url).copied();
-        last.is_none_or(|last| last == importer_format(self, file))
+        last.is_none_or(|last| last == importer_format(self, &importer_id(file, url)))
     }
 }
 
-/// How Node reads `file`, for the interop of its imports of CommonJS deps:
+/// The id Vite's import analysis has for a module: its file with the query
+/// of the url it was requested under.
+pub(crate) fn importer_id(file: &Path, url: &str) -> String {
+    match url.split_once('?') {
+        Some((_, query)) => format!("{}?{query}", file.display()),
+        None => file.to_string_lossy().into_owned(),
+    }
+}
+
+/// How Node reads the module `id` (a file path, with the query it was
+/// requested under), for the interop of its imports of CommonJS deps:
 /// Vite's `isFilePathESM` and `isFilePathFormatExplicit` (utils.ts), by the
-/// extension, else by the `type` of the nearest package.json Vite can load
-/// (`findNearestPackageData`); neither under `legacy.inconsistentCjsInterop`
-/// (importAnalysis.ts, `isNodeMode` and `isNodeModeForDynamicImport`).
+/// extension the id ends with, else by the `type` of the nearest
+/// package.json Vite can load (`findNearestPackageData`); neither under
+/// `legacy.inconsistentCjsInterop` (importAnalysis.ts, `isNodeMode` and
+/// `isNodeModeForDynamicImport`). An id starting with `\0` is an ES module,
+/// one that is no absolute path is not.
 ///
 /// Each call walks up from the file's directory with one stat per directory
 /// and reads a package.json only when its stamp moved, so one created,
-/// deleted or changed while the server runs counts from the next request, as
-/// Vite's watcher drops it from the package cache.
+/// deleted or changed while the server runs counts from the next request.
+/// Vite's watcher drops a changed or deleted one from its package cache.
 pub(crate) fn importer_format(
     formats: &ImporterFormats,
-    file: &Path,
+    id: &str,
 ) -> oj_compiler::interop::ImporterFormat {
     use oj_compiler::interop::ImporterFormat;
     let none = ImporterFormat {
@@ -399,16 +411,20 @@ pub(crate) fn importer_format(
     if formats.legacy {
         return none;
     }
-    match file.extension().and_then(|e| e.to_str()) {
-        Some("mjs" | "mts") => return ImporterFormat::ESM,
-        Some("cjs" | "cts") => {
-            return ImporterFormat {
-                esm: false,
-                explicit: true,
-            }
-        }
-        _ => {}
+    // Vite tests the whole id, so a query hides the extension.
+    if id.ends_with(".mjs") || id.ends_with(".mts") {
+        return ImporterFormat::ESM;
     }
+    if id.ends_with(".cjs") || id.ends_with(".cts") {
+        return ImporterFormat {
+            esm: false,
+            explicit: true,
+        };
+    }
+    if id.starts_with('\0') {
+        return ImporterFormat::ESM;
+    }
+    let file = Path::new(id.split('?').next().unwrap_or(id));
     let Some(dir) = file.parent().filter(|_| file.is_absolute()) else {
         return none;
     };
@@ -422,14 +438,7 @@ pub(crate) fn importer_format(
         let kind = match known {
             Some((at, kind)) if at == stamp => kind,
             _ => {
-                let kind = oj_config::manifest_loads(&manifest).then(|| {
-                    let bytes = std::fs::read(&manifest).unwrap_or_default();
-                    let text = String::from_utf8_lossy(&bytes);
-                    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-                    serde_json::from_str::<serde_json::Value>(text)
-                        .ok()
-                        .and_then(|data| data.get("type")?.as_str().map(str::to_string))
-                });
+                let kind = oj_config::manifest_type(&manifest);
                 formats
                     .manifests
                     .lock()
@@ -458,4 +467,67 @@ pub(crate) fn warn_lingui_macro_shim_once() {
              which is what normally compiles these macros."
         );
     });
+}
+
+#[cfg(test)]
+mod importer_format_tests {
+    use super::*;
+    use oj_compiler::interop::ImporterFormat;
+
+    const NONE: ImporterFormat = ImporterFormat {
+        esm: false,
+        explicit: false,
+    };
+    const CJS: ImporterFormat = ImporterFormat {
+        esm: false,
+        explicit: true,
+    };
+
+    #[test]
+    fn the_extension_then_the_nearest_loadable_package_json_decide() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let write = |rel: &str, body: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        write("package.json", r#"{"type":"module"}"#);
+        write("cjs/package.json", r#"{"type":"commonjs"}"#);
+        write("plain/package.json", r#"{"name":"plain"}"#);
+        // Not a manifest to Vite: passed over for the one above.
+        write("broken/package.json", "");
+        write("null/package.json", "null");
+        let formats = ImporterFormats::new(false);
+        let of = |rel: &str| importer_format(&formats, &root.join(rel).to_string_lossy());
+        assert_eq!(of("src/a.js"), ImporterFormat::ESM);
+        assert_eq!(of("src/deep/er/a.tsx"), ImporterFormat::ESM, "walks up");
+        assert_eq!(of("cjs/a.js"), CJS);
+        assert_eq!(of("plain/a.js"), NONE);
+        assert_eq!(of("broken/a.js"), ImporterFormat::ESM);
+        assert_eq!(of("null/a.js"), ImporterFormat::ESM);
+        // The extension wins over the package.
+        assert_eq!(of("plain/a.mjs"), ImporterFormat::ESM);
+        assert_eq!(of("plain/a.mts"), ImporterFormat::ESM);
+        assert_eq!(of("src/a.cjs"), CJS);
+        assert_eq!(of("src/a.cts"), CJS);
+        // Vite tests the id with its query, which hides the extension.
+        assert_eq!(of("plain/a.mjs?raw"), NONE);
+        assert_eq!(of("src/a.cjs?worker"), ImporterFormat::ESM);
+        // A virtual id is an ES module; a relative one is not.
+        assert_eq!(
+            importer_format(&formats, "\0virtual:x"),
+            ImporterFormat::ESM
+        );
+        assert_eq!(importer_format(&formats, "relative/a.js"), NONE);
+        // legacy.inconsistentCjsInterop: nothing is.
+        let legacy = ImporterFormats::new(true);
+        for rel in ["src/a.js", "src/a.mjs", "cjs/a.js"] {
+            assert_eq!(
+                importer_format(&legacy, &root.join(rel).to_string_lossy()),
+                NONE,
+                "{rel}"
+            );
+        }
+    }
 }
