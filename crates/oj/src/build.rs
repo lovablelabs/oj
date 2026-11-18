@@ -2592,6 +2592,16 @@ pub(crate) fn tsconfig_paths_plugin_with(
     ))
 }
 
+/// `env`'s `resolve.dedupe`, after the app's plugins where vite:resolve sits.
+pub(crate) fn dedupe_plugin(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) -> Option<SharedPluginable> {
+    crate::start_bundle::alias::DedupePlugin::new(root, oj_config::environment_dedupe(config, env))
+        .map(Pluginable::new_shared)
+}
+
 /// A resolver with the build's own resolve settings for `env`: its
 /// conditions (production), mainFields, extensions, aliases and tsconfig
 /// `paths` mode.
@@ -2617,7 +2627,7 @@ fn build_resolver_with(
         oj_resolver::ResolveSettings {
             conditions: conditions.unwrap_or_else(|| build_conditions(config, env)),
             alias: oj_config::top_level_alias(config),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, env),
             extensions: resolve.extensions,
             main_fields: resolve.main_fields,
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
@@ -4160,6 +4170,7 @@ pub async fn build(
         "client",
         false,
     ));
+    oj_plugins.extend(dedupe_plugin(root.as_ref(), &config, "client"));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
@@ -6242,6 +6253,7 @@ async fn build_client_entry(
         )));
     }
     oj_plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
+    oj_plugins.extend(dedupe_plugin(root, config, "client"));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -6557,6 +6569,7 @@ async fn build_library(
                 plugins.push(Pluginable::new_shared(user.with_build_end()));
             }
             plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
+            plugins.extend(dedupe_plugin(root, config, "client"));
             plugins.push(Pluginable::new_shared(OjCssPlugin {
                 collected: Arc::clone(&collected_css),
                 root: root.to_path_buf(),

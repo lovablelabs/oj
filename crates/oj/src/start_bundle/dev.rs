@@ -684,6 +684,11 @@ impl DevBundler {
                 ),
             ));
         }
+        plugins.extend(crate::build::dedupe_plugin(
+            &start.root,
+            &start.config,
+            "client",
+        ));
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
                 .with_route_tree(start.route_tree())

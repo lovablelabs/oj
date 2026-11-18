@@ -1415,6 +1415,15 @@ function extractEsbuild(es) {
   return Object.keys(out).length ? out : null;
 }
 
+// The client environment's resolved `resolve.dedupe` entries beyond the top-level list.
+function extractClientDedupe(c) {
+  const list = c.environments?.client?.resolve?.dedupe;
+  if (!Array.isArray(list)) return null;
+  const top = Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe : [];
+  const own = list.filter((x) => typeof x === "string" && !top.includes(x));
+  return own.length ? own : null;
+}
+
 // `ssr.noExternal`/`external` entries: strings and globs pass through, RegExps
 // become `{ regex }`, `true` stays `true`.
 function extractSsr(ssr, ssrEnvironment) {
@@ -2109,6 +2118,10 @@ async function extractValues(input) {
           }),
         ),
         dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
+        // The client environment's resolved list, where it holds more than the
+        // top-level one: `environments.client.resolve.dedupe` and what plugins'
+        // `configEnvironment` hooks add (TanStack Start's React and router).
+        clientDedupe: extractClientDedupe(c),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
         oxc: extractOxc(c.oxc),

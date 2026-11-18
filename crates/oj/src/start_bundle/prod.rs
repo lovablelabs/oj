@@ -234,6 +234,13 @@ fn client_plugins(
         env,
         worker,
     ));
+    if matches!(target, CodeTarget::Client) {
+        plugins.extend(crate::build::dedupe_plugin(
+            &start.root,
+            &start.config,
+            "client",
+        ));
+    }
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())

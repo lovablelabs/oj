@@ -1389,7 +1389,7 @@ pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver 
         oj_resolver::ResolveSettings {
             conditions: oj_config::resolve_conditions(config, "client"),
             alias: oj_config::resolve_alias(config, "client"),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, "client"),
             extensions: oj_config::resolve_extensions(config),
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
@@ -1563,7 +1563,7 @@ fn optimized_deps(
             entries,
             build_inputs: oj_config::build_inputs(config),
             build_out_dir: oj_config::build_out_dir(config),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, "client"),
             alias: oj_config::resolve_alias(config, "client"),
             force: oj_config::optimize_deps_force(config),
             bundler_options: oj_config::optimize_deps_bundler_options(config),

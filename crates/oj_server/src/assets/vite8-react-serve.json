@@ -43,6 +43,7 @@
       "ios16.4"
     ]
   },
+  "clientDedupe": null,
   "cors": {},
   "css": {
     "devSourcemap": false,

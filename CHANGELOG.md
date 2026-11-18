@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev and `oj build`: a package in `resolve.dedupe` is bundled once, from the app's root, when a dependency installs a copy of its own (`node_modules/<pkg>/node_modules/react` pinned at another version, or a `file:` package with its own `node_modules`). The Start dev client bundle and `oj build`'s client bundles took the copy nearest each importer, so the page shipped two Reacts and the dependency's hooks failed with "Invalid hook call", whether the list was the config's own `resolve.dedupe` or what a plugin's `configEnvironment` adds for the client (TanStack Start lists `react`, `react-dom` and its router there). Vite resolves a deduped package from the root for every importer (`tryNodeResolve`), and its client environment's list is the top-level one with what `environments.client` and those hooks add. oj now applies the same rule where the bundler resolves bare imports, falling back to the importer's copy when the root has none, and the client's list takes the client environment's additions in the bundles, the dev server's resolver and the dep optimizer alike.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

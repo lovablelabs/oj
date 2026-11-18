@@ -10,7 +10,8 @@
 //! the browser unresolved.
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use rolldown_plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext,
@@ -244,5 +245,73 @@ impl Plugin for TsconfigPathsPlugin {
             )
             .await?;
         Ok(resolved.ok().map(HookResolveIdOutput::from_resolved_id))
+    }
+}
+
+/// `resolve.dedupe` where vite:resolve sits: a bare import of a listed
+/// package resolves from the app root for every importer, as Vite's
+/// tryNodeResolve does (`basedir = root`), so a copy nested under a
+/// dependency's own node_modules never becomes a second instance. Where the
+/// root has no copy the importer's own lookup stands, as in oj's resolver.
+#[derive(Debug)]
+pub(crate) struct DedupePlugin {
+    /// A stand-in importer at the root: a bare id resolves from there as a
+    /// package only, never as a path (no importer would fall back to the cwd).
+    root_importer: PathBuf,
+    dedupe: HashSet<String>,
+}
+
+impl DedupePlugin {
+    /// None for an empty list.
+    pub fn new(root: &Path, dedupe: Vec<String>) -> Option<Self> {
+        (!dedupe.is_empty()).then(|| DedupePlugin {
+            root_importer: root.join("__oj_importer__.js"),
+            dedupe: dedupe.into_iter().collect(),
+        })
+    }
+}
+
+impl Plugin for DedupePlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:dedupe")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        use rolldown_common::ImportKind;
+        let spec = args.specifier;
+        let Some(importer) = args.importer else {
+            return Ok(None);
+        };
+        if !matches!(
+            args.kind,
+            ImportKind::Import | ImportKind::DynamicImport | ImportKind::Require
+        ) || !oj_resolver::dedupes(&self.dedupe, spec)
+        {
+            return Ok(None);
+        }
+        let resolver = ctx.resolver();
+        let Ok(from_root) = resolver.resolve(Some(&self.root_importer), spec, args.kind, false)
+        else {
+            return Ok(None);
+        };
+        let file = importer.split(['?', '#']).next().unwrap_or(importer);
+        if Path::new(file).is_absolute() {
+            if let Ok(own) = resolver.resolve(Some(Path::new(file)), spec, args.kind, false) {
+                if own.path == from_root.path {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(HookResolveIdOutput::from_resolved_id(
+            rolldown_common::ResolvedId::from(from_root),
+        )))
     }
 }

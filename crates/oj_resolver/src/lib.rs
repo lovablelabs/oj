@@ -23,7 +23,7 @@ pub use defaults::{
 };
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
-use spec::package_name;
+use spec::{package_name, strip_query};
 pub use tsconfig_paths::TsconfigPaths;
 
 pub struct OjResolver {
@@ -151,13 +151,8 @@ impl OjResolver {
         }
     }
 
-    /// A bare import of a `resolve.dedupe` package resolves from the root so
-    /// nested copies collapse to one instance (Vite parity).
     fn should_dedupe(&self, specifier: &str) -> bool {
-        !self.dedupe.is_empty()
-            && !specifier.starts_with('.')
-            && !specifier.starts_with('/')
-            && self.dedupe.contains(package_name(specifier))
+        dedupes(&self.dedupe, specifier)
     }
 
     /// Drops the fs cache. Misses are cached like hits, so a file created after
@@ -438,6 +433,16 @@ impl OjResolver {
             }
         }
     }
+}
+
+/// Whether `specifier` is a bare import of a `resolve.dedupe` package, which
+/// resolves from the root so nested copies collapse to one instance (Vite's
+/// tryNodeResolve: `dedupe.includes(pkgId)`).
+pub fn dedupes(dedupe: &HashSet<String>, specifier: &str) -> bool {
+    !dedupe.is_empty()
+        && !specifier.starts_with('.')
+        && !specifier.starts_with('/')
+        && dedupe.contains(package_name(strip_query(specifier)))
 }
 
 /// An importer id as a file path: its query and hash dropped.
