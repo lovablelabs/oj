@@ -520,8 +520,9 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-// With hot updates on, a page is not reloaded for a change, so it can ask
-// for a chunk long after the bundle that named it, and the dev server's
+// With hot updates on, a page that takes a change as a hot update is not
+// reloaded for it, so it can ask for a chunk long after the bundle that
+// named it, and the dev server's
 // answer for the name can change (a 404 once the name is dropped, which is
 // how the page learns it is too old). A browser told to keep the chunk for
 // good never asks. So a chunk is revalidated: `no-cache` with its ETag, and
@@ -568,8 +569,10 @@ fn with_hot_updates_a_chunk_is_revalidated_not_cached_for_good() {
     check(&second, &second_body);
 }
 
-// Without hot updates (the editor's gate with full reloads) every change
-// reloads the pages onto the new names, so a name is fetched once and kept.
+// Without hot updates (the editor's gate with full reloads) a change
+// reloads the pages onto the new names once the gate lets the reload
+// through, and a page still on an old entry is consistent with the old
+// chunks in its cache, so a name is fetched once and kept.
 #[test]
 fn without_hot_updates_a_chunk_is_cached_for_good() {
     let Some(app) = app("chunk-retention-immutable") else {
@@ -596,9 +599,11 @@ fn without_hot_updates_a_chunk_is_cached_for_good() {
 }
 
 /// The note as a module that takes its own hot updates, so an edit to it
-/// reloads no page.
+/// reloads no page, and says which text last ran in the page (`__note`).
 fn accepting_note(text: &str) -> String {
-    format!("export const note = {text:?};\nif (import.meta.hot) import.meta.hot.accept();\n")
+    format!(
+        "export const note = {text:?};\nglobalThis.__note = note;\nif (import.meta.hot) import.meta.hot.accept();\n"
+    )
 }
 
 // Two tabs. One has the about route open: it loaded the note's chunk and
@@ -645,8 +650,11 @@ async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone(
     std::fs::write(root.join(LAZY_NOTE), accepting_note("lazy-note-two")).unwrap();
     let second = wait_for_note_chunk(&dev, Some(&first));
     assert_ne!(second, first);
-    // The pages' hot update is out before the chunk goes.
-    std::thread::sleep(Duration::from_secs(1));
+    // The hot update is out, and applied where the module runs, before the
+    // chunk goes.
+    loaded
+        .wait_for("globalThis.__note === 'lazy-note-two'", WAIT)
+        .await;
     for page in [&loaded, &other] {
         assert!(
             page.eval::<bool>("window.__mark === 'kept'").await,

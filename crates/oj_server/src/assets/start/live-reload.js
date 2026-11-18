@@ -251,12 +251,15 @@
   // back) without a new stamp, so a tab can meet a name it reloaded for
   // under an earlier document, and that document is not this one. One
   // served from a cache comes back with the same changes, and stops.
-  // Once per document: the server's frame and the import's own rejection
-  // can both speak of one failed import, and the second, finding the mark
-  // the first left, would say the reload served the same document.
-  let leaving = false;
+  // Once per document and chunk: the server's frame and the import's own
+  // rejection can both speak of one failed import, and the second, finding
+  // the mark the first left, would say the reload served the same document
+  // while this one is still on its way out. By name, not for the document
+  // as a whole: a reload the user declined (a `beforeunload` prompt) leaves
+  // the document where it is, and the next chunk it finds gone asks again.
+  const reloadedFor = new Set();
   const reloadForGoneChunk = (what) => {
-    if (stamp == null || leaving) return;
+    if (stamp == null || reloadedFor.has(what)) return;
     const mark = stamp + "|" + (docHas ?? "") + "|" + what;
     let marks = [];
     try {
@@ -274,7 +277,7 @@
       sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
     } catch {}
     console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
-    leaving = true;
+    reloadedFor.add(what);
     snapshot();
     location.reload();
   };
@@ -286,11 +289,11 @@
   // answered with the chunk does not count (`responseStatus`, where the
   // browser reports one): a page that has the chunk loaded keeps running
   // it, and the frame is about another page's request, made after the
-  // chunk went. The import's rejection would not do: a
-  // router catches a failed lazy import (TanStack Router's
-  // lazyRouteComponent), so no unhandled rejection is ever raised, where
-  // Vite's `vite:preloadError` is dispatched by its preload helper before
-  // the import rejects, caught or not.
+  // chunk went. The import's rejection would not do: a router catches a
+  // failed lazy import (TanStack Router's lazyRouteComponent), so no
+  // unhandled rejection is ever raised, where Vite's `vite:preloadError` is
+  // dispatched by its preload helper before the import rejects, caught or
+  // not.
   const CHUNKS = base + "/@oj-start/";
   const asked = new Set();
   // The chunk a url names (null for a url that is not one of the dev

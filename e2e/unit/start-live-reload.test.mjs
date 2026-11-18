@@ -425,6 +425,28 @@ test("the document that is reloading for a gone chunk says so once", async () =>
   ]);
 });
 
+test("a document whose reload did not happen asks again for the next gone chunk", async () => {
+  // The reload can be refused (a `beforeunload` prompt the user declines):
+  // the document stays. The chunk it reloaded for is not asked about
+  // again, by the frame or by the import's rejection; another chunk it
+  // finds gone later is a reload of its own.
+  const page = loadPage({ stamp: '"1f-4"' });
+  page.open();
+  page.fetched(GONE_URL);
+  await page.receive(GONE);
+  assert.equal(reloadsIn(page.log), 1);
+  await page.receive(GONE);
+  assert.equal(reloadsIn(page.log), 1, "the same chunk again");
+  const next = "http://localhost/@oj-start/posts-CAFEBABE.js";
+  page.fetched(next);
+  await page.receive({ type: "oj:chunk-gone", name: "posts-CAFEBABE.js" });
+  assert.equal(reloadsIn(page.log), 2, "another chunk, in the document that stayed");
+  assert.deepEqual(page.warned, [
+    "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js); reloading",
+    "[oj] a chunk of this page is gone from the dev server (posts-CAFEBABE.js); reloading",
+  ]);
+});
+
 test("a cached document that asks for two gone chunks as it loads stops after one reload for each", async () => {
   const reloads = goneIn(new Map());
   const names = ["about-DEADBEEF.js", "posts-CAFEBABE.js"];

@@ -3,8 +3,9 @@
 
 //! How the Start client bundle goes over the wire: an ETag from the chunk's
 //! content hash (a reload revalidates to a 304), immutable caching for the
-//! bundle's hashed chunks where every change reloads the pages (with hot
-//! updates on they revalidate too), and gzip for clients that accept it.
+//! bundle's hashed chunks where hot updates are off and a change reloads
+//! the pages (with hot updates on they revalidate too), and gzip for
+//! clients that accept it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -343,7 +344,8 @@ fn compressible(mime: &str) -> bool {
 /// One chunk of the client bundle. `immutable`: cached for good, since its
 /// name carries its content hash (every chunk but the entry, named by
 /// rolldown's `[name]-[hash]`); not with hot updates on, where a page that
-/// was never reloaded must still hear that the server dropped the name.
+/// was not reloaded for a change must still hear that the server dropped
+/// the name.
 pub(crate) struct Chunk<'a> {
     pub mime: &'static str,
     pub hash: &'a str,
