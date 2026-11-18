@@ -4270,6 +4270,27 @@ async fn serve_client_chunk(
     name: &str,
 ) -> Response {
     let name = percent_decode(name);
+    // A chunk is asked for when a page first imports it, which can be long
+    // after the page loaded: the output has to cover every hot update by
+    // then, as it does for a document. A chunk whose modules were
+    // hot-updated since it was built is the code before the edit, and the
+    // page asking never ran those modules, so its patch had nothing to
+    // re-run: the page reloads onto the current output instead of running
+    // the old code. Vite serves the module behind an `import()` at its
+    // current code whenever it is first asked for
+    // (server/transformRequest.ts); a chunk of a bundle cannot be swapped
+    // under the name an older entry imports it by (the two share bindings
+    // by the names of one build), so the reload is the way to the current
+    // code here.
+    state.client_output_fresh().await;
+    if state.bundler.left_behind(&name) {
+        chunk_gone(&state.error_tx, &name);
+        return (
+            StatusCode::NOT_FOUND,
+            format!("oj start: {name} was hot-updated since this page loaded; reload the page"),
+        )
+            .into_response();
+    }
     let served = state
         .bundle
         .read()

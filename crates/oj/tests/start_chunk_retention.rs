@@ -465,6 +465,104 @@ async fn a_page_held_behind_many_rebundles_loads_its_lazy_route() {
     page.close().await;
 }
 
+const NOTE_SHOWN: &str = "document.querySelector('#note')?.textContent";
+
+/// Follows the page's link to the about route; whether it comes to show
+/// `text` as the note.
+async fn goes_to_about_and_shows(page: &Page, text: &str) -> bool {
+    page.eval::<bool>("(document.getElementById('to-about').click(), true)")
+        .await;
+    page.poll(
+        &format!("{NOTE_SHOWN} === '{text}'"),
+        Duration::from_secs(40),
+    )
+    .await
+}
+
+/// Hot updates on, two pages open on the home route, neither of which has
+/// loaded the note's chunk. The note is edited: no page runs it, so the hot
+/// update re-runs nothing and reloads nothing. A page that then goes to the
+/// about route imports the note's chunk by the name its entry has, the one
+/// from before the edit, and used to render the note as it was before the
+/// edit for as long as it stayed open, while a new page rendered the edited
+/// one. The dev server now answers that the chunk is gone, and the page
+/// reloads onto the current output: one page right after the hot update
+/// (before the output behind it was written), the other once the output
+/// renamed the chunk.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_page_first_imports_a_hot_updated_chunk_as_it_is_now() {
+    let Some(app) = app("chunk-retention-hot") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
+    std::fs::write(root.join("src/routes/index.tsx"), INDEX).unwrap();
+    write_note(&root, "lazy-note-one");
+    let dev = Server::oj_dev(&root);
+    let first = wait_for_note_chunk(&dev, None);
+
+    let early = Page::open(&dev.url("/")).await;
+    let late = Page::open(&dev.url("/")).await;
+    for page in [&early, &late] {
+        page.wait_for(
+            "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'",
+            WAIT,
+        )
+        .await;
+    }
+    // The pages' hot clients register: an edit with none connected rebuilds
+    // and reloads instead.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    for page in [&early, &late] {
+        page.eval::<bool>("(window.__mark = 'kept', true)").await;
+    }
+
+    write_note(&root, "lazy-note-two");
+    let deadline = Instant::now() + WAIT;
+    while !dev.output().contains("oj start: hot updated") {
+        assert!(
+            Instant::now() < deadline,
+            "the edit was not a hot update\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for page in [&early, &late] {
+        assert!(
+            page.eval::<bool>("window.__mark === 'kept'").await,
+            "an edit to a module no page runs reloaded a page\n{}",
+            dev.output()
+        );
+    }
+
+    // Right after the hot update, the written output still behind it.
+    assert!(
+        goes_to_about_and_shows(&early, "lazy-note-two").await,
+        "the about route of a page open since before the edit shows {:?}, not the edited note\n{}",
+        early.eval::<serde_json::Value>(NOTE_SHOWN).await,
+        dev.output()
+    );
+    // Once the output renamed the chunk.
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    assert!(
+        goes_to_about_and_shows(&late, "lazy-note-two").await,
+        "the about route of a page open across the output refresh shows {:?}, not the edited note\n{}",
+        late.eval::<serde_json::Value>(NOTE_SHOWN).await,
+        dev.output()
+    );
+
+    // The chunk from before the edit is no longer served; the current one is.
+    let (status, body) = chunk(&dev, &first);
+    assert_eq!(status, 404, "{body}\n{}", dev.output());
+    assert!(body.contains("hot-updated since"), "{body}");
+    assert_eq!(chunk(&dev, &second).0, 200);
+    early.close().await;
+    late.close().await;
+}
+
 /// Removes every file under `dir` whose content is `content`.
 fn remove_files_with(dir: &Path, content: &[u8]) -> usize {
     let mut removed = 0;

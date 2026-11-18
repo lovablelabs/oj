@@ -56,6 +56,70 @@ struct Events {
     changed: tokio::sync::Notify,
 }
 
+/// The chunks hot updates left behind: ones the pages may still name whose
+/// modules were edited since.
+///
+/// A hot update re-runs a changed module on the pages that run it. On a
+/// page that never loaded it the patch has nothing to re-run, and the page's
+/// first import of the module is not the runtime's: its entry imports the
+/// module's chunk by the name it had before the edit, which the dev server
+/// keeps serving for pages held behind a reload (see
+/// `start_chunks::ServedBundles`). Served to a hot page, that chunk is the
+/// module as it was before the edit, for as long as the page stays open.
+/// Vite's dev server serves a module at its current code whenever it is
+/// first imported (plugins/importAnalysis.ts rewrites `import()` to the
+/// module's url, server/transformRequest.ts transforms it on request). So
+/// the chunks holding a hot-updated module are noted here once an output
+/// renames them, and a page that asks for one is told it is gone and
+/// reloads onto the current output (`start_dev::serve_client_chunk`).
+#[derive(Default)]
+pub(crate) struct LeftBehind {
+    /// The files hot updates changed since the last output.
+    changed: HashSet<String>,
+    /// The chunks of the last output each file's modules are in.
+    holders: HashMap<String, Vec<String>>,
+    /// The chunks left behind, by name.
+    names: HashSet<String>,
+}
+
+impl LeftBehind {
+    /// A batch of edits went to the pages as hot updates.
+    pub fn hot_updated(&mut self, changed: &[PathBuf]) {
+        self.changed
+            .extend(changed.iter().map(|p| p.to_string_lossy().into_owned()));
+    }
+
+    /// A new output, as `(chunk name, its module ids)`: the chunks of the
+    /// output before it that hold a file hot-updated since are left behind,
+    /// unless this output still has them under the same name (a save that
+    /// changed nothing renames nothing, and an edit taken back brings the
+    /// old name back). A module is counted under its file, whatever query
+    /// it carries (a route's split-off component is `route.tsx?tsr-split=...`).
+    pub fn output<'a>(&mut self, chunks: impl Iterator<Item = (&'a str, Vec<&'a str>)>) {
+        let before = std::mem::take(&mut self.holders);
+        let mut current = HashSet::new();
+        for (name, modules) in chunks {
+            current.insert(name);
+            for id in modules {
+                let file = id.split('?').next().unwrap_or(id);
+                let held = self.holders.entry(file.to_string()).or_default();
+                if !held.iter().any(|n| n == name) {
+                    held.push(name.to_string());
+                }
+            }
+        }
+        for file in self.changed.drain() {
+            self.names
+                .extend(before.get(&file).into_iter().flatten().cloned());
+        }
+        self.names.retain(|name| !current.contains(name.as_str()));
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
 /// One engine session and the state its plugins write into.
 pub(crate) struct HotSession {
     pub engine: Arc<DevEngine>,
@@ -588,6 +652,48 @@ mod tests {
         assert!(unresolved_in_patch(text_only, "/app/src/a.tsx", &declared).is_none());
         let ext: Declared = Arc::new(|s| s == "cdn-only-dep");
         assert!(unresolved_in_patch("import \"cdn-only-dep\";", "/app/a.ts", &ext).is_none());
+    }
+
+    #[test]
+    fn a_chunk_holding_a_hot_updated_module_is_left_behind_once_renamed() {
+        let mut left = LeftBehind::default();
+        let entry = ("client-entry.js", vec!["/app/src/main.tsx"]);
+        let about = |name: &'static str| (name, vec!["/app/src/about.tsx?tsr-split=component"]);
+        let note = |name: &'static str| (name, vec!["/app/src/note.ts", "/app/src/words.ts"]);
+        left.output([entry.clone(), about("about-1.js"), note("note-1.js")].into_iter());
+        assert!(!left.has("note-1.js"));
+
+        // A save that changed nothing: the output names the chunk as before.
+        left.hot_updated(&[PathBuf::from("/app/src/note.ts")]);
+        left.output([entry.clone(), about("about-1.js"), note("note-1.js")].into_iter());
+        assert!(!left.has("note-1.js"), "the chunk was not renamed");
+
+        // An edit: the chunk it renamed is left behind, the others are not.
+        left.hot_updated(&[PathBuf::from("/app/src/note.ts")]);
+        left.output([entry.clone(), about("about-1.js"), note("note-2.js")].into_iter());
+        assert!(left.has("note-1.js"));
+        assert!(!left.has("note-2.js") && !left.has("about-1.js") && !left.has("client-entry.js"));
+
+        // A module is its file's, whatever query it carries; the entry keeps
+        // its name, so it is never left behind.
+        left.hot_updated(&[
+            PathBuf::from("/app/src/about.tsx"),
+            PathBuf::from("/app/src/main.tsx"),
+        ]);
+        left.output([entry.clone(), about("about-2.js"), note("note-2.js")].into_iter());
+        assert!(left.has("about-1.js") && left.has("note-1.js"));
+        assert!(!left.has("client-entry.js") && !left.has("note-2.js"));
+
+        // A chunk renamed with no hot update to its modules (a rebuild the
+        // pages reload for) stays served to the pages held behind it.
+        left.output([entry.clone(), about("about-3.js"), note("note-3.js")].into_iter());
+        assert!(!left.has("about-2.js") && !left.has("note-2.js"));
+
+        // An edit taken back: the first name is the current chunk again.
+        left.hot_updated(&[PathBuf::from("/app/src/note.ts")]);
+        left.output([entry, about("about-3.js"), note("note-1.js")].into_iter());
+        assert!(!left.has("note-1.js"), "the current output has it");
+        assert!(left.has("note-3.js"));
     }
 
     #[test]

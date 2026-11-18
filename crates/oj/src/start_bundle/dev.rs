@@ -29,7 +29,7 @@ use super::code::{CodeTarget, GlobScope, StartCodePlugin};
 use super::errors::{unresolved_import_in, BundleError};
 use super::host::StartHostPlugin;
 use super::hosts::{self, BundleHost};
-use super::hot::{EngineSlot, HotSession, SessionParts};
+use super::hot::{EngineSlot, HotSession, LeftBehind, SessionParts};
 use super::inputs::{BuiltInputs, LoadedInputs, Notes, RecordLoadedInputs};
 use super::refresh::{RefreshPreamble, RefreshTransform, RefreshWrapper};
 use super::shims::NodeBuiltinShims;
@@ -77,6 +77,8 @@ pub(crate) struct DevBundler {
     /// The module ids of the last bundle written, whose StyleX rules a cached
     /// copy of it carries.
     bundle_modules: Mutex<Vec<String>>,
+    /// The chunks hot updates left behind (see [`LeftBehind`]).
+    left_behind: Mutex<LeftBehind>,
     /// Each module's file as the bundler loaded it, as loading goes on.
     loaded: Arc<LoadedInputs>,
     /// The files of the last bundle written, as they were when its output
@@ -126,6 +128,7 @@ impl DevBundler {
             clients: Mutex::new(PageSockets::default()),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
+            left_behind: Mutex::new(LeftBehind::default()),
             loaded,
             built: Mutex::default(),
         }
@@ -152,6 +155,15 @@ impl DevBundler {
     }
 
     /// The module ids of the last bundle written.
+    /// Whether `name` is a chunk whose modules were hot-updated since it
+    /// was built: a page that asks for it would run them as they were.
+    pub(crate) fn left_behind(&self, name: &str) -> bool {
+        self.left_behind
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has(name)
+    }
+
     pub(crate) fn bundle_modules(&self) -> Vec<String> {
         self.bundle_modules.lock().unwrap().clone()
     }
@@ -503,6 +515,10 @@ impl DevBundler {
                     let css = super::hot::link_new_styles(&start.cache, &css)
                         .map_err(|e| BundleError::from_message(format!("css-urls.json: {e}")))?;
                     self.record_inputs(live, host).await?;
+                    self.left_behind
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .hot_updated(changed);
                     return Ok(Run::Hot { css });
                 }
             }
@@ -534,6 +550,16 @@ impl DevBundler {
         let live = session.as_ref().expect("a live session");
         let (output, notes) = live.latest_output().await?;
         self.note_built(&notes, &output);
+        self.left_behind
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .output(output.iter().filter_map(|out| match out {
+                rolldown_common::Output::Chunk(c) => Some((
+                    c.filename.as_str(),
+                    c.modules.keys.iter().map(|id| id.as_str()).collect(),
+                )),
+                rolldown_common::Output::Asset(_) => None,
+            }));
         let module_ids: Vec<String> = live
             .engine
             .get_module_ids()
