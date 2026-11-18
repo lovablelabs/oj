@@ -117,6 +117,26 @@ pub(super) fn verified_digests(files: &[PathBuf], memo: Option<&Memo>) -> Digest
     }
 }
 
+impl Digests {
+    /// Each file that had a stat and a digest, with the stat: `None` for one
+    /// modified within the freshness slack of the pass, whose stat a
+    /// same-size save inside the mtime granularity would leave equal.
+    pub(super) fn inputs(&self, files: &[PathBuf]) -> Vec<(PathBuf, Option<(u64, u64)>)> {
+        files
+            .iter()
+            .zip(&self.stats)
+            .zip(&self.hashes)
+            .filter_map(|((path, stat), hash)| {
+                let (size, mtime_ns) = (*stat)?;
+                hash.as_ref()?;
+                let settled =
+                    mtime_ns.saturating_add(MEMO_FRESHNESS_SLACK_NS) <= self.statted_at_ns;
+                Some((path.clone(), settled.then_some((size, mtime_ns))))
+            })
+            .collect()
+    }
+}
+
 fn memoized_digest(memo: &Memo, p: &Path, (size, mtime_ns): (u64, u64)) -> Option<blake3::Hash> {
     let known = memo.files.get(p.to_str()?)?;
     if size != known.size || mtime_ns != known.mtime_ns {

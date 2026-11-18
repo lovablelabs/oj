@@ -183,6 +183,11 @@ pub struct RestoreStats {
     pub chunks: usize,
     pub rehashed: usize,
     pub elapsed_ms: u128,
+    /// Each closure file with the size and mtime (ns) it had when the key
+    /// was verified: the sources the restored bundle stands for. `None` for
+    /// a file modified too close to the verification for its stat to vouch
+    /// for its contents.
+    pub inputs: Vec<(PathBuf, Option<(u64, u64)>)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -341,6 +346,7 @@ impl StartBundleStore {
             chunks: manifest.files.len(),
             rehashed: digests.rehashed,
             elapsed_ms: started.elapsed().as_millis(),
+            inputs: digests.inputs(&files),
         };
         Ok((stats, self.pin(&manifest)))
     }

@@ -98,9 +98,39 @@ pub(crate) fn built_inputs<'a>(
 
 /// Whether every file is still as it was when the bundler loaded it.
 pub(crate) fn unchanged(built: &[(PathBuf, Stat)]) -> bool {
+    moved(built).is_empty()
+}
+
+/// The files that are no longer as they were when the bundler loaded them.
+pub(crate) fn moved(built: &[(PathBuf, Stat)]) -> Vec<PathBuf> {
     built
         .iter()
-        .all(|(file, loaded)| stat(file).as_ref() == Some(loaded))
+        .filter(|(file, loaded)| stat(file).as_ref() != Some(loaded))
+        .map(|(file, _)| file.clone())
+        .collect()
+}
+
+/// A restored bundle's files, each under the size and mtime (ns since the
+/// epoch) its restore verified the file's contents at. A file without one
+/// (modified too close to the restore) gets a stat no file has, so it always
+/// counts as moved.
+pub(crate) fn restored_inputs(inputs: &[(PathBuf, Option<(u64, u64)>)]) -> BuiltInputs {
+    let mut built: BuiltInputs = inputs
+        .iter()
+        .map(|(file, verified)| {
+            let stat = match verified {
+                Some((size, mtime_ns)) => (
+                    *size,
+                    SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(*mtime_ns),
+                ),
+                None => (u64::MAX, SystemTime::UNIX_EPOCH),
+            };
+            (file.clone(), stat)
+        })
+        .collect();
+    built.sort();
+    built.dedup();
+    built
 }
 
 fn stat(file: &Path) -> Option<Stat> {
@@ -179,6 +209,43 @@ mod tests {
 
         std::fs::remove_file(&a).unwrap();
         assert!(!unchanged(&built(&[a.as_str()])), "a.ts is gone");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // A restored bundle stands for its files as the restore verified them
+    // (size and mtime in ns, as the store records them): a save after the
+    // restore is a moved file, and so is a deleted one; one left alone is
+    // not. A file the restore could not vouch for by its stat (written
+    // within the freshness slack) is always moved.
+    #[test]
+    fn a_file_saved_or_deleted_after_the_restore_is_moved() {
+        let root = dir("restored");
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| root.join(format!("src/{n}.ts")));
+        for file in [&a, &b, &c, &d] {
+            std::fs::write(file, "export const x = 1;\n").unwrap();
+        }
+        let verified = |file: &Path| {
+            let meta = std::fs::metadata(file).unwrap();
+            let mtime = meta.modified().unwrap();
+            let ns = mtime
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            (
+                file.to_path_buf(),
+                Some((meta.len(), u64::try_from(ns).unwrap())),
+            )
+        };
+        let built = restored_inputs(&[verified(&a), verified(&b), verified(&c)]);
+        assert!(moved(&built).is_empty(), "nothing saved yet: {built:?}");
+
+        std::fs::write(&b, "export const x = 'saved after the restore';\n").unwrap();
+        std::fs::remove_file(&c).unwrap();
+        assert_eq!(moved(&built), vec![b.clone(), c.clone()]);
+        assert!(!unchanged(&built));
+
+        let fresh = restored_inputs(&[verified(&a), (d.clone(), None)]);
+        assert_eq!(moved(&fresh), vec![d.clone()], "an unvouched file");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

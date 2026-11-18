@@ -200,6 +200,34 @@ fn persist_then_restore_roundtrips_artifacts() {
     );
 }
 
+// A restore reports each closure file under the stat its key was verified
+// at, except one written within the freshness slack: a same-size save inside
+// the mtime granularity would keep that stat, so it vouches for nothing.
+#[test]
+fn a_restore_vouches_only_for_settled_files() {
+    let fx = Fixture::new("restoreinputs");
+    fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(stats.inputs.len(), 2);
+    assert!(
+        stats.inputs.iter().all(|(_, stat)| stat.is_none()),
+        "just written: {:?}",
+        stats.inputs
+    );
+
+    fx.settle_modules();
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    for (file, stat) in &stats.inputs {
+        let meta = fs::metadata(file).unwrap();
+        assert_eq!(
+            *stat,
+            Some((meta.len(), mtime_ns(&meta).unwrap())),
+            "{file:?}"
+        );
+    }
+}
+
 #[test]
 fn names_absent_from_the_manifest_do_not_resolve() {
     let fx = Fixture::new("absent");

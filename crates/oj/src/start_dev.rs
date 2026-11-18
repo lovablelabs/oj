@@ -1437,6 +1437,33 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// What changed under the boot bundle before the Start watcher's feed was
+/// subscribed: its files saved since it read them (or its restore verified
+/// them), and the files its globs match today that it never read, as the
+/// restore's own glob check finds them.
+fn boot_changes(
+    state: &StartState,
+    cache: &Path,
+) -> (
+    std::collections::HashSet<PathBuf>,
+    std::collections::HashSet<PathBuf>,
+) {
+    let moved = state.bundler.moved_inputs().into_iter().collect();
+    let inputs = state.bundler.input_files();
+    if inputs.is_empty() {
+        return (moved, Default::default());
+    }
+    let scopes = state
+        .client_glob_scopes
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let added = restorable_glob_members(&cache.join("glob-scopes.json"), cache)
+        .into_iter()
+        .filter(|f| added_to_glob(&scopes, &inputs, f))
+        .collect();
+    (moved, added)
+}
+
 /// Whether the client bundle hot-updates, given the editor's gate (`Some`
 /// with its full-reload mode) or none. Only a full-reload gate turns hot
 /// updates off: its releases reload the pages anyway.
@@ -1562,6 +1589,7 @@ fn spawn_start_watcher(
     // module changes and never flip this.
     let watch_root = root.clone();
     let boot_entry = crate::start_host::app_start_entry(&watch_root);
+    let cache_dir = cache.clone();
     rt.spawn(refresh_worker(
         root.clone(),
         cache.clone(),
@@ -1599,6 +1627,13 @@ fn spawn_start_watcher(
         // not changes: the client rebundle reads every source file, which
         // otherwise looked like an edit of every source file and rebuilt again.
         let mut changes = oj_server::ContentChanges::new();
+        // The boot bundle's files saved before this feed was subscribed (while
+        // the bundle built or was restored, before the server's watcher was
+        // up) reached no event, nor did a file created then under one of its
+        // globs: they are the first batch, or the client would keep the
+        // bundle from before them while the server renders them. Taken
+        // before the walk below, which can be slow.
+        let (mut moved_at_boot, mut added_at_boot) = boot_changes(&state, &cache_dir);
         // Scanned on this thread, so boot never waits on it: events queue on
         // the feed meanwhile. A file created while it runs can read as known,
         // a race chokidar's own initial scan has too.
@@ -1606,24 +1641,34 @@ fn spawn_start_watcher(
         state.flush_timing.watcher_armed();
         loop {
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            // The boot's revalidation asks whether this thread is caught up
-            // with its feed (`FlushTiming::watcher_caught_up`): idle while
-            // waiting on an empty one, not from the first event in hand.
-            let first = match rx.try_recv() {
-                Ok(ev) => Ok(ev),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    state.flush_timing.watcher_idle(true);
-                    rx.recv()
+            let at_boot = !moved_at_boot.is_empty() || !added_at_boot.is_empty();
+            let mut paths: std::collections::HashSet<PathBuf> = if at_boot {
+                created.extend(added_at_boot.iter().cloned());
+                std::mem::take(&mut moved_at_boot)
+                    .into_iter()
+                    .chain(std::mem::take(&mut added_at_boot))
+                    .collect()
+            } else {
+                // The boot's revalidation asks whether this thread is caught
+                // up with its feed (`FlushTiming::watcher_caught_up`): idle
+                // while waiting on an empty one, not from the first event in
+                // hand.
+                let first = match rx.try_recv() {
+                    Ok(ev) => Ok(ev),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        state.flush_timing.watcher_idle(true);
+                        rx.recv()
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                };
+                state.flush_timing.watcher_idle(false);
+                match first {
+                    Ok(ev) => {
+                        created.extend(known.adds(&ev));
+                        changes.changed_paths(&ev).into_iter().collect()
+                    }
+                    Err(_) => break,
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-            };
-            state.flush_timing.watcher_idle(false);
-            let mut paths: std::collections::HashSet<PathBuf> = match first {
-                Ok(ev) => {
-                    created.extend(known.adds(&ev));
-                    changes.changed_paths(&ev).into_iter().collect()
-                }
-                Err(_) => break,
             };
             // A request can arrive milliseconds after a save: invalidate the
             // worker environments on the first raw event, before the settle
@@ -1671,7 +1716,9 @@ fn spawn_start_watcher(
             // rebuild end would wait out the cap for a flush that already
             // happened, serving the previous bundle for minutes.
             state.flush_timing.watcher_change();
-            if let Some(gate) = &state.gate {
+            // Writes from before this process are owed no editor flush: the
+            // boot batch is not held for one.
+            if let Some(gate) = state.gate.as_ref().filter(|_| !at_boot) {
                 let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
                 gate.hold_reload(&batch_paths);
             }
@@ -3509,6 +3556,7 @@ fn bundle_client_entry_cached(
             "  oj start: client bundle cache miss (a plugin generates a stylesheet from its modules)"
         ),
         Ok((stats, pinned)) => {
+            bundler.note_restored(&stats.inputs);
             let rehashed = match stats.rehashed {
                 0 => String::new(),
                 n => format!(", {n} re-hashed"),
