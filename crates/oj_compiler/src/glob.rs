@@ -1199,6 +1199,7 @@ fn collect_options(arg: &Argument) -> Option<GlobOptions> {
         return None;
     };
     let mut opts = GlobOptions::default();
+    let mut default_as = false;
     for prop in &obj.properties {
         let ObjectPropertyKind::ObjectProperty(p) = prop else {
             continue;
@@ -1224,9 +1225,18 @@ fn collect_options(arg: &Argument) -> Option<GlobOptions> {
             ("base", Some(s), _) => opts.base = Some(s.to_string()),
             ("query", Some(q), _) if q.starts_with('?') => opts.query = q.to_string(),
             ("query", Some(q), _) => opts.query = format!("?{q}"),
-            ("as", Some(s), _) => opts.query = format!("?{s}"),
+            ("as", Some(s), _) => {
+                opts.query = format!("?{s}");
+                default_as = matches!(s, "raw" | "url");
+            }
             _ => {}
         }
+    }
+    // Vite's parseGlobOptions (`forceDefaultAs`): `as: "raw"` and `as: "url"`
+    // pick the default export unless `import` says otherwise, so the values
+    // are the strings and not module namespaces.
+    if default_as && opts.import.is_none() {
+        opts.import = Some("default".to_string());
     }
     Some(opts)
 }
@@ -1885,6 +1895,56 @@ mod tests {
         assert!(
             !out.contains("switch"),
             "string-literal import left alone: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Vite's parseGlobOptions: `as: "raw"` and `as: "url"` pick the default
+    // export (the string), eager and lazy, unless `import` asks for `"*"`;
+    // any other `as` is only the query.
+    #[test]
+    fn as_raw_and_as_url_pick_the_default_export() {
+        let dir = fixture_dir("as-default");
+        for kind in ["raw", "url"] {
+            let eager = expand_source(
+                &dir,
+                &format!(
+                    "const m = import.meta.glob('./locales/en.json', {{ as: '{kind}', eager: true }});\n"
+                ),
+            );
+            assert!(
+                eager.contains(&format!(
+                    r#"import {{ default as __oj_glob_0 }} from "./locales/en.json?{kind}";"#
+                )),
+                "eager as {kind}: {eager}"
+            );
+            let lazy = expand_source(
+                &dir,
+                &format!("const m = import.meta.glob('./locales/en.json', {{ as: '{kind}' }});\n"),
+            );
+            assert!(
+                lazy.contains(&format!(
+                    r#"() => import("./locales/en.json?{kind}").then((m) => m["default"])"#
+                )),
+                "lazy as {kind}: {lazy}"
+            );
+        }
+        let star = expand_source(
+            &dir,
+            "const m = import.meta.glob('./locales/en.json', { import: '*', as: 'raw', eager: true });\n",
+        );
+        assert!(
+            star.contains(r#"import * as __oj_glob_0 from "./locales/en.json?raw";"#),
+            "an explicit namespace import stays: {star}"
+        );
+        let other = expand_source(
+            &dir,
+            "const m = import.meta.glob('./locales/en.json', { as: 'inline' });\n",
+        );
+        assert!(
+            other.contains(r#"() => import("./locales/en.json?inline")"#)
+                && !other.contains(".then("),
+            "other as values keep the namespace: {other}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
