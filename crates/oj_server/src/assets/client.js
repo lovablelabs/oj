@@ -113,6 +113,15 @@ export function removeStyle(id) {
   }
 }
 
+// Vite's client `injectQuery`: the query a url's dynamic import() needs,
+// ahead of the url's own, for urls the dev server handles.
+export function injectQuery(url, queryToInject) {
+  if (url[0] !== "." && url[0] !== "/") return url;
+  const pathname = url.replace(/[?#].*$/, "");
+  const { search, hash } = new URL(url, "http://vite.dev");
+  return `${pathname}?${queryToInject}${search ? "&" + search.slice(1) : ""}${hash || ""}`;
+}
+
 // Vite's HMRClient.currentFirstInvalidatedBy: set while an update's accept
 // callbacks run, so an invalidate() they trigger names the original module.
 let currentFirstInvalidatedBy;
@@ -410,7 +419,7 @@ function reportHmrFailure(path, error) {
 }
 
 // The dev `base` this client is served under (Vite's __BASE__).
-const base = new URL(import.meta.url).pathname.replace(/@oj\/client\.js$/, "");
+export const base = new URL(import.meta.url).pathname.replace(/@oj\/client\.js$/, "");
 
 // Where the socket lives (Vite's client): `server.hmr.{protocol,host,clientPort,
 // path}` override the page's own origin, and the per-process token lets the
@@ -512,7 +521,20 @@ async function lost(ws) {
   setTimeout(connect, 1000);
 }
 
-connect();
+// On a TanStack Start document (Start dev's `/@vite/client`) Start's client
+// holds the socket: these exports load, but no update reaches them.
+// "pending": the document was still parsing, so its tag may yet come.
+if (globalThis.__ojPageClient === "pending") {
+  document.addEventListener(
+    "DOMContentLoaded",
+    () => {
+      if (!document.querySelector('script[src*="/@oj-start/live-reload.js"]')) connect();
+    },
+    { once: true },
+  );
+} else if (!globalThis.__ojPageClient) {
+  connect();
+}
 
 // Vite's waitForSuccessfulPing: any HTTP answer from the socket's host means
 // the server is back (the ws route itself replies to a plain GET).

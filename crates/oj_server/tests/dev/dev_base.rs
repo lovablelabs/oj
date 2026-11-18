@@ -48,6 +48,11 @@ async fn client_scripts_answer_under_the_base() {
     // Shares the base's leading letters but is not under it.
     server.text("/apple.svg").await;
     server.text("/@oj/client.js").await;
+    // Vite's client path under the base is oj's client under the base.
+    assert_eq!(
+        server.text("/app/@vite/client").await,
+        "export * from \"/app/@oj/client.js\";\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -174,6 +179,17 @@ async fn a_based_page_runs_one_client_and_one_refresh_runtime() {
         loaded,
         ["/app/@oj/client.js", "/app/@oj/refresh-runtime.js"],
         "the page's client and refresh runtime URLs"
+    );
+    let vite_client: (bool, String) = page
+        .eval(
+            r#"Promise.all([import("/app/@vite/client"), import("/app/@oj/client.js")])
+                .then(([vite, oj]) => [vite.createHotContext === oj.createHotContext, vite.base])"#,
+        )
+        .await;
+    assert_eq!(
+        vite_client,
+        (true, "/app/".to_string()),
+        "/app/@vite/client is the page's client"
     );
 
     page.eval::<bool>(

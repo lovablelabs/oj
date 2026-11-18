@@ -1698,6 +1698,12 @@ fn build_router(
                 }),
             )
             .route(
+                "/@vite/client",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.vite_client_js.clone())
+                }),
+            )
+            .route(
                 "/@oj/refresh-preamble.js",
                 get(|State(state): State<Arc<ServerState>>| async move {
                     js(state.oj_paths.refresh_preamble_js.clone())

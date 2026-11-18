@@ -23,6 +23,9 @@ pub(crate) struct OjPublicPaths {
     /// for Vite import in their preamble: oj's runtime re-exported, so they
     /// share the one instance oj's compiled modules register with.
     pub(crate) react_refresh_js: Bytes,
+    /// `/@vite/client`, Vite's client path, which pages written for Vite load
+    /// beside the preamble: oj's client re-exported, one instance and socket.
+    pub(crate) vite_client_js: Bytes,
 }
 
 impl OjPublicPaths {
@@ -38,9 +41,11 @@ impl OjPublicPaths {
         let react_refresh_js = format!(
             "export * from {refresh_runtime:?};\nexport {{ default }} from {refresh_runtime:?};\n"
         );
+        let vite_client_js = format!("export * from {client:?};\n");
         OjPublicPaths {
             refresh_preamble: at("/@oj/refresh-preamble.js"),
             react_refresh_js: Bytes::from(react_refresh_js),
+            vite_client_js: Bytes::from(vite_client_js),
             refresh_runtime_js: Bytes::from(refresh_runtime_js),
             refresh_preamble_js: Bytes::from(refresh_preamble_js),
             client,

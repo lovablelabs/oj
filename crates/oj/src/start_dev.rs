@@ -3646,6 +3646,24 @@ fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[Strin
     }
 }
 
+/// `/@vite/client` under Start dev: oj's dev client, as the inner server
+/// answers it, after a check that leaves the socket to the Start client on a
+/// document oj rendered. Its live-reload tag follows the stream's last chunk,
+/// so while the document still parses the decision waits for its end.
+fn page_client_js(base: &str, path: &str) -> Option<String> {
+    match path {
+        "/@vite/client" => Some(format!(
+            "import \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
+        )),
+        "/@oj-start/page-client.js" => Some(
+            "if (document.querySelector('script[src*=\"/@oj-start/live-reload.js\"]')) globalThis.__ojPageClient = \"start\";\n\
+             else if (document.readyState === \"loading\") globalThis.__ojPageClient = \"pending\";\n"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn document_url(url: &str) -> String {
     let (path, query) = match url.split_once('?') {
         Some((p, q)) => (p, format!("?{q}")),
@@ -3773,6 +3791,9 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             Some(body) => css_response(body),
             None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
         };
+    }
+    if let Some(js) = page_client_js(&state.base, path) {
+        return ([(header::CONTENT_TYPE, "text/javascript")], js).into_response();
     }
     if let Some(name) = path.strip_prefix("/@oj-start/") {
         return serve_client_chunk(&state, req.headers(), name).await;

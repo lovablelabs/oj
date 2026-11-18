@@ -6,7 +6,9 @@
 //! `/@react-refresh` answers with the refresh runtime (plugin-react's
 //! resolveId/load serve it in Vite), and a component module asks only for
 //! `window.$RefreshReg$`, the check Vite's refresh wrapper makes, so both the
-//! documented preamble and its stubs alone mount the component.
+//! documented preamble and its stubs alone mount the component. The page also
+//! loads `/@vite/client`, as Vite's docs pair it with the preamble: oj's client
+//! under Vite's path, with the exports of Vite's `client.ts` that it has.
 
 use std::time::Duration;
 
@@ -40,6 +42,7 @@ fn config() -> String {
         format!(
             "<!doctype html><html><body><div id=\\\"root\\\"></div>\
              <script type=\\\"module\\\">{}</script>\
+             <script type=\\\"module\\\" src=\\\"/@vite/client\\\"></script>\
              <script type=\\\"module\\\">import(\\\"/src/mount.tsx\\\").catch((e) => {{ window.__mountError = String(e); }});</script>\
              </body></html>",
             preamble.replace('\n', "\\n").replace('"', "\\\"")
@@ -103,6 +106,10 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
         "/@react-refresh is not oj's refresh runtime:\n{runtime}"
     );
 
+    // Vite's client path re-exports oj's client: one module, one socket.
+    let client = server.text("/@vite/client").await;
+    assert_eq!(client, "export * from \"/@oj/client.js\";\n");
+
     let listening = server.listen().await;
     for path in ["/harness", "/stubs", "/named", "/source"] {
         let page = Page::open(&format!("http://127.0.0.1:{}{path}", listening.addr.port())).await;
@@ -117,6 +124,26 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
             mounted,
             "{path}: the component never mounted; import error: {error:?}, page errors: {:?}",
             page.errors()
+        );
+        let client: serde_json::Value = page
+            .eval(
+                r#"Promise.all([import("/@vite/client"), import("/@oj/client.js")]).then(([vite, oj]) => ({
+                    exports: Object.keys(vite).sort(),
+                    same: vite.createHotContext === oj.createHotContext,
+                    base: vite.base,
+                    query: [vite.injectQuery("/src/a.ts?x=1#h", "import"), vite.injectQuery("react", "import")],
+                }))"#,
+            )
+            .await;
+        assert_eq!(
+            client,
+            serde_json::json!({
+                "exports": ["ErrorOverlay", "base", "createHotContext", "injectQuery", "removeStyle", "updateStyle"],
+                "same": true,
+                "base": "/",
+                "query": ["/src/a.ts?import&x=1#h", "react"],
+            }),
+            "{path}: /@vite/client"
         );
         page.close().await;
     }
