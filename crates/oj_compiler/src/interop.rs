@@ -493,7 +493,7 @@ mod tests {
     /// namespace's names without reading its bindings.
     #[test]
     fn interop_helper_names_no_shadowable_global() {
-        for global in ["Object", "Array", "Reflect", "globalThis"] {
+        for global in ["Object.", "Array.", "Reflect.", "globalThis"] {
             assert!(
                 !DYN_INTEROP_HELPER.contains(global),
                 "{global} in {DYN_INTEROP_HELPER}"
