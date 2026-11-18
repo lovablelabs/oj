@@ -131,8 +131,11 @@ fn crawl_file(state: &ServerState, url: &str) -> Option<PathBuf> {
     (!partial).then_some(file)
 }
 
+/// The page's preload urls as the last session's crawl found them. Not
+/// `graph-snapshot.json`, which held bare paths (`/src/a.md` for an import
+/// of `/src/a.md?raw`): a list an older version wrote is never read.
 pub(crate) fn snapshot_path(root: &Path) -> PathBuf {
-    oj_cache::cache_root(root).join("graph-snapshot.json")
+    oj_cache::cache_root(root).join("preload-snapshot.json")
 }
 
 pub(crate) fn load_graph_snapshot(root: &Path) -> Vec<String> {
@@ -146,6 +149,7 @@ pub(crate) fn save_graph_snapshot(root: &Path, urls: &[String]) {
     let path = snapshot_path(root);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
+        let _ = std::fs::remove_file(parent.join("graph-snapshot.json"));
     }
     let _ = std::fs::write(path, serde_json::to_vec(&urls).unwrap_or_default());
 }

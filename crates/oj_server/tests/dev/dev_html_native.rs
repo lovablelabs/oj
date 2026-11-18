@@ -187,19 +187,298 @@ async fn a_dev_page_preloads_its_static_graph_only() {
     }
     // What the next boot preloads before its crawl is done: the same list.
     let snapshot: Vec<String> = serde_json::from_slice(
-        &std::fs::read(oj_cache::cache_root(&app.root).join("graph-snapshot.json")).unwrap(),
+        &std::fs::read(oj_cache::cache_root(&app.root).join("preload-snapshot.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
         snapshot.iter().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "/src/b.js",
-            "/src/data.json",
-            "/src/pic.png",
-            "/src/style.css",
-            "/src/a.js"
-        ]
+        ROOT_PRELOADS
     );
+}
+
+/// A page whose script imports files by a query: `?raw` of a Markdown and a
+/// CSV file (static imports and an eager glob's members), of a script it
+/// also imports as a module, a stylesheet's `?inline`, and a script another
+/// module imports as text.
+fn queried_imports_app(plugins: Option<&str>) -> App {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"raw-preloads","version":"1.0.0"}"#,
+        ),
+        (
+            "index.html",
+            r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        ),
+        ("src/notes.md", "# Notes\n\nSome *text* with a {brace.\n"),
+        ("src/accounts.csv", "id,name\n1,\"Acme, Inc.\"\n"),
+        ("src/posts/one.md", "# One\n"),
+        ("src/posts/two.md", "# Two\n"),
+        ("src/util.js", "export const util = 1;\n"),
+        ("src/shared.js", "export const shared = 1;\n"),
+        (
+            "src/b.js",
+            "import sharedText from \"./shared.js?raw\";\nexport const b = sharedText;\n",
+        ),
+        ("src/style.css", ".x { color: blue; }\n"),
+        ("src/main.js", QUERIED_MAIN),
+    ]);
+    if let Some(plugins) = plugins {
+        app.write(&[("oj.plugins.mjs", plugins)]);
+    }
+    app
+}
+
+const QUERIED_MAIN: &str = "import notes from \"./notes.md?raw\";\n\
+     import accounts from \"./accounts.csv?raw\";\n\
+     import { util } from \"./util.js\";\n\
+     import utilText from \"./util.js?raw\";\n\
+     import { shared } from \"./shared.js\";\n\
+     import { b } from \"./b.js\";\n\
+     import css from \"./style.css?inline\";\n\
+     const posts = import.meta.glob(\"./posts/*.md\", { query: \"?raw\", import: \"default\", eager: true });\n\
+     window.__MAIN = [notes, accounts, util, utilText, shared, b, css, posts];\n";
+
+/// Each import under the url its importer names: `shared.js` is the module
+/// for the page's script and `shared.js?raw` for `b.js`, both preloaded.
+const QUERIED_PRELOADS: [&str; 10] = [
+    "/src/accounts.csv?raw",
+    "/src/b.js",
+    "/src/notes.md?raw",
+    "/src/posts/one.md?raw",
+    "/src/posts/two.md?raw",
+    "/src/shared.js",
+    "/src/style.css?inline",
+    "/src/util.js",
+    "/src/util.js?raw",
+    "/src/shared.js?raw",
+];
+
+/// The page's preloads are `QUERIED_PRELOADS` and each answers a script
+/// request with a module.
+async fn assert_queried_preloads(server: &crate::Server) {
+    let html = server.text("/").await;
+    let links = preloads(&html);
+    assert_eq!(links, QUERIED_PRELOADS, "{html}");
+    for url in &links {
+        let req = axum::http::Request::get(url.as_str())
+            .header("sec-fetch-dest", "script")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = server.request(req).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(res.headers["content-type"], "text/javascript", "{url}");
+    }
+}
+
+/// An import named with a query is preloaded under that url, the one its
+/// importer asks for: `?raw` of a Markdown or CSV file (a static import and
+/// each member of an eager glob), of a script, and a stylesheet's `?inline`.
+/// The bare path is another module (the script's own) or no module at all:
+/// the page used to preload `/src/notes.md`, which the browser refused as a
+/// script. Two modules naming one file by different urls each get theirs.
+///
+/// Vite's dev page has no preloads: the browser asks only for the urls
+/// vite:import-analysis wrote into the importer, each with its query, and
+/// vite:asset's load answers `?raw` with the file's text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queried_import_is_preloaded_under_its_query() {
+    let app = queried_imports_app(None);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    assert_queried_preloads(&server).await;
+    // The next boot's preloads, before its crawl is done: the same urls.
+    let snapshot: Vec<String> = serde_json::from_slice(
+        &std::fs::read(oj_cache::cache_root(&app.root).join("preload-snapshot.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot, QUERIED_PRELOADS);
+}
+
+/// The same page in an app with a plugin whose `transform` takes every id,
+/// as most apps have: there a script request for the bare `/src/notes.md`
+/// goes through the module pipeline, which compiled the Markdown as
+/// JavaScript and answered 500 with a parse error naming `notes.md.js`, once
+/// per preloaded file, with the error overlay over a page whose imports had
+/// all loaded. No preload names a Markdown or CSV file without its query,
+/// and every preload answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queried_import_preload_answers_where_a_plugin_takes_every_id() {
+    let app = queried_imports_app(Some(
+        "export default [{ name: \"takes-every-id\", transform() { return null; } }];\n",
+    ));
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    assert_queried_preloads(&server).await;
+    let bare: Vec<String> = preloads(&server.text("/").await)
+        .into_iter()
+        .filter(|url| url.ends_with(".md") || url.ends_with(".csv"))
+        .collect();
+    assert_eq!(bare, Vec::<String>::new());
+}
+
+/// The page's preloads once `/src/main.js` has been served again, polled
+/// until `done` says they are what an edit leaves.
+async fn preloads_after_edit(server: &crate::Server, done: impl Fn(&str, &[String]) -> bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let main = server.text("/src/main.js").await;
+        let links = preloads(&server.text("/").await);
+        if done(&main, &links) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the page's preloads never followed the edit: {links:?}\n{main}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// The preloads follow the importer's source: an import it no longer names
+/// with a query is no longer preloaded under it, and a file it stops
+/// importing is not preloaded at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_queried_import_is_no_longer_preloaded() {
+    let app = queried_imports_app(None);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    assert_queried_preloads(&server).await;
+    app.write(&[(
+        "src/main.js",
+        &QUERIED_MAIN
+            .replace(
+                "import notes from \"./notes.md?raw\";\n",
+                "const notes = 0;\n",
+            )
+            .replace(
+                "import utilText from \"./util.js?raw\";\n",
+                "const utilText = 0;\n",
+            ),
+    )]);
+    preloads_after_edit(&server, |_, links| {
+        let gone = |url: &str| !links.iter().any(|l| l == url);
+        gone("/src/notes.md?raw")
+            && gone("/src/notes.md")
+            && gone("/src/util.js?raw")
+            && !gone("/src/util.js")
+            && !gone("/src/accounts.csv?raw")
+    })
+    .await;
+}
+
+/// After a hot update, an importer names the updated module with the
+/// update's stamp (`/src/theme.js?t=..`, Vite's `lastHMRTimestamp` appended
+/// by import analysis), and the page's preload of it is that url, never the
+/// unstamped one: the preload and the import are one request. Here
+/// `widget.js` accepts its own updates and `theme.js`, which it imports, is
+/// edited; both are stamped.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hot_updated_imports_preload_is_the_url_its_importer_names() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"stamped-preloads","version":"1.0.0"}"#),
+        (
+            "index.html",
+            r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        ),
+        (
+            "src/main.js",
+            "import { widget } from \"./widget.js\";\nwindow.__MAIN = widget;\n",
+        ),
+        (
+            "src/widget.js",
+            "import { theme } from \"./theme.js\";\nexport const widget = theme;\nimport.meta.hot.accept();\n",
+        ),
+        ("src/theme.js", "export const theme = 1;\n"),
+    ]);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    assert_eq!(
+        preloads(&server.text("/").await),
+        ["/src/widget.js", "/src/theme.js"]
+    );
+    app.write(&[("src/theme.js", "export const theme = 2;\n")]);
+    let named = |code: &str, file: &str| {
+        Regex::new(&format!(r#""(/src/{file}\.js\?t=\d+)""#))
+            .unwrap()
+            .captures(code)
+            .map(|c| c[1].to_string())
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let main = server.text("/src/main.js").await;
+        let widget = server.text("/src/widget.js").await;
+        let links = preloads(&server.text("/").await);
+        if let (Some(widget_url), Some(theme_url)) =
+            (named(&main, "widget"), named(&widget, "theme"))
+        {
+            assert_eq!(links, [widget_url, theme_url]);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no importer named a stamped url: {links:?}\n{main}\n{widget}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// A snapshot an older version wrote is not read. It named a `?raw` import
+/// by its bare path, and the page gets the snapshot's list until the crawl
+/// is done, so the first load after an upgrade would preload `/src/notes.md`
+/// once more. The crawl is held here by a `transform` of the page's script
+/// that waits for a file the test writes; the list this version wrote is
+/// what the page preloads meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_with_bare_paths_from_an_older_version_is_not_read() {
+    let app = queried_imports_app(Some(
+        "import { existsSync } from \"node:fs\";\n\
+         const release = new URL(\"./release\", import.meta.url);\n\
+         export default [{ name: \"held-entry\", async transform(code, id) {\n\
+           if (!id.endsWith(\"/src/main.js\")) return null;\n\
+           while (!existsSync(release)) await new Promise((r) => setTimeout(r, 50));\n\
+           return null;\n\
+         } }];\n",
+    ));
+    let cache = oj_cache::cache_root(&app.root);
+    if !cache.starts_with(&app.root) {
+        eprintln!("skipping: OJ_CACHE_DIR shares the snapshot");
+        return;
+    }
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("graph-snapshot.json"),
+        r#"["/src/notes.md","/src/accounts.csv","/src/util.js"]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cache.join("preload-snapshot.json"),
+        r#"["/src/notes.md?raw","/src/util.js"]"#,
+    )
+    .unwrap();
+    let server = app.serve().await;
+    let html = server.text("/").await;
+    assert_eq!(
+        preloads(&html),
+        ["/src/notes.md?raw", "/src/util.js"],
+        "{html}"
+    );
+    // The crawl replaces the list and removes the older version's.
+    app.write(&[("release", "")]);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while preloads(&server.text("/").await) != QUERIED_PRELOADS {
+        assert!(tokio::time::Instant::now() < deadline, "the crawl's list");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!cache.join("graph-snapshot.json").exists());
 }
 
 /// Each page preloads its own graph: `about.html`, once its script has been

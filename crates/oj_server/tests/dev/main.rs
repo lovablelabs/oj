@@ -366,7 +366,7 @@ pub async fn crawled(root: &Path) -> bool {
         eprintln!("skipping the crawl wait: OJ_CACHE_DIR shares the graph snapshot");
         return false;
     }
-    let snapshot = cache.join("graph-snapshot.json");
+    let snapshot = cache.join("preload-snapshot.json");
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     while !snapshot.exists() {
         assert!(
