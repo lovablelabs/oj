@@ -428,6 +428,16 @@ fn the_as_option_maps_to_a_query() {
         url.contains("import(\"./content/a.md?url\").then((m) => m.default)"),
         "{url}"
     );
+    // An explicit namespace import beside `as` stays a namespace.
+    let star = glob(
+        "const m = import.meta.glob(\"./content/*.md\", { as: \"raw\", eager: true, import: \"*\" });",
+        &file,
+        &r,
+    );
+    assert!(
+        star.starts_with("import * as __oj_glob0_0 from \"./content/a.md?raw\";"),
+        "{star}"
+    );
     let bare = glob(
         "const m = import.meta.glob(\"./content/*.md\", { query: \"raw\" });",
         &file,

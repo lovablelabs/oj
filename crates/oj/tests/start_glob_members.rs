@@ -153,6 +153,38 @@ fn a_deleted_glob_member_leaves_the_render_and_the_bundle() {
     no_bundle_failure(&dev);
 }
 
+/// The deprecated `as: "raw"` glob option gives the files' text on the server
+/// render as it does in the client bundle (Vite's parseGlobOptions picks the
+/// default export for it), eager and lazy.
+#[test]
+fn an_as_raw_glob_renders_strings_on_the_server() {
+    let Some(app) = app("glob-as-raw") else {
+        return;
+    };
+    let root = app.0.clone();
+    with_notes(&root);
+    // `.txt`, so that no plugin of the app transforms the members.
+    std::fs::write(root.join("src/notes/a.txt"), "text a\n").unwrap();
+    std::fs::write(root.join("src/notes/b.txt"), "text b\n").unwrap();
+    std::fs::write(
+        root.join("src/widgets/notes.jsx"),
+        r#"const notes = import.meta.glob("../notes/*.txt", { as: "raw", eager: true });
+const lazy = import.meta.glob("../notes/a.txt", { as: "raw" });
+const first = await Object.values(lazy)[0]();
+export function Notes() {
+  const texts = Object.values(notes).map((v) => String(v).trim()).join(",");
+  return <span data-testid="raw-notes">{"astexts:" + texts + ";lazy:" + String(first).trim()}</span>;
+}
+"#,
+    )
+    .unwrap();
+    let dev = Server::oj_dev(&root);
+    let (home, entry) = served(&dev);
+    assert!(home.contains("astexts:text a,text b;lazy:text a"), "{home}");
+    assert!(entry.contains("text b"), "{entry}");
+    no_bundle_failure(&dev);
+}
+
 /// An open page sees the members come and go, with no manual refresh.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_open_page_follows_the_glob_members() {
