@@ -1287,6 +1287,75 @@ async fn a_nested_resolve_in_the_scan_is_a_scan_resolve() {
     assert_eq!(served.unwrap().as_deref(), Some("/scan-false"));
 }
 
+// Vite resolves an include entry with its own resolver and the aliases, not
+// the app's plugins (optimizer/resolve.ts createOptimizeDepsIncludeResolver
+// over createBackCompatIdResolver). A plugin that answers the app's import of
+// the dev JSX runtime with a virtual wrapper, which imports the real runtime
+// itself, must leave the listed runtime to pre-bundle; an import the crawl
+// meets still asks the plugins.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_include_entry_resolves_without_the_apps_plugins() {
+    let app = App::new();
+    app.write(
+        "node_modules/react/package.json",
+        r#"{"name":"react","version":"1.0.0"}"#,
+    );
+    app.write(
+        "node_modules/react/jsx-dev-runtime.js",
+        "exports.jsxDEV = () => null;\n",
+    );
+    app.esm("claimed", &[("index.js", "export default 1;\n")]);
+    app.write(
+        "main.js",
+        "import \"react/jsx-dev-runtime\";\nimport \"claimed\";\n",
+    );
+    app.write(
+        "oj.plugins.mjs",
+        r#"const WRAPPER = "\0wrapped-jsx-dev-runtime";
+export default [{
+  name: "wrap-jsx-dev-runtime",
+  enforce: "pre",
+  resolveId(id, importer) {
+    if (id === "react/jsx-dev-runtime" && !importer?.includes(WRAPPER)) return WRAPPER;
+    if (id === "claimed") return "\0claimed";
+    return null;
+  },
+}];
+"#,
+    );
+    let config = json!({
+        "config": { "root": app.root().display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = crate::plugins::PluginHost::spawn(
+        &app.root(),
+        &app.root().join("oj.plugins.mjs"),
+        &config,
+        None,
+    )
+    .await
+    .expect("the plugin host spawns");
+    let input = OptimizeInput {
+        entries: app.entry("main.js"),
+        include: strings(&["react/jsx-dev-runtime"]),
+        ..Default::default()
+    };
+    let pre = app.prebundle(&input, &[]);
+    let scanned = pre.scan(Some(&host)).await;
+    host.shutdown();
+    let found: BTreeMap<_, _> = scanned.into_iter().collect();
+    assert_eq!(
+        found.get("react/jsx-dev-runtime"),
+        Some(&app.root().join("node_modules/react/jsx-dev-runtime.js")),
+        "the include entry did not resolve to the package: {found:?}"
+    );
+    assert!(
+        !found.contains_key("claimed"),
+        "a crawled import a plugin answers virtually is not a dep: {found:?}"
+    );
+}
+
 /// The Rust reader of React's CommonJS export names must agree with
 /// requiring the package (dep-names.mjs), for every facade dep and both
 /// NODE_ENVs, or a named import of a React API resolves to undefined.

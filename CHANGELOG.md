@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dev server: an `optimizeDeps.include` entry resolves without the app's plugins, as in Vite (optimizer/resolve.ts `createOptimizeDepsIncludeResolver`, which resolves through the aliases and Vite's own resolver alone). The dependency scan asked the plugins first, so where a plugin answers the app's import of `react/jsx-dev-runtime` with a virtual wrapper module (a plugin that tags elements with their source does), the entry `@vitejs/plugin-react` lists was reported as `failed to resolve dependency "react/jsx-dev-runtime", present in 'optimizeDeps.include'` and left out of the first pre-bundle. An import the scan meets in the app's source still asks the plugins.
 - `import.meta.glob` with the deprecated `as: "raw"` or `as: "url"` option gives each file's text or URL in the dev server, `oj build` and the TanStack Start server render, eager and lazy. Vite's `parseGlobOptions` sets `import: "default"` for these two values; oj only added the query, so the map held module namespaces (`{ default: "..." }`) there while the TanStack Start client bundle held the strings, and a Start page rendering such a glob got the namespace objects on the server and the text in the browser (a failed server render or a hydration mismatch). An explicit `import: "*"` beside `as` keeps the namespace, in the Start client bundle too, where it was replaced by the default export.
 
 ## [0.4.17] - 2026-11-18
