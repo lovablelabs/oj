@@ -261,6 +261,13 @@ impl HotSession {
                 seen.remove(p);
             }
             if changed.iter().any(|p| !p.exists()) || failed_on_a_deleted_file(&err) {
+                // Asked for here, not left to `latest_output` reading the
+                // engine's state: a second watcher event for the deleted
+                // file starts another update, and the state reads as a
+                // build in progress, not as the failed update, while it
+                // runs. The output before the deletion would stand as the
+                // current one.
+                let _ = self.engine.trigger_full_build();
                 return Ok(false);
             }
             return Err(err);
@@ -695,7 +702,11 @@ mod tests {
         until("the engine never saw the write", || {
             session.events.seen.lock().unwrap().contains_key(&name)
         });
+        // The engine's task is over, and its coordinator has taken the
+        // task's end in (it answers in order): the files the task loaded
+        // are watched before the next change is made.
         let _ = session.engine.wait_for_ongoing_bundle().await;
+        let _ = session.engine.get_bundle_state().await;
     }
 
     /// `file` is deleted, and the engine's update over it has failed.
@@ -781,7 +792,10 @@ mod tests {
 
         let settled = session.settle(std::slice::from_ref(&edited), true).await;
         let failure = match settled {
-            Ok(_) => session.latest_output().await.map(|_| ()),
+            Ok(_) => session
+                .latest_output()
+                .await
+                .map(|(output, _)| code(&output)),
             Err(err) => Err(err),
         };
         let message = failure.expect_err("the import of a deleted file fails the rebundle");
