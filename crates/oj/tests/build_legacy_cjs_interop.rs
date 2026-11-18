@@ -156,21 +156,20 @@ fn build_both(legacy: bool) -> Option<[String; 2]> {
     // The worker's bundle, run with a `postMessage` that prints.
     let worker = |dist: &str| {
         let mut stack = vec![root.join(dist)];
-        let mut found = None;
+        let mut found = Vec::new();
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap().flatten() {
                 let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("worker"))
-                {
-                    found = Some(path);
+                } else if name.starts_with("worker-") && name.ends_with(".js") {
+                    found.push(path);
                 }
             }
         }
-        let file = found.unwrap_or_else(|| panic!("the worker's file in {dist}"));
+        assert_eq!(found.len(), 1, "one worker bundle in {dist}: {found:?}");
+        let file = &found[0];
         output(Command::new("node").args([
             "--input-type=module",
             "-e",
