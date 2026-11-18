@@ -231,13 +231,12 @@ impl InteropRewriter<'_> {
                 }
                 // Vite's transformCjsImport: the namespace of a CommonJS dep
                 // is module.exports spread beside `default`, so a name the
-                // dep only assigns at runtime (a UMD wrapper) is a member. A
-                // module that exports names of its own already is one.
+                // dep only assigns at runtime (a UMD wrapper) is a member.
+                // The helper a dynamic import goes through builds it, so
+                // both forms of one dep have the same members.
                 ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                    out.push_str(&format!(
-                        "const {} = {ns}.__cjs_exports === undefined && Object.keys({ns}).some((k) => k !== \"default\") ? {ns} : {{ ...((typeof {cjs} === \"object\" && !Array.isArray({cjs})) || typeof {cjs} === \"function\" ? {cjs} : {{}}), default: {cjs} }};",
-                        s.local.name
-                    ));
+                    self.needs_ns_helper = true;
+                    out.push_str(&format!("const {} = __oj_dyn_interop({ns});", s.local.name));
                 }
                 ImportDeclarationSpecifier::ImportSpecifier(s) => {
                     let key = json_key(&export_name(&s.imported));
@@ -283,7 +282,9 @@ impl InteropRewriter<'_> {
 
     /// `export * as ns from "cjs"`: consumers must see the interop namespace
     /// (module.exports as `default` plus its properties), the shape the
-    /// dynamic-import helper builds, so build it with that helper.
+    /// dynamic-import helper builds, so build it with that helper. Vite only
+    /// rewrites the URL here, so its `ns` is the pre-bundle's ES namespace:
+    /// `ns.default` is module.exports there too, without the other members.
     ///
     /// A bare `export * from "cjs"` is left alone on purpose: ESM has no
     /// dynamic named exports, so a rewrite could only forward statically known
@@ -333,10 +334,21 @@ fn cjs_import(ns: &str, cjs: &str, url: &str) -> String {
     )
 }
 
-/// Vite's `interopNamespace` for a dynamically imported CommonJS dependency: the
-/// CJS value becomes `default`, and its own properties the named exports, unless
-/// it already is an ES module namespace.
-const DYN_INTEROP_HELPER: &str = "const __oj_dyn_interop = (m) => { const v = m && m.__cjs_exports !== undefined ? m.__cjs_exports : (m && m.default !== undefined ? m.default : m); if (v && v.__esModule) return v; return (v && typeof v === \"object\") || typeof v === \"function\" ? Object.assign(Object.create(null), v, { default: v }) : { default: v }; };\n";
+/// Vite's `interopHelper` (importAnalysis) in its Node mode, for a namespace
+/// or dynamic import of a CommonJS dependency: module.exports becomes
+/// `default` and its own enumerable properties the other members (none for
+/// an array or a primitive), whether or not it is flagged `__esModule`.
+///
+/// A module that is not oj-wrapped CommonJS (no `__cjs_exports`) and exports
+/// a name besides `default` keeps its ES namespace: it is an ES module
+/// flagged for interop, whose names are not on its `default`.
+///
+/// The helper sits in the module's own scope, where a top-level binding may
+/// be called `Object` or `Array` (`import { Array } from "effect"`), so it
+/// reaches both through a literal's constructor. `getOwnPropertyNames` lists
+/// a namespace's names without reading the bindings, which `Object.keys`
+/// does, throwing for one still uninitialised in an import cycle.
+const DYN_INTEROP_HELPER: &str = "const __oj_dyn_interop = (m) => { if (m && m.__cjs_exports === undefined && ({}).constructor.getOwnPropertyNames(m).some((k) => k !== \"default\")) return m; const v = m && m.__cjs_exports !== undefined ? m.__cjs_exports : (m && m.default !== undefined ? m.default : m); return { ...((typeof v === \"object\" && ![].constructor.isArray(v)) || typeof v === \"function\" ? v : {}), default: v }; };\n";
 
 struct DynamicImportInterop<'i> {
     interop: &'i dyn Fn(&str) -> Option<String>,
@@ -468,15 +480,26 @@ mod tests {
     fn namespace_import_binds_module_exports() {
         let out = run(r#"import * as ns from "cjs-dep";"#);
         assert!(
-            out.contains(r#"? __ojcjs0 : {}), default: __ojcjs0 };"#),
-            "the namespace is module.exports beside default: {out}"
+            out.starts_with("const __oj_dyn_interop = "),
+            "helper prepended: {out}"
         );
         assert!(
-            out.contains(
-                "const ns = __ojns0.__cjs_exports === undefined && Object.keys(__ojns0).some("
-            ),
-            "a module with names of its own stays its namespace: {out}"
+            out.contains("const ns = __oj_dyn_interop(__ojns0);"),
+            "{out}"
         );
+    }
+
+    /// The helper names no global a module could shadow, and lists a
+    /// namespace's names without reading its bindings.
+    #[test]
+    fn interop_helper_names_no_shadowable_global() {
+        for global in ["Object", "Array", "Reflect", "globalThis"] {
+            assert!(
+                !DYN_INTEROP_HELPER.contains(global),
+                "{global} in {DYN_INTEROP_HELPER}"
+            );
+        }
+        assert!(DYN_INTEROP_HELPER.contains("getOwnPropertyNames(m)"));
     }
 
     #[test]
