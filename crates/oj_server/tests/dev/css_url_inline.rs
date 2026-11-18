@@ -211,7 +211,8 @@ async fn accept_and_fetch_dest_tell_a_link_from_an_import() {
 
     const LINK: &str = "text/css,*/*;q=0.1";
     // (url, headers, whether the answer is the stylesheet)
-    let cases: [(&str, &[(&str, &str)], bool); 9] = [
+    type Headers<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(&str, Headers, bool); 9] = [
         ("/src/a.css?import", &[("accept", LINK)], true),
         ("/src/a.css?import", &[("accept", "*/*")], false),
         ("/src/a.css", &[], false),
