@@ -159,7 +159,10 @@ pub(crate) async fn serve_plugin_resolve(state: &Arc<ServerState>, id: &str) -> 
             .filter(|meta| !meta.needs_interop)
             .map(|meta| meta.url.clone())
     };
-    compiled_response(compile_plugin_source(state, source, format!("\0{id}"), pre).await)
+    // The importer its imports resolve from is the id as resolved, with the
+    // `\0` the plugin gave it and no other (Vite's importAnalysis passes
+    // `importerModule.id`).
+    compiled_response(compile_plugin_source(state, source, id.to_string(), pre).await)
 }
 
 /// Vite's browser-externalized node builtin: a Proxy whose property reads warn
