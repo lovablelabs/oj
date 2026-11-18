@@ -551,8 +551,11 @@ fn with_hot_updates_a_chunk_is_revalidated_not_cached_for_good() {
         assert!(served.is_empty(), "a 304 has no body");
         assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
         assert_eq!(header(&headers, "etag"), Some(etag.as_str()));
-        let (status, _, served) =
-            dev.fetch("GET", &path, &[("If-None-Match", "W/\"other\"".to_string())]);
+        let (status, _, served) = dev.fetch(
+            "GET",
+            &path,
+            &[("If-None-Match", "W/\"other\"".to_string())],
+        );
         assert_eq!(status, 200, "{name} asked for with another ETag");
         assert_eq!(String::from_utf8_lossy(&served), body, "{name}");
     };
