@@ -1515,9 +1515,8 @@ async fn bundle_worker_inline_with(
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
     // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
-        .and_then(|o| alias_plugin(root, &o.config))
-        .into_iter()
-        .collect();
+        .map(|o| resolve_plugins(root, &o.config))
+        .unwrap_or_default();
     if let Some(container) = &container {
         plugins.push(Pluginable::new_shared(
             OjUserPlugin::new(
@@ -1575,9 +1574,8 @@ async fn bundle_worker_entry_with(
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
     // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
-        .and_then(|o| alias_plugin(root, &o.config))
-        .into_iter()
-        .collect();
+        .map(|o| resolve_plugins(root, &o.config))
+        .unwrap_or_default();
     if let Some(container) = &container {
         plugins.push(Pluginable::new_shared(
             OjUserPlugin::new(
@@ -2421,6 +2419,87 @@ async fn preprocess_via_engine(
         .compile_path(css, css_file, options, false)
         .await
         .map_err(|e| anyhow::anyhow!("css preprocess failed for {}: {e}", css_file.display()))
+}
+
+/// The plugins that open a bundle's list (the app's, a library's, the SSR
+/// build's, a worker's): the one for `legacy.inconsistentCjsInterop` when
+/// it is set, then the app's aliases. Vite's resolve plugin, which carries
+/// the option, is in each of those bundles' lists too.
+fn resolve_plugins(root: &Path, config: &oj_config::OjConfig) -> Vec<SharedPluginable> {
+    let legacy = config
+        .legacy
+        .as_ref()
+        .and_then(|legacy| legacy.inconsistent_cjs_interop)
+        == Some(true);
+    legacy
+        .then(|| Pluginable::new_shared(LegacyCjsInteropPlugin))
+        .into_iter()
+        .chain(alias_plugin(root, config))
+        .collect()
+}
+
+/// Vite's `legacy.inconsistentCjsInterop` in a build. rolldown reads a
+/// CommonJS module flagged `__esModule` by its importer: one that is an ES
+/// module to Node (by its extension or its package.json's `type`) gets
+/// module.exports as the default import, any other the module's own
+/// `default`. With the option Vite's resolve plugin leaves the package.json
+/// out of every resolution it reports (rolldown_plugin_vite_resolve,
+/// `package_json_path: (!legacy_inconsistent_cjs_interop).then(...)`), so no
+/// module's package type is known and every importer is read the second
+/// way. This plugin does the same to whatever the plugins after it and
+/// rolldown's own resolver answer, keeping the package's `sideEffects`
+/// verdict, which rolldown would otherwise read off that package.json.
+#[derive(Debug)]
+struct LegacyCjsInteropPlugin;
+
+impl Plugin for LegacyCjsInteropPlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:legacy-inconsistent-cjs-interop")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        let options = rolldown_plugin::PluginContextResolveOptions {
+            import_kind: args.kind,
+            is_entry: args.is_entry,
+            skip_self: true,
+            custom: Arc::clone(&args.custom),
+            attributes: args.attributes.clone(),
+        };
+        let Ok(resolved) = ctx
+            .resolve(args.specifier, args.importer, Some(options))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let side_effects = resolved.side_effects.or_else(|| {
+            // The patterns are relative to the package's directory, by its
+            // real path, as rolldown and Vite's resolve plugin test them.
+            let package = resolved.package_json.as_ref()?;
+            let relative = resolved.id.relative_path(package.realpath().parent()?);
+            let verdict = package.check_side_effects_for(&relative.to_string_lossy())?;
+            Some(if verdict {
+                rolldown_common::side_effects::HookSideEffects::True
+            } else {
+                rolldown_common::side_effects::HookSideEffects::False
+            })
+        });
+        Ok(Some(HookResolveIdOutput {
+            id: resolved.id.as_arc_str().clone(),
+            external: Some(resolved.external),
+            normalize_external_id: resolved.normalize_external_id,
+            side_effects,
+            package_json_path: None,
+            attributes: Some(resolved.attributes),
+        }))
+    }
 }
 
 /// `resolve.alias` as the bundle's first plugin, as Vite's alias plugin
@@ -4061,7 +4140,7 @@ pub async fn build(
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(&root, &config).into_iter().collect();
+    let mut oj_plugins: Vec<SharedPluginable> = resolve_plugins(&root, &config);
     let stylex =
         oj_server::stylex::plugin_for(&root, &config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -5537,7 +5616,7 @@ pub(crate) async fn build_ssr(
     })));
 
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
+    let mut oj_plugins: Vec<SharedPluginable> = resolve_plugins(root, config);
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -6148,7 +6227,7 @@ async fn build_client_entry(
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
+    let mut oj_plugins: Vec<SharedPluginable> = resolve_plugins(root, config);
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -6459,8 +6538,7 @@ async fn build_library(
                 rolldown_minify(minify)
             };
 
-            let mut plugins: Vec<SharedPluginable> =
-                alias_plugin(root, config).into_iter().collect();
+            let mut plugins: Vec<SharedPluginable> = resolve_plugins(root, config);
             if let Some(plugin) = &stylex {
                 plugins.push(crate::stylex_plugin::transform(plugin));
             }

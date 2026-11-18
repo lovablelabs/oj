@@ -2131,8 +2131,10 @@ mod tests {
 
     #[test]
     fn needs_interop_defaults_to_true_when_the_optimizer_does_not_say() {
-        // Interop is the safe default: assuming an ESM dep needs none would
-        // break `import x from "cjs-dep"` at runtime.
+        // A manifest without the key: oj's writer and Vite's always set it,
+        // and Vite's reader works it out from the entry's source when it is
+        // missing. Flagged, the dep is imported by its `default`, which a
+        // CommonJS dep's pre-bundle has; an ES dep's may not.
         let v: serde_json::Value = serde_json::from_str(r#"{"dep":{"file":"dep.js"}}"#).unwrap();
         let map = parse_metadata(&v, "0123456789abcdef").unwrap();
         assert!(map["dep"].needs_interop);

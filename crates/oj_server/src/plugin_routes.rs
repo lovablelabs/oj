@@ -329,11 +329,136 @@ pub(crate) fn is_cjs_dep_file(memo: &Mutex<HashMap<PathBuf, bool>>, path: &Path)
     );
     let v = is_js
         && match std::fs::read_to_string(path) {
-            Ok(src) => !oj_compiler::cjs::has_module_syntax_pub(path, &src),
+            // A file that does not parse (JSX in a `.js`) is not known to
+            // be CommonJS: flagging it would have its importers import a
+            // `default` its pre-bundle may not have.
+            Ok(src) => oj_compiler::cjs::is_commonjs_source(&src),
             Err(_) => false,
         };
     memo.lock().unwrap().insert(path.to_path_buf(), v);
     v
+}
+
+/// What decides how Node reads an importing file, for the interop of its
+/// imports of CommonJS deps (see [`importer_format`]).
+pub(crate) struct ImporterFormats {
+    /// Vite's `legacy.inconsistentCjsInterop`: no importer is in Node mode.
+    legacy: bool,
+    /// Each package.json read so far.
+    manifests: Mutex<HashMap<PathBuf, (ManifestStamp, ManifestType)>>,
+    /// The format each served module was last compiled under, by url: a
+    /// compile the memory cache holds is stale once it differs.
+    compiled: Mutex<HashMap<String, oj_compiler::interop::ImporterFormat>>,
+}
+
+/// A package.json's modification time and size when it was read.
+type ManifestStamp = (Option<std::time::SystemTime>, u64);
+/// What a package.json said: None for one Vite cannot load, else its `type`.
+type ManifestType = Option<Option<String>>;
+
+impl ImporterFormats {
+    pub(crate) fn new(legacy: bool) -> Self {
+        Self {
+            legacy,
+            manifests: Mutex::default(),
+            compiled: Mutex::default(),
+        }
+    }
+
+    /// Records the format `url` is being compiled under.
+    pub(crate) fn compiled(&self, url: &str, format: oj_compiler::interop::ImporterFormat) {
+        self.compiled
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), format);
+    }
+
+    /// Whether `url`'s last compile was under the format `file` has now.
+    pub(crate) fn current(&self, url: &str, file: &Path) -> bool {
+        let last = self.compiled.lock().unwrap().get(url).copied();
+        last.is_none_or(|last| last == importer_format(self, &importer_id(file, url)))
+    }
+}
+
+/// The id Vite's import analysis has for a module: its file with the query
+/// of the url it was requested under.
+pub(crate) fn importer_id(file: &Path, url: &str) -> String {
+    match url.split_once('?') {
+        Some((_, query)) => format!("{}?{query}", file.display()),
+        None => file.to_string_lossy().into_owned(),
+    }
+}
+
+/// How Node reads the module `id` (a file path, with the query it was
+/// requested under), for the interop of its imports of CommonJS deps:
+/// Vite's `isFilePathESM` and `isFilePathFormatExplicit` (utils.ts), by the
+/// extension the id ends with, else by the `type` of the nearest
+/// package.json Vite can load (`findNearestPackageData`); neither under
+/// `legacy.inconsistentCjsInterop` (importAnalysis.ts, `isNodeMode` and
+/// `isNodeModeForDynamicImport`). An id starting with `\0` is an ES module,
+/// one that is no absolute path is not.
+///
+/// Each call walks up from the file's directory with one stat per directory
+/// and reads a package.json only when its stamp moved, so one created,
+/// deleted or changed while the server runs counts from the next request.
+/// Vite's watcher drops a changed or deleted one from its package cache.
+pub(crate) fn importer_format(
+    formats: &ImporterFormats,
+    id: &str,
+) -> oj_compiler::interop::ImporterFormat {
+    use oj_compiler::interop::ImporterFormat;
+    let none = ImporterFormat {
+        esm: false,
+        explicit: false,
+    };
+    if formats.legacy {
+        return none;
+    }
+    // Vite tests the whole id, so a query hides the extension.
+    if id.ends_with(".mjs") || id.ends_with(".mts") {
+        return ImporterFormat::ESM;
+    }
+    if id.ends_with(".cjs") || id.ends_with(".cts") {
+        return ImporterFormat {
+            esm: false,
+            explicit: true,
+        };
+    }
+    if id.starts_with('\0') {
+        return ImporterFormat::ESM;
+    }
+    let file = Path::new(id.split('?').next().unwrap_or(id));
+    let Some(dir) = file.parent().filter(|_| file.is_absolute()) else {
+        return none;
+    };
+    for dir in dir.ancestors() {
+        let manifest = dir.join("package.json");
+        let Ok(meta) = std::fs::metadata(&manifest) else {
+            continue;
+        };
+        let stamp: ManifestStamp = (meta.modified().ok(), meta.len());
+        let known = formats.manifests.lock().unwrap().get(&manifest).cloned();
+        let kind = match known {
+            Some((at, kind)) if at == stamp => kind,
+            _ => {
+                let kind = oj_config::manifest_type(&manifest);
+                formats
+                    .manifests
+                    .lock()
+                    .unwrap()
+                    .insert(manifest, (stamp, kind.clone()));
+                kind
+            }
+        };
+        // One Vite cannot load is passed over for the next one up.
+        if let Some(kind) = kind {
+            return ImporterFormat {
+                esm: kind.as_deref() == Some("module"),
+                explicit: matches!(kind.as_deref(), Some("module" | "commonjs")),
+            };
+        }
+    }
+    none
 }
 
 pub(crate) fn warn_lingui_macro_shim_once() {
@@ -345,4 +470,91 @@ pub(crate) fn warn_lingui_macro_shim_once() {
              which is what normally compiles these macros."
         );
     });
+}
+
+#[cfg(test)]
+mod importer_format_tests {
+    use super::*;
+    use oj_compiler::interop::ImporterFormat;
+
+    const NONE: ImporterFormat = ImporterFormat {
+        esm: false,
+        explicit: false,
+    };
+    const CJS: ImporterFormat = ImporterFormat {
+        esm: false,
+        explicit: true,
+    };
+
+    #[test]
+    fn the_extension_then_the_nearest_loadable_package_json_decide() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let write = |rel: &str, body: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        write("package.json", r#"{"type":"module"}"#);
+        write("cjs/package.json", r#"{"type":"commonjs"}"#);
+        write("plain/package.json", r#"{"name":"plain"}"#);
+        // Not a manifest to Vite: passed over for the one above.
+        write("broken/package.json", "");
+        write("null/package.json", "null");
+        let formats = ImporterFormats::new(false);
+        let of = |rel: &str| importer_format(&formats, &root.join(rel).to_string_lossy());
+        assert_eq!(of("src/a.js"), ImporterFormat::ESM);
+        assert_eq!(of("src/deep/er/a.tsx"), ImporterFormat::ESM, "walks up");
+        assert_eq!(of("cjs/a.js"), CJS);
+        assert_eq!(of("plain/a.js"), NONE);
+        assert_eq!(of("broken/a.js"), ImporterFormat::ESM);
+        assert_eq!(of("null/a.js"), ImporterFormat::ESM);
+        // The extension wins over the package.
+        assert_eq!(of("plain/a.mjs"), ImporterFormat::ESM);
+        assert_eq!(of("plain/a.mts"), ImporterFormat::ESM);
+        assert_eq!(of("src/a.cjs"), CJS);
+        assert_eq!(of("src/a.cts"), CJS);
+        // Vite tests the id with its query, which hides the extension.
+        assert_eq!(of("plain/a.mjs?raw"), NONE);
+        assert_eq!(of("src/a.cjs?worker"), ImporterFormat::ESM);
+        // A virtual id is an ES module; a relative one is not.
+        assert_eq!(
+            importer_format(&formats, "\0virtual:x"),
+            ImporterFormat::ESM
+        );
+        assert_eq!(importer_format(&formats, "relative/a.js"), NONE);
+        // legacy.inconsistentCjsInterop: nothing is.
+        let legacy = ImporterFormats::new(true);
+        for rel in ["src/a.js", "src/a.mjs", "cjs/a.js"] {
+            assert_eq!(
+                importer_format(&legacy, &root.join(rel).to_string_lossy()),
+                NONE,
+                "{rel}"
+            );
+        }
+    }
+
+    /// The provisional verdict for a dep read at serve time: CommonJS only
+    /// when the file parses and has no module syntax.
+    #[test]
+    fn a_dep_file_that_does_not_parse_is_not_taken_for_commonjs() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo = Mutex::new(HashMap::new());
+        let verdict = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            is_cjs_dep_file(&memo, &path)
+        };
+        assert!(verdict("cjs.js", "module.exports = { a: 1 };\n"));
+        assert!(!verdict("esm.js", "export const a = 1;\n"));
+        assert!(!verdict(
+            "jsx.js",
+            "import React from \"react\";\nexport const A = () => <p />;\n"
+        ));
+        assert!(!verdict(
+            "flow.js",
+            "// @flow\nexport function f(a: number): number { return a; }\n"
+        ));
+        assert!(!verdict("style.css", "a { color: red }\n"));
+    }
 }

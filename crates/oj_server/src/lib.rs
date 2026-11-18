@@ -364,6 +364,8 @@ struct ServerState {
     /// Memo of is_cjs_dep_file's per-file verdict (a read + syntax probe):
     /// dep files do not change within a session, like `dir_cache`.
     cjs_dep_memo: Mutex<HashMap<PathBuf, bool>>,
+    /// See [`plugin_routes::importer_format`].
+    importer_formats: plugin_routes::ImporterFormats,
     /// See `canonicalize_memo`.
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
@@ -2340,6 +2342,13 @@ impl DevServer {
                     .collect(),
             ),
             cjs_dep_memo: Mutex::new(HashMap::new()),
+            importer_formats: plugin_routes::ImporterFormats::new(
+                config
+                    .legacy
+                    .as_ref()
+                    .and_then(|l| l.inconsistent_cjs_interop)
+                    == Some(true),
+            ),
             canon_memo: Mutex::new(std::collections::HashMap::new()),
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,

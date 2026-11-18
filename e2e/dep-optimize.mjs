@@ -61,7 +61,7 @@ try {
   assert.equal(main.status, 200);
   // Vite's ensureVersionQuery: the dep URL carries `?v=<browserHash>` so the
   // browser may cache it forever (a re-optimize changes the hash, so the URL).
-  const depUrl = main.body.match(/import \* as __ojns0 from "(\/@oj-deps\/cjs-lib\.mjs\?v=[0-9a-f]{8})"/)?.[1];
+  const depUrl = main.body.match(/import __ojcjs0 from "(\/@oj-deps\/cjs-lib\.mjs\?v=[0-9a-f]{8})"/)?.[1];
   assert.ok(depUrl, `consumer redirected to the versioned optimized dep:\n${main.body}`);
   assert.match(main.body, /const \{ greet[^}]*\} = __ojcjs0/, "named import destructured from the cjs value");
 

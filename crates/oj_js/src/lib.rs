@@ -11,6 +11,7 @@
 //! two runtimes are dropped on the same thread.
 
 mod bridge;
+mod cjs_names;
 pub mod code_cache;
 /// The engine's OpenTelemetry pipeline, the very crate (and so the very
 /// `OTEL_GLOBALS`) the runtime was built with.

@@ -63,6 +63,24 @@ pub fn has_module_syntax_pub(path: &Path, source_text: &str) -> bool {
     has_module_syntax(path, source_text)
 }
 
+/// Whether `source_text` reads as CommonJS: it parses as a module with no
+/// import or export, or only as a script (sloppy-mode code a module parse
+/// refuses: a reserved word as a binding, `with`, an octal literal). One
+/// that parses as neither (JSX or Flow shipped in a `.js` file) is not known
+/// to be, where [`has_module_syntax_pub`] says "no module syntax" for it.
+pub fn is_commonjs_source(source_text: &str) -> bool {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
+    if !parsed.fatal_error {
+        return !parsed.program.body.iter().any(is_module_statement);
+    }
+    // `import` and `export` are diagnostics a script parse recovers from,
+    // so the recovered body is asked too.
+    let allocator = Allocator::default();
+    let script = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
+    !script.fatal_error && !script.program.body.iter().any(is_module_statement)
+}
+
 #[derive(Debug)]
 pub struct CjsFactoryAnalysis {
     pub body: String,
@@ -102,20 +120,19 @@ fn dedup_in_order(items: Vec<String>) -> Vec<String> {
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
-    if parsed.fatal_error {
-        return false;
-    }
-    parsed.program.body.iter().any(|stmt| {
-        matches!(
-            stmt,
-            Statement::ImportDeclaration(_)
-                | Statement::ExportDeclaration(_)
-                | Statement::ExportNamedDeclaration(_)
-                | Statement::ExportFromDeclaration(_)
-                | Statement::ExportAllDeclaration(_)
-                | Statement::ExportDefaultDeclaration(_)
-        )
-    })
+    !parsed.fatal_error && parsed.program.body.iter().any(is_module_statement)
+}
+
+fn is_module_statement(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::ImportDeclaration(_)
+            | Statement::ExportDeclaration(_)
+            | Statement::ExportNamedDeclaration(_)
+            | Statement::ExportFromDeclaration(_)
+            | Statement::ExportAllDeclaration(_)
+            | Statement::ExportDefaultDeclaration(_)
+    )
 }
 
 /// A CJS module after NODE_ENV folding and DCE, plus what it requires/exports.
@@ -1069,6 +1086,30 @@ exports.named = 1;
         assert!(has_module_syntax_pub(p, "export * from './m';"));
         assert!(has_module_syntax_pub(p, "export default 1;"));
         assert!(!has_module_syntax_pub(p, "module.exports = { a: 1 };"));
+        assert!(is_commonjs_source("module.exports = { a: 1 };"));
+        assert!(!is_commonjs_source("export const a = 1;"));
+        // An ES module that only parses as JSX is not CommonJS.
+        let jsx = "import React from 'react';\nexport const A = () => <p />;\n";
+        assert!(!has_module_syntax_pub(p, jsx) && !is_commonjs_source(jsx));
+        // Sloppy-mode CommonJS that is fatal to a module parse (`await` as
+        // an identifier) is judged by a script parse.
+        for sloppy in [
+            "module.exports = await;\n",
+            "var await = 1;\nmodule.exports = await;\n",
+        ] {
+            let allocator = Allocator::default();
+            assert!(
+                Parser::new(&allocator, sloppy, SourceType::mjs())
+                    .parse()
+                    .fatal_error,
+                "{sloppy}"
+            );
+            assert!(is_commonjs_source(sloppy), "{sloppy}");
+        }
+        // A script parse recovers from `export`: such a file is no CommonJS.
+        assert!(!is_commonjs_source(
+            "var await = 1;\nexport const a = await;\n"
+        ));
         assert!(!has_module_syntax_pub(p, "const x = require('y');"));
         assert!(!has_module_syntax_pub(p, "const p = import('y');"));
     }

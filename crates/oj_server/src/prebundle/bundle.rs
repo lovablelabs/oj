@@ -103,10 +103,13 @@ fn single_default(exports: &[String]) -> bool {
 
 /// Vite's needsInterop (optimizer/index.ts) minus the forced list: the entry
 /// has no ESM syntax (CJS, UMD), or the bundle collapsed an ESM entry into a
-/// lone default export (a peer require()d it).
+/// lone default export (a peer require()d it). An entry whose source cannot
+/// be read is taken for CommonJS only when its bundle exports a lone
+/// default, as a CommonJS entry's does: its importers import that default,
+/// so one with no exports must not be flagged.
 fn needs_interop(facade: Option<&Path>, generated: &[String]) -> bool {
     match facade.filter(|f| f.is_absolute()).and_then(shape_of) {
-        None => generated.is_empty() || single_default(generated),
+        None => single_default(generated),
         Some(shape) if !shape.has_module_syntax => true,
         Some(shape) => single_default(generated) && !single_default(&shape.exports),
     }
@@ -679,4 +682,23 @@ fn diagnostics(errs: &[rolldown_error::BuildDiagnostic]) -> String {
         .map(|e| crate::load_error::render(e).to_string())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod needs_interop_tests {
+    use super::needs_interop;
+
+    /// An entry whose source cannot be read (no facade, a virtual id): its
+    /// importers import the bundle's `default`, so it is flagged only when
+    /// the bundle exports that alone, never when it exports nothing.
+    #[test]
+    fn an_unreadable_entry_is_flagged_only_for_a_lone_default_export() {
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        for facade in [None, Some(std::path::Path::new("virtual:entry"))] {
+            assert!(!needs_interop(facade, &[]), "no exports");
+            assert!(needs_interop(facade, &names(&["default"])));
+            assert!(!needs_interop(facade, &names(&["default", "a"])));
+            assert!(!needs_interop(facade, &names(&["a"])));
+        }
+    }
 }

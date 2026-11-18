@@ -68,9 +68,11 @@ pub(crate) async fn serve_vite_dep_url(
     dep_response(headers, false, code.into_bytes())
 }
 
-/// Whether the pre-bundle entry has a default export to re-export: a
-/// CommonJS dep's always does (its bundle exports `module.exports` as the
-/// default, and the named-export facade re-exports it); an ES module dep's
+/// Whether the pre-bundle entry has a default export to re-export: a dep
+/// flagged for interop is imported by its default (a CommonJS dep's bundle
+/// exports `module.exports` as it, and the named-export facade re-exports
+/// it; an ES module forced onto the list without one does not link either
+/// way); any other ES module dep's
 /// entry is read, as `export *` passes over the default and a re-export of
 /// one the entry lacks would fail to link.
 fn pre_bundle_has_default(state: &ServerState, meta: &optimize::DepMeta) -> bool {

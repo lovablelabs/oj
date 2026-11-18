@@ -1721,6 +1721,7 @@ function extractServerFlags(s, legacy, appType) {
     }
   }
   if (legacy?.skipWebSocketTokenCheck === true) out.skipWebSocketTokenCheck = true;
+  if (legacy?.inconsistentCjsInterop === true) out.inconsistentCjsInterop = true;
   return Object.keys(out).length ? out : null;
 }
 // `preview.*` as resolved by Vite (inheriting `server.*` except the port).

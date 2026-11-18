@@ -78,6 +78,9 @@ pub struct CompileOptions {
     /// cache key from the original path and a compile on a synthetic one
     /// (`x.svg` -> `x.svg.tsx`) agree; `None` consults the nearest tsconfig.
     pub class_field_set_semantics: Option<bool>,
+    /// TypeScript's `verbatimModuleSyntax`, decided by the caller for the
+    /// same reason; `None` consults the nearest tsconfig.
+    pub verbatim_module_syntax: Option<bool>,
     /// The dev server's defines; `None` uses the mode-derived fallback.
     pub env: Option<Arc<ImportMetaEnv>>,
     /// The app root (Vite's `config.root`) that `/`-led `import.meta.glob`
@@ -117,6 +120,7 @@ impl CompileOptions {
             ssr: false,
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
+            verbatim_module_syntax: None,
             env: None,
             root: None,
             alias: Arc::from([]),
@@ -133,6 +137,7 @@ impl CompileOptions {
             ssr: false,
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
+            verbatim_module_syntax: None,
             env: None,
             root: None,
             alias: Arc::from([]),
@@ -426,6 +431,11 @@ fn transform_options(path: &Path, source_text: &str, opts: &CompileOptions) -> T
         options.assumptions.set_public_class_fields = true;
         options.typescript.remove_class_fields_without_initializer = true;
     }
+    // Vite maps the tsconfig's `verbatimModuleSyntax` onto the transform's
+    // `onlyRemoveTypeImports`.
+    options.typescript.only_remove_type_imports = opts
+        .verbatim_module_syntax
+        .unwrap_or_else(|| tsconfig::verbatim_module_syntax(path));
     let jsx = &mut options.jsx;
     jsx.jsx_plugin = true;
     if opts.jsx.is_classic() {
@@ -823,6 +833,7 @@ import React from "react";
                 ssr: false,
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
+                verbatim_module_syntax: None,
                 env: None,
                 root: None,
                 alias: Arc::from([]),
@@ -915,6 +926,7 @@ import React from "react";
                 ssr: false,
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
+                verbatim_module_syntax: None,
                 env: None,
                 root: None,
                 alias: Arc::from([]),

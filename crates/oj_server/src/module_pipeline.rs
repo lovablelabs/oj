@@ -1,4 +1,5 @@
 use super::*;
+use oj_compiler::interop::{InteropKind, InteropTarget};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::SystemTime;
@@ -72,7 +73,7 @@ pub(crate) async fn ensure_module_as(
         None => file_stamp(file).await,
     };
     let track = serves_tracked(state, file, preloaded.is_some());
-    if let Some(hit) = warm_hit(state, url, stamp) {
+    if let Some(hit) = warm_hit(state, file, url, stamp) {
         // The cache serves the bytes its last load read (same stat).
         if track && !state.content.served_again(file) {
             if let Some(hash) = crate::file_content_hash(file) {
@@ -137,6 +138,8 @@ pub(crate) async fn ensure_module_as(
     let CompileKey {
         key,
         class_field_semantics,
+        verbatim_module_syntax,
+        importer_format,
     } = compile_key(
         state,
         file,
@@ -145,6 +148,7 @@ pub(crate) async fn ensure_module_as(
         is_server,
         stamp,
         imports_stamp,
+        None,
     );
 
     if let Some(module) = memory_hit(state, url, &key) {
@@ -308,6 +312,8 @@ pub(crate) async fn ensure_module_as(
         is_server,
         is_svelte,
         class_field_semantics,
+        verbatim_module_syntax,
+        importer_format,
         css,
         plugin_maps: transformed.maps,
         dep_map,
@@ -348,7 +354,22 @@ pub(crate) async fn ensure_module_as(
     // re-keyed.
     let baked = imports_stamp_of(state, &module.imports);
     let key = if !is_dep && baked != imports_stamp {
-        compile_key(state, file, url, &source_hash, is_server, stamp, baked).key
+        compile_key(
+            state,
+            file,
+            url,
+            &source_hash,
+            is_server,
+            stamp,
+            baked,
+            Some(&CompileKey {
+                key: key.clone(),
+                class_field_semantics,
+                verbatim_module_syntax,
+                importer_format,
+            }),
+        )
+        .key
     } else {
         key
     };
@@ -469,8 +490,18 @@ fn serves_tracked(state: &ServerState, file: &Path, preloaded: bool) -> bool {
 }
 
 /// The memory-cached module for an unchanged file, found without reading it.
-fn warm_hit(state: &ServerState, url: &str, stamp: Option<FileStamp>) -> Option<Compiled> {
+fn warm_hit(
+    state: &ServerState,
+    file: &Path,
+    url: &str,
+    stamp: Option<FileStamp>,
+) -> Option<Compiled> {
     let (mtime, size) = stamp?;
+    // A package.json that changed how Node reads the file changes the
+    // compile's key, though the file itself is as it was.
+    if !state.importer_formats.current(url, file) {
+        return None;
+    }
     let key = state
         .mtime_keys
         .lock()
@@ -604,6 +635,10 @@ struct CompileKey {
     /// tsconfig class-field semantics, decided ONCE from the real path: the
     /// compile may run on a synthetic one (`x.svg` -> `x.svg.tsx`).
     class_field_semantics: bool,
+    /// tsconfig `verbatimModuleSyntax`, decided from the real path too.
+    verbatim_module_syntax: bool,
+    /// How Node reads the file, decided from the real path too.
+    importer_format: oj_compiler::interop::ImporterFormat,
 }
 
 /// The newest HMR stamp among a module's imports, by their served urls: what
@@ -638,6 +673,7 @@ fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
 /// [`imports_stamp_of`]), folded in so an unchanged importer recompiles after
 /// a dep update and its import carries the new `?t=`, and so a cached compile
 /// is found only under the stamps it bakes in.
+#[allow(clippy::too_many_arguments)]
 fn compile_key(
     state: &ServerState,
     file: &Path,
@@ -646,6 +682,9 @@ fn compile_key(
     is_server: bool,
     stamp: Option<FileStamp>,
     imports_stamp: u64,
+    // What a compile already ran under: its re-key must not read a
+    // package.json or a tsconfig that changed since.
+    pinned: Option<&CompileKey>,
 ) -> CompileKey {
     let mode = if is_server { "server" } else { "dev" };
     let invalidated = state
@@ -663,10 +702,34 @@ fn compile_key(
     if invalidated > 0 {
         mode_key.push_str(&format!("+inv{invalidated}"));
     }
-    // tsconfig class-field semantics change the output, so they are part of the key.
-    let class_field_semantics = oj_compiler::tsconfig::class_field_set_semantics(file);
+    // tsconfig class-field semantics change the output, so they are part of
+    // the key; so does `verbatimModuleSyntax`, the imports the transform
+    // keeps. One lookup of the nearest tsconfig answers both.
+    let (class_field_semantics, verbatim_module_syntax) = match pinned {
+        Some(pinned) => (pinned.class_field_semantics, pinned.verbatim_module_syntax),
+        None => oj_compiler::tsconfig::transform_settings(file),
+    };
     if class_field_semantics {
         mode_key.push_str("+setcf");
+    }
+    if verbatim_module_syntax {
+        mode_key.push_str("+vms");
+    }
+    // So does the importer's package type: the interop of a namespace or
+    // dynamic import of a CommonJS dep follows it.
+    let importer_format = pinned
+        .map(|pinned| pinned.importer_format)
+        .unwrap_or_else(|| {
+            crate::plugin_routes::importer_format(
+                &state.importer_formats,
+                &crate::plugin_routes::importer_id(file, url),
+            )
+        });
+    state.importer_formats.compiled(url, importer_format);
+    if importer_format.esm {
+        mode_key.push_str("+esm");
+    } else if importer_format.explicit {
+        mode_key.push_str("+cjs");
     }
     // The pre-bundle's browser version salts the key: a dep re-optimization
     // changes the optimized URLs, so modules compiled against the old map
@@ -694,6 +757,8 @@ fn compile_key(
     CompileKey {
         key,
         class_field_semantics,
+        verbatim_module_syntax,
+        importer_format,
     }
 }
 
@@ -1150,6 +1215,8 @@ struct CompileJob {
     is_server: bool,
     is_svelte: bool,
     class_field_semantics: bool,
+    verbatim_module_syntax: bool,
+    importer_format: oj_compiler::interop::ImporterFormat,
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
@@ -1286,6 +1353,9 @@ impl CompileJob {
             oj_compiler::interop::rewrite_cjs_interop_logged(
                 source,
                 file,
+                self.importer_format,
+                &self.later_transforms(),
+                &|spec: &str| rw.may_need_interop(spec),
                 &interop,
                 &mut warn_interop_once,
             )
@@ -1303,6 +1373,17 @@ impl CompileJob {
         )
     }
 
+    /// What the compile will do with the imports the interop rewrite leaves.
+    fn later_transforms(&self) -> oj_compiler::interop::LaterTransforms {
+        let jsx = &self.state.jsx;
+        oj_compiler::interop::LaterTransforms {
+            keep_value_imports: self.verbatim_module_syntax,
+            jsx_classic: jsx.is_classic(),
+            jsx_pragma: jsx.pragma.clone(),
+            jsx_pragma_frag: jsx.pragma_frag.clone(),
+        }
+    }
+
     fn compile_app(
         &self,
         rw: &ImportRewrite<'_>,
@@ -1310,6 +1391,9 @@ impl CompileJob {
         let interopped = oj_compiler::interop::rewrite_cjs_interop_logged(
             &self.source,
             &self.file,
+            self.importer_format,
+            &self.later_transforms(),
+            &|spec: &str| rw.may_need_interop(spec),
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );
@@ -1320,6 +1404,7 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
+        opts.verbatim_module_syntax = Some(self.verbatim_module_syntax);
         // StyleX ran ahead of the app's plugins (see ensure_module_as).
         opts.stylex = None;
         oj_compiler::compile_module_with_maps(
@@ -1549,13 +1634,38 @@ impl ImportRewrite<'_> {
 
     /// Specifiers whose named imports must read off the CJS value (module.exports)
     /// instead of linking as ESM bindings; shared by app source and served ESM deps.
-    fn cjs_interop_url(&self, spec: &str) -> Option<String> {
-        let url = self.cjs_interop_target(spec)?;
-        self.interop_urls.borrow_mut().insert(url.clone());
-        Some(url)
+    fn cjs_interop_url(&self, spec: &str) -> Option<InteropTarget> {
+        let target = self.cjs_interop_target(spec)?;
+        self.interop_urls.borrow_mut().insert(target.url.clone());
+        Some(target)
     }
 
-    fn cjs_interop_target(&self, spec: &str) -> Option<String> {
+    /// Whether `spec` could need interop, answered off what is already
+    /// known: nothing is resolved, and no dep is registered. A bare
+    /// specifier the optimizer has not seen yet could.
+    fn may_need_interop(&self, spec: &str) -> bool {
+        let job = self.job;
+        if let Some(dep) = vite_dep_id(&job.state, spec) {
+            return self.may_need_interop(&dep);
+        }
+        if job.pre_resolved.contains_key(spec) || is_node_builtin(spec) {
+            return true;
+        }
+        if is_lingui_macro_specifier(spec) {
+            return false;
+        }
+        match job
+            .dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| job.state.optimized.meta_now(spec))
+        {
+            Some(meta) => meta.needs_interop,
+            None => is_bare_specifier(spec),
+        }
+    }
+
+    fn cjs_interop_target(&self, spec: &str) -> Option<InteropTarget> {
         let job = self.job;
         // A Vite optimized-dep URL is the dep's own import (Vite's import
         // analysis interops a named import of its optimized file the same way).
@@ -1569,7 +1679,7 @@ impl ImportRewrite<'_> {
                 .and_then(|file| job.state.optimized.entry_by_file(file))
                 .or_else(|| self.resolver_answer_dep(spec, answer))
             {
-                return meta.needs_interop.then_some(meta.url);
+                return meta.needs_interop.then(|| dep_target(meta));
             }
             let path = Path::new(&answer.id);
             let cjs = !answer.external
@@ -1577,12 +1687,17 @@ impl ImportRewrite<'_> {
                 && path.components().any(|c| c.as_os_str() == "node_modules")
                 && (is_cjs_dep_file(&job.state.cjs_dep_memo, path)
                     || job.state.optimize_view.needs_forced_interop(path));
-            return cjs.then(|| self.pre_resolved_url(&answer.id));
+            return cjs.then(|| {
+                InteropTarget::new(self.pre_resolved_url(&answer.id), InteropKind::Served)
+            });
         }
         // Builtins are browser-externalized to a stub with no named exports;
         // interop so named imports read undefined instead of failing to link.
         if is_node_builtin(spec) {
-            return Some(format!("/@id/{}", hex_encode(spec)));
+            return Some(InteropTarget::new(
+                format!("/@id/{}", hex_encode(spec)),
+                InteropKind::BrowserExternal,
+            ));
         }
         // lingui macro entrypoints go to the shim (which has real
         // named exports), never through default-access interop.
@@ -1597,7 +1712,7 @@ impl ImportRewrite<'_> {
             .cloned()
             .or_else(|| job.state.optimized.meta_now(spec))
         {
-            return m.needs_interop.then_some(m.url);
+            return m.needs_interop.then(|| dep_target(m));
         }
         if !is_bare_specifier(spec) {
             return None;
@@ -1605,7 +1720,7 @@ impl ImportRewrite<'_> {
         // A CJS dep missing from the pre-bundle registers here too (Vite's
         // registerMissingImport): the destructure reads off the FUTURE bundle.
         if let Some(m) = self.register_missing_dep(spec, &job.state.resolver) {
-            return m.needs_interop.then_some(m.url);
+            return m.needs_interop.then(|| dep_target(m));
         }
         let resolved = job.state.resolver.resolve_from(&job.file, spec).ok()?;
         let in_node_modules = resolved
@@ -1620,7 +1735,10 @@ impl ImportRewrite<'_> {
                 || job.state.optimize_view.needs_forced_interop(&resolved))
         {
             allow_root(&job.state.fs_allow, package_root(&resolved));
-            return Some(url_of(&job.state.root, &resolved));
+            return Some(InteropTarget::new(
+                url_of(&job.state.root, &resolved),
+                InteropKind::Served,
+            ));
         }
         None
     }
@@ -2144,12 +2262,29 @@ pub(crate) fn warn_interop_once(msg: String) {
     }
 }
 
+/// How an optimized dep that needs interop is read: its pre-bundle exports
+/// module.exports as `default`; the named-export facade of a react-family
+/// dep is oj's own module, with `__cjs_exports`.
+fn dep_target(meta: optimize::DepMeta) -> InteropTarget {
+    let kind = if meta.file.ends_with("__oj_named.mjs") {
+        InteropKind::Served
+    } else {
+        InteropKind::PreBundle
+    };
+    InteropTarget::new(meta.url, kind)
+}
+
 pub(crate) fn interop_node_builtins(source: &str, file: &Path) -> Option<String> {
     if !source.contains("node:") {
         return None;
     }
     oj_compiler::interop::rewrite_cjs_interop(source, file, &|spec| {
-        is_node_builtin(spec).then(|| format!("/@id/{}", hex_encode(spec)))
+        is_node_builtin(spec).then(|| {
+            InteropTarget::new(
+                format!("/@id/{}", hex_encode(spec)),
+                InteropKind::BrowserExternal,
+            )
+        })
     })
 }
 

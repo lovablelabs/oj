@@ -8,8 +8,9 @@
 //! Only the class-field semantics are consumed here, derived like rolldown:
 //! an explicit `useDefineForClassFields` wins, else `target` decides (`esnext`
 //! or ES2022+ mean define, anything else including no target means assign),
-//! and no tsconfig means the transform default (define). rolldown also maps
-//! `verbatimModuleSyntax`, `experimentalDecorators` and `jsx*`; not yet here.
+//! and no tsconfig means the transform default (define). `verbatimModuleSyntax`
+//! is read too (the transform's `only_remove_type_imports`). rolldown also
+//! maps `experimentalDecorators` and `jsx*`; not yet here.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -62,6 +63,45 @@ pub fn class_field_set_semantics(path: &Path) -> bool {
         .use_define_for_class_fields
         .unwrap_or_else(|| target_implies_define(opts.target.as_deref()));
     !define
+}
+
+/// Whether the nearest owning tsconfig sets `verbatimModuleSyntax`, which
+/// Vite hands the TypeScript transform as `onlyRemoveTypeImports` (rolldown's
+/// tsconfig merge): an import written as a value then stays though no value
+/// refers to it. False for non-TS files and files no tsconfig owns. The
+/// older `importsNotUsedAsValues` and `preserveValueImports` are not read.
+pub fn verbatim_module_syntax(path: &Path) -> bool {
+    let is_ts = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "mts" | "cts")
+    );
+    if !is_ts {
+        return false;
+    }
+    let Ok(Some(tsconfig)) = resolver().find_tsconfig(path) else {
+        return false;
+    };
+    tsconfig.compiler_options.verbatim_module_syntax == Some(true)
+}
+
+/// [`class_field_set_semantics`] and [`verbatim_module_syntax`] off one
+/// lookup of the nearest tsconfig.
+pub fn transform_settings(path: &Path) -> (bool, bool) {
+    let is_ts = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "mts" | "cts")
+    );
+    if !is_ts {
+        return (false, false);
+    }
+    let Ok(Some(tsconfig)) = resolver().find_tsconfig(path) else {
+        return (false, false);
+    };
+    let opts = &tsconfig.compiler_options;
+    let define = opts
+        .use_define_for_class_fields
+        .unwrap_or_else(|| target_implies_define(opts.target.as_deref()));
+    (!define, opts.verbatim_module_syntax == Some(true))
 }
 
 /// Drops every cached tsconfig lookup: the compiler half of Vite's

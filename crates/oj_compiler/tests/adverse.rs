@@ -616,8 +616,17 @@ fn cjs_interop_rewriting_is_none_when_there_is_nothing_to_do() {
     let path = Path::new("/src/App.tsx");
     let never = |_: &str| None;
     assert!(interop::rewrite_cjs_interop("import a from \"./a\";", path, &never).is_none());
-    assert!(interop::rewrite_cjs_interop("const a = (", path, &|_| Some("/x".into())).is_none());
-    assert!(interop::rewrite_cjs_interop("", path, &|_| Some("/x".into())).is_none());
+    assert!(interop::rewrite_cjs_interop("const a = (", path, &|_| Some(
+        interop::InteropTarget::new("/x", interop::InteropKind::PreBundle)
+    ))
+    .is_none());
+    assert!(
+        interop::rewrite_cjs_interop("", path, &|_| Some(interop::InteropTarget::new(
+            "/x",
+            interop::InteropKind::PreBundle
+        )))
+        .is_none()
+    );
 }
 
 #[test]
@@ -634,10 +643,35 @@ fn cjs_interop_rewriting_produces_valid_code_for_every_import_form() {
         "import { \"weird name\" as w } from \"cjs-pkg\";",
         "import a from \"cjs-pkg\";\nimport b from \"cjs-pkg\";",
     ];
+    // Nothing uses the bindings, which the TypeScript transform would then
+    // remove: `verbatimModuleSyntax` keeps every value form in the rewrite.
+    let later = interop::LaterTransforms {
+        keep_value_imports: true,
+        ..Default::default()
+    };
     for source in sources {
-        let rewritten = interop::rewrite_cjs_interop(source, path, &|spec| {
-            (spec == "cjs-pkg").then(|| "/node_modules/cjs-pkg/index.js".to_string())
-        });
+        let rewritten = interop::rewrite_cjs_interop_logged(
+            source,
+            path,
+            interop::ImporterFormat::ESM,
+            &later,
+            &|_| true,
+            &|spec| {
+                (spec == "cjs-pkg").then(|| {
+                    interop::InteropTarget::new(
+                        "/node_modules/cjs-pkg/index.js",
+                        interop::InteropKind::Served,
+                    )
+                })
+            },
+            &mut |_| {},
+        );
+        // Only `import type` is left alone.
+        assert_eq!(
+            rewritten.is_none(),
+            source.starts_with("import type"),
+            "{source} -> {rewritten:?}"
+        );
         let Some(code) = rewritten else { continue };
         assert!(
             compile(Path::new("/verify.mjs"), &code, &CompileOptions::prod()).is_ok(),

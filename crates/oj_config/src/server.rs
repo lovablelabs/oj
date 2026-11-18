@@ -63,38 +63,47 @@ pub fn nearest_package_dir(dir: &Path) -> Option<&Path> {
 }
 
 /// Whether Vite's `loadPackageData` returns for this package.json.
-/// `findNearestPackageData` catches its throw and walks on to the parent
-/// directory, so a file that is empty, is not JSON or holds `null` is no
-/// manifest to it. Read as Vite reads it: bytes decoded leniently, a leading
-/// BOM dropped, any JSON value but `null` accepted (`const { sideEffects } =
-/// data` throws for `null` alone), and a `sideEffects` array whose member has
-/// no `includes` (anything but a string or an array) throwing too.
 fn manifest_loads(path: &Path) -> bool {
+    manifest_type(path).is_some()
+}
+
+/// The `type` of the package.json at `path` as Vite's `loadPackageData`
+/// reads it, or None when it throws there. `findNearestPackageData` catches
+/// that throw and walks on to the parent directory, so a file that is empty,
+/// is not JSON or holds `null` is no manifest to it. Read as Vite reads it:
+/// bytes decoded leniently, a leading BOM dropped, any JSON value but `null`
+/// accepted (`const { sideEffects } = data` throws for `null` alone), and a
+/// `sideEffects` array whose member has no `includes` (anything but a string
+/// or an array) throwing too.
+pub fn manifest_type(path: &Path) -> Option<Option<String>> {
     if !path.is_file() {
-        return false;
+        return None;
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return false;
-    };
+    let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     // The grammar alone, as `JSON.parse` holds it: no limit on nesting, on a
     // number's size or on what a `\u` escape names.
-    if serde_json::from_str::<serde::de::IgnoredAny>(text).is_err() {
-        return false;
-    }
+    serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
     match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(serde_json::Value::Null) => false,
-        Ok(data) => match data.get("sideEffects") {
-            Some(serde_json::Value::Array(members)) => {
-                members.iter().all(|m| m.is_string() || m.is_array())
-            }
-            _ => true,
-        },
+        Ok(serde_json::Value::Null) => None,
+        Ok(data) => {
+            let loads = match data.get("sideEffects") {
+                Some(serde_json::Value::Array(members)) => {
+                    members.iter().all(|m| m.is_string() || m.is_array())
+                }
+                _ => true,
+            };
+            loads.then(|| {
+                data.get("type")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_string)
+            })
+        }
         // JSON a `Value` cannot hold (a lone surrogate escape, 1e999, nesting
         // past serde's limit), which `JSON.parse` takes. Its `sideEffects`
-        // are not looked at.
-        Err(_) => true,
+        // and `type` are not looked at.
+        Err(_) => Some(None),
     }
 }
 
