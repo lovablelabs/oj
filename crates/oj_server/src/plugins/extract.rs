@@ -442,17 +442,28 @@ pub(crate) fn run_engine_job_subprocess(
         let mut stdin = child.stdin.take().expect("piped stdin");
         let sent = serde_json::to_string(payload)
             .map_err(|e| boot(format!("engine job payload: {e}")))
-            .and_then(|json| {
-                stdin
-                    .write_all(json.as_bytes())
-                    .map_err(|e| boot(format!("engine job payload: {e}")))
-            });
-        if let Err(e) = sent {
+            .map(|json| stdin.write_all(json.as_bytes()));
+        // Dropping closes the pipe; the child's read_to_string completes.
+        drop(stdin);
+        let failed = match sent {
+            Ok(Ok(())) => None,
+            // The pipe broke: the child is gone, or going, before it read its
+            // payload. How it ended says more than the write's error does, so
+            // a child that was killed or crashed is classified below like one
+            // that ended after reading; its pipe closes just before it can be
+            // reaped, hence the short wait.
+            Ok(Err(e)) => match exited_within(&mut child, PAYLOAD_EXIT_GRACE) {
+                Some(status) if !status.success() => None,
+                _ => Some(boot(format!("engine job payload: {e}"))),
+            },
+            Err(e) => Some(e),
+        };
+        if let Some(e) = failed {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = std::fs::remove_file(&result_file);
             return Err(e);
         }
-        // Dropping closes the pipe; the child's read_to_string completes.
     }
     // A bounded job's child enforces the deadline itself; the grace covers
     // spawn and result writing, then a wedged child is killed. An unbounded
@@ -511,6 +522,26 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope: serde_json::Value =
         serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
     engine_job_outcome(envelope)
+}
+
+/// How long a child whose payload pipe broke gets to finish exiting.
+const PAYLOAD_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The exit status of `child` if it ends within `grace`, reaping it.
+fn exited_within(
+    child: &mut std::process::Child,
+    grace: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let until = std::time::Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// An engine job child in the shutdown sweep's registry until it is reaped.
@@ -1967,19 +1998,49 @@ mod exit_signal_tests {
 
     /// `run_engine_job_subprocess` against a stand-in child running `script`.
     fn job_with_child(script: &str) -> Result<serde_json::Value, oj_js::EngineError> {
+        job_with_child_and_payload(script, &serde_json::Value::Null)
+    }
+
+    fn job_with_child_and_payload(
+        script: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, oj_js::EngineError> {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("fake-oj");
         std::fs::write(&exe, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        run_engine_job_subprocess(
-            &exe,
-            dir.path(),
-            Path::new("job.mjs"),
-            "run",
-            &serde_json::Value::Null,
-            None,
-        )
+        run_engine_job_subprocess(&exe, dir.path(), Path::new("job.mjs"), "run", payload, None)
+    }
+
+    // A child that ends before it has read its payload breaks the pipe the
+    // payload is written to. The payload here is far larger than a pipe
+    // holds and the stand-in never reads it, so the write always fails; how
+    // the child ended still decides the error, not the broken pipe.
+    #[test]
+    fn a_child_gone_before_it_read_its_payload_is_classified_by_how_it_ended() {
+        let _one = one_at_a_time();
+        let payload = serde_json::Value::String("x".repeat(4 << 20));
+        match job_with_child_and_payload("kill -KILL $$", &payload) {
+            Err(oj_js::EngineError::Interrupted(why)) => {
+                assert!(why.contains("SIGKILL (signal 9)"), "{why}");
+            }
+            other => panic!("SIGKILL is an interruption: {other:?}"),
+        }
+        match job_with_child_and_payload("exit 7", &payload) {
+            Err(oj_js::EngineError::Boot(why)) => {
+                assert!(why.contains("the engine job child died"), "{why}");
+            }
+            other => panic!("an exit code is a crash: {other:?}"),
+        }
+        // A child that closed its end and ended well never got the payload:
+        // that stays a payload error.
+        match job_with_child_and_payload("exit 0", &payload) {
+            Err(oj_js::EngineError::Boot(why)) => {
+                assert!(why.contains("engine job payload"), "{why}");
+            }
+            other => panic!("an unread payload is a payload error: {other:?}"),
+        }
     }
 
     // A child a signal killed (the kernel's memory killer, a supervisor's

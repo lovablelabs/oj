@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin host: a job child (the config load, the dependency pre-bundle) killed by a signal before it has read its payload is an interruption naming the signal, as it is when the signal lands later. The payload is written to the child's stdin, and a child that was already gone broke that write, so the kernel's memory killer or a supervisor's signal to the process group arriving in that window was reported as a failure of the job ("engine job payload: Broken pipe (os error 32)") where the caller expects an interruption it may run again; a child that crashed in the same window was reported the same way, without its exit status. When the write fails, the child's exit is now what decides the error, exactly as after a completed write; a child that ended well without reading keeps the payload error.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed
