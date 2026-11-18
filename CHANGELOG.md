@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `import.meta.glob` with the deprecated `as: "raw"` or `as: "url"` option gives each file's text or URL in the dev server, `oj build` and the TanStack Start server render, eager and lazy. Vite's `parseGlobOptions` sets `import: "default"` for these two values; oj only added the query, so the map held module namespaces (`{ default: "..." }`) there while the TanStack Start client bundle held the strings, and a Start page rendering such a glob printed `[object Object]` on the server and the text in the browser (a hydration mismatch). An explicit `import: "*"` beside `as` keeps the namespace, in the Start client bundle too, where it was replaced by the default export.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

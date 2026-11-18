@@ -211,7 +211,7 @@ impl GlobOpts {
                         "Option \"import\" can only be \"default\" or \"*\" when \"as\" is \"{as_}\", but got \"{i}\""
                     ));
                 }
-                import = Some("default".into());
+                import.get_or_insert_with(|| "default".into());
             }
             query = as_.clone();
         }
