@@ -1923,6 +1923,45 @@ mod tests {
         eprintln!("differential cases: {cases}, skipped: {}", skipped.len());
     }
 
+    /// oxc's `Pragma::parse` for the classic runtime: which identifier the
+    /// transform refers to.
+    #[test]
+    fn the_classic_factory_root_is_the_one_oxc_refers_to() {
+        for (pragma, root) in [
+            (None, Some("React")),
+            (Some(""), Some("React")),
+            (Some("h"), Some("h")),
+            (Some("Preact.h"), Some("Preact")),
+            (Some("a.b.c"), Some("a")),
+            // Not a path of identifier names, or a reserved word: the default.
+            (Some("1x"), Some("React")),
+            (Some("class"), Some("React")),
+            (Some("a.1b"), Some("React")),
+            (Some("a*/b"), Some("React")),
+            (Some("import.x"), Some("React")),
+            // No identifier is referred to.
+            (Some("this.h"), None),
+            (Some("this"), None),
+            (Some("import.meta.h"), None),
+        ] {
+            assert_eq!(classic_pragma_root(pragma).as_deref(), root, "{pragma:?}");
+        }
+    }
+
+    /// A pragma value that would close the restating comment is neither
+    /// restated nor used.
+    #[test]
+    fn a_pragma_value_that_closes_a_comment_is_no_pragma() {
+        let src = "// @jsx a*/b\n// @jsxFrag F\nimport d from \"cjs-dep\";\nd;\n";
+        let out =
+            rewrite_cjs_interop(src, Path::new("m.jsx"), &target(InteropKind::PreBundle)).unwrap();
+        assert!(
+            out.starts_with("/* @jsxFrag F */const d = __ojcjs0;// @jsx a*/b"),
+            "{out}"
+        );
+        assert_eq!(out.lines().count(), src.lines().count(), "no line is added");
+    }
+
     /// oxc's `find_jsx_pragma`, case by case.
     #[test]
     fn the_pragma_scan_reads_what_oxc_reads() {
