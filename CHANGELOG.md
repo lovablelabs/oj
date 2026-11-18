@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: an `optimizeDeps.include` entry resolves without the app's plugins, as in Vite (optimizer/resolve.ts `createOptimizeDepsIncludeResolver`, which resolves through the aliases and Vite's own resolver alone). The dependency scan asked the plugins first, so where a plugin answers the app's import of `react/jsx-dev-runtime` with a virtual wrapper module (a plugin that tags elements with their source does), the entry `@vitejs/plugin-react` lists was reported as `failed to resolve dependency "react/jsx-dev-runtime", present in 'optimizeDeps.include'` and left out of the first pre-bundle. An import the scan meets in the app's source still asks the plugins.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed
