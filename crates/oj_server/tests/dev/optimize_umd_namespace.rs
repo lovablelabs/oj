@@ -839,7 +839,7 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
         ("index.html", INDEX),
         (
             "src/main.js",
-            "import \"./pragma.jsx\";\nimport \"./directive.jsx\";\nimport \"./bom.jsx\";\nimport \"./second.jsx\";\n",
+            "import \"./pragma.jsx\";\nimport \"./directive.jsx\";\nimport \"./bom.jsx\";\nimport \"./second.jsx\";\nimport \"./sameline.jsx\";\nimport \"./aftercomment.jsx\";\n",
         ),
         // The pragma after a directive prologue, a byte order mark, and in
         // a second comment after a hashbang-less license one.
@@ -850,6 +850,15 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
         (
             "src/bom.jsx",
             "\u{feff}/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        // The first statement on the pragma's own line.
+        (
+            "src/sameline.jsx",
+            "'use strict'; /** @jsxImportSource custom-jsx */ import * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        (
+            "src/aftercomment.jsx",
+            "/* c */ /** @jsxImportSource custom-jsx */ import * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
         ),
         (
             "src/second.jsx",
@@ -871,7 +880,14 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
     app.write(&packages());
     let server = app.serve().await;
     crate::crawled(&app.root).await;
-    for file in ["pragma", "directive", "bom", "second"] {
+    for file in [
+        "pragma",
+        "directive",
+        "bom",
+        "second",
+        "sameline",
+        "aftercomment",
+    ] {
         let code = server.text(&format!("/src/{file}.jsx")).await;
         assert!(
             code.contains("const kit = __oj_dyn_interop(__ojcjs0, 1);"),
@@ -880,6 +896,132 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
         assert!(
             code.contains("custom-jsx") && !code.contains("react"),
             "{file}.jsx: the pragma names the JSX runtime:\n{code}"
+        );
+    }
+}
+
+// A classic JSX factory set in the config is referred to by the JSX
+// transform alone: its import stays, as oxc's TypeScript transform keeps it,
+// and is read off the CommonJS dep that supplies it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_jsx_factory_from_a_commonjs_dep_is_kept_in_tsx() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"cjs-jsx-factory","version":"1.0.0","type":"module"}"#,
+        ),
+        (
+            "vite.config.js",
+            "export default { esbuild: { jsx: \"transform\", jsxFactory: \"h\", jsxFragment: \"Fragment\" } };\n",
+        ),
+        ("index.html", INDEX),
+        (
+            "src/main.js",
+            "import { A } from \"./A.tsx\";\nwindow.__result = JSON.stringify(A());\n",
+        ),
+        (
+            "src/A.tsx",
+            "import { h, Fragment } from \"jsx-cjs\";\nexport const A = () => <><b>x</b></>;\n",
+        ),
+        (
+            "node_modules/jsx-cjs/package.json",
+            r#"{"name":"jsx-cjs","version":"1.0.0","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/jsx-cjs/index.js",
+            "exports.Fragment = \"fragment\";\nexports.h = function (type, props) {\n  return [type].concat([].slice.call(arguments, 2));\n};\n",
+        ),
+    ]);
+    let (result, errors, urls) = load(&app).await;
+    assert_eq!(
+        result,
+        json!(["fragment", ["b", "x"]]),
+        "the JSX is built by the dep's factory and fragment; errors: {errors:?}"
+    );
+    let dep: Vec<&String> = urls.iter().filter(|u| u.contains("jsx-cjs")).collect();
+    assert!(
+        dep.len() == 1 && dep[0].contains("/@oj-deps/jsx-cjs"),
+        "the factory's dep is loaded once, from its pre-bundle: {dep:?}"
+    );
+    assert_eq!(errors, Vec::<String>::new(), "page errors");
+}
+
+// tsconfig `verbatimModuleSyntax` keeps an import written as a value, in the
+// TypeScript transform (Vite hands it over as `onlyRemoveTypeImports`) and in
+// the interop rewrite before it; without it an import no value refers to is
+// removed, and its dep is not loaded.
+#[tokio::test(flavor = "multi_thread")]
+async fn verbatim_module_syntax_keeps_an_unused_value_import() {
+    const UNUSED: &str = "import { a } from \"plain-cjs\";\nimport { named } from \"esm-kit\";\nimport { type T, b } from \"plain-cjs\";\nexport const n: number = 1;\n";
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"cjs-verbatim","version":"1.0.0","type":"module"}"#,
+        ),
+        ("index.html", INDEX),
+        (
+            "src/main.js",
+            "import \"./elided.ts\";\nimport \"../verbatim/kept.ts\";\n",
+        ),
+        ("src/elided.ts", UNUSED),
+        (
+            "verbatim/tsconfig.json",
+            r#"{"compilerOptions":{"verbatimModuleSyntax":true}}"#,
+        ),
+        ("verbatim/kept.ts", UNUSED),
+    ]);
+    app.write(&packages());
+    let server = app.serve().await;
+    crate::crawled(&app.root).await;
+    let elided = server.text("/src/elided.ts").await;
+    assert!(
+        !elided.contains("plain-cjs") && !elided.contains("esm-kit"),
+        "no value refers to the imports: both are removed\n{elided}"
+    );
+    let kept = server.text("/verbatim/kept.ts").await;
+    assert!(
+        kept.contains("const { a } = __ojcjs0;")
+            && kept.contains("const { b } = __ojcjs1;")
+            && !kept.contains(" T "),
+        "the CommonJS dep's value imports are read through interop, the inline type is not:\n{kept}"
+    );
+    assert!(
+        kept.contains("import { named } from \"/@oj-deps/esm-kit"),
+        "the ES dep's import stays too:\n{kept}"
+    );
+}
+
+// A template-literal specifier that resolves to nothing fails the compile,
+// as the string form does.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unresolvable_template_literal_import_is_a_compile_error() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"cjs-template","version":"1.0.0","type":"module"}"#,
+        ),
+        ("index.html", INDEX),
+        ("src/main.js", "import \"./tpl.js\";\n"),
+        (
+            "src/tpl.js",
+            "export const load = () => import(`nope-pkg`);\n",
+        ),
+        (
+            "src/str.js",
+            "export const load = () => import(\"nope-pkg\");\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    for file in ["tpl", "str"] {
+        let res = server.get(&format!("/src/{file}.js")).await;
+        assert_eq!(res.status, 500, "{file}.js:\n{}", res.body);
+        assert!(
+            res.body.contains("Failed to resolve import \"nope-pkg\""),
+            "{file}.js:\n{}",
+            res.body
         );
     }
 }

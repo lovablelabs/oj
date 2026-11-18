@@ -138,6 +138,7 @@ pub(crate) async fn ensure_module_as(
     let CompileKey {
         key,
         class_field_semantics,
+        verbatim_module_syntax,
         importer_format,
     } = compile_key(
         state,
@@ -311,6 +312,7 @@ pub(crate) async fn ensure_module_as(
         is_server,
         is_svelte,
         class_field_semantics,
+        verbatim_module_syntax,
         importer_format,
         css,
         plugin_maps: transformed.maps,
@@ -628,6 +630,8 @@ struct CompileKey {
     /// tsconfig class-field semantics, decided ONCE from the real path: the
     /// compile may run on a synthetic one (`x.svg` -> `x.svg.tsx`).
     class_field_semantics: bool,
+    /// tsconfig `verbatimModuleSyntax`, decided from the real path too.
+    verbatim_module_syntax: bool,
     /// How Node reads the file, decided from the real path too.
     importer_format: oj_compiler::interop::ImporterFormat,
 }
@@ -698,6 +702,11 @@ fn compile_key(
     if class_field_semantics {
         mode_key.push_str("+setcf");
     }
+    // So does `verbatimModuleSyntax`: the imports the transform keeps.
+    let verbatim_module_syntax = oj_compiler::tsconfig::verbatim_module_syntax(file);
+    if verbatim_module_syntax {
+        mode_key.push_str("+vms");
+    }
     // So does the importer's package type: the interop of a namespace or
     // dynamic import of a CommonJS dep follows it.
     let importer_format = importer_format.unwrap_or_else(|| {
@@ -738,6 +747,7 @@ fn compile_key(
     CompileKey {
         key,
         class_field_semantics,
+        verbatim_module_syntax,
         importer_format,
     }
 }
@@ -1195,6 +1205,7 @@ struct CompileJob {
     is_server: bool,
     is_svelte: bool,
     class_field_semantics: bool,
+    verbatim_module_syntax: bool,
     importer_format: oj_compiler::interop::ImporterFormat,
     css: CssState,
     plugin_maps: Vec<String>,
@@ -1333,6 +1344,7 @@ impl CompileJob {
                 source,
                 file,
                 self.importer_format,
+                &self.later_transforms(),
                 &interop,
                 &mut warn_interop_once,
             )
@@ -1350,6 +1362,17 @@ impl CompileJob {
         )
     }
 
+    /// What the compile will do with the imports the interop rewrite leaves.
+    fn later_transforms(&self) -> oj_compiler::interop::LaterTransforms {
+        let jsx = &self.state.jsx;
+        oj_compiler::interop::LaterTransforms {
+            keep_value_imports: self.verbatim_module_syntax,
+            jsx_classic: jsx.is_classic(),
+            jsx_pragma: jsx.pragma.clone(),
+            jsx_pragma_frag: jsx.pragma_frag.clone(),
+        }
+    }
+
     fn compile_app(
         &self,
         rw: &ImportRewrite<'_>,
@@ -1358,6 +1381,7 @@ impl CompileJob {
             &self.source,
             &self.file,
             self.importer_format,
+            &self.later_transforms(),
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );
@@ -1368,6 +1392,7 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
+        opts.verbatim_module_syntax = Some(self.verbatim_module_syntax);
         // StyleX ran ahead of the app's plugins (see ensure_module_as).
         opts.stylex = None;
         oj_compiler::compile_module_with_maps(

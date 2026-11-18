@@ -145,12 +145,36 @@ impl InteropTarget {
     }
 }
 
+/// What the transforms that run on this pass's output will do with the
+/// module's imports, so the pass leaves them the imports Vite's import
+/// analysis would see after them.
+#[derive(Clone, Debug, Default)]
+pub struct LaterTransforms {
+    /// TypeScript's `verbatimModuleSyntax` (the transform's
+    /// `only_remove_type_imports`): an import written as a value stays
+    /// though no value refers to it.
+    pub keep_value_imports: bool,
+    /// The classic JSX runtime, whose transform refers to its factories.
+    pub jsx_classic: bool,
+    /// The classic element factory (`React.createElement` when None).
+    pub jsx_pragma: Option<String>,
+    /// The classic fragment (`React.Fragment` when None).
+    pub jsx_pragma_frag: Option<String>,
+}
+
 pub fn rewrite_cjs_interop(
     source: &str,
     path: &Path,
     interop: &dyn Fn(&str) -> Option<InteropTarget>,
 ) -> Option<String> {
-    rewrite_cjs_interop_logged(source, path, ImporterFormat::ESM, interop, &mut |_| {})
+    rewrite_cjs_interop_logged(
+        source,
+        path,
+        ImporterFormat::ESM,
+        &LaterTransforms::default(),
+        interop,
+        &mut |_| {},
+    )
 }
 
 /// Like `rewrite_cjs_interop`, with a sink for the dev warnings the rewrite
@@ -159,6 +183,7 @@ pub fn rewrite_cjs_interop_logged(
     source: &str,
     path: &Path,
     format: ImporterFormat,
+    later: &LaterTransforms,
     interop: &dyn Fn(&str) -> Option<InteropTarget>,
     warn: &mut dyn FnMut(String),
 ) -> Option<String> {
@@ -175,9 +200,15 @@ pub fn rewrite_cjs_interop_logged(
         path,
         source,
         program: &parsed.program,
+        // Symbols are read only off a parse without a diagnostic: a file
+        // with one is reported by the compile, and keeps its bindings here.
+        elides: source_type.is_typescript()
+            && !later.keep_value_imports
+            && parsed.diagnostics.is_empty(),
         typescript: source_type.is_typescript(),
-        jsx: source_type.is_jsx(),
+        later,
         scoping: std::cell::OnceCell::new(),
+        jsx_use: std::cell::OnceCell::new(),
         format,
         edits: Vec::new(),
         hoisted: String::new(),
@@ -242,7 +273,7 @@ fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
     let Some(first) = program.body.first() else {
         return start;
     };
-    let first = oxc_span::GetSpan::span(first).start as usize;
+    let first = statement_start(first);
     let pragma = program
         .comments
         .iter()
@@ -263,8 +294,8 @@ fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
     // boundary. One that follows code on its line (`'use strict' /** @jsx h
     // */`) may sit inside a statement, so the bindings go to the start of
     // the next line, as after a `//` comment; when the first statement is
-    // on that same line there is no place both after the pragma and between
-    // statements, and Vite's position is kept.
+    // on that same line, to the start of that statement, which is always
+    // both after the pragma and between statements.
     let line_start = source[..from].rfind(is_line_terminator).map_or(0, |at| {
         at + source[at..].chars().next().map_or(1, char::len_utf8)
     });
@@ -276,8 +307,30 @@ fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
     }
     match next_line_start(source, to) {
         Some(at) if at <= first => at,
-        _ => start,
+        _ => first,
     }
+}
+
+/// Where a statement's text starts: its decorators come before the span oxc
+/// gives a decorated class or its export.
+fn statement_start(stmt: &Statement) -> usize {
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind};
+    let class = match stmt {
+        Statement::ClassDeclaration(class) => Some(&**class),
+        Statement::ExportDeclaration(export) => match &export.declaration {
+            Declaration::ClassDeclaration(class) => Some(&**class),
+            _ => None,
+        },
+        Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ExportDefaultDeclarationKind::ClassDeclaration(class) => Some(&**class),
+            _ => None,
+        },
+        _ => None,
+    };
+    let span = oxc_span::GetSpan::span(stmt).start;
+    class
+        .and_then(|class| class.decorators.first())
+        .map_or(span, |decorator| decorator.span.start.min(span)) as usize
 }
 
 fn is_line_terminator(c: char) -> bool {
@@ -324,6 +377,93 @@ fn apply_edits(source: &str, mut edits: Vec<Edit>) -> String {
     result
 }
 
+/// The identifiers the JSX transform will refer to in a module that has
+/// JSX, though the source does not: oxc's TypeScript transform keeps an
+/// import of one (`is_jsx_imports`, and the references its classic JSX
+/// transform creates first).
+///
+/// - The root of the `@jsx` pragma a leading comment gives, else `React`,
+///   when the module has an element; of `@jsxFrag`, else `React`, when it
+///   has a fragment. oxc keeps these under either runtime.
+/// - Under the classic runtime (the config's, or a `@jsxRuntime classic`
+///   comment), the roots of the configured `pragma` and `pragmaFrag`: an
+///   element calls the first, a fragment both.
+fn jsx_identifiers(
+    source: &str,
+    program: &oxc_ast::ast::Program,
+    later: &LaterTransforms,
+) -> Vec<String> {
+    #[derive(Default)]
+    struct Jsx {
+        element: bool,
+        fragment: bool,
+    }
+    impl<'a> Visit<'a> for Jsx {
+        fn visit_jsx_element(&mut self, it: &oxc_ast::ast::JSXElement<'a>) {
+            self.element = true;
+            walk::walk_jsx_element(self, it);
+        }
+        fn visit_jsx_fragment(&mut self, it: &oxc_ast::ast::JSXFragment<'a>) {
+            self.fragment = true;
+            walk::walk_jsx_fragment(self, it);
+        }
+    }
+    let mut jsx = Jsx::default();
+    jsx.visit_program(program);
+    if !jsx.element && !jsx.fragment {
+        return Vec::new();
+    }
+    // The pragmas of the comments before the first statement.
+    let first = program.body.first().map_or(source.len(), |stmt| {
+        oxc_span::GetSpan::span(stmt).start as usize
+    });
+    let pragma = |keyword: &str| {
+        program
+            .comments
+            .iter()
+            .take_while(|comment| (comment.span.start as usize) < first)
+            .filter_map(|comment| {
+                let text = &source[comment.span.start as usize..comment.span.end as usize];
+                let after = &text[text.find(keyword)? + keyword.len()..];
+                after
+                    .starts_with(char::is_whitespace)
+                    .then(|| after.split_whitespace().next())
+                    .flatten()
+                    .map(|value| value.trim_end_matches("*/").to_string())
+            })
+            .last()
+    };
+    let root = |path: &str| path.split('.').next().unwrap_or(path).to_string();
+    let (comment_pragma, comment_frag) = (pragma("@jsx"), pragma("@jsxFrag"));
+    let classic = match pragma("@jsxRuntime").as_deref() {
+        Some("classic") => true,
+        Some("automatic") => false,
+        _ => later.jsx_classic,
+    };
+    let mut names = Vec::new();
+    if jsx.element {
+        names.push(root(comment_pragma.as_deref().unwrap_or("React")));
+    }
+    if jsx.fragment {
+        names.push(root(comment_frag.as_deref().unwrap_or("React")));
+    }
+    if classic {
+        let factory = comment_pragma
+            .as_deref()
+            .or(later.jsx_pragma.as_deref())
+            .unwrap_or("React.createElement");
+        names.push(root(factory));
+        if jsx.fragment {
+            let fragment = comment_frag
+                .as_deref()
+                .or(later.jsx_pragma_frag.as_deref())
+                .unwrap_or("React.Fragment");
+            names.push(root(fragment));
+        }
+    }
+    names
+}
+
 /// The line breaks of a replaced span, appended to its one-line replacement
 /// so every later line keeps its number (Vite's `getLineBreaks`).
 fn line_breaks(text: &str) -> String {
@@ -340,13 +480,16 @@ struct InteropRewriter<'r> {
     path: &'r Path,
     source: &'r str,
     program: &'r oxc_ast::ast::Program<'r>,
-    /// A TypeScript source: its transform, which runs after this pass,
+    /// A TypeScript source whose transform, which runs after this pass,
     /// removes the import bindings no value refers to.
+    elides: bool,
     typescript: bool,
-    jsx: bool,
+    later: &'r LaterTransforms,
     /// The module's symbols and references, built for the first import that
     /// asks.
     scoping: std::cell::OnceCell<oxc_semantic::Scoping>,
+    /// The identifiers the JSX transform will refer to.
+    jsx_use: std::cell::OnceCell<Vec<String>>,
     format: ImporterFormat,
     edits: Vec<Edit>,
     hoisted: String,
@@ -377,13 +520,13 @@ impl InteropRewriter<'_> {
         }
     }
 
-    /// Whether the TypeScript transform keeps the import binding `local`: one
-    /// a value refers to (oxc's `has_value_reference`: any reference that is
-    /// not a type position), or one the JSX transform may refer to without
-    /// the source saying so (`React`, a name a `@jsx` pragma gives). Always,
-    /// outside TypeScript.
+    /// Whether the TypeScript transform keeps the import binding `local`:
+    /// one a value refers to (oxc's `has_value_reference`: any reference
+    /// that is not a type position), or one the JSX transform refers to
+    /// (see [`jsx_identifiers`]). Always, where that transform removes no
+    /// value import.
     fn keeps(&self, local: &oxc_ast::ast::BindingIdentifier) -> bool {
-        if !self.typescript {
+        if !self.elides {
             return true;
         }
         let scoping = self.scoping.get_or_init(|| {
@@ -401,13 +544,10 @@ impl InteropRewriter<'_> {
         {
             return true;
         }
-        let name = local.name.as_str();
-        self.jsx
-            && (name == "React"
-                || self.program.comments.iter().any(|comment| {
-                    let text = &self.source[comment.span.start as usize..comment.span.end as usize];
-                    text.contains("@jsx") && text.contains(name)
-                }))
+        self.jsx_use
+            .get_or_init(|| jsx_identifiers(self.source, self.program, self.later))
+            .iter()
+            .any(|name| name == local.name.as_str())
     }
 
     /// Vite's default import of a dep that needs interop (transformCjsImport):
@@ -434,36 +574,31 @@ impl InteropRewriter<'_> {
         if decl.import_kind.is_type() {
             return;
         }
-        let Some(target) = (self.interop)(crate::lit_str(decl.source.value)) else {
-            return;
-        };
         let all: &[ImportDeclarationSpecifier] = decl
             .specifiers
             .as_ref()
             .map_or(&[], |specs| specs.as_slice());
-        // An inline `type` specifier is erased by the TypeScript transform,
-        // which runs after this pass (Vite's import analysis runs after it
-        // and never sees one). A declaration of nothing else only has its
-        // URL rewritten, for that transform to drop or keep as it would.
+        // The TypeScript transform runs after this pass, Vite's import
+        // analysis after it: an inline `type` specifier is erased, and so is
+        // a binding no value refers to (`import { T } from "dep"`, `T` used
+        // only as a type, or not at all) unless `verbatimModuleSyntax` keeps
+        // what is written as a value.
         let is_type = |spec: &&ImportDeclarationSpecifier| matches!(spec, ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type());
-        if !all.is_empty() && all.iter().all(|spec| is_type(&spec)) {
-            self.next_idx();
-            self.push(decl.source.span, json_str(&target.url));
-            return;
-        }
-        // So is a binding no value refers to (`import { T } from "dep"`, `T`
-        // used only as a type, or not at all): that transform removes it,
-        // and the whole declaration when none is left. Vite's import
-        // analysis runs on what remains.
         let specs: Vec<&ImportDeclarationSpecifier> = all
             .iter()
-            .filter(|spec| !is_type(spec) && self.keeps(spec.local()))
+            .filter(|spec| !(self.typescript && is_type(spec)) && self.keeps(spec.local()))
             .collect();
-        if !all.is_empty() && specs.is_empty() {
-            self.next_idx();
-            self.push(decl.span, String::new());
+        // With no binding left the transform removes the declaration (it
+        // keeps `import "dep"` under `verbatimModuleSyntax`). It is left as
+        // written for the transform to remove, and the dep is not asked
+        // about: an import the browser never makes registers nothing.
+        let emptied = !all.is_empty() && specs.is_empty();
+        if emptied && !self.later.keep_value_imports {
             return;
         }
+        let Some(target) = (self.interop)(crate::lit_str(decl.source.value)) else {
+            return;
+        };
         let named = specs
             .iter()
             .any(|s| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)));
@@ -765,7 +900,14 @@ mod tests {
     }
 
     fn run_as(src: &str, kind: InteropKind, format: ImporterFormat) -> Option<String> {
-        rewrite_cjs_interop_logged(src, Path::new("m.js"), format, &target(kind), &mut |_| {})
+        rewrite_cjs_interop_logged(
+            src,
+            Path::new("m.js"),
+            format,
+            &LaterTransforms::default(),
+            &target(kind),
+            &mut |_| {},
+        )
     }
 
     /// A pre-bundle imported from an ES module.
@@ -861,94 +1003,248 @@ mod tests {
         }
     }
 
-    /// The TypeScript transform runs after this pass and erases type-only
-    /// imports; Vite's import analysis runs after it and never sees them.
-    #[test]
-    fn type_only_specifiers_are_left_to_the_typescript_transform() {
-        let run = |src: &str| {
-            rewrite_cjs_interop(src, Path::new("m.ts"), &target(InteropKind::PreBundle))
-        };
-        // Nothing but types: only the URL, no binding, no default import.
-        assert_eq!(
-            run(r#"import { type T, type U as V } from "cjs-dep";"#),
-            Some(format!("import {{ type T, type U as V }} from \"{URL}\";"))
-        );
-        assert_eq!(run(r#"import type { T } from "cjs-dep";"#), None);
-        assert_eq!(run(r#"export type { T } from "cjs-dep";"#), None);
-        // A value beside a type: the value alone is bound.
-        let out = run("import d, { type T, a } from \"cjs-dep\";\nd(a);\n").unwrap();
-        assert_eq!(
-            out,
-            format!(
-                "const d = __ojcjs0;const {{ a: a }} = __ojcjs0;import __ojcjs0 from \"{URL}\";\nd(a);\n"
-            )
-        );
+    fn run_ts(src: &str, file: &str, later: &LaterTransforms) -> Option<String> {
+        rewrite_cjs_interop_logged(
+            src,
+            Path::new(file),
+            ImporterFormat::ESM,
+            later,
+            &target(InteropKind::PreBundle),
+            &mut |_| {},
+        )
     }
 
-    /// oxc's TypeScript transform removes an import binding no value refers
-    /// to, and the declaration when none is left (`has_value_reference`):
-    /// Vite's import analysis runs on what remains, so this pass, which runs
-    /// first, leaves the same.
+    /// oxc's TypeScript transform, which runs after this pass, removes an
+    /// import binding no value refers to and the declaration when none is
+    /// left (`has_value_reference`); Vite's import analysis runs on what
+    /// remains. A declaration that will be removed is left as written, for
+    /// that transform to remove: nothing is spliced, and the dep is not
+    /// asked about.
     #[test]
-    fn a_binding_used_only_as_a_type_is_dropped_as_typescript_drops_it() {
-        let run = |src: &str, file: &str| {
-            rewrite_cjs_interop(src, Path::new(file), &target(InteropKind::PreBundle))
-        };
-        let import = format!("import __ojcjs0 from \"{URL}\";");
-        // Used only as a type, or not at all: nothing is left, on its line.
+    fn a_declaration_typescript_removes_is_left_to_it() {
+        let later = LaterTransforms::default();
         for src in [
+            "import { type T, type U as V } from \"cjs-dep\";\n",
+            "import type { T } from \"cjs-dep\";\n",
+            "export type { T } from \"cjs-dep\";\n",
             "import { T } from \"cjs-dep\";\nlet x: T;\n",
             "import { T } from \"cjs-dep\";\nexport type { T };\n",
             "import d, { T } from \"cjs-dep\";\nlet x: T | typeof d;\n",
             "import * as ns from \"cjs-dep\";\nlet x: ns.T;\n",
             "import { unused } from \"cjs-dep\";\nlet x = 1;\n",
+            // Shadowed in the only scope that uses the name.
+            "import { a } from \"cjs-dep\";\nfunction f(a: number) { return a; }\n",
+            // No statement is joined to the next: the text is as it was.
+            "\"use client\"\nimport { FC } from \"cjs-dep\"\n(async () => {})()\n",
+            "import { FC } from \"cjs-dep\"\n[1].map(String)\n",
+            "import { FC } from \"cjs-dep\"\n`tpl`.length\n",
+        ] {
+            assert_eq!(run_ts(src, "m.ts", &later), None, "{src}");
+        }
+        // The dep of a removed declaration is not looked up.
+        let asked = std::cell::Cell::new(0);
+        let out = rewrite_cjs_interop_logged(
+            "import { T } from \"cjs-dep\";\nlet x: T;\n",
+            Path::new("m.ts"),
+            ImporterFormat::ESM,
+            &later,
+            &|_| {
+                asked.set(asked.get() + 1);
+                Some(InteropTarget::new(URL, InteropKind::PreBundle))
+            },
+            &mut |_| {},
+        );
+        assert_eq!((out, asked.get()), (None, 0));
+    }
+
+    /// A binding a value refers to is read; one beside it that none does is
+    /// not.
+    #[test]
+    fn only_the_bindings_a_value_refers_to_are_read() {
+        let later = LaterTransforms::default();
+        let import = format!("import __ojcjs0 from \"{URL}\";");
+        for (src, bindings) in [
+            (
+                "import { a, T } from \"cjs-dep\";\nlet x: T = a;\n",
+                "const { a: a } = __ojcjs0;",
+            ),
+            (
+                "import d, { T } from \"cjs-dep\";\nlet x: T = d;\n",
+                "const d = __ojcjs0;",
+            ),
+            (
+                "import d, { type T, a } from \"cjs-dep\";\nd(a);\n",
+                "const d = __ojcjs0;const { a: a } = __ojcjs0;",
+            ),
+            // A class is a value and a type.
+            (
+                "import { C } from \"cjs-dep\";\nlet x: C = new C();\n",
+                "const { C: C } = __ojcjs0;",
+            ),
+            // Re-exported, exported as default, in a shorthand property.
+            (
+                "import { a } from \"cjs-dep\";\nexport { a };\n",
+                "const { a: a } = __ojcjs0;",
+            ),
+            (
+                "import a from \"cjs-dep\";\nexport default a;\n",
+                "const a = __ojcjs0;",
+            ),
+            (
+                "import { a } from \"cjs-dep\";\nexport const o = { a };\n",
+                "const { a: a } = __ojcjs0;",
+            ),
+            // Shadowed in an inner scope, used in the outer one.
+            (
+                "import { a } from \"cjs-dep\";\nfunction f(a: number) { return a; }\nf(a);\n",
+                "const { a: a } = __ojcjs0;",
+            ),
         ] {
             let rest = src.split_once('\n').unwrap().1;
-            assert_eq!(run(src, "m.ts"), Some(format!("\n{rest}")), "{src}");
+            assert_eq!(
+                run_ts(src, "m.ts", &later),
+                Some(format!("{bindings}{import}\n{rest}")),
+                "{src}"
+            );
         }
-        // One value use beside a type use: the value binding alone is read.
-        assert_eq!(
-            run("import { a, T } from \"cjs-dep\";\nlet x: T = a;\n", "m.ts"),
-            Some(format!(
-                "const {{ a: a }} = __ojcjs0;{import}\nlet x: T = a;\n"
-            ))
-        );
-        assert_eq!(
-            run("import d, { T } from \"cjs-dep\";\nlet x: T = d;\n", "m.ts"),
-            Some(format!("const d = __ojcjs0;{import}\nlet x: T = d;\n"))
-        );
-        // A value position that is also read as a type keeps the binding.
-        assert_eq!(
-            run(
-                "import { C } from \"cjs-dep\";\nlet x: C = new C();\n",
-                "m.ts"
-            ),
-            Some(format!(
-                "const {{ C: C }} = __ojcjs0;{import}\nlet x: C = new C();\n"
-            ))
-        );
         // JavaScript elides nothing.
         assert_eq!(
-            run("import { unused } from \"cjs-dep\";\n", "m.js"),
+            run_ts("import { unused } from \"cjs-dep\";\n", "m.js", &later),
             Some(format!("const {{ unused: unused }} = __ojcjs0;{import}\n"))
         );
-        // The JSX transform refers to its factory without the source saying
-        // so: `React`, and a name a pragma gives, stay.
-        assert_eq!(
-            run(
-                "import React from \"cjs-dep\";\nexport const el = <p />;\n",
-                "m.tsx"
-            ),
-            Some(format!(
-                "const React = __ojcjs0;{import}\nexport const el = <p />;\n"
-            ))
+        // A file with a parse diagnostic keeps its bindings: its symbols
+        // are not read off a recovered tree.
+        let out = run_ts(
+            "import { unused } from \"cjs-dep\";\nlet x = 08n;\n",
+            "m.ts",
+            &later,
         );
-        let out = run(
-            "/** @jsx h */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n",
+        if let Some(out) = out {
+            assert!(
+                out.starts_with("const { unused: unused } = __ojcjs0;"),
+                "{out}"
+            );
+        }
+    }
+
+    /// tsconfig `verbatimModuleSyntax` (the transform's
+    /// `only_remove_type_imports`): what is written as a value stays, an
+    /// inline `type` goes, and a declaration of only those becomes a
+    /// side-effect import.
+    #[test]
+    fn verbatim_module_syntax_keeps_value_imports() {
+        let later = LaterTransforms {
+            keep_value_imports: true,
+            ..Default::default()
+        };
+        let import = format!("import __ojcjs0 from \"{URL}\";");
+        assert_eq!(
+            run_ts(
+                "import { T, type U } from \"cjs-dep\";\nlet x: T;\n",
+                "m.ts",
+                &later
+            ),
+            Some(format!("const {{ T: T }} = __ojcjs0;{import}\nlet x: T;\n"))
+        );
+        assert_eq!(
+            run_ts("import { unused } from \"cjs-dep\";\n", "m.ts", &later),
+            Some(format!("const {{ unused: unused }} = __ojcjs0;{import}\n"))
+        );
+        assert_eq!(
+            run_ts("import { type T } from \"cjs-dep\";\n", "m.ts", &later),
+            Some(format!("import \"{URL}\";\n"))
+        );
+        assert_eq!(
+            run_ts("import type { T } from \"cjs-dep\";\n", "m.ts", &later),
+            None
+        );
+    }
+
+    /// The JSX transform refers to its factories though the source does
+    /// not; oxc's TypeScript transform keeps an import of one
+    /// (`is_jsx_imports`, and the reference its classic transform creates).
+    #[test]
+    fn a_jsx_factory_import_is_kept_as_oxc_keeps_it() {
+        let automatic = LaterTransforms::default();
+        let classic = LaterTransforms {
+            jsx_classic: true,
+            jsx_pragma: Some("createElement".into()),
+            jsx_pragma_frag: Some("Fragment".into()),
+            ..Default::default()
+        };
+        let kept = |src: &str, file: &str, later: &LaterTransforms, binding: &str| {
+            let out = run_ts(src, file, later);
+            assert!(
+                out.as_deref().is_some_and(|out| out.contains(binding)),
+                "{src}: {out:?}"
+            );
+        };
+        // The config's classic factory and fragment, used by the JSX alone.
+        let src = "import { createElement, Fragment } from \"cjs-dep\";\nexport const A = () => <><b>x</b></>;\n";
+        kept(
+            src,
             "m.tsx",
+            &classic,
+            "const { createElement: createElement, Fragment: Fragment } = __ojcjs0;",
+        );
+        // An element without a fragment refers to the factory alone.
+        let out = run_ts(
+            "import { createElement, Fragment } from \"cjs-dep\";\nexport const A = () => <b>x</b>;\n",
+            "m.tsx",
+            &classic,
         )
         .unwrap();
-        assert!(out.contains("const { h: h } = __ojcjs0;"), "{out}");
+        assert!(
+            out.starts_with("const { createElement: createElement } = __ojcjs0;"),
+            "{out}"
+        );
+        // Under the automatic runtime those names are nothing special.
+        assert_eq!(run_ts(src, "m.tsx", &automatic), None);
+        // A comment's pragma, under either runtime.
+        kept(
+            "/** @jsx h */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n",
+            "m.tsx",
+            &automatic,
+            "const { h: h } = __ojcjs0;",
+        );
+        kept(
+            "/** @jsxRuntime classic */\n/** @jsx m.h */\nimport m from \"cjs-dep\";\nexport const el = <p />;\n",
+            "m.tsx",
+            &automatic,
+            "const m = __ojcjs0;",
+        );
+        // oxc keeps an unused `React` beside an element under the automatic
+        // runtime too (its TypeScript pragma defaults to React.createElement).
+        kept(
+            "import React from \"cjs-dep\";\nexport const el = <p />;\n",
+            "m.tsx",
+            &automatic,
+            "const React = __ojcjs0;",
+        );
+        // Without JSX in the module, or in a `.ts` file, there is no such rule.
+        assert_eq!(
+            run_ts(
+                "import React from \"cjs-dep\";\nexport const n = 1;\n",
+                "m.tsx",
+                &classic
+            ),
+            None
+        );
+        assert_eq!(
+            run_ts(
+                "import { createElement } from \"cjs-dep\";\nexport const n = 1;\n",
+                "m.ts",
+                &classic
+            ),
+            None
+        );
+        // An import used as an element is a value use.
+        kept(
+            "import { Foo } from \"cjs-dep\";\nexport const el = <Foo />;\n",
+            "m.tsx",
+            &automatic,
+            "const { Foo: Foo } = __ojcjs0;",
+        );
     }
 
     #[test]
@@ -1269,12 +1565,36 @@ mod tests {
                     .unwrap_or_else(|| panic!("{src}"));
             assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src:?}");
         }
-        // No place after the pragma and between statements: Vite's.
-        let src = format!("'use strict'; /** @jsx h */ {import}");
-        let out = rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle));
+        // The first statement on the pragma's own line: right before it,
+        // which is after the pragma and between statements.
+        for before in ["'use strict'; /** @jsx h */ ", "/* c */ /** @jsx h */ "] {
+            let src = format!("{before}{import}");
+            let out =
+                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle));
+            assert_eq!(out, Some(format!("{before}{head}{rewritten}")), "{src}");
+        }
+        // The same in a TypeScript file, and before a decorated class.
+        let out = run_ts(
+            "/** @jsx h */ @dec export class X {}\nimport d from \"cjs-dep\";\nd;\n",
+            "m.tsx",
+            &LaterTransforms::default(),
+        );
         assert_eq!(
             out,
-            Some(format!("{head}'use strict'; /** @jsx h */ {rewritten}"))
+            Some(format!(
+                "/** @jsx h */{head} @dec export class X {{}}\n{rewritten}d;\n"
+            ))
+        );
+        let out = run_ts(
+            "'use strict'; /** @jsx h */ @dec export class X {}\nimport d from \"cjs-dep\";\nd;\n",
+            "m.tsx",
+            &LaterTransforms::default(),
+        );
+        assert_eq!(
+            out,
+            Some(format!(
+                "'use strict'; /** @jsx h */ {head}@dec export class X {{}}\n{rewritten}d;\n"
+            ))
         );
         // A pragma after the first statement is no pragma: byte 0.
         let src = format!("{import}/** @jsxImportSource custom */\n");
@@ -1318,6 +1638,7 @@ mod tests {
             r#"export * from "cjs-dep";"#,
             Path::new("/app/m.js"),
             ImporterFormat::ESM,
+            &LaterTransforms::default(),
             &target(InteropKind::PreBundle),
             &mut |w| warnings.push(w),
         );
@@ -1332,6 +1653,7 @@ mod tests {
             r#"export * from "./sib.js";"#,
             Path::new("m.js"),
             ImporterFormat::ESM,
+            &LaterTransforms::default(),
             &target(InteropKind::PreBundle),
             &mut |w| warnings.push(w),
         );
@@ -1347,6 +1669,7 @@ mod tests {
             r#"export * from "cjs-dep";"#,
             Path::new("m.js"),
             ImporterFormat::ESM,
+            &LaterTransforms::default(),
             &target(InteropKind::Served),
             &mut |w| warnings.push(w),
         );
