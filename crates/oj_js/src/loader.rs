@@ -208,6 +208,7 @@ impl ModuleLoader for EngineModuleLoader {
                     )
                     .await
                     .map_err(JsErrorBox::from_err)?;
+                let loaded = with_dropped_cjs_names(loaded);
                 let module_type =
                     module_type_from_media_and_requested_type(loaded.media_type, &requested);
                 // ESM code cache: keyed by the FOUND specifier — that is the
@@ -344,6 +345,34 @@ fn module_type_from_media_and_requested_type(
             _ => ModuleType::JavaScript,
         },
     }
+}
+
+/// A CommonJS file's ES wrapper (the one text source the npm loader
+/// returns), given the names its export analysis dropped and Node keeps:
+/// see [`crate::cjs_names`].
+fn with_dropped_cjs_names(
+    mut loaded: deno_resolver::loader::LoadedModule<'_>,
+) -> deno_resolver::loader::LoadedModule<'_> {
+    let LoadedModuleSource::String(wrapper) = &loaded.source else {
+        return loaded;
+    };
+    if !wrapper.contains("export default mod;") {
+        return loaded;
+    }
+    let Some(source) = deno_path_util::url_to_file_path(&loaded.specifier)
+        .ok()
+        .and_then(|path| std::fs::read(path).ok())
+    else {
+        return loaded;
+    };
+    let names =
+        crate::cjs_names::dropped_names(&String::from_utf8_lossy(&source), wrapper.as_ref());
+    if !names.is_empty() {
+        loaded.source = LoadedModuleSource::String(
+            crate::cjs_names::with_names(wrapper.as_ref(), &names).into(),
+        );
+    }
+    loaded
 }
 
 fn loaded_module_source_to_module_source_code(source: LoadedModuleSource) -> ModuleSourceCode {

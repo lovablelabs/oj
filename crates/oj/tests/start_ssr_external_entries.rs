@@ -13,6 +13,15 @@
 //! build declares its own `require` (`createRequire`), or calls none, keeps
 //! the `module` entry, where Vite loads `main`: oj's deliberate divergence.
 //!
+//! A CommonJS `main` is Node's to load, and its namespace Node's: the names
+//! Node's lexer reads off the file, beside `default`. webpack's UMD output
+//! (pdf.js 3) assigns each export in an inner module (`exports.Options =
+//! ...`) and defines it again on the entry with the descriptor in
+//! parentheses (`Object.defineProperty(exports, "Options", ({ get ... }))`);
+//! the engine's analysis took the second for a getter it could not vouch for
+//! and dropped the name, so `import * as kit` had every inner name but the
+//! real exports and `kit.Options.workerSrc = ...` threw on the server.
+//!
 //! Each shape is its own page, loaded by its loader, so one page failing
 //! leaves the others standing. Every page that Vite renders is checked
 //! against Vite's dev server on the same app.
@@ -44,6 +53,70 @@ fn requiring_builds(dir: &str, tag: &str) -> Vec<(String, String)> {
         ),
     ]
 }
+
+/// webpack's `libraryTarget: "umd"` output of an entry re-exporting from an
+/// inner module: `Options` is assigned in the inner module and defined on
+/// the entry's exports with a parenthesised descriptor; `internalOnly` is
+/// assigned in the inner module alone; `version` is defined on the entry
+/// alone.
+const WEBPACK_UMD: &str = r#"(function webpackUniversalModuleDefinition(root, factory) {
+  if (typeof exports === 'object' && typeof module === 'object') module.exports = factory();
+  else if (typeof define === 'function' && define.amd) define("webpack-umd", [], factory);
+  else if (typeof exports === 'object') exports["webpack-umd"] = factory();
+  else root["webpack-umd"] = factory();
+})(globalThis, () => {
+return /******/ (() => { // webpackBootstrap
+/******/ 	"use strict";
+/******/ 	var __webpack_modules__ = ([
+/* 0 */
+/***/ ((__unused_webpack_module, exports) => {
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.internalOnly = exports.Options = void 0;
+const Options = Object.create(null);
+exports.Options = Options;
+Options.workerSrc = "";
+exports.internalOnly = 1;
+
+/***/ })
+/******/ 	]);
+/******/ 	var __webpack_module_cache__ = {};
+/******/ 	function __w_require__(moduleId) {
+/******/ 		var cachedModule = __webpack_module_cache__[moduleId];
+/******/ 		if (cachedModule !== undefined) return cachedModule.exports;
+/******/ 		var module = __webpack_module_cache__[moduleId] = { exports: {} };
+/******/ 		__webpack_modules__[moduleId](module, module.exports, __w_require__);
+/******/ 		return module.exports;
+/******/ 	}
+var __webpack_exports__ = {};
+(() => {
+var exports = __webpack_exports__;
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+Object.defineProperty(exports, "Options", ({
+  enumerable: true,
+  get: function () {
+    return _options.Options;
+  }
+}));
+Object.defineProperty(exports, "version", ({
+  enumerable: true,
+  get: function () {
+    return "3.0.0";
+  }
+}));
+var _options = __w_require__(0);
+})();
+
+/******/ 	return __webpack_exports__;
+/******/ })()
+;
+});
+"#;
 
 fn packages() -> Vec<(String, String)> {
     let mut files: Vec<(String, String)> = [
@@ -119,6 +192,12 @@ fn packages() -> Vec<(String, String)> {
             "umd-main/esm.js",
             "export function named() { return \"umd-main-module-entry\"; }\n",
         ),
+        // pdf.js 3's shape: a webpack UMD `main` and no `module`.
+        (
+            "webpack-umd/package.json",
+            r#"{"name":"webpack-umd","main":"build/kit.js"}"#,
+        ),
+        ("webpack-umd/build/kit.js", WEBPACK_UMD),
         // An ESM `module` with a `require` of its own.
         (
             "creates-require/package.json",
@@ -200,6 +279,12 @@ const PAGES: &[(&str, &str)] = &[
         "creates-require",
         "import { which } from \"creates-require\";\nexport const run = () => which();\n",
     ),
+    // The pdf.js setup line at the top of a module, then what the namespace
+    // holds.
+    (
+        "webpack-umd",
+        "import * as kit from \"webpack-umd\";\nimport kitDefault, { Options } from \"webpack-umd\";\nkit.Options.workerSrc = \"/worker.js\";\nexport const run = () =>\n  [\n    Object.keys(kit).sort().join(\",\"),\n    kit.default === kitDefault,\n    Options === kitDefault.Options,\n    kitDefault.Options.workerSrc,\n  ].join(\"|\");\n",
+    ),
 ];
 
 /// What each page renders in dev on oj and on Vite. The dependency a page's
@@ -231,6 +316,19 @@ const DEV: &[(&str, &str, Option<&str>)] = &[
     ),
     ("umd-main", "umd-main-module-entry", None),
     ("creates-require", "creates-require-module:helper", None),
+    // Node's namespace for the file, as the lexer of Node 24.17 reads it:
+    // the names assigned through `exports.` anywhere in the file (one of
+    // them, `internalOnly`, is not on module.exports, and the UMD header's
+    // `exports["webpack-umd"]` is one too), not `version`, which only a
+    // parenthesised `defineProperty` names. Vite's module runner
+    // imports an external natively, so it renders the same on that Node; on
+    // a Node whose lexer drops `Options` the import does not link there, so
+    // Vite is not asked.
+    (
+        "webpack-umd",
+        "Options,default,internalOnly,module.exports,webpack-umd|true|true|/worker.js",
+        None,
+    ),
 ];
 
 fn page_route(path: &str) -> String {
@@ -389,6 +487,11 @@ fn the_build_bundles_each_external() {
         ("nested-copy", "nested-module:nested-copy-module-entry:HI"),
         ("subdirectory", "deep-module-entry:HI"),
         ("umd-main", "umd-main-module-entry"),
+        // Bundled, so the namespace is module.exports beside `default`.
+        (
+            "webpack-umd",
+            "Options,default,version|true|true|/worker.js",
+        ),
     ] {
         assert_eq!(
             rendered(&ours, page),
