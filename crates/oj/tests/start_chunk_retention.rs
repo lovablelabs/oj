@@ -403,6 +403,18 @@ async fn a_page_held_behind_many_rebundles_loads_its_lazy_route() {
         let name = wait_for_note_chunk(&dev, names.last().map(String::as_str));
         names.push(name);
     }
+    // No hot updates under a full-reload gate: nothing is ever left
+    // behind, and a chunk's name is fetched once (every rebundle reloads
+    // the pages onto new names).
+    let (status, headers, _) = dev.fetch("GET", &format!("/@oj-start/{}", names[0]), &[]);
+    assert_eq!(status, 200, "the first bundle's chunk\n{}", dev.output());
+    assert_eq!(
+        headers
+            .iter()
+            .find(|(name, _)| name == "cache-control")
+            .map(|(_, value)| value.as_str()),
+        Some("max-age=31536000, immutable")
+    );
     assert!(
         dev.output().contains("reload held for the editor's flush"),
         "the gate held no reload\n{}",
@@ -465,7 +477,75 @@ async fn a_page_held_behind_many_rebundles_loads_its_lazy_route() {
     page.close().await;
 }
 
+// ---- Hot updates: a chunk whose code was patched since is not served ----
+//
+// With hot updates on, a page takes an edit in place and keeps the entry it
+// loaded, which imports each lazy chunk by the name it had then. A chunk the
+// page already ran is patched; one it has not loaded yet is not the hot
+// runtime's to load: the entry imports it natively, by the old name, and the
+// retained chunk under that name is the code from before the edit. The dev
+// server answers that such a chunk is gone, and the page that asked reloads
+// onto the current output.
+
 const NOTE_SHOWN: &str = "document.querySelector('#note')?.textContent";
+const MOUNTED: &str = "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'";
+/// Whether the page's hot client is up: the bundle's runtime is there and
+/// its socket is open (the introduction is sent again, which the server
+/// takes once). The server registers a client as it reads the introduction,
+/// well inside the 50 ms the watcher waits before it looks at a save.
+const HOT_CLIENT: &str = "(() => { const bus = globalThis.__ojStartHmr; return !!(bus && bus.runtime && bus.send && bus.send({ type: 'oj:client', id: bus.runtime.clientId })); })()";
+
+/// Waits until `page` shows a new document (no mark on it) that hydrated
+/// (`ready`) with its hot client up, and marks the document: a reload
+/// takes the mark away.
+async fn hot_ready(page: &Page, ready: &str) {
+    page.wait_for(
+        &format!("window.__mark === undefined && ({ready}) && {HOT_CLIENT}"),
+        WAIT,
+    )
+    .await;
+    page.eval::<bool>("(window.__mark = 'kept', true)").await;
+}
+
+async fn kept(page: &Page) -> bool {
+    page.eval::<bool>("window.__mark === 'kept'").await
+}
+
+/// Loads `path` in the page's tab as a new document (the browser's HTTP
+/// cache and session storage stay), and waits for it as [`hot_ready`] does.
+async fn load(page: &Page, path: &str, ready: &str) {
+    page.eval::<bool>(&format!(
+        "(window.__mark = 'leaving', location.assign({}), true)",
+        serde_json::to_string(path).unwrap()
+    ))
+    .await;
+    hot_ready(page, ready).await;
+}
+
+fn hot_updates(dev: &Server) -> usize {
+    dev.output().matches("oj start: hot updated").count()
+}
+
+/// Waits for a "hot updated" line past `before` of them: the edit went to
+/// the pages in place, with no reload.
+async fn hot_updated(dev: &Server, before: usize) {
+    let deadline = Instant::now() + WAIT;
+    while hot_updates(dev) <= before {
+        assert!(
+            Instant::now() < deadline,
+            "the edit was not a hot update\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Writes the note and waits for its hot update.
+async fn edit_note(dev: &Server, root: &Path, text: &str) {
+    let before = hot_updates(dev);
+    write_note(root, text);
+    hot_updated(dev, before).await;
+}
 
 /// Follows the page's link to the about route; whether it comes to show
 /// `text` as the note.
@@ -479,88 +559,530 @@ async fn goes_to_about_and_shows(page: &Page, text: &str) -> bool {
     .await
 }
 
-/// Hot updates on, two pages open on the home route, neither of which has
-/// loaded the note's chunk. The note is edited: no page runs it, so the hot
-/// update re-runs nothing and reloads nothing. A page that then goes to the
-/// about route imports the note's chunk by the name its entry has, the one
-/// from before the edit, and used to render the note as it was before the
-/// edit for as long as it stayed open, while a new page rendered the edited
-/// one. The dev server now answers that the chunk is gone, and the page
-/// reloads onto the current output: one page right after the hot update
-/// (before the output behind it was written), the other once the output
-/// renamed the chunk.
+/// What the page shows and said, for a failed assertion.
+async fn seen(page: &Page, dev: &Server) -> String {
+    format!(
+        "note {:?}; console {:?}; errors {:?}\n{}",
+        page.eval::<serde_json::Value>(NOTE_SHOWN).await,
+        page.console(),
+        page.errors(),
+        dev.output()
+    )
+}
+
+/// The fixture with the home and about routes of this file and the lazily
+/// imported note, under `oj dev` with `env`, and the note chunk's first name.
+fn hot_started(name: &str, env: &[(&str, &str)]) -> Option<(start_app::App, Server, String)> {
+    let app = app(name)?;
+    std::fs::write(app.0.join("src/routes/about.tsx"), ABOUT).unwrap();
+    std::fs::write(app.0.join("src/routes/index.tsx"), INDEX).unwrap();
+    write_note(&app.0, "lazy-note-one");
+    let dev = Server::oj_dev_with(&app.0, env);
+    let first = wait_for_note_chunk(&dev, None);
+    Some((app, dev, first))
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A page open on the home route has not loaded the note's chunk. The note
+/// is edited: the page runs no module of it, so the hot update re-runs
+/// nothing and reloads nothing. The page then goes to the about route,
+/// whose effect imports the note's chunk by the name the page's entry has,
+/// the one from before the edit. It used to render the note as it was
+/// before the edit for as long as it stayed open, while a new page rendered
+/// the edited one. The chunk is now answered as gone (never cached: an edit
+/// taken back makes the name current again), the page reloads, and the
+/// about route shows the edited note.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_open_page_first_imports_a_hot_updated_chunk_as_it_is_now() {
-    let Some(app) = app("chunk-retention-hot") else {
+    let Some((app, dev, first)) = hot_started("chunk-retention-hot", &[]) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    // With hot updates on a chunk is revalidated, not cached for good: a
+    // name can stop being served.
+    let (status, headers, _) = dev.fetch("GET", &format!("/@oj-start/{first}"), &[]);
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+    let etag = header(&headers, "etag").expect("a validator").to_string();
+    let (status, _, _) = dev.fetch(
+        "GET",
+        &format!("/@oj-start/{first}"),
+        &[("If-None-Match", etag)],
+    );
+    assert_eq!(status, 304, "the chunk revalidates");
+
+    let page = Page::open(&dev.url("/")).await;
+    hot_ready(&page, MOUNTED).await;
+    edit_note(&dev, &app.0, "lazy-note-two").await;
+    assert!(
+        kept(&page).await,
+        "an edit to a module the page does not run reloaded it\n{}",
+        dev.output()
+    );
+
+    assert!(
+        goes_to_about_and_shows(&page, "lazy-note-two").await,
+        "the about route of a page open since before the edit: {}",
+        seen(&page, &dev).await
+    );
+    assert!(
+        !kept(&page).await,
+        "the page shows the edited note without having reloaded"
+    );
+
+    // The chunk from before the edit is no longer served, and the answer is
+    // not one to cache; the current one is served.
+    let (status, headers, body) = dev.fetch("GET", &format!("/@oj-start/{first}"), &[]);
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 404, "{body}\n{}", dev.output());
+    assert!(body.contains("hot-updated since"), "{body}");
+    assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    assert_eq!(chunk(&dev, &second).0, 200);
+    page.close().await;
+}
+
+/// The same with the chunk in the browser's cache: the tab visited the about
+/// route before (the note's chunk was fetched then), loaded the home route
+/// as a new document, and the note was edited. Served as immutable, the
+/// chunk came out of the browser's cache when the page went to the about
+/// route, the dev server was never asked, and the page ran the note from
+/// before the edit. With hot updates on a chunk is revalidated, so the
+/// browser asks, hears it is gone, and the page reloads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hot_updated_chunk_is_not_run_from_the_browsers_cache() {
+    let Some((app, dev, _first)) = hot_started("chunk-retention-cached", &[]) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    page.wait_for(&format!("{NOTE_SHOWN} === 'lazy-note-one'"), WAIT)
+        .await;
+    load(&page, "/", MOUNTED).await;
+    edit_note(&dev, &app.0, "lazy-note-two").await;
+    assert!(kept(&page).await, "the edit reloaded the page");
+
+    assert!(
+        goes_to_about_and_shows(&page, "lazy-note-two").await,
+        "the about route, its chunk in the browser's cache: {}",
+        seen(&page, &dev).await
+    );
+    assert!(!kept(&page).await, "the page reloaded for the chunk");
+    page.close().await;
+}
+
+/// The editor's gate holds hot updates until its flush (`OJ_HMR_GATE=1`
+/// without full reloads). A page that imports the edited chunk during the
+/// hold has not been patched: it is whole with the chunks it names, so it
+/// gets the chunk as it was and is not reloaded (a reload would show it
+/// every held edit, ahead of the flush). The flush releases the patch,
+/// which re-runs the module the page has run by then. A page that first
+/// imports the chunk after the flush is past the patch, and reloads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_hot_update_leaves_its_chunk_served_until_the_flush() {
+    let gate = [("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "false")];
+    let Some((app, dev, first)) = hot_started("chunk-retention-gate", &gate) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let during = Page::open(&dev.url("/")).await;
+    let after = Page::open(&dev.url("/")).await;
+    for page in [&during, &after] {
+        hot_ready(page, MOUNTED).await;
+    }
+
+    // The gate holds from the first save it sees until the flush. The
+    // engine watches the files on its own clock and can patch the pages
+    // before the gate has seen that save (such a patch goes straight out,
+    // and its chunk is left behind at once, which is the same thing said
+    // twice); so the gate is made to hold first, by a save of a file no
+    // bundle has, as an editor's batch of writes holds it for the later
+    // ones.
+    let held = |file: &'static str| {
+        let dev = &dev;
+        async move {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                let (_, status) = dev.request("GET", "/__hmr_gate", &[]);
+                if status.contains(&format!("{file}\":")) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the gate never held {file}\n{}",
+                    dev.output()
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    };
+    std::fs::write(app.0.join("src/lib/unused.ts"), "export {};\n").unwrap();
+    held("/src/lib/unused.ts").await;
+    let before = hot_updates(&dev);
+    write_note(&app.0, "lazy-note-two");
+    held("/src/lib/lazy-note.ts").await;
+    hot_updated(&dev, before).await;
+    // The output behind the held update renamed the chunk.
+    let second = wait_for_note_chunk(&dev, Some(&first));
+
+    // During the hold: the chunk as the page's entry names it, no reload.
+    assert!(
+        goes_to_about_and_shows(&during, "lazy-note-one").await,
+        "a page importing the chunk while the gate holds its update: {}",
+        seen(&during, &dev).await
+    );
+    assert!(
+        kept(&during).await,
+        "the page reloaded onto edits the gate still holds\n{}",
+        dev.output()
+    );
+    assert_eq!(chunk(&dev, &first).0, 200, "served while the gate holds");
+
+    let (status, body) = dev.request("POST", "/__hmr_flush", &[]);
+    assert_eq!(status, 200, "flush: {body}");
+    // The released patch re-runs the note on the page that ran it.
+    assert!(
+        during
+            .poll(
+                &format!("{NOTE_SHOWN} === 'lazy-note-two'"),
+                Duration::from_secs(40)
+            )
+            .await,
+        "the page after the flush: {}",
+        seen(&during, &dev).await
+    );
+    // After the flush the old name is left behind: the other page reloads.
+    assert_eq!(chunk(&dev, &first).0, 404, "left behind once released");
+    assert_eq!(chunk(&dev, &second).0, 200);
+    assert!(
+        goes_to_about_and_shows(&after, "lazy-note-two").await,
+        "a page importing the chunk after the flush: {}",
+        seen(&after, &dev).await
+    );
+    assert!(!kept(&after).await, "the page reloaded for the chunk");
+    during.close().await;
+    after.close().await;
+}
+
+/// An edit made, taken back and made again renames the chunk back and
+/// forth. A tab that loads the home route anew each time and then goes to
+/// the about route reloads for the chunk each time: the third time it meets
+/// the name it reloaded for the first time, under a later document, and
+/// used to be left with a failed import and no note (the reload guard is
+/// once per document and chunk, and took the two documents for one).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_taken_back_and_made_again_reloads_the_page_each_time() {
+    let Some((app, dev, first)) = hot_started("chunk-retention-toggle", &[]) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = &app.0;
+    let tab = Page::open(&dev.url("/")).await;
+    hot_ready(&tab, MOUNTED).await;
+
+    let mut current = first.clone();
+    for (round, text) in ["lazy-note-two", "lazy-note-one", "lazy-note-two"]
+        .into_iter()
+        .enumerate()
+    {
+        edit_note(&dev, root, text).await;
+        assert!(kept(&tab).await, "round {round}: the edit reloaded the tab");
+        assert!(
+            goes_to_about_and_shows(&tab, text).await,
+            "round {round}: the about route after the edit to {text:?}: {}",
+            seen(&tab, &dev).await
+        );
+        assert!(
+            !kept(&tab).await,
+            "round {round}: the tab reloaded for the chunk"
+        );
+        let renamed = wait_for_note_chunk(&dev, Some(&current));
+        assert_eq!(chunk(&dev, &current).0, 404, "round {round}: left behind");
+        current = renamed;
+        load(&tab, "/", MOUNTED).await;
+    }
+    // Each reload was the page's own, for its chunk: the server sent none.
+    assert!(
+        !dev.output().contains("reloading"),
+        "the server reloaded the pages\n{}",
+        dev.output()
+    );
+    assert!(
+        tab.console()
+            .iter()
+            .all(|line| !line.contains("served the same document")
+                && !line.contains("gone from the dev server")),
+        "the tab's console: {:?}",
+        tab.console()
+    );
+    tab.close().await;
+}
+
+/// An edit taken back makes the chunk's first name the current one again:
+/// it is served, and a page open since before the edit, which never loaded
+/// the chunk, imports it by that name and shows the note as it is, without
+/// a reload.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_taken_back_serves_the_chunk_under_its_first_name_again() {
+    let Some((app, dev, first)) = hot_started("chunk-retention-revert", &[]) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = &app.0;
+    let page = Page::open(&dev.url("/")).await;
+    hot_ready(&page, MOUNTED).await;
+
+    edit_note(&dev, root, "lazy-note-two").await;
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    assert_eq!(chunk(&dev, &first).0, 404, "left behind by the edit");
+
+    edit_note(&dev, root, "lazy-note-one").await;
+    let third = wait_for_note_chunk(&dev, Some(&second));
+    assert_eq!(third, first, "the note as it was has its first name");
+    let (status, body) = chunk(&dev, &first);
+    assert!(
+        status == 200 && body.contains("lazy-note-one"),
+        "the first name after the edit was taken back: {status} {body:?}\n{}",
+        dev.output()
+    );
+    assert_eq!(chunk(&dev, &second).0, 404, "the edit's own chunk");
+
+    assert!(kept(&page).await, "the edits reloaded the page");
+    assert!(
+        goes_to_about_and_shows(&page, "lazy-note-one").await,
+        "a page open since before the edit: {}",
+        seen(&page, &dev).await
+    );
+    assert!(kept(&page).await, "it had no reason to reload");
+    page.close().await;
+}
+
+/// A hot client of the dev server without a browser: a socket that
+/// introduces itself as a page's runtime does, so edits go out as hot
+/// updates.
+fn hot_socket(dev: &Server) {
+    let url = format!("ws://127.0.0.1:{}/@oj-start/hmr", dev.port);
+    let (opened, is_open) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use futures_util::{SinkExt, StreamExt};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    r#"{"type":"oj:client","id":"socket-page"}"#.into(),
+                ))
+                .await
+                .unwrap();
+            let _ = opened.send(());
+            while let Some(Ok(_)) = socket.next().await {}
+        });
+    });
+    is_open
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the hot socket opens");
+    // The server reads the introduction and registers the client.
+    std::thread::sleep(Duration::from_millis(500));
+}
+
+// The engine watches the files itself and patches the pages on its own
+// clock; the dev server's watcher looks at a save some 50 ms after it. A
+// document asked for in between makes the output current at once, renaming
+// the chunk before the watcher's run has looked at the save. The chunk is
+// left behind whichever comes first: what counts is the engine's own
+// account of what it patched and what it then put out. (Which of the two
+// comes first here is the machine's to decide; the bookkeeping's unit tests
+// in start_hot.rs pin the order.)
+#[test]
+fn a_chunk_is_left_behind_when_a_document_asks_for_the_output_first() {
+    let Some((app, dev, first)) = hot_started("chunk-retention-race", &[]) else {
+        return;
+    };
+    hot_socket(&dev);
+    let before = hot_updates(&dev);
+    write_note(&app.0, "lazy-note-two");
+    // Documents, back to back, from the save until the watcher's run ends.
+    let deadline = Instant::now() + WAIT;
+    while hot_updates(&dev) <= before {
+        let (status, _) = dev.request("GET", "/", &[]);
+        assert_eq!(status, 200, "{}", dev.output());
+        assert!(
+            Instant::now() < deadline,
+            "the edit was not a hot update\n{}",
+            dev.output()
+        );
+    }
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    assert_eq!(
+        chunk(&dev, &first).0,
+        404,
+        "the chunk from before the edit is still served\n{}",
+        dev.output()
+    );
+    assert_eq!(chunk(&dev, &second).0, 200);
+}
+
+// ---- A file-routed app: the lazy chunk is a route's split-off component ----
+
+const FILE_ROOT: &str = r#"import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import { useEffect } from "react";
+
+export const Route = createRootRoute({
+  head: () => ({ meta: [{ title: "lazy routes" }] }),
+  component: RootComponent,
+});
+
+function RootComponent() {
+  useEffect(() => {
+    (self as { __ojHydrated?: boolean }).__ojHydrated = true;
+  }, []);
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <Outlet />
+        <Scripts />
+      </body>
+    </html>
+  );
+}
+"#;
+
+const FILE_INDEX: &str = r#"import { createFileRoute, Link } from "@tanstack/react-router";
+
+export const Route = createFileRoute("/")({
+  component: () => (
+    <main>
+      <p id="home">home page</p>
+      <Link to="/later" id="to-later">later</Link>
+    </main>
+  ),
+});
+"#;
+
+const FILE_LAZY: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { lazyLabel } from "../lib/lazy-label";
+
+export const Route = createFileRoute("/later")({
+  component: LazyPage,
+});
+
+function LazyPage() {
+  return <p id="later">{lazyLabel}</p>;
+}
+"#;
+
+const FILE_ROUTER: &str = r#"import { createRouter } from "@tanstack/react-router";
+import { routeTree } from "./routeTree.gen";
+
+export function getRouter() {
+  return createRouter({ routeTree });
+}
+"#;
+
+/// The chunk files under `dir` whose text holds `needle`, by name.
+fn chunks_holding(dir: &Path, needle: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+        .filter(|e| std::fs::read_to_string(e.path()).is_ok_and(|s| s.contains(needle)))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// A file-routed app: the router's code splitter moves a route's component
+/// into `route.tsx?tsr-split=component`, a chunk of its own with what the
+/// component imports. A page open on the home route has not loaded the lazy
+/// route's chunk; a module that chunk holds is edited (a hot update, no
+/// reload), and the page follows its link to the route: it shows the route
+/// as it is now, after a reload, where it showed it as it was before the
+/// edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_page_goes_to_a_lazy_route_hot_updated_since_as_it_is_now() {
+    let Some(app) = app("chunk-retention-file-routes") else {
         return;
     };
     if browser::skip() {
         return;
     }
     let root = app.0.clone();
-    std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
-    std::fs::write(root.join("src/routes/index.tsx"), INDEX).unwrap();
-    write_note(&root, "lazy-note-one");
+    let routes = root.join("src/routes");
+    std::fs::remove_dir_all(&routes).unwrap();
+    std::fs::create_dir_all(&routes).unwrap();
+    std::fs::write(routes.join("__root.tsx"), FILE_ROOT).unwrap();
+    std::fs::write(routes.join("index.tsx"), FILE_INDEX).unwrap();
+    std::fs::write(routes.join("later.tsx"), FILE_LAZY).unwrap();
+    std::fs::write(root.join("src/routeTree.ts"), "export {};\n").unwrap();
+    std::fs::write(root.join("src/router.tsx"), FILE_ROUTER).unwrap();
+    let label = root.join("src/lib/lazy-label.ts");
+    std::fs::write(&label, "export const lazyLabel = \"lazy-label-one\";\n").unwrap();
     let dev = Server::oj_dev(&root);
-    let first = wait_for_note_chunk(&dev, None);
 
-    let early = Page::open(&dev.url("/")).await;
-    let late = Page::open(&dev.url("/")).await;
-    for page in [&early, &late] {
-        page.wait_for(
-            "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'",
-            WAIT,
-        )
+    let page = Page::open(&dev.url("/")).await;
+    hot_ready(&page, "self.__ojHydrated === true").await;
+    // The label is in the lazy route's split-off chunk, not in the entry.
+    let chunks = root.join(".oj-cache/v1/start/client-chunks");
+    let holding = chunks_holding(&chunks, "lazy-label-one");
+    assert_eq!(holding.len(), 1, "the label's chunk: {holding:?}");
+    let old = holding[0].clone();
+    assert_ne!(old, "client-entry.js");
+    assert!(
+        std::fs::read_to_string(chunks.join(&old))
+            .unwrap()
+            .contains("later.tsx?tsr-split=component"),
+        "{old} is not the route's split-off component"
+    );
+
+    let before = hot_updates(&dev);
+    std::fs::write(&label, "export const lazyLabel = \"lazy-label-two\";\n").unwrap();
+    hot_updated(&dev, before).await;
+    assert!(kept(&page).await, "the edit reloaded the page");
+
+    page.eval::<bool>("(document.getElementById('to-later').click(), true)")
         .await;
-    }
-    // The pages' hot clients register: an edit with none connected rebuilds
-    // and reloads instead.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-    for page in [&early, &late] {
-        page.eval::<bool>("(window.__mark = 'kept', true)").await;
-    }
-
-    write_note(&root, "lazy-note-two");
-    let deadline = Instant::now() + WAIT;
-    while !dev.output().contains("oj start: hot updated") {
-        assert!(
-            Instant::now() < deadline,
-            "the edit was not a hot update\n{}",
-            dev.output()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    for page in [&early, &late] {
-        assert!(
-            page.eval::<bool>("window.__mark === 'kept'").await,
-            "an edit to a module no page runs reloaded a page\n{}",
-            dev.output()
-        );
-    }
-
-    // Right after the hot update, the written output still behind it.
+    let shown = "document.querySelector('#later')?.textContent";
     assert!(
-        goes_to_about_and_shows(&early, "lazy-note-two").await,
-        "the about route of a page open since before the edit shows {:?}, not the edited note\n{}",
-        early.eval::<serde_json::Value>(NOTE_SHOWN).await,
+        page.poll(
+            &format!("{shown} === 'lazy-label-two'"),
+            Duration::from_secs(40)
+        )
+        .await,
+        "the lazy route shows {:?}; console {:?}; errors {:?}\n{}",
+        page.eval::<serde_json::Value>(shown).await,
+        page.console(),
+        page.errors(),
         dev.output()
     );
-    // Once the output renamed the chunk.
-    let second = wait_for_note_chunk(&dev, Some(&first));
     assert!(
-        goes_to_about_and_shows(&late, "lazy-note-two").await,
-        "the about route of a page open across the output refresh shows {:?}, not the edited note\n{}",
-        late.eval::<serde_json::Value>(NOTE_SHOWN).await,
-        dev.output()
+        !kept(&page).await,
+        "the page reloaded for the route's chunk"
     );
-
-    // The chunk from before the edit is no longer served; the current one is.
-    let (status, body) = chunk(&dev, &first);
-    assert_eq!(status, 404, "{body}\n{}", dev.output());
-    assert!(body.contains("hot-updated since"), "{body}");
-    assert_eq!(chunk(&dev, &second).0, 200);
-    early.close().await;
-    late.close().await;
+    assert_eq!(chunk(&dev, &old).0, 404, "the route's old chunk");
+    page.close().await;
 }
 
 /// Removes every file under `dir` whose content is `content`.

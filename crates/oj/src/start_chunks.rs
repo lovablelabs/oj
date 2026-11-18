@@ -3,7 +3,8 @@
 
 //! How the Start client bundle goes over the wire: an ETag from the chunk's
 //! content hash (a reload revalidates to a 304), immutable caching for the
-//! bundle's hashed chunks, and gzip for clients that accept it.
+//! bundle's hashed chunks where no hot update can retire a name, and gzip
+//! for clients that accept it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -241,6 +242,14 @@ pub(crate) fn chunk_gone_frame(name: &str) -> String {
     serde_json::json!({ "type": "oj:chunk-gone", "name": name }).to_string()
 }
 
+/// The same for a chunk the server still has but will not serve: its code
+/// was hot-updated since the page that asks for it loaded (see
+/// `start_hot::LeftBehind`), which the page says in its console.
+pub(crate) fn chunk_hot_updated_frame(name: &str) -> String {
+    serde_json::json!({ "type": "oj:chunk-gone", "name": name, "reason": "hot-updated" })
+        .to_string()
+}
+
 /// Below this a gzip frame costs more than it saves.
 const MIN_GZIP_BYTES: usize = 1024;
 
@@ -339,8 +348,11 @@ fn compressible(mime: &str) -> bool {
         || mime.contains("svg")
 }
 
-/// One chunk of the client bundle. `immutable`: its name carries its content
-/// hash (every chunk but the entry, named by rolldown's `[name]-[hash]`).
+/// One chunk of the client bundle. `immutable`: cached for good, since its
+/// name carries its content hash (every chunk but the entry, named by
+/// rolldown's `[name]-[hash]`) and the dev server will serve the name for
+/// as long as a page can ask for it; not so with hot updates on, where a
+/// chunk hot-updated since is no longer served (`start_hot::LeftBehind`).
 pub(crate) struct Chunk<'a> {
     pub mime: &'static str,
     pub hash: &'a str,
@@ -561,6 +573,16 @@ mod tests {
         let map = cache.lock();
         assert_eq!(map.len(), chunks);
         assert!(map.keys().all(|hash| hash.starts_with("current-")));
+    }
+
+    #[test]
+    fn the_hot_updated_chunk_frame_says_why() {
+        let frame: serde_json::Value =
+            serde_json::from_str(&chunk_hot_updated_frame("about-1.js")).unwrap();
+        assert_eq!(
+            frame,
+            serde_json::json!({ "type": "oj:chunk-gone", "name": "about-1.js", "reason": "hot-updated" })
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -33,6 +33,130 @@ pub(crate) struct Frame {
     pub text: String,
 }
 
+/// The chunks hot updates left behind: ones a page may still name whose
+/// code was patched since.
+///
+/// A hot update re-runs a changed module on the pages that run it. On a
+/// page that never loaded it the patch has nothing to re-run, and the page's
+/// first import of the module is not the runtime's: its entry imports the
+/// module's chunk by the name it had when the page loaded, which the dev
+/// server keeps serving for pages held behind a reload (see
+/// `start_chunks::ServedBundles`). Served to a page that took the patch,
+/// that chunk is the module as it was before the edit, for as long as the
+/// page stays open. Vite's dev server serves a module at its current code
+/// whenever it is first imported (plugins/importAnalysis.ts rewrites
+/// `import()` to the module's url, server/transformRequest.ts transforms it
+/// on request). So a page that asks for such a chunk is told it is gone and
+/// reloads onto the current output (`start_dev::serve_client_chunk`).
+///
+/// Which chunks: fed by the engine itself, in its own order of patches and
+/// outputs. Until the next output, the chunks of the last one that hold a
+/// patched file; from then on, every chunk that output renamed (the patched
+/// file's chunk, and any chunk whose code followed it: an importer naming
+/// the renamed chunk, the importer of a glob that gained a member). A patch
+/// the editor's gate holds back leaves nothing behind until it is released:
+/// a page it has not reached is whole with the chunks it names.
+#[derive(Default)]
+pub(crate) struct LeftBehind {
+    /// The files patched since the last output, in patches sent to the pages.
+    patched: HashSet<String>,
+    /// The same, in patches the gate holds.
+    held_patched: HashSet<String>,
+    /// The chunks of the last output each file's modules are in.
+    holders: HashMap<String, Vec<String>>,
+    /// The chunks of the last output.
+    last: HashSet<String>,
+    /// The chunks left behind, by name.
+    names: HashSet<String>,
+    /// The chunks patches the gate still holds will leave behind.
+    held_names: HashSet<String>,
+    /// The files of the patches the engine just made, until the first of
+    /// their frames goes out or is parked.
+    incoming: Vec<String>,
+}
+
+impl LeftBehind {
+    /// The engine patched the pages for `files`; `held`: the gate parked
+    /// the patches.
+    fn patched(&mut self, files: &[String], held: bool) {
+        let into = if held {
+            &mut self.held_patched
+        } else {
+            &mut self.patched
+        };
+        into.extend(files.iter().cloned());
+    }
+
+    /// A new output of the engine, as `(chunk name, whether it is an entry,
+    /// its module ids)`. With a patch since the output before it, the chunks
+    /// this one no longer has are left behind: by the patches sent, unless
+    /// only held ones can have renamed the chunk. An output with no patch
+    /// before it (a rebuild the pages reload for) leaves nothing behind, nor
+    /// does a save that changed nothing (it renames nothing), and a name
+    /// this output has is current, whatever it was before (an edit taken
+    /// back). A module is counted under its file, whatever query it carries
+    /// (a route's split-off component is `route.tsx?tsr-split=...`); an
+    /// entry's name is fixed and every page runs it, so it holds nothing
+    /// here.
+    fn output<'a>(&mut self, chunks: impl Iterator<Item = (&'a str, bool, Vec<&'a str>)>) {
+        let before_holders = std::mem::take(&mut self.holders);
+        let before = std::mem::take(&mut self.last);
+        for (name, entry, modules) in chunks {
+            self.last.insert(name.to_string());
+            if entry {
+                continue;
+            }
+            for id in modules {
+                let file = id.split('?').next().unwrap_or(id);
+                let held = self.holders.entry(file.to_string()).or_default();
+                if !held.iter().any(|n| n == name) {
+                    held.push(name.to_string());
+                }
+            }
+        }
+        let patched = std::mem::take(&mut self.patched);
+        let held_patched = std::mem::take(&mut self.held_patched);
+        if !patched.is_empty() || !held_patched.is_empty() {
+            let holds = |files: &HashSet<String>, name: &String| {
+                files
+                    .iter()
+                    .filter_map(|file| before_holders.get(file))
+                    .any(|chunks| chunks.contains(name))
+            };
+            for name in before.into_iter().filter(|n| !self.last.contains(n)) {
+                if held_patched.is_empty() || holds(&patched, &name) {
+                    self.names.insert(name);
+                } else {
+                    self.held_names.insert(name);
+                }
+            }
+        }
+        self.names.retain(|name| !self.last.contains(name));
+        self.held_names.retain(|name| !self.last.contains(name));
+    }
+
+    /// The gate released the patches it held.
+    fn released(&mut self) {
+        self.names.extend(self.held_names.drain());
+        self.patched.extend(self.held_patched.drain());
+    }
+
+    /// The patches the gate held were dropped for a reload of every page.
+    fn discarded(&mut self) {
+        self.held_names.clear();
+        self.held_patched.clear();
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.names.contains(name)
+            || self
+                .patched
+                .iter()
+                .filter_map(|file| self.holders.get(file))
+                .any(|chunks| chunks.iter().any(|n| n == name))
+    }
+}
+
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
     patches: Mutex<VecDeque<(String, axum::body::Bytes)>>,
@@ -57,6 +181,10 @@ pub(crate) struct HotUpdates {
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
     parked: Mutex<Vec<Arc<Frame>>>,
+    /// The chunks the patches left behind; locked inside `parked`'s lock
+    /// wherever the gate decides, so a chunk is left behind exactly when
+    /// its patch goes to the pages.
+    left_behind: Mutex<LeftBehind>,
 }
 
 impl HotUpdates {
@@ -69,6 +197,7 @@ impl HotUpdates {
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
+            left_behind: Mutex::new(LeftBehind::default()),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -125,14 +254,45 @@ impl HotUpdates {
         for frame in parked.drain(..) {
             let _ = self.tx.send(frame);
         }
+        self.left_behind().released();
     }
 
     /// The gate flushed with a page reload: the parked frames are moot.
     pub(crate) fn discard(&self) {
-        self.parked
+        let mut parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        parked.clear();
+        self.left_behind().discarded();
+    }
+
+    fn left_behind(&self) -> std::sync::MutexGuard<'_, LeftBehind> {
+        self.left_behind
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+    }
+
+    /// The engine patched the pages for `files` (see [`LeftBehind`]), in
+    /// the patches accepted next. Whether the gate holds them is decided
+    /// where their frames are sent or parked ([`HotUpdates::send`]), by the
+    /// same reading of the gate: a chunk is left behind exactly when its
+    /// patch went to the pages. Files whose patches were never accepted
+    /// (held back for a build error) leave nothing behind.
+    pub(crate) fn patched(&self, files: &[String]) {
+        self.left_behind().incoming = files.to_vec();
+    }
+
+    /// A new output of the engine (see [`LeftBehind::output`]).
+    pub(crate) fn output<'a>(&self, chunks: impl Iterator<Item = (&'a str, bool, Vec<&'a str>)>) {
+        self.left_behind().output(chunks);
+    }
+
+    /// Whether `name` is a chunk whose code was patched on the pages since
+    /// it was built: a page that asks for it now would run the code from
+    /// before the edit.
+    pub(crate) fn left_behind_chunk(&self, name: &str) -> bool {
+        self.left_behind().has(name)
     }
 
     fn send(&self, frame: Frame) {
@@ -141,7 +301,15 @@ impl HotUpdates {
             .parked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.gate.get().is_some_and(|held| held()) {
+        let held = self.gate.get().is_some_and(|held| held());
+        if frame.client.is_some() {
+            // A patch's frame: its files' chunks are left behind now, or
+            // once the gate lets it go.
+            let mut left = self.left_behind();
+            let files = std::mem::take(&mut left.incoming);
+            left.patched(&files, held);
+        }
+        if held {
             parked.push(frame);
         } else {
             let _ = self.tx.send(frame);
@@ -296,6 +464,181 @@ pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOTE: &str = "/app/src/note.ts";
+    const ABOUT: &str = "/app/src/about.tsx";
+
+    /// An output: the entry, the about route's split-off component and the
+    /// note, each chunk under the name given.
+    fn output(left: &mut LeftBehind, about: &str, note: &str) {
+        left.output(
+            [
+                ("client-entry.js", true, vec!["/app/src/main.tsx", ABOUT]),
+                (about, false, vec!["/app/src/about.tsx?tsr-split=component"]),
+                (note, false, vec![NOTE, "/app/src/words.ts"]),
+            ]
+            .into_iter(),
+        );
+    }
+
+    fn files(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn a_chunk_holding_a_patched_file_is_left_behind() {
+        let mut left = LeftBehind::default();
+        output(&mut left, "about-1.js", "note-1.js");
+        assert!(!left.has("note-1.js"));
+
+        // From the patch on, before any output: the chunk of the last
+        // output that holds the file, and no other; never the entry.
+        left.patched(&files(&[NOTE]), false);
+        assert!(left.has("note-1.js"));
+        assert!(!left.has("about-1.js") && !left.has("client-entry.js"));
+        // The output renamed it: left behind for good, the new name is not.
+        output(&mut left, "about-1.js", "note-2.js");
+        assert!(left.has("note-1.js") && !left.has("note-2.js"));
+
+        // A module is its file's, whatever query it carries, and the entry
+        // holding the same file keeps its name.
+        left.patched(&files(&[ABOUT]), false);
+        assert!(left.has("about-1.js") && !left.has("client-entry.js"));
+        output(&mut left, "about-2.js", "note-2.js");
+        assert!(left.has("about-1.js") && !left.has("about-2.js"));
+
+        // A patch whose output names the chunk as before (the edit was
+        // taken back before the output): nothing is left behind.
+        left.patched(&files(&[NOTE]), false);
+        output(&mut left, "about-2.js", "note-2.js");
+        assert!(!left.has("note-2.js"));
+
+        // A chunk renamed with no patch before the output (a rebuild the
+        // pages reload for) stays served to the pages held behind it.
+        output(&mut left, "about-3.js", "note-3.js");
+        assert!(!left.has("about-2.js") && !left.has("note-2.js"));
+
+        // An edit taken back: the first name is the current chunk again.
+        left.patched(&files(&[NOTE]), false);
+        output(&mut left, "about-3.js", "note-1.js");
+        assert!(!left.has("note-1.js"), "the current output has it");
+        assert!(left.has("note-3.js"));
+    }
+
+    // An output asked for between the engine's patch and the dev server's
+    // own look at the changed files (a document or a chunk request forces
+    // one) still leaves the chunk behind: the engine's patch is what counts,
+    // and it comes before the engine's output.
+    #[test]
+    fn an_output_right_after_the_patch_leaves_the_chunk_behind() {
+        let mut left = LeftBehind::default();
+        output(&mut left, "about-1.js", "note-1.js");
+        left.patched(&files(&[NOTE]), false);
+        output(&mut left, "about-1.js", "note-2.js");
+        assert!(left.has("note-1.js"));
+        // Nothing more is known of the edit afterwards; the next output
+        // changes nothing.
+        output(&mut left, "about-1.js", "note-2.js");
+        assert!(left.has("note-1.js") && !left.has("note-2.js"));
+    }
+
+    // A chunk renamed by an output that follows a patch is left behind
+    // though it holds no patched file: its code followed the patched one
+    // (the importer of a glob that gained a member, an importer naming a
+    // renamed chunk).
+    #[test]
+    fn a_chunk_the_patched_output_renamed_is_left_behind() {
+        let mut left = LeftBehind::default();
+        output(&mut left, "about-1.js", "note-1.js");
+        left.patched(&files(&["/app/src/posts/new.md"]), false);
+        assert!(!left.has("about-1.js"), "not before the output says so");
+        output(&mut left, "about-2.js", "note-1.js");
+        assert!(left.has("about-1.js") && !left.has("note-1.js"));
+    }
+
+    // A patch the gate holds leaves nothing behind until it is released: a
+    // page it has not reached runs the chunks it names. A later hold does
+    // not bring back a chunk a released patch left behind; patches dropped
+    // for a reload leave nothing.
+    #[test]
+    fn a_held_patch_leaves_its_chunk_behind_once_released() {
+        let mut left = LeftBehind::default();
+        output(&mut left, "about-1.js", "note-1.js");
+        left.patched(&files(&[NOTE]), true);
+        assert!(!left.has("note-1.js"), "held, before the output");
+        output(&mut left, "about-1.js", "note-2.js");
+        assert!(!left.has("note-1.js"), "held, after the output");
+        left.released();
+        assert!(left.has("note-1.js") && !left.has("note-2.js"));
+
+        // Released before its output.
+        left.patched(&files(&[NOTE]), true);
+        left.released();
+        assert!(left.has("note-2.js"));
+        output(&mut left, "about-1.js", "note-3.js");
+        assert!(left.has("note-2.js") && left.has("note-1.js"));
+
+        // A later hold, on another file: what was left behind stays so, the
+        // sent patch's chunk is left behind, the held one's is not.
+        left.patched(&files(&[ABOUT]), true);
+        left.patched(&files(&[NOTE]), false);
+        output(&mut left, "about-2.js", "note-4.js");
+        assert!(left.has("note-1.js") && left.has("note-2.js") && left.has("note-3.js"));
+        assert!(!left.has("about-1.js"));
+
+        // Dropped for a reload of every page.
+        left.discarded();
+        assert!(!left.has("about-1.js"));
+        left.released();
+        assert!(!left.has("about-1.js"));
+    }
+
+    // The gate is read where the patch is recorded, and its flush releases
+    // what it held.
+    #[test]
+    fn the_gate_decides_when_a_patched_chunk_is_left_behind() {
+        let holding = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let hot = HotUpdates::new("");
+        let gate = Arc::clone(&holding);
+        hot.set_gate(Arc::new(move || {
+            gate.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let chunks = |note: &'static str| {
+            [
+                ("client-entry.js", true, vec!["/app/src/main.tsx"]),
+                (note, false, vec![NOTE]),
+            ]
+            .into_iter()
+        };
+        hot.output(chunks("note-1.js"));
+        let patched = |seq: u32| {
+            hot.patched(&files(&[NOTE]));
+            hot.accept(&patch("c1", &format!("hmr_patch_{seq}.js"), seq));
+        };
+        patched(1);
+        hot.output(chunks("note-2.js"));
+        assert!(
+            !hot.left_behind_chunk("note-1.js"),
+            "the gate holds the patch"
+        );
+        holding.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.release();
+        assert!(hot.left_behind_chunk("note-1.js"));
+
+        holding.store(true, std::sync::atomic::Ordering::SeqCst);
+        patched(2);
+        hot.output(chunks("note-3.js"));
+        hot.discard();
+        hot.release();
+        assert!(!hot.left_behind_chunk("note-2.js"), "dropped for a reload");
+
+        // Files whose patch never went out leave nothing behind.
+        holding.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.patched(&files(&[NOTE]));
+        assert!(!hot.left_behind_chunk("note-3.js"), "no patch was accepted");
+        patched(3);
+        assert!(hot.left_behind_chunk("note-3.js"), "no gate holds it");
+    }
 
     fn patch(client: &str, file: &str, seq: u32) -> Patch {
         Patch {

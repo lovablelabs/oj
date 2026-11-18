@@ -4270,23 +4270,26 @@ async fn serve_client_chunk(
     name: &str,
 ) -> Response {
     let name = percent_decode(name);
-    // A chunk is asked for when a page first imports it, which can be long
-    // after the page loaded: the output has to cover every hot update by
-    // then, as it does for a document. A chunk whose modules were
-    // hot-updated since it was built is the code before the edit, and the
-    // page asking never ran those modules, so its patch had nothing to
-    // re-run: the page reloads onto the current output instead of running
-    // the old code. Vite serves the module behind an `import()` at its
-    // current code whenever it is first asked for
+    // A chunk whose code was hot-updated on the pages since it was built is
+    // the code before the edit, and a page asks for it when it first imports
+    // it, which can be long after it loaded: it never ran those modules, so
+    // its patch had nothing to re-run. The page reloads onto the current
+    // output instead of running the old code. Vite serves the module behind
+    // an `import()` at its current code whenever it is first asked for
     // (server/transformRequest.ts); a chunk of a bundle cannot be swapped
     // under the name an older entry imports it by (the two share bindings
     // by the names of one build), so the reload is the way to the current
-    // code here.
-    state.client_output_fresh().await;
-    if state.bundler.left_behind(&name) {
-        chunk_gone(&state.error_tx, &name);
+    // code here. Never cached: an edit taken back makes the name the
+    // current chunk's again.
+    if state.bundler.hot.left_behind_chunk(&name) {
+        if !name.ends_with(".map") {
+            let _ = state
+                .error_tx
+                .send(crate::start_chunks::chunk_hot_updated_frame(&name));
+        }
         return (
             StatusCode::NOT_FOUND,
+            [(header::CACHE_CONTROL, "no-store")],
             format!("oj start: {name} was hot-updated since this page loaded; reload the page"),
         )
             .into_response();
@@ -4346,8 +4349,17 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
-    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !served.entry;
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`, and
+    // a name's content never changes. With hot updates on, a name can stop
+    // being served all the same (a chunk hot-updated since, above), which a
+    // browser that cached it for good would never hear of: it would run the
+    // code from before the edit out of its cache. So the browser asks each
+    // time, and the ETag makes that a 304, as Vite's dev server sends every
+    // module (`send`: `Cache-Control: no-cache` with an `Etag`) and its
+    // bundled dev every output file (middlewares/memoryFiles.ts: an `Etag`
+    // and no `Cache-Control`). Without hot updates every rebundle reloads
+    // the pages onto the new names, and a name is fetched once.
+    let immutable = !served.entry && !state.bundler.hot_bundle();
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {

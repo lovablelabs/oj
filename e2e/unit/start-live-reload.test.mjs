@@ -32,6 +32,8 @@ function loadPage({
   const listeners = {};
   const clock = { now: 0 };
   const said = [];
+  // What the client warned of in the console.
+  const warned = [];
   // The elements the client appended to the document's head.
   const added = [];
   // The page's resource timeline: the urls it has fetched, and its observers.
@@ -64,7 +66,7 @@ function loadPage({
     performance: { getEntriesByType: (type) => (type === "resource" ? resources.map((name) => ({ name })) : []) },
     fetch: (...args) => fetch(...args),
     URL,
-    console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
+    console: { error() {}, debug() {}, warn: (line) => warned.push(line), log: (line) => said.push(line) },
     location: {
       protocol: "http:",
       host: hostname,
@@ -174,6 +176,7 @@ function loadPage({
     pagehide: (persisted) => emit(listeners, "pagehide", { persisted }),
     pageshow: (persisted) => emit(listeners, "pageshow", { persisted }),
     said,
+    warned,
     online: () => emit(listeners, "online"),
     // A promise rejection nothing in the page handled (a failed import()),
     // and the page's request to the server it leads to, settled.
@@ -329,6 +332,61 @@ test("a tab that reloaded for one gone chunk reloads for the next, under the sam
   assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 1);
   assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 1, "another chunk, later");
   assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 0, "the same one again is a cached document");
+});
+
+test("a later document reloads for a chunk an earlier one reloaded for: an edit taken back and made again", async () => {
+  // Hot updates rename a chunk back and forth without a new stamp: the
+  // edit made (the page reloads for the first name), taken back, and made
+  // again meets the first name under a later document, which names more
+  // hot changes. The mark is the document's, so it reloads; the same
+  // document served again from a cache does not.
+  const storage = new Map();
+  const reloads = async (hot) => {
+    const page = loadPage({ stamp: '"1f-4"', hot, storage });
+    page.open();
+    page.fetched(GONE_URL);
+    await page.receive(GONE);
+    return reloadsIn(page.log);
+  };
+  assert.equal(await reloads("0"), 1);
+  assert.equal(await reloads("0"), 0, "the same document again");
+  assert.equal(await reloads("4"), 1, "a later document, the same name");
+  assert.equal(await reloads("4"), 0, "and that one again");
+});
+
+test("a chunk hot-updated since the page loaded says so, whichever way the page finds out", async () => {
+  const frame = { ...GONE, reason: "hot-updated" };
+  const told = loadPage({ stamp: '"1f-4"' });
+  told.open();
+  told.fetched(GONE_URL);
+  await told.receive(frame);
+  assert.equal(reloadsIn(told.log), 1);
+  assert.deepEqual(told.warned, [
+    "[oj] a chunk this page asked for was hot-updated since the page loaded (about-DEADBEEF.js); reloading",
+  ]);
+
+  // The frame before the page's resource timeline shows the request, and
+  // the import's own rejection first to the reload: the reason is the
+  // frame's all the same, and nothing is said twice.
+  const raced = loadPage({ stamp: '"1f-4"' });
+  raced.open();
+  await raced.receive(frame);
+  await raced.rejected(new TypeError(`Failed to fetch dynamically imported module: ${GONE_URL}`));
+  raced.fetched(GONE_URL);
+  raced.elapse();
+  assert.equal(reloadsIn(raced.log), 1);
+  assert.deepEqual(raced.warned, [
+    "[oj] a chunk this page asked for was hot-updated since the page loaded (about-DEADBEEF.js); reloading",
+  ]);
+
+  // A chunk that is simply gone keeps its own message.
+  const gone = loadPage({ stamp: '"1f-4"' });
+  gone.open();
+  gone.fetched(GONE_URL);
+  await gone.receive(GONE);
+  assert.deepEqual(gone.warned, [
+    "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js); reloading",
+  ]);
 });
 
 test("a cached document that asks for two gone chunks as it loads stops after one reload for each", async () => {

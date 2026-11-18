@@ -246,25 +246,41 @@
   // chunks as it loads would otherwise reload for each in turn, forever.
   const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
   const GONE_CHUNK_MARKS = 64;
+  // The document's hot changes are part of the mark as well: hot updates
+  // rename chunks back and forth (an edit taken back brings the old name
+  // back) without a new stamp, so a tab can meet a name it reloaded for
+  // under an earlier document, and that document is not this one. One
+  // served from a cache comes back with the same changes, and stops.
+  // `hotUpdated`: the chunks the server said it still has and will not
+  // serve, their code having been hot-updated since this page loaded (the
+  // page never ran it, so the update had nothing to re-run here). Kept by
+  // name: the import's own rejection can get to the reload first.
+  const hotUpdated = new Set();
+  // Once per document: the server's frame and the import's own rejection
+  // can both speak of one failed import, and the second, finding the mark
+  // the first left, would say the reload served the same document.
+  let leaving = false;
   const reloadForGoneChunk = (what) => {
-    if (stamp == null) return;
-    const mark = stamp + "|" + what;
+    if (stamp == null || leaving) return;
+    const mark = stamp + "|" + (docHas ?? "") + "|" + what;
+    const why = hotUpdated.has(what)
+      ? "a chunk this page asked for was hot-updated since the page loaded (" + what + ")"
+      : "a chunk of this page is gone from the dev server (" + what + ")";
     let marks = [];
     try {
       const kept = JSON.parse(sessionStorage.getItem(GONE_CHUNK_KEY) || "[]");
       if (Array.isArray(kept)) marks = kept.filter((m) => typeof m === "string");
     } catch {}
     if (marks.includes(mark)) {
-      console.warn(
-        "[oj] a chunk of this page is gone from the dev server (" + what + "), and reloading served the same document",
-      );
+      console.warn("[oj] " + why + ", and reloading served the same document");
       return;
     }
     marks.push(mark);
     try {
       sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
     } catch {}
-    console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
+    console.warn("[oj] " + why + "; reloading");
+    leaving = true;
     snapshot();
     location.reload();
   };
@@ -428,7 +444,10 @@
       // A chunk some page asked for is gone from the server: this page
       // reloads if it was the one asking, and is otherwise left as it is.
       if (msg && msg.type === "oj:chunk-gone") {
-        if (typeof msg.name === "string") goneChunk(msg.name);
+        if (typeof msg.name === "string") {
+          if (msg.reason === "hot-updated") hotUpdated.add(msg.name);
+          goneChunk(msg.name);
+        }
         return;
       }
       // A plugin's `server.ws.send`: to the page's `import.meta.hot.on`.
