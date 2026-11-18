@@ -503,6 +503,12 @@ pub(crate) const SERVER_FN_BASE: &str = "/_serverFn/";
 /// [`route_tree::ClientRouteTree`]).
 pub(crate) const CLIENT_ROUTE_TREE: &str = "route-tree.client.js";
 
+/// What the route generator said about the app's routes, while no
+/// generation of this dev server has made a tree of them: the client bundle
+/// fails with it (see `DevBundler::bundle_async`). Held by the dev server,
+/// not in the cache directory, which an `oj build` of the same app shares.
+pub(crate) type RouteTreeRefusal = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
 /// The router entry for `root`: package.json `imports["#tanstack-router-entry"]`
 /// when it names an existing file, else `src/router.{tsx,ts,jsx,js}`, else
 /// `src/router.tsx` (so the miss is reported against the conventional path).

@@ -157,7 +157,23 @@ async function main() {
     root,
   );
   const generator = new Generator({ config, root });
-  await generator.run();
+  try {
+    await generator.run();
+  } catch (e) {
+    // The app's routes cannot make a tree (two files on one path, a file
+    // the generator cannot transform): said to oj apart from every other
+    // way this script can fail, so a dev server stays up on it. oj prints
+    // what it is told; the script ends without printing it again.
+    if (process.env.OJ_ROUTE_TREE_ERROR) {
+      let told = false;
+      try {
+        writeFileSync(process.env.OJ_ROUTE_TREE_ERROR, String(e?.message ?? e));
+        told = true;
+      } catch {}
+      if (told) process.exit(1);
+    }
+    throw e;
+  }
   // The client's tree, as Start's `tanstack-start:route-tree-client-plugin`
   // loads it for the client environment: server-only subtrees pruned, no
   // types, header or footer. The client bundles load it in place of the
