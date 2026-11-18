@@ -356,7 +356,9 @@ fn with_dropped_cjs_names(
     let LoadedModuleSource::String(wrapper) = &loaded.source else {
         return loaded;
     };
-    if !wrapper.contains("export default mod;") {
+    // The translation's wrapper, by the line every one starts with: an ES
+    // module returned as text is not one.
+    if !wrapper.starts_with(crate::cjs_names::WRAPPER_FIRST_LINE) {
         return loaded;
     }
     let Some(source) = deno_path_util::url_to_file_path(&loaded.specifier)

@@ -212,6 +212,15 @@ fn packages() -> Vec<(String, String)> {
             "ts-barrel/ops.js",
             "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nexports.set = exports.get = void 0;\nexports.get = function () { return \"got\"; };\nexports.set = function () { return \"set\"; };\n",
         ),
+        // A name the file assigns and defines with a getter that throws.
+        (
+            "throwing-getter/package.json",
+            r#"{"name":"throwing-getter","main":"index.js"}"#,
+        ),
+        (
+            "throwing-getter/index.js",
+            "exports.boom = exports.ok = void 0;\nexports.ok = \"ok\";\nObject.defineProperty(exports, \"boom\", ({ enumerable: true, get: function () { throw new Error(\"boom\"); } }));\n",
+        ),
         // An ESM `module` with a `require` of its own.
         (
             "creates-require/package.json",
@@ -297,6 +306,10 @@ const PAGES: &[(&str, &str)] = &[
         "ts-barrel",
         "import { get, set } from \"ts-barrel\";\nexport const run = () => get() + \":\" + set();\n",
     ),
+    (
+        "throwing-getter",
+        "import * as ns from \"throwing-getter\";\nimport { ok } from \"throwing-getter\";\nexport const run = () => [ok, typeof ns.boom, Object.keys(ns).sort().join(\",\")].join(\"|\");\n",
+    ),
     // The pdf.js setup line at the top of a module, then what the namespace
     // holds.
     (
@@ -336,6 +349,14 @@ const DEV: &[(&str, &str, Option<&str>)] = &[
     ("creates-require", "creates-require-module:helper", None),
     // Names the engine's wrapper exports through an alias are exported once.
     ("ts-barrel", "got:set", Some("got:set")),
+    // A getter that throws when the name is read off module.exports leaves
+    // that export undefined, as Node 24.17 does for the same file; the
+    // import does not fail. Vite's result is the Node's it runs on.
+    (
+        "throwing-getter",
+        "ok|undefined|boom,default,module.exports,ok",
+        None,
+    ),
     // Node's namespace for the file, as the lexer of Node 24.17 reads it:
     // the names assigned through `exports.` anywhere in the file (one of
     // them, `internalOnly`, is not on module.exports, and the UMD header's

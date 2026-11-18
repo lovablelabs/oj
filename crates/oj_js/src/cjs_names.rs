@@ -24,6 +24,9 @@
 
 use std::collections::BTreeSet;
 
+/// How the ES wrapper the translation writes for a CommonJS file begins.
+pub(crate) const WRAPPER_FIRST_LINE: &str = "import { createRequire as __internalCreateRequire, Module as __internalModule } from \"node:module\";";
+
 /// The names `source` (a CommonJS file) exports by assignment and also
 /// defines with `Object.defineProperty(exports, "name", ...)`, less those
 /// `wrapper` (its ES wrapper module) already exports.
@@ -44,14 +47,16 @@ pub(crate) fn dropped_names(source: &str, wrapper: &str) -> Vec<String> {
         }
     }
     let exported = wrapper_exports(wrapper);
+    let assigned = assigned_names(source);
     names
         .into_iter()
         // What the wrapper's own two exports are called, and names a string
-        // literal here could not hold as they are.
+        // literal here could not hold as they are (the wrapper writes such
+        // a name escaped, so it could not be told from this one either).
         .filter(|name| !matches!(*name, "default" | "module.exports"))
-        .filter(|name| !name.contains(['\\', '"', '\n', '\r']))
+        .filter(|name| !name.contains(['\\', '"']) && !name.chars().any(|c| c < ' '))
         .filter(|name| !exported.contains(*name))
-        .filter(|name| assigns(source, name))
+        .filter(|name| assigned.contains(*name))
         .map(str::to_string)
         .collect()
 }
@@ -89,9 +94,15 @@ pub(crate) fn with_names(wrapper: &str, names: &[String]) -> String {
     if !out.ends_with('\n') {
         out.push('\n');
     }
+    // A binding name the wrapper does not hold: a package may export a
+    // name spelled like oj's.
+    let mut prefix = "__oj_export_".to_string();
+    while wrapper.contains(&prefix) {
+        prefix.push('_');
+    }
     for (n, name) in names.iter().enumerate() {
         out.push_str(&format!(
-            "let __oj_export_{n}__; try {{ __oj_export_{n}__ = mod[\"{name}\"]; }} catch {{}}\nexport {{ __oj_export_{n}__ as \"{name}\" }};\n"
+            "let {prefix}{n}__; try {{ {prefix}{n}__ = mod[\"{name}\"]; }} catch {{}}\nexport {{ {prefix}{n}__ as \"{name}\" }};\n"
         ));
     }
     out
@@ -120,16 +131,13 @@ fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
-/// Whether `source` has `exports.name =` or `exports["name"] =` (an
-/// assignment, not a comparison), on `exports` itself or on
+/// The names `source` assigns with `exports.name =` or `exports["name"] =`
+/// (an assignment, not a comparison), on `exports` itself or on
 /// `module.exports`: the two objects cjs-module-lexer reads assignments to.
 /// webpack's inner modules take the first form, `exports` being their
-/// parameter. `other.exports.name =` is not one.
-fn assigns(source: &str, name: &str) -> bool {
-    let is_assignment = |after: &str| {
-        let after = after.trim_start();
-        after.starts_with('=') && !after.starts_with("==")
-    };
+/// parameter. `other.exports.name =` is not one. One pass over the file.
+fn assigned_names(source: &str) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
     let mut from = 0;
     while let Some(found) = source[from..].find("exports") {
         let at = from + found;
@@ -153,28 +161,29 @@ fn assigns(source: &str, name: &str) -> bool {
         }
         let after = source[from..].trim_start();
         let member = if let Some(dotted) = after.strip_prefix('.') {
-            dotted
-                .trim_start()
-                .strip_prefix(name)
-                .filter(|tail| !tail.chars().next().is_some_and(is_identifier_char))
+            let dotted = dotted.trim_start();
+            let end = dotted
+                .find(|c: char| !is_identifier_char(c))
+                .unwrap_or(dotted.len());
+            (end > 0).then(|| (&dotted[..end], &dotted[end..]))
         } else {
             after.strip_prefix('[').and_then(|keyed| {
                 let keyed = keyed.trim_start();
-                ['"', '\''].iter().find_map(|quote| {
-                    keyed
-                        .strip_prefix(*quote)?
-                        .strip_prefix(name)?
-                        .strip_prefix(*quote)?
-                        .trim_start()
-                        .strip_prefix(']')
-                })
+                let quote = keyed.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+                let keyed = &keyed[1..];
+                let name = &keyed[..keyed.find(quote)?];
+                let tail = keyed[name.len() + 1..].trim_start().strip_prefix(']')?;
+                Some((name, tail))
             })
         };
-        if member.is_some_and(is_assignment) {
-            return true;
+        if let Some((name, tail)) = member {
+            let tail = tail.trim_start();
+            if tail.starts_with('=') && !tail.starts_with("==") {
+                names.insert(name);
+            }
         }
     }
-    false
+    names
 }
 
 #[cfg(test)]
@@ -251,6 +260,49 @@ Object.defineProperty(exports, 'quo"ted', descriptor);
             dropped_names("exports.a = 1;", WRAPPER),
             Vec::<String>::new()
         );
+    }
+
+    /// The wrapper writes a name with a control character escaped, which
+    /// the raw name here would not match: such a name is left out. A package
+    /// exporting a name spelled like oj's bindings gets other bindings.
+    #[test]
+    fn a_name_that_cannot_be_compared_or_would_collide_is_safe() {
+        let source = "exports[\"tab\tbed\"] = 1;\nObject.defineProperty(exports, \"tab\tbed\", descriptor);\nexports.added = 1;\nObject.defineProperty(exports, \"added\", descriptor);\n";
+        let wrapper = "let mod;\nexport const __oj_export_0__ = mod[\"__oj_export_0__\"];\nexport default mod;\n";
+        let names = dropped_names(source, wrapper);
+        assert_eq!(names, ["added"]);
+        let out = with_names(wrapper, &names);
+        assert!(
+            out.ends_with("let __oj_export__0__; try { __oj_export__0__ = mod[\"added\"]; } catch {}\nexport { __oj_export__0__ as \"added\" };\n"),
+            "{out}"
+        );
+        assert_eq!(out.matches("__oj_export_0__ ").count(), 1, "{out}");
+    }
+
+    /// `__esModule` is a name like any other: Node lists it when the file
+    /// assigns it.
+    #[test]
+    fn es_module_flag_is_added_when_assigned_and_defined() {
+        let source = "exports.__esModule = true;\nObject.defineProperty(exports, \"__esModule\", ({ value: true }));\n";
+        assert_eq!(dropped_names(source, WRAPPER), ["__esModule"]);
+        let only_defined = "Object.defineProperty(exports, \"__esModule\", ({ value: true }));\n";
+        assert_eq!(dropped_names(only_defined, WRAPPER), Vec::<String>::new());
+    }
+
+    /// Every candidate is looked up in one set of assigned names, built in
+    /// one pass: a large bundle with many definitions is not rescanned per
+    /// name.
+    #[test]
+    fn the_assigned_names_are_collected_in_one_pass() {
+        let mut source = String::new();
+        for n in 0..2000 {
+            source.push_str(&format!(
+                "exports.name{n} = void 0;\nObject.defineProperty(exports, \"name{n}\", ({{ get: function () {{ return m.name{n}; }} }}));\n"
+            ));
+        }
+        let assigned = assigned_names(&source);
+        assert_eq!(assigned.len(), 2000);
+        assert_eq!(dropped_names(&source, WRAPPER).len(), 2000);
     }
 
     /// A name that is no identifier is exported under its string name.
