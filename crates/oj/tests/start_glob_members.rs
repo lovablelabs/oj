@@ -214,11 +214,20 @@ async fn an_open_page_follows_the_glob_members() {
     std::fs::remove_file(root.join("src/notes/b.md")).unwrap();
     page.wait_for(&format!("{NOTES} === 'rawnotes:a.md,c.md'"), WAIT)
         .await;
-    // Neither change showed the page an error on its way.
-    let overlay: String = page
-        .eval("sessionStorage.getItem('overlay-seen') ?? ''")
+    // Neither change showed the page an error on its way. The page may
+    // still be reloading (a second rebuild follows the first when the
+    // deletion lands behind it), so the note is read through a poll, which
+    // rides out a document on its way in. The overlay element is appended
+    // after an import, which a reload can cut short: the build error the
+    // page logs ahead of it is checked too.
+    let no_overlay = page
+        .poll("sessionStorage.getItem('overlay-seen') === null", WAIT)
         .await;
-    assert_eq!(overlay, "", "console: {:?}", page.console());
+    let console = page.console();
+    assert!(
+        no_overlay && !console.iter().any(|line| line.contains("build error")),
+        "the page was shown a build error (overlay never shown: {no_overlay}); console: {console:?}"
+    );
     no_bundle_failure(&dev);
 }
 

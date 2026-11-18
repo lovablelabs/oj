@@ -34,6 +34,10 @@ enum Seen {
     Reload,
     /// The engine rebuilt without an update for any page.
     Unseen,
+    /// The file was deleted behind an earlier rebundle: the engine's update
+    /// over it failed, and that rebundle asked for the full build, which
+    /// read the files without it. Stands only while the file stays gone.
+    Gone,
 }
 
 /// The app's declared externals a client bundle may import as written.
@@ -160,9 +164,7 @@ impl HotSession {
                     };
                     // Inside the engine's build task, before a queued update
                     // can load a module the build read.
-                    *events.output.lock().unwrap() = Some((recorded, loaded.snapshot()));
-                    events.outputs.fetch_add(1, Ordering::SeqCst);
-                    events.changed.notify_waiters();
+                    record_output(&events, recorded, loaded.snapshot());
                 },
             )
         };
@@ -231,7 +233,13 @@ impl HotSession {
         let watched = loop {
             let ready = self.events.error.lock().unwrap().is_some() || {
                 let seen = self.events.seen.lock().unwrap();
-                known.iter().all(|p| seen.contains_key(p))
+                // A file noted as gone that is back is a new file, which the
+                // engine has yet to report.
+                known.iter().all(|p| match seen.get(p) {
+                    Some(Seen::Gone) => !Path::new(p).exists(),
+                    Some(_) => true,
+                    None => false,
+                })
             };
             if ready {
                 break true;
@@ -260,7 +268,8 @@ impl HotSession {
             for p in &known {
                 seen.remove(p);
             }
-            if changed.iter().any(|p| !p.exists()) || failed_on_a_deleted_file(&err) {
+            let gone = deleted_file_behind(&err);
+            if changed.iter().any(|p| !p.exists()) || gone.is_some() {
                 // Asked for here, not left to `latest_output` reading the
                 // engine's state: a second watcher event for the deleted
                 // file starts another update, and the state reads as a
@@ -268,6 +277,15 @@ impl HotSession {
                 // runs. The output before the deletion would stand as the
                 // current one.
                 let _ = self.engine.trigger_full_build();
+                // The deletion is in a batch still to come, and the engine
+                // will say nothing more of the file (its failed update
+                // recorded nothing): that batch's rebundle would wait out
+                // the deadline above and build in full a second time. The
+                // build asked for here covers it.
+                if let Some(gone) = gone.filter(|gone| changed.iter().all(|p| p != Path::new(gone)))
+                {
+                    seen.insert(gone, Seen::Gone);
+                }
                 return Ok(false);
             }
             return Err(err);
@@ -333,14 +351,32 @@ impl HotSession {
     }
 }
 
-/// Whether a failed update is over a module whose file is no longer on disk
-/// (`err.id`: the module that failed to load, its query included). An id
-/// that is no absolute path (a plugin's virtual module) is no file.
-fn failed_on_a_deleted_file(err: &BundleError) -> bool {
-    err.id.as_deref().is_some_and(|id| {
-        let file = Path::new(id.split_once('?').map_or(id, |(file, _)| file));
-        file.is_absolute() && !file.exists()
-    })
+/// The file of the module a failed update is over, when it is no longer on
+/// disk (`err.id`: the module that failed to load, without its query and
+/// fragment, as the plugin host splits an id). An id that is no absolute
+/// path (a plugin's `\0` virtual module) is no file. An absolute id with no
+/// file behind it at all (a path-like virtual id such as `/@x`) reads as a
+/// deleted file: its failure is reported all the same, by the full build
+/// that follows, at the cost of that build.
+fn deleted_file_behind(err: &BundleError) -> Option<String> {
+    let id = err.id.as_deref()?;
+    let file = id.split(['?', '#']).next().unwrap_or(id);
+    (Path::new(file).is_absolute() && !Path::new(file).exists()).then(|| file.to_string())
+}
+
+/// An output of the engine, or the error of its build. An output that
+/// built says the sources build as they are: a failed update recorded
+/// before it (one the rebundle that took it in already answered with this
+/// build, and that a second update over the same file failed again) is no
+/// longer the app's state, and the next rebundle would otherwise take it for
+/// a fresh failure and build in full where a patch does.
+fn record_output(events: &Events, recorded: Result<Vec<Output>, BundleError>, notes: Notes) {
+    if recorded.is_ok() {
+        *events.error.lock().unwrap() = None;
+    }
+    *events.output.lock().unwrap() = Some((recorded, notes));
+    events.outputs.fetch_add(1, Ordering::SeqCst);
+    events.changed.notify_waiters();
 }
 
 fn on_hmr_updates(
@@ -615,6 +651,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_failed_update_is_over_a_deleted_file_by_its_modules_file() {
+        let dir = std::env::temp_dir().join(format!("oj-start-gone-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.svg");
+        std::fs::write(&file, "<svg/>").unwrap();
+        let over = |id: String| {
+            deleted_file_behind(&BundleError {
+                id: Some(id),
+                ..Default::default()
+            })
+        };
+        let path = file.to_string_lossy().into_owned();
+        // The file is there: the failure is the module's own.
+        assert_eq!(over(path.clone()), None);
+        assert_eq!(over(format!("{path}?raw")), None);
+        assert_eq!(over(format!("{path}#frag")), None);
+        assert_eq!(over(format!("{path}?url#frag")), None);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(over(path.clone()), Some(path.clone()));
+        assert_eq!(over(format!("{path}?raw")), Some(path.clone()));
+        assert_eq!(over(format!("{path}#frag")), Some(path.clone()));
+        assert_eq!(over(format!("{path}?url#frag")), Some(path.clone()));
+        // No file was ever behind these.
+        assert_eq!(over("\0virtual:x".into()), None);
+        assert_eq!(over("virtual:x".into()), None);
+        assert_eq!(deleted_file_behind(&BundleError::default()), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed update recorded behind the rebundle that answered it (a
+    /// second update over the same deleted file failing again) does not
+    /// outlive the build that succeeded: the next rebundle would take it
+    /// for a fresh failure. A build that failed leaves it.
+    #[test]
+    fn an_output_that_built_clears_the_failed_update_before_it() {
+        let events = Events::default();
+        let failed = || {
+            Some(BundleError::from_message(
+                "Could not load /app/src/b.md?raw",
+            ))
+        };
+        *events.error.lock().unwrap() = failed();
+        record_output(
+            &events,
+            Err(BundleError::from_message("the build failed")),
+            Notes::default(),
+        );
+        assert_eq!(*events.error.lock().unwrap(), failed());
+        record_output(&events, Ok(Vec::new()), Notes::default());
+        assert_eq!(*events.error.lock().unwrap(), None);
+        assert_eq!(events.outputs.load(Ordering::SeqCst), 2);
+    }
+
     /// An app under a fresh directory and a session over its `src/entry.js`.
     async fn session_over(label: &str, files: &[(&str, &str)]) -> (PathBuf, HotSession) {
         use super::super::assets::{AssetMode, StartAssetsPlugin, Styles};
@@ -761,11 +852,64 @@ mod tests {
             "the rebundle takes the full build"
         );
         let (output, _) = session.latest_output().await.unwrap();
-        let code = code(&output);
+        let built = code(&output);
         assert!(
-            code.contains("note-c") && !code.contains("note-b"),
-            "{code}"
+            built.contains("note-c") && !built.contains("note-b"),
+            "{built}"
         );
+
+        // The rebundle for the deletion's own batch, which comes after: the
+        // build above read the files without the deleted member, so it has
+        // nothing to wait for and nothing to build.
+        let builds = session.events.outputs.load(Ordering::SeqCst);
+        let settled = session.settle(&[dir.join("src/notes/b.md")], true).await;
+        assert_eq!(settled.map_err(|e| e.message), Ok(false));
+        let (output, _) = session.latest_output().await.unwrap();
+        assert_eq!(
+            session.events.outputs.load(Ordering::SeqCst),
+            builds,
+            "the deletion's batch built again"
+        );
+        assert!(!code(&output).contains("note-b"));
+        session.close(&EngineSlot::default()).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file deleted behind a rebundle and written again before its own
+    /// batch is rebundled is a new file: that rebundle waits for what the
+    /// engine makes of it, and its output holds the new text.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_member_deleted_behind_a_rebundle_and_written_again_is_rebundled() {
+        let (dir, session) = session_over(
+            "glob-member-back",
+            &[
+                (
+                    "src/entry.js",
+                    "const notes = import.meta.glob(\"./notes/*.md\", { query: \"?raw\", eager: true, import: \"default\" });\nconsole.log(notes);\n",
+                ),
+                ("src/notes/a.md", "note-a\n"),
+                ("src/notes/b.md", "note-b\n"),
+            ],
+        )
+        .await;
+        let created = dir.join("src/notes/c.md");
+        let deleted = dir.join("src/notes/b.md");
+        written_and_seen(&session, &created, "note-c\n").await;
+        deleted_and_failed(&session, &deleted);
+        let settled = session.settle(std::slice::from_ref(&created), true).await;
+        assert_eq!(settled.map_err(|e| e.message), Ok(false));
+        session.latest_output().await.unwrap();
+        // The coordinator has taken the build's end in: its files are watched.
+        let _ = session.engine.get_bundle_state().await;
+
+        std::fs::write(&deleted, "note-again\n").unwrap();
+        session
+            .settle(std::slice::from_ref(&deleted), true)
+            .await
+            .unwrap();
+        let (output, _) = session.latest_output().await.unwrap();
+        let code = code(&output);
+        assert!(code.contains("note-again"), "{code}");
         session.close(&EngineSlot::default()).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -790,16 +934,20 @@ mod tests {
         written_and_seen(&session, &edited, "export const other = 2;\n").await;
         deleted_and_failed(&session, &dir.join("src/notes/b.md"));
 
+        // The failed update is not the verdict: the full build is, and it
+        // names the import that no longer loads.
         let settled = session.settle(std::slice::from_ref(&edited), true).await;
-        let failure = match settled {
-            Ok(_) => session
-                .latest_output()
-                .await
-                .map(|(output, _)| code(&output)),
-            Err(err) => Err(err),
-        };
-        let message = failure.expect_err("the import of a deleted file fails the rebundle");
-        assert!(message.message.contains("b.md"), "{message}");
+        assert_eq!(
+            settled.map_err(|e| e.message),
+            Ok(false),
+            "the rebundle takes the full build"
+        );
+        let built = session
+            .latest_output()
+            .await
+            .map(|(output, _)| code(&output));
+        let failure = built.expect_err("the full build fails on the import of the deleted file");
+        assert!(failure.message.contains("b.md?raw"), "{failure}");
         session.close(&EngineSlot::default()).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
