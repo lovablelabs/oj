@@ -211,7 +211,10 @@ pub(crate) fn accepts_html_fallback(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) fn is_spa_navigation(rel: &str, headers: &HeaderMap) -> bool {
-    if rel.starts_with('@') || rel.starts_with("src/") || rel.starts_with("node_modules/") {
+    if crate::is_dev_server_path(&format!("/{rel}"))
+        || rel.starts_with("src/")
+        || rel.starts_with("node_modules/")
+    {
         return false;
     }
     let last = rel.rsplit('/').next().unwrap_or("");

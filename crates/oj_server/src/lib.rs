@@ -76,11 +76,48 @@ const HMR_WS_PATH: &str = "/__ws";
 const HMR_FLUSH_PATH: &str = "/__hmr_flush";
 const HMR_GATE_PATH: &str = "/__hmr_gate";
 
-/// The `/__` paths the dev server itself serves. Everything else under `/__`
-/// is the app's, as in Vite, which reserves no such prefix: a framework route
-/// or a plugin middleware page (`/__component/preview/X`) must reach them.
+/// The `/@` urls under which oj serves its own modules and endpoints (the
+/// Start dev host's `/@oj-start/` included).
+const DEV_SERVER_AT_PREFIXES: &[&str] = &[
+    "/@id/",
+    "/@oj/",
+    "/@oj-deps/",
+    deps::OPTIONAL_PEER_PREFIX,
+    "/@oj-start/",
+    "/@presolve/",
+    "/@virtual/",
+];
+/// oj's own single-path `/@` urls, and `/@vite/client`, which oj does not
+/// serve but Vite reserves (`isInternalRequest`).
+const DEV_SERVER_AT_PATHS: &[&str] = &[
+    "/@vite/client",
+    "/@vite/env",
+    "/@react-refresh",
+    "/@oj-empty",
+    "/@ssr-resolve",
+    "/@ssr-module",
+];
+
+/// The paths the dev server itself serves: its `/__` endpoints and its `/@`
+/// urls. Everything else is the app's, as in Vite, which reserves no `/__`
+/// prefix and only its own `/@` urls (`/@fs/`, `/@id/`, `/@vite/client`,
+/// `/@vite/env`): a framework route or a plugin middleware page
+/// (`/__component/preview/X`, `/@someone`) must reach them.
 pub fn is_dev_server_path(path: &str) -> bool {
     matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
+        || DEV_SERVER_AT_PATHS.contains(&path)
+        || DEV_SERVER_AT_PREFIXES.iter().any(|p| path.starts_with(p))
+        || fs_url_path(path).is_some()
+}
+
+/// The absolute path an `/@fs` url names: `/@fs/abs`, or `/@fsC:/abs` for a
+/// Windows drive.
+pub(crate) fn fs_url_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/@fs")?;
+    let drive = rest.as_bytes();
+    (rest.starts_with('/')
+        || (drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':'))
+        .then_some(rest)
 }
 mod dev_html;
 mod html;

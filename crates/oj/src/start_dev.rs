@@ -3655,10 +3655,11 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
 /// oj's own routes see) and `raw` the path as sent (what `server.proxy`
 /// matches, as Vite's proxy runs ahead of its base middleware).
 fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[String]) -> Route {
-    // Only oj's own `/__` endpoints are the dev server's: Vite reserves no
-    // `/__` prefix, so an app route or a plugin middleware page under it
-    // goes through the middleware and SSR like any document.
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+    // Only oj's own `/__` endpoints and `/@` urls are the dev server's: Vite
+    // reserves no `/__` prefix and only its own `/@` urls, so an app route or
+    // a plugin middleware page there (`/__preview`, `/@someone`) goes through
+    // the middleware and SSR like any document.
+    if oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
     if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
@@ -5008,7 +5009,7 @@ fn public_file_path(
     if *method != Method::GET && *method != Method::HEAD {
         return None;
     }
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+    if oj_server::is_dev_server_path(path) {
         return None;
     }
     // Vite's urlRE is `(\?|&)url(?:&|$)`, its importQueryRE
@@ -7464,6 +7465,12 @@ mod tests {
         // oj's own urls and a path that tries to leave the dir.
         assert_eq!(at("/@oj-start/x.js", None), None);
         assert_eq!(at("/@fs/etc/passwd", None), None);
+        // Any other `/@` path is a file name like another (Vite's
+        // isInternalRequest names only its own prefixes).
+        assert_eq!(
+            at("/@someone.png", None),
+            Some(PathBuf::from("/app/public/@someone.png"))
+        );
         assert_eq!(at("/../package.json", None), None);
         assert_eq!(at("/a/%2e%2e/package.json", None), None);
         assert_eq!(at("//etc/passwd", None), None);
@@ -7682,6 +7689,31 @@ mod tests {
             classify(&req("GET", "/__component/preview/Badge"), &no_proxy),
             Route::Document
         ));
+        // Nor any `/@` path but oj's own urls: a route param (`/@someone`)
+        // is a document, a dotted one may be a file first.
+        for path in ["/@someone", "/@someone/posts", "/%40someone"] {
+            assert_eq!(classify(&req("GET", path), &no_proxy), Route::Document);
+        }
+        assert_eq!(
+            classify(&req("GET", "/@someone.png"), &no_proxy),
+            Route::StaticOrDocument
+        );
+        assert_eq!(classify(&req("POST", "/@someone"), &no_proxy), Route::Api);
+        for path in [
+            "/@react-refresh",
+            "/@fs/app/src/a.ts",
+            "/@id/virtual:x",
+            "/@oj/client.js",
+            crate::start_routes::PATH,
+            crate::start_hot::PATCH_PREFIX,
+            crate::start_bundle::assets::DEV_ID_BASE,
+        ] {
+            assert_eq!(
+                classify(&req("GET", path), &no_proxy),
+                Route::Pass,
+                "{path}"
+            );
+        }
         assert!(matches!(
             classify(&req("GET", "/__hmr_gate"), &no_proxy),
             Route::Pass

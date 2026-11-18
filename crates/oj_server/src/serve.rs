@@ -256,7 +256,7 @@ async fn request_file(
     uri: &Uri,
     rel: &str,
 ) -> Result<PathBuf, Box<Response>> {
-    if let Some(abs) = uri.path().strip_prefix("/@fs") {
+    if let Some(abs) = crate::fs_url_path(uri.path()) {
         let Some(real) = fs_gate(state, &PathBuf::from(urldecode(abs))) else {
             return Err(Box::new(
                 (StatusCode::FORBIDDEN, "oj: /@fs path not allow-listed").into_response(),

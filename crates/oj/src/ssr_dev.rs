@@ -228,8 +228,9 @@ async fn ssr_route(State(state): State<Arc<SsrState>>, req: Request, next: Next)
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     let path = req.uri().path();
-    // Vite reserves no `/__` prefix: only oj's own endpoints skip SSR.
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+    // Vite reserves no `/__` prefix and only its own `/@` urls: only oj's own
+    // endpoints and urls skip SSR, and a socket upgrade is never a page.
+    if oj_server::is_dev_server_path(path) || oj_server::is_websocket_upgrade(req.headers()) {
         return Route::Pass;
     }
     if path.rsplit('/').next().is_some_and(|seg| seg.contains('.')) {
@@ -442,6 +443,23 @@ mod tests {
             matches!(classify(&req, &prefixes), Route::Pass)
         };
         assert!(route("GET", "/@oj/client.js"), "internal urls pass through");
+        assert!(
+            route("GET", "/@react-refresh"),
+            "internal urls pass through"
+        );
+        assert!(
+            !route("GET", "/@someone") && !route("GET", "/@someone/posts"),
+            "an app page under /@ is rendered, Vite reserves only its own /@ urls"
+        );
+        let upgrade = axum::http::Request::get("/@hmr")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(
+            matches!(classify(&upgrade, &prefixes), Route::Pass),
+            "a socket upgrade to a configured hmr path passes through"
+        );
         assert!(
             route("GET", "/__hmr_gate"),
             "oj's own endpoints pass through"

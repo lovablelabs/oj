@@ -3194,3 +3194,59 @@ fn the_hmr_clock_is_strictly_increasing_across_threads() {
     assert_eq!(all.len(), count, "no stamp is handed out twice");
     assert!(all[0] >= before, "a stamp is never behind the clock");
 }
+
+/// Every `/@` url a dev server route or handler answers is the dev server's;
+/// any other `/@` path (a route param like `/@someone`) is the app's, as Vite
+/// reserves only its own `/@` urls.
+#[test]
+fn dev_server_paths_are_the_urls_oj_serves() {
+    for own in [
+        "/@oj/client.js",
+        "/@oj/refresh-runtime.js",
+        "/@oj/refresh-preamble.js",
+        "/@oj/routes.js",
+        runtime_env::MODULE_PATH,
+        runtime_env::CONTROL_PATH,
+        "/@oj/debug/gc",
+        "/@oj/diagnostics",
+        "/@oj/typecheck",
+        "/@oj/server-fn.js",
+        "/@oj/lingui-macro-shim.js",
+        "/@oj/tanstack/routes.json",
+        "/@vite/client",
+        "/@vite/env",
+        "/@react-refresh",
+        "/@ssr-resolve",
+        "/@ssr-module",
+        "/@oj-deps/react.js",
+        "/@oj-empty",
+        "/@oj-optional-peer/6e6f6465",
+        "/@virtual/routes",
+        "/@presolve/6e6f6465",
+        "/@id/__x00__virtual:x",
+        "/@fs/repo/packages/ui/src/index.ts",
+        "/@fsC:/repo/packages/ui/src/index.ts",
+        "/@oj-start/hmr",
+        "/@oj-start/fs/app/src/a.css",
+        "/@oj-start/client-entry.js",
+        HMR_WS_PATH,
+        HMR_FLUSH_PATH,
+        HMR_GATE_PATH,
+    ] {
+        assert!(is_dev_server_path(own), "{own} is oj's");
+    }
+    for app in [
+        "/@someone",
+        "/@someone/posts",
+        "/@fsomeone",
+        "/@idle",
+        "/@oj",
+        "/@ojfan/posts",
+        "/@react-refresh/x",
+        "/@vite",
+        "/__component/preview/Badge",
+        "/someone",
+    ] {
+        assert!(!is_dev_server_path(app), "{app} is the app's");
+    }
+}
