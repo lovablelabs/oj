@@ -84,6 +84,26 @@ pub fn verbatim_module_syntax(path: &Path) -> bool {
     tsconfig.compiler_options.verbatim_module_syntax == Some(true)
 }
 
+/// [`class_field_set_semantics`] and [`verbatim_module_syntax`] off one
+/// lookup of the nearest tsconfig.
+pub fn transform_settings(path: &Path) -> (bool, bool) {
+    let is_ts = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "mts" | "cts")
+    );
+    if !is_ts {
+        return (false, false);
+    }
+    let Ok(Some(tsconfig)) = resolver().find_tsconfig(path) else {
+        return (false, false);
+    };
+    let opts = &tsconfig.compiler_options;
+    let define = opts
+        .use_define_for_class_fields
+        .unwrap_or_else(|| target_implies_define(opts.target.as_deref()));
+    (!define, opts.verbatim_module_syntax == Some(true))
+}
+
 /// Drops every cached tsconfig lookup: the compiler half of Vite's
 /// `reloadOnTsconfigChange`, called by the dev server when a tsconfig changes.
 pub fn clear_cache() {

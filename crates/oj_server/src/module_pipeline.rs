@@ -362,7 +362,12 @@ pub(crate) async fn ensure_module_as(
             is_server,
             stamp,
             baked,
-            Some(importer_format),
+            Some(&CompileKey {
+                key: key.clone(),
+                class_field_semantics,
+                verbatim_module_syntax,
+                importer_format,
+            }),
         )
         .key
     } else {
@@ -677,9 +682,9 @@ fn compile_key(
     is_server: bool,
     stamp: Option<FileStamp>,
     imports_stamp: u64,
-    // The importer format a compile already ran under: its re-key must not
-    // read a package.json that changed since.
-    importer_format: Option<oj_compiler::interop::ImporterFormat>,
+    // What a compile already ran under: its re-key must not read a
+    // package.json or a tsconfig that changed since.
+    pinned: Option<&CompileKey>,
 ) -> CompileKey {
     let mode = if is_server { "server" } else { "dev" };
     let invalidated = state
@@ -697,24 +702,29 @@ fn compile_key(
     if invalidated > 0 {
         mode_key.push_str(&format!("+inv{invalidated}"));
     }
-    // tsconfig class-field semantics change the output, so they are part of the key.
-    let class_field_semantics = oj_compiler::tsconfig::class_field_set_semantics(file);
+    // tsconfig class-field semantics change the output, so they are part of
+    // the key; so does `verbatimModuleSyntax`, the imports the transform
+    // keeps. One lookup of the nearest tsconfig answers both.
+    let (class_field_semantics, verbatim_module_syntax) = match pinned {
+        Some(pinned) => (pinned.class_field_semantics, pinned.verbatim_module_syntax),
+        None => oj_compiler::tsconfig::transform_settings(file),
+    };
     if class_field_semantics {
         mode_key.push_str("+setcf");
     }
-    // So does `verbatimModuleSyntax`: the imports the transform keeps.
-    let verbatim_module_syntax = oj_compiler::tsconfig::verbatim_module_syntax(file);
     if verbatim_module_syntax {
         mode_key.push_str("+vms");
     }
     // So does the importer's package type: the interop of a namespace or
     // dynamic import of a CommonJS dep follows it.
-    let importer_format = importer_format.unwrap_or_else(|| {
-        crate::plugin_routes::importer_format(
-            &state.importer_formats,
-            &crate::plugin_routes::importer_id(file, url),
-        )
-    });
+    let importer_format = pinned
+        .map(|pinned| pinned.importer_format)
+        .unwrap_or_else(|| {
+            crate::plugin_routes::importer_format(
+                &state.importer_formats,
+                &crate::plugin_routes::importer_id(file, url),
+            )
+        });
     state.importer_formats.compiled(url, importer_format);
     if importer_format.esm {
         mode_key.push_str("+esm");
@@ -1345,6 +1355,7 @@ impl CompileJob {
                 file,
                 self.importer_format,
                 &self.later_transforms(),
+                &|spec: &str| rw.may_need_interop(spec),
                 &interop,
                 &mut warn_interop_once,
             )
@@ -1382,6 +1393,7 @@ impl CompileJob {
             &self.file,
             self.importer_format,
             &self.later_transforms(),
+            &|spec: &str| rw.may_need_interop(spec),
             &|spec: &str| rw.cjs_interop_url(spec),
             &mut warn_interop_once,
         );
@@ -1626,6 +1638,31 @@ impl ImportRewrite<'_> {
         let target = self.cjs_interop_target(spec)?;
         self.interop_urls.borrow_mut().insert(target.url.clone());
         Some(target)
+    }
+
+    /// Whether `spec` could need interop, answered off what is already
+    /// known: nothing is resolved, and no dep is registered. A bare
+    /// specifier the optimizer has not seen yet could.
+    fn may_need_interop(&self, spec: &str) -> bool {
+        let job = self.job;
+        if let Some(dep) = vite_dep_id(&job.state, spec) {
+            return self.may_need_interop(&dep);
+        }
+        if job.pre_resolved.contains_key(spec) || is_node_builtin(spec) {
+            return true;
+        }
+        if is_lingui_macro_specifier(spec) {
+            return false;
+        }
+        match job
+            .dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| job.state.optimized.meta_now(spec))
+        {
+            Some(meta) => meta.needs_interop,
+            None => is_bare_specifier(spec),
+        }
     }
 
     fn cjs_interop_target(&self, spec: &str) -> Option<InteropTarget> {

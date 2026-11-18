@@ -839,7 +839,7 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
         ("index.html", INDEX),
         (
             "src/main.js",
-            "import \"./pragma.jsx\";\nimport \"./directive.jsx\";\nimport \"./bom.jsx\";\nimport \"./second.jsx\";\nimport \"./sameline.jsx\";\nimport \"./aftercomment.jsx\";\n",
+            "import \"./pragma.jsx\";\nimport \"./directive.jsx\";\nimport \"./bom.jsx\";\nimport \"./second.jsx\";\nimport \"./sameline.jsx\";\nimport \"./aftercomment.jsx\";\nimport \"./combo.tsx\";\n",
         ),
         // The pragma after a directive prologue, a byte order mark, and in
         // a second comment after a hashbang-less license one.
@@ -850,6 +850,10 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
         (
             "src/bom.jsx",
             "\u{feff}/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        (
+            "src/combo.tsx",
+            "/**\n * @jsxRuntime classic\n * @jsx a\n */\nimport { a } from \"plain-cjs\";\nexport const el = <p />;\n",
         ),
         // The first statement on the pragma's own line.
         (
@@ -880,6 +884,13 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
     app.write(&packages());
     let server = app.serve().await;
     crate::crawled(&app.root).await;
+    // Several pragmas in one comment: the runtime, then the factory, which
+    // only the JSX refers to and a CommonJS dep supplies.
+    let code = server.text("/src/combo.tsx").await;
+    assert!(
+        code.contains("const { a } = __ojcjs0;") && code.contains("a(\"p\""),
+        "combo.tsx: the factory is read off the dep and called:\n{code}"
+    );
     for file in [
         "pragma",
         "directive",
@@ -955,7 +966,9 @@ async fn a_configured_jsx_factory_from_a_commonjs_dep_is_kept_in_tsx() {
 // removed, and its dep is not loaded.
 #[tokio::test(flavor = "multi_thread")]
 async fn verbatim_module_syntax_keeps_an_unused_value_import() {
-    const UNUSED: &str = "import { a } from \"plain-cjs\";\nimport { named } from \"esm-kit\";\nimport { type T, b } from \"plain-cjs\";\nexport const n: number = 1;\n";
+    // An unused value import of a CommonJS dep and of an ES dep, an inline
+    // type, and a type imported without `type`.
+    const UNUSED: &str = "import { a } from \"plain-cjs\";\nimport { named } from \"esm-kit\";\nimport { type T, b } from \"plain-cjs\";\nimport { Shape } from \"plain-esm\";\nexport const n: number = 1;\nexport let shape: Shape;\n";
     let app = App::new(&[
         (
             "package.json",
@@ -972,6 +985,18 @@ async fn verbatim_module_syntax_keeps_an_unused_value_import() {
             r#"{"compilerOptions":{"verbatimModuleSyntax":true}}"#,
         ),
         ("verbatim/kept.ts", UNUSED),
+        // create-vite's layout: a root tsconfig of references, the option
+        // in the project that includes `src`.
+        (
+            "template/tsconfig.json",
+            r#"{"files":[],"references":[{"path":"./tsconfig.app.json"}]}"#,
+        ),
+        (
+            "template/tsconfig.app.json",
+            r#"{"compilerOptions":{"verbatimModuleSyntax":true},"include":["src"]}"#,
+        ),
+        ("template/src/kept.ts", UNUSED),
+        ("template/scripts/elided.ts", UNUSED),
     ]);
     app.write(&packages());
     let server = app.serve().await;
@@ -992,6 +1017,38 @@ async fn verbatim_module_syntax_keeps_an_unused_value_import() {
         kept.contains("import { named } from \"/@oj-deps/esm-kit"),
         "the ES dep's import stays too:\n{kept}"
     );
+    assert!(
+        kept.contains("import { Shape } from \"/@oj-deps/plain-esm"),
+        "a type imported without `type` stays, as under Vite (it fails to link in the browser):\n{kept}"
+    );
+    // The project that includes the file decides.
+    let in_project = server.text("/template/src/kept.ts").await;
+    assert!(
+        in_project.contains("const { a } = __ojcjs0;"),
+        "a file the referenced project includes is under its option:\n{in_project}"
+    );
+    let outside = server.text("/template/scripts/elided.ts").await;
+    assert!(
+        !outside.contains("plain-cjs"),
+        "a file no project includes is not:\n{outside}"
+    );
+    // An edit to the tsconfig is picked up while the server runs.
+    app.write(&[(
+        "verbatim/tsconfig.json",
+        r#"{"compilerOptions":{"verbatimModuleSyntax":false}}"#,
+    )]);
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let code = server.text("/verbatim/kept.ts").await;
+        if !code.contains("plain-cjs") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edited tsconfig never took effect:\n{code}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 // A template-literal specifier that resolves to nothing fails the compile,

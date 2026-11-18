@@ -172,6 +172,7 @@ pub fn rewrite_cjs_interop(
         path,
         ImporterFormat::ESM,
         &LaterTransforms::default(),
+        &|_| true,
         interop,
         &mut |_| {},
     )
@@ -184,6 +185,10 @@ pub fn rewrite_cjs_interop_logged(
     path: &Path,
     format: ImporterFormat,
     later: &LaterTransforms,
+    // Whether a specifier could need interop, answered without resolving or
+    // registering anything: a module none of whose imports could is spared
+    // the symbol pass that decides which bindings stay.
+    may_need_interop: &dyn Fn(&str) -> bool,
     interop: &dyn Fn(&str) -> Option<InteropTarget>,
     warn: &mut dyn FnMut(String),
 ) -> Option<String> {
@@ -196,6 +201,7 @@ pub fn rewrite_cjs_interop_logged(
 
     let mut rewriter = InteropRewriter {
         interop,
+        may_need_interop,
         warn,
         path,
         source,
@@ -247,90 +253,156 @@ pub fn rewrite_cjs_interop_logged(
     // Vite puts the bindings at the start of the file (interopNamedImports,
     // `appendLeft(getFileStartIndex(source))`: past a hashbang line, else
     // byte 0), so a function declared in the module and called above the
-    // import statement finds them initialised. The same place here (see
-    // `hoist_index` for the one exception), with no line added, the helper
-    // first as the bindings call it. Every edit starts at or after it, so
-    // its offset in the result is its offset in the source.
-    let head = if needs_helper {
-        format!("{DYN_INTEROP_HELPER}{hoisted}")
-    } else {
-        hoisted
-    };
-    result.insert_str(hoist_index(source, &parsed.program), &head);
+    // import statement finds them initialised. The same place here, with no
+    // line added, the helper first as the bindings call it. Every edit
+    // starts at or after it, so its offset in the result is its offset in
+    // the source.
+    //
+    // Vite's import analysis runs after the JSX transform; here the
+    // transform runs on this pass's output and reads the file's JSX pragmas
+    // from the comments before its first statement, which the bindings now
+    // are. So the pragmas the file's own leading comments hold are restated
+    // in one comment ahead of the bindings.
+    let mut head = String::new();
+    if !hoisted.is_empty() || needs_helper {
+        head.push_str(&jsx_pragmas(source, &parsed.program).restated());
+    }
+    if needs_helper {
+        head.push_str(DYN_INTEROP_HELPER);
+    }
+    head.push_str(&hoisted);
+    result.insert_str(file_start_index(source), &head);
     Some(result)
 }
 
-/// Where the hoisted bindings go: Vite's file start, unless a comment
-/// before the module's first statement holds a JSX pragma (`@jsx`,
-/// `@jsxImportSource`, `@jsxRuntime`, `@jsxFrag`). Vite's import analysis
-/// runs after the JSX transform; here the transform runs on this pass's
-/// output and reads a pragma from the comments before the first statement
-/// (directives are not statements to it), so the bindings go right after the
-/// last such comment: after `*/`, or at the start of the line after a `//`
-/// comment.
-fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
-    let start = file_start_index(source);
-    let Some(first) = program.body.first() else {
-        return start;
-    };
-    let first = statement_start(first);
-    let pragma = program
-        .comments
-        .iter()
-        .map(|comment| {
-            (
-                comment,
-                comment.span.start as usize,
-                comment.span.end as usize,
-            )
-        })
-        .take_while(|(_, from, _)| *from < first)
-        .filter(|(_, from, to)| *from >= start && source[*from..*to].contains("@jsx"))
-        .last();
-    let Some((comment, from, to)) = pragma else {
-        return start;
-    };
-    // Right after a block comment that starts its line: a statement
-    // boundary. One that follows code on its line (`'use strict' /** @jsx h
-    // */`) may sit inside a statement, so the bindings go to the start of
-    // the next line, as after a `//` comment; when the first statement is
-    // on that same line, to the start of that statement, which is always
-    // both after the pragma and between statements.
-    let line_start = source[..from].rfind(is_line_terminator).map_or(0, |at| {
-        at + source[at..].chars().next().map_or(1, char::len_utf8)
-    });
-    let leads_its_line = source[line_start.max(start)..from]
-        .chars()
-        .all(|c| c.is_whitespace() || c == '\u{feff}');
-    if !comment.is_line() && leads_its_line {
-        return to;
-    }
-    match next_line_start(source, to) {
-        Some(at) if at <= first => at,
-        _ => first,
+/// The JSX pragmas of a module, as oxc's transform reads them
+/// (oxc_transformer 0.158, `jsx/comments.rs`: `update_options_with_comments`
+/// over the comments `Transformer::build_with_scoping` hands it): from the
+/// comments that start before the first statement's span, in a JSX source
+/// only, every pragma of every comment, the last of a kind winning.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct JsxPragmas {
+    /// `@jsx`
+    jsx: Option<String>,
+    /// `@jsxFrag`
+    frag: Option<String>,
+    /// `@jsxRuntime classic` (true) or `automatic` (false); any other value
+    /// is ignored.
+    classic: Option<bool>,
+    /// `@jsxImportSource`
+    import_source: Option<String>,
+}
+
+impl JsxPragmas {
+    /// One comment holding these pragmas, or nothing when there is none.
+    fn restated(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(classic) = self.classic {
+            parts.push(format!(
+                "@jsxRuntime {}",
+                if classic { "classic" } else { "automatic" }
+            ));
+        }
+        for (keyword, value) in [
+            ("@jsx", &self.jsx),
+            ("@jsxFrag", &self.frag),
+            ("@jsxImportSource", &self.import_source),
+        ] {
+            // A value from a `//` comment could close this one.
+            if let Some(value) = value.as_ref().filter(|v| !v.contains("*/")) {
+                parts.push(format!("{keyword} {value}"));
+            }
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("/* {} */", parts.join(" "))
+        }
     }
 }
 
-/// Where a statement's text starts: its decorators come before the span oxc
-/// gives a decorated class or its export.
-fn statement_start(stmt: &Statement) -> usize {
-    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind};
-    let class = match stmt {
-        Statement::ClassDeclaration(class) => Some(&**class),
-        Statement::ExportDeclaration(export) => match &export.declaration {
-            Declaration::ClassDeclaration(class) => Some(&**class),
-            _ => None,
-        },
-        Statement::ExportDefaultDeclaration(export) => match &export.declaration {
-            ExportDefaultDeclarationKind::ClassDeclaration(class) => Some(&**class),
-            _ => None,
-        },
-        _ => None,
+fn jsx_pragmas(source: &str, program: &oxc_ast::ast::Program) -> JsxPragmas {
+    let mut pragmas = JsxPragmas::default();
+    let Some(first) = program
+        .body
+        .first()
+        .filter(|_| program.source_type.is_jsx())
+    else {
+        return pragmas;
     };
-    let span = oxc_span::GetSpan::span(stmt).start;
-    class
-        .and_then(|class| class.decorators.first())
-        .map_or(span, |decorator| decorator.span.start.min(span)) as usize
+    let first = oxc_span::GetSpan::span(first).start;
+    for comment in program
+        .comments
+        .iter()
+        .take_while(|comment| comment.span.start < first)
+    {
+        let mut text = comment.content_span().source_text(source);
+        while let Some((keyword, value, rest)) = find_jsx_pragma(text) {
+            match keyword {
+                "" => pragmas.jsx = Some(value.to_string()),
+                "Frag" => pragmas.frag = Some(value.to_string()),
+                "ImportSource" => pragmas.import_source = Some(value.to_string()),
+                _ => match value {
+                    "classic" => pragmas.classic = Some(true),
+                    "automatic" => pragmas.classic = Some(false),
+                    _ => {}
+                },
+            }
+            text = rest;
+        }
+    }
+    pragmas
+}
+
+/// oxc's `find_jsx_pragma` (oxc_transformer 0.158, `jsx/comments.rs`), which
+/// is private there: the next pragma in a comment's text, as the rest of its
+/// keyword after `@jsx` (`""`, `"Runtime"`, `"ImportSource"`, `"Frag"`), its
+/// value, and the text after it to search again.
+///
+/// `@` counts only at the start of the text or after a space, a tab, a line
+/// break or `*` (so `` `@jsx h` `` in backticks is no pragma). The keyword
+/// ends at a space or a tab; an unknown keyword is skipped. Spaces and tabs
+/// may follow, then the value runs to the next ASCII whitespace; a line
+/// break right after the keyword leaves no value, and the search ends.
+fn find_jsx_pragma(mut text: &str) -> Option<(&str, &str, &str)> {
+    let keyword;
+    loop {
+        let at = text.find('@')?;
+        let preceded =
+            at == 0 || matches!(text.as_bytes()[at - 1], b' ' | b'\t' | b'\r' | b'\n' | b'*');
+        if !preceded || !text[at..].starts_with("@jsx") {
+            text = &text[at + 1..];
+            continue;
+        }
+        text = &text[at + 4..];
+        let space = text.bytes().position(|b| matches!(b, b' ' | b'\t'))?;
+        let word = &text[..space];
+        text = &text[space + 1..];
+        if matches!(word, "" | "Runtime" | "ImportSource" | "Frag") {
+            keyword = word;
+            break;
+        }
+    }
+    let text = text.trim_start_matches([' ', '\t']);
+    if text.is_empty() {
+        return None;
+    }
+    let is_space = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0x0B | 0x0C);
+    let (value, rest) = match text.bytes().position(is_space) {
+        Some(end) => (&text[..end], &text[end + 1..]),
+        None => (text, ""),
+    };
+    (!value.is_empty()).then_some((keyword, value, rest))
+}
+
+/// Vite's `getFileStartIndex`: the length of a leading hashbang line with
+/// its line terminator (`hashbangRE`: `\r\n`, `\r`, `\n`, U+2028 or U+2029,
+/// or none at the end of the file), else 0.
+fn file_start_index(source: &str) -> usize {
+    if !source.starts_with("#!") {
+        return 0;
+    }
+    next_line_start(source, 0).unwrap_or(source.len())
 }
 
 fn is_line_terminator(c: char) -> bool {
@@ -349,16 +421,6 @@ fn next_line_start(source: &str, from: usize) -> Option<usize> {
     } else {
         at + c.len_utf8()
     })
-}
-
-/// Vite's `getFileStartIndex`: the length of a leading hashbang line with
-/// its line terminator (`hashbangRE`: `\r\n`, `\r`, `\n`, U+2028 or U+2029,
-/// or none at the end of the file), else 0.
-fn file_start_index(source: &str) -> usize {
-    if !source.starts_with("#!") {
-        return 0;
-    }
-    next_line_start(source, 0).unwrap_or(source.len())
 }
 
 struct Edit {
@@ -413,33 +475,10 @@ fn jsx_identifiers(
     if !jsx.element && !jsx.fragment {
         return Vec::new();
     }
-    // The pragmas of the comments before the first statement.
-    let first = program.body.first().map_or(source.len(), |stmt| {
-        oxc_span::GetSpan::span(stmt).start as usize
-    });
-    let pragma = |keyword: &str| {
-        program
-            .comments
-            .iter()
-            .take_while(|comment| (comment.span.start as usize) < first)
-            .filter_map(|comment| {
-                let text = &source[comment.span.start as usize..comment.span.end as usize];
-                let after = &text[text.find(keyword)? + keyword.len()..];
-                after
-                    .starts_with(char::is_whitespace)
-                    .then(|| after.split_whitespace().next())
-                    .flatten()
-                    .map(|value| value.trim_end_matches("*/").to_string())
-            })
-            .last()
-    };
+    let pragmas = jsx_pragmas(source, program);
     let root = |path: &str| path.split('.').next().unwrap_or(path).to_string();
-    let (comment_pragma, comment_frag) = (pragma("@jsx"), pragma("@jsxFrag"));
-    let classic = match pragma("@jsxRuntime").as_deref() {
-        Some("classic") => true,
-        Some("automatic") => false,
-        _ => later.jsx_classic,
-    };
+    let (comment_pragma, comment_frag) = (pragmas.jsx, pragmas.frag);
+    let classic = pragmas.classic.unwrap_or(later.jsx_classic);
     let mut names = Vec::new();
     if jsx.element {
         names.push(root(comment_pragma.as_deref().unwrap_or("React")));
@@ -476,6 +515,7 @@ fn line_breaks(text: &str) -> String {
 /// it collect in `hoisted`.
 struct InteropRewriter<'r> {
     interop: &'r dyn Fn(&str) -> Option<InteropTarget>,
+    may_need_interop: &'r dyn Fn(&str) -> bool,
     warn: &'r mut dyn FnMut(String),
     path: &'r Path,
     source: &'r str,
@@ -538,6 +578,12 @@ impl InteropRewriter<'_> {
         let Some(symbol) = local.symbol_id.get() else {
             return true;
         };
+        // oxc's `has_value_reference`: an import redeclared as a value
+        // (`import { Status } from "dep"; const Status = ...`, legal when
+        // the import is only a type) is shadowed, and removed.
+        if (scoping.symbol_flags(symbol) - oxc_semantic::SymbolFlags::Import).is_value() {
+            return false;
+        }
         if scoping
             .get_resolved_references(symbol)
             .any(|reference| !reference.is_type())
@@ -571,7 +617,8 @@ impl InteropRewriter<'_> {
     }
 
     fn import(&mut self, decl: &ImportDeclaration) {
-        if decl.import_kind.is_type() {
+        if decl.import_kind.is_type() || !(self.may_need_interop)(crate::lit_str(decl.source.value))
+        {
             return;
         }
         let all: &[ImportDeclarationSpecifier] = decl
@@ -905,6 +952,7 @@ mod tests {
             Path::new("m.js"),
             format,
             &LaterTransforms::default(),
+            &|_| true,
             &target(kind),
             &mut |_| {},
         )
@@ -1009,6 +1057,7 @@ mod tests {
             Path::new(file),
             ImporterFormat::ESM,
             later,
+            &|_| true,
             &target(InteropKind::PreBundle),
             &mut |_| {},
         )
@@ -1048,6 +1097,7 @@ mod tests {
             Path::new("m.ts"),
             ImporterFormat::ESM,
             &later,
+            &|_| true,
             &|_| {
                 asked.set(asked.get() + 1);
                 Some(InteropTarget::new(URL, InteropKind::PreBundle))
@@ -1114,17 +1164,16 @@ mod tests {
         );
         // A file with a parse diagnostic keeps its bindings: its symbols
         // are not read off a recovered tree.
-        let out = run_ts(
-            "import { unused } from \"cjs-dep\";\nlet x = 08n;\n",
-            "m.ts",
-            &later,
+        // (A top-level `return` is a diagnostic the parser recovers from.)
+        let src = "import { unused } from \"cjs-dep\";\nreturn;\n";
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
+        assert!(!parsed.fatal_error && !parsed.diagnostics.is_empty());
+        let out = run_ts(src, "m.ts", &later).expect("rewritten");
+        assert!(
+            out.starts_with("const { unused: unused } = __ojcjs0;"),
+            "{out}"
         );
-        if let Some(out) = out {
-            assert!(
-                out.starts_with("const { unused: unused } = __ojcjs0;"),
-                "{out}"
-            );
-        }
     }
 
     /// tsconfig `verbatimModuleSyntax` (the transform's
@@ -1521,85 +1570,299 @@ mod tests {
         }
     }
 
-    /// The JSX transform, which runs on this pass's output, reads a pragma
-    /// only from the comments before the first token: the bindings follow
-    /// the last comment that holds one.
+    /// The JSX transform, which runs on this pass's output, reads the pragmas
+    /// of the comments before the first statement: the bindings are that
+    /// statement now, at Vite's position, so the file's pragmas are restated
+    /// in a comment ahead of them.
     #[test]
-    fn the_bindings_follow_a_leading_jsx_pragma_comment() {
-        let import = "import d from \"cjs-dep\";\n";
+    fn the_pragmas_of_a_jsx_file_are_restated_ahead_of_the_bindings() {
+        let import = "import d from \"cjs-dep\";\nd;\n";
         let head = "const d = __ojcjs0;";
-        let rewritten = format!("import __ojcjs0 from \"{URL}\";\n");
-        for (before, after) in [
-            ("/** @jsxImportSource custom */", "\n"),
-            ("// license\n/* @jsx h */", " /* @other */\n"),
-            ("// @jsxRuntime classic\n", "// later\n"),
-            ("#!/usr/bin/env node\n/** @jsxFrag F */", "\n"),
-            // After a directive prologue, a byte order mark, another
-            // comment, all three.
-            ("\"use client\";\n/** @jsxImportSource custom */", "\n"),
-            ("\u{feff}/** @jsxImportSource custom */", "\n"),
-            ("/* license */\n'use strict'\n// @jsx h\n", ""),
+        let rewritten = format!("import __ojcjs0 from \"{URL}\";\nd;\n");
+        for (before, restated) in [
             (
-                "#!/usr/bin/env node\n\"use client\";\n// note\n/** @jsxImportSource custom */",
-                "\n",
+                "/** @jsxImportSource custom */\n",
+                "/* @jsxImportSource custom */",
             ),
+            ("// license\n/* @jsx h */ /* @other */\n", "/* @jsx h */"),
+            (
+                "// @jsxRuntime classic\n// later\n",
+                "/* @jsxRuntime classic */",
+            ),
+            (
+                "\"use client\";\n/** @jsxImportSource custom */\n",
+                "/* @jsxImportSource custom */",
+            ),
+            (
+                "\u{feff}/** @jsxImportSource custom */\n",
+                "/* @jsxImportSource custom */",
+            ),
+            ("/* license */\n'use strict'\n// @jsx h\n", "/* @jsx h */"),
+            // On the first statement's own line, after code on its line.
+            ("'use strict'; /** @jsx h */ ", "/* @jsx h */"),
+            ("/* c */ /** @jsx h */ ", "/* @jsx h */"),
+            ("'use strict' /** @jsx h */\n", "/* @jsx h */"),
+            // Several pragmas, in one comment and in several: all of them,
+            // the last of a kind.
+            (
+                "/**\n * @jsxRuntime classic\n * @jsx createElement\n */\n",
+                "/* @jsxRuntime classic @jsx createElement */",
+            ),
+            (
+                "/** @jsxFrag F @jsx h */\n/** @jsx g */\n",
+                "/* @jsx g @jsxFrag F */",
+            ),
+            // Between a decorator and its export: before the export's span,
+            // so oxc reads it.
+            ("@dec /** @jsx h */ export class X {}\n", "/* @jsx h */"),
+            // No pragma: nothing is restated.
+            ("/** a comment with `@jsx h` in backticks */\n", ""),
+            ("/** @jsxUnknown x */\n", ""),
         ] {
-            let src = format!("{before}{after}{import}");
-            let out =
-                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle))
-                    .unwrap_or_else(|| panic!("{src}"));
-            assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src}");
+            for file in ["m.jsx", "m.tsx"] {
+                let src = format!("{before}{import}");
+                let out =
+                    rewrite_cjs_interop(&src, Path::new(file), &target(InteropKind::PreBundle))
+                        .unwrap_or_else(|| panic!("{src}"));
+                assert_eq!(
+                    out,
+                    format!("{restated}{head}{before}{rewritten}"),
+                    "{file}: {src:?}"
+                );
+            }
         }
-        // A pragma comment after code on its line may sit inside a
-        // statement: the bindings go to the next line, whatever ends it.
-        for (before, after) in [
-            ("'use strict' /** @jsx h */\n", ""),
-            ("'use strict' /** @jsx h */ /** @jsxFrag F */\r\n", ""),
-            ("/** @jsx h */ /** @jsxFrag F */\n", ""),
-            ("'use strict' // @jsx h\r", ""),
-            ("// @jsx h\u{2028}", ""),
-        ] {
-            let src = format!("{before}{after}{import}");
-            let out =
-                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle))
-                    .unwrap_or_else(|| panic!("{src}"));
-            assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src:?}");
-        }
-        // The first statement on the pragma's own line: right before it,
-        // which is after the pragma and between statements.
-        for before in ["'use strict'; /** @jsx h */ ", "/* c */ /** @jsx h */ "] {
-            let src = format!("{before}{import}");
-            let out =
-                rewrite_cjs_interop(&src, Path::new("m.jsx"), &target(InteropKind::PreBundle));
-            assert_eq!(out, Some(format!("{before}{head}{rewritten}")), "{src}");
-        }
-        // The same in a TypeScript file, and before a decorated class.
-        let out = run_ts(
-            "/** @jsx h */ @dec export class X {}\nimport d from \"cjs-dep\";\nd;\n",
-            "m.tsx",
-            &LaterTransforms::default(),
+        // After a hashbang line, and never in a file that is not JSX.
+        let out = run("#!/usr/bin/env node\n/** @jsx h */\nimport d from \"cjs-dep\";\n");
+        assert!(
+            out.starts_with(&format!("#!/usr/bin/env node\n{head}/** @jsx h */")),
+            "{out}"
         );
-        assert_eq!(
-            out,
-            Some(format!(
-                "/** @jsx h */{head} @dec export class X {{}}\n{rewritten}d;\n"
-            ))
+        let src = "#!/usr/bin/env node\n/** @jsx h */\nimport d from \"cjs-dep\";\n";
+        let out =
+            rewrite_cjs_interop(src, Path::new("m.jsx"), &target(InteropKind::PreBundle)).unwrap();
+        assert!(
+            out.starts_with(&format!(
+                "#!/usr/bin/env node\n/* @jsx h */{head}/** @jsx h */"
+            )),
+            "{out}"
         );
-        let out = run_ts(
-            "'use strict'; /** @jsx h */ @dec export class X {}\nimport d from \"cjs-dep\";\nd;\n",
-            "m.tsx",
-            &LaterTransforms::default(),
-        );
-        assert_eq!(
-            out,
-            Some(format!(
-                "'use strict'; /** @jsx h */ {head}@dec export class X {{}}\n{rewritten}d;\n"
-            ))
-        );
-        // A pragma after the first statement is no pragma: byte 0.
-        let src = format!("{import}/** @jsxImportSource custom */\n");
-        let out = run(&src);
+        // A pragma after the first statement is no pragma.
+        let out = rewrite_cjs_interop(
+            "import d from \"cjs-dep\";\n/** @jsx h */\nd;\n",
+            Path::new("m.jsx"),
+            &target(InteropKind::PreBundle),
+        )
+        .unwrap();
         assert!(out.starts_with(head), "{out}");
+    }
+
+    /// The import bindings of `"cjs-dep"` this pass reads in `src`.
+    fn bindings_oj_keeps(src: &str, file: &str, later: &LaterTransforms) -> Vec<String> {
+        let Some(out) = run_ts(src, file, later) else {
+            return Vec::new();
+        };
+        let head = out.split("import __ojcjs").next().unwrap_or("");
+        let mut names = Vec::new();
+        for statement in head.split(';') {
+            // Past the restated pragma comment, when there is one.
+            let statement = statement.trim_start();
+            let statement = match statement.strip_prefix("/*") {
+                Some(comment) => comment.split_once("*/").map_or("", |(_, rest)| rest),
+                None => statement,
+            };
+            let Some(rest) = statement.strip_prefix("const ") else {
+                continue;
+            };
+            let Some((left, right)) = rest.split_once(" = ") else {
+                continue;
+            };
+            if !right.contains("__ojcjs") {
+                continue;
+            }
+            match left.strip_prefix('{') {
+                Some(list) => names.extend(
+                    list.trim_end_matches('}')
+                        .split(',')
+                        .filter_map(|pair| pair.split_once(": "))
+                        .map(|(_, local)| local.trim().to_string()),
+                ),
+                None => names.push(left.trim().to_string()),
+            }
+        }
+        names.sort();
+        names
+    }
+
+    /// The import bindings of `"cjs-dep"` left in what the real transform
+    /// (the compile, with the options the dev server builds) makes of `src`.
+    fn bindings_oxc_keeps(src: &str, file: &str, opts: &crate::CompileOptions) -> Vec<String> {
+        let out = crate::compile::compile(Path::new(file), src, opts)
+            .unwrap_or_else(|e| panic!("{file} does not compile: {e:?}\n{src}"));
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, &out.code, SourceType::mjs()).parse();
+        assert!(!parsed.fatal_error, "{}", out.code);
+        let mut names = Vec::new();
+        for stmt in &parsed.program.body {
+            let Statement::ImportDeclaration(decl) = stmt else {
+                continue;
+            };
+            if crate::lit_str(decl.source.value) != "cjs-dep" {
+                continue;
+            }
+            for spec in decl.specifiers.iter().flatten() {
+                names.push(spec.local().name.to_string());
+            }
+        }
+        names.sort();
+        names
+    }
+
+    /// The pass decides which import bindings the TypeScript and JSX
+    /// transforms will leave, before they run. This holds it to what they
+    /// do leave: every source, under every JSX configuration and both
+    /// `verbatimModuleSyntax` settings, through the real compile.
+    #[test]
+    fn the_kept_bindings_are_the_ones_the_real_transform_keeps() {
+        const SOURCES: &[(&str, &str)] = &[
+            // Types and unused.
+            ("m.ts", "import { T } from \"cjs-dep\";\nexport let x: T;\n"),
+            ("m.ts", "import { type T, type U as V } from \"cjs-dep\";\nexport let x: T | V;\n"),
+            ("m.ts", "import type { T } from \"cjs-dep\";\nexport let x: T;\n"),
+            ("m.ts", "import { T } from \"cjs-dep\";\nexport type { T };\n"),
+            ("m.ts", "import d, { T } from \"cjs-dep\";\nexport let x: T | typeof d;\n"),
+            ("m.ts", "import * as ns from \"cjs-dep\";\nexport let x: ns.T;\n"),
+            ("m.ts", "import { unused } from \"cjs-dep\";\nexport const x = 1;\n"),
+            ("m.ts", "import d, * as ns from \"cjs-dep\";\nexport const x = d;\n"),
+            // Values, beside types.
+            ("m.ts", "import { a, T } from \"cjs-dep\";\nexport let x: T = a;\n"),
+            ("m.ts", "import d, { type T, a } from \"cjs-dep\";\nexport const x = d(a);\n"),
+            ("m.ts", "import { C } from \"cjs-dep\";\nexport let x: C = new C();\n"),
+            ("m.ts", "import { a } from \"cjs-dep\";\nexport { a };\n"),
+            ("m.ts", "import a from \"cjs-dep\";\nexport default a;\n"),
+            ("m.ts", "import { a } from \"cjs-dep\";\nexport const o = { a };\n"),
+            ("m.ts", "import { a as b } from \"cjs-dep\";\nexport const o = [b];\n"),
+            // Shadowing.
+            ("m.ts", "import { a } from \"cjs-dep\";\nexport function f(a: number) { return a; }\n"),
+            ("m.ts", "import { a } from \"cjs-dep\";\nexport function f(a: number) { return a; }\nf(a);\n"),
+            // Redeclared as a value: the import was only a type.
+            ("m.ts", "import { Status } from \"cjs-dep\";\nconst Status = { ok: 1 };\nexport const s: Status = Status as any;\n"),
+            ("m.ts", "import { Kind } from \"cjs-dep\";\nfunction Kind() { return 1; }\nexport const k = Kind();\n"),
+            // JSX.
+            ("m.tsx", "import { Foo } from \"cjs-dep\";\nexport const el = <Foo />;\n"),
+            ("m.tsx", "import React from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "import React from \"cjs-dep\";\nexport const el = <><b /></>;\n"),
+            ("m.tsx", "import React from \"cjs-dep\";\nexport const n = 1;\n"),
+            ("m.tsx", "import { createElement, Fragment } from \"cjs-dep\";\nexport const A = () => <><b>x</b></>;\n"),
+            ("m.tsx", "import { createElement, Fragment } from \"cjs-dep\";\nexport const A = () => <b>x</b>;\n"),
+            ("m.tsx", "import { createElement } from \"cjs-dep\";\nexport const n = 1;\n"),
+            ("m.ts", "import { createElement } from \"cjs-dep\";\nexport const n = 1;\n"),
+            // Comment pragmas.
+            ("m.tsx", "/** @jsx h */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsx h */\nimport { h, Fragment } from \"cjs-dep\";\nexport const el = <><p /></>;\n"),
+            ("m.tsx", "/** @jsx m.h */\nimport m from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/**\n * @jsxRuntime classic\n * @jsx createElement\n */\nimport { createElement } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxFrag F @jsx h */\nimport { h, F } from \"cjs-dep\";\nexport const el = <><p /></>;\n"),
+            ("m.tsx", "/** @jsx a @jsx b */\nimport { a, b } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** `@jsx h` */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxImportSource cjs-dep */\nimport { jsx } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "// @jsx h\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxRuntime classic */\nimport React, { h } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "/** @jsxRuntime automatic */\nimport { createElement } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "\"use client\";\n/** @jsx h */\nimport { h } from \"cjs-dep\";\nexport const el = <p />;\n"),
+            ("m.tsx", "import { h } from \"cjs-dep\";\n/** @jsx h */\nexport const el = <p />;\n"),
+        ];
+        let configs: [(&str, crate::JsxConfig); 3] = [
+            ("automatic", crate::JsxConfig::default()),
+            (
+                "classic, default factory",
+                crate::JsxConfig {
+                    runtime: Some("classic".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "classic, config factory",
+                crate::JsxConfig {
+                    runtime: Some("classic".into()),
+                    pragma: Some("createElement".into()),
+                    pragma_frag: Some("Fragment".into()),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let mut cases = 0;
+        for (file, src) in SOURCES {
+            for (label, jsx) in &configs {
+                // A pragma comment asks for a runtime the compile rejects
+                // with this configuration's options: not a case.
+                for verbatim in [false, true] {
+                    let mut opts = crate::CompileOptions::prod();
+                    opts.jsx = jsx.clone();
+                    opts.verbatim_module_syntax = Some(verbatim);
+                    opts.class_field_set_semantics = Some(false);
+                    if crate::compile::compile(Path::new(file), src, &opts).is_err() {
+                        continue;
+                    }
+                    let later = LaterTransforms {
+                        keep_value_imports: verbatim,
+                        jsx_classic: jsx.is_classic(),
+                        jsx_pragma: jsx.pragma.clone(),
+                        jsx_pragma_frag: jsx.pragma_frag.clone(),
+                    };
+                    assert_eq!(
+                        bindings_oj_keeps(src, file, &later),
+                        bindings_oxc_keeps(src, file, &opts),
+                        "{file}, {label}, verbatimModuleSyntax {verbatim}:\n{src}"
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        // Every source under at least the automatic runtime, both settings.
+        assert!(cases >= SOURCES.len() * 2, "{cases} cases ran");
+        eprintln!("differential cases: {cases}");
+    }
+
+    /// oxc's `find_jsx_pragma`, case by case.
+    #[test]
+    fn the_pragma_scan_reads_what_oxc_reads() {
+        let all = |mut text: &str| {
+            let mut found = Vec::new();
+            while let Some((keyword, value, rest)) = find_jsx_pragma(text) {
+                found.push(format!("{keyword}={value}"));
+                text = rest;
+            }
+            found
+        };
+        for (text, want) in [
+            ("* @jsx h ", vec!["=h"]),
+            (
+                "*\n * @jsxRuntime classic\n * @jsx createElement\n ",
+                vec!["Runtime=classic", "=createElement"],
+            ),
+            ("* @jsxFrag F @jsx h ", vec!["Frag=F", "=h"]),
+            ("* @jsx a @jsx b ", vec!["=a", "=b"]),
+            (
+                "* @jsxImportSource @emotion/react ",
+                vec!["ImportSource=@emotion/react"],
+            ),
+            (" @jsx\th", vec!["=h"]),
+            ("@jsx h", vec!["=h"]),
+            // Not preceded by whitespace or `*`.
+            ("* `@jsx h` ", vec![]),
+            ("* x@jsx h ", vec![]),
+            // An unknown keyword is skipped, the search goes on.
+            ("* @jsxUnknown x @jsx h ", vec!["=h"]),
+            // The keyword ends at a space or a tab: a line break does not
+            // end it, so `@jsx\nh` is the unknown keyword `\nh`... up to the
+            // next space, and the search goes on from there.
+            ("* @jsx\nh @jsxFrag F ", vec!["Frag=F"]),
+            // No value before the end.
+            ("* @jsx ", vec![]),
+            ("* @jsx", vec![]),
+        ] {
+            assert_eq!(all(text), want, "{text:?}");
+        }
     }
 
     /// Vite's `hashbangRE`: any line terminator ends the hashbang line, and
@@ -1639,6 +1902,7 @@ mod tests {
             Path::new("/app/m.js"),
             ImporterFormat::ESM,
             &LaterTransforms::default(),
+            &|_| true,
             &target(InteropKind::PreBundle),
             &mut |w| warnings.push(w),
         );
@@ -1654,6 +1918,7 @@ mod tests {
             Path::new("m.js"),
             ImporterFormat::ESM,
             &LaterTransforms::default(),
+            &|_| true,
             &target(InteropKind::PreBundle),
             &mut |w| warnings.push(w),
         );
@@ -1670,6 +1935,7 @@ mod tests {
             Path::new("m.js"),
             ImporterFormat::ESM,
             &LaterTransforms::default(),
+            &|_| true,
             &target(InteropKind::Served),
             &mut |w| warnings.push(w),
         );
