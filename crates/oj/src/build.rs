@@ -1515,9 +1515,8 @@ async fn bundle_worker_inline_with(
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
     // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
-        .and_then(|o| alias_plugin(root, &o.config))
-        .into_iter()
-        .collect();
+        .map(|o| resolve_plugins(root, &o.config))
+        .unwrap_or_default();
     if let Some(container) = &container {
         plugins.push(Pluginable::new_shared(
             OjUserPlugin::new(
@@ -1575,9 +1574,8 @@ async fn bundle_worker_entry_with(
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
     // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
-        .and_then(|o| alias_plugin(root, &o.config))
-        .into_iter()
-        .collect();
+        .map(|o| resolve_plugins(root, &o.config))
+        .unwrap_or_default();
     if let Some(container) = &container {
         plugins.push(Pluginable::new_shared(
             OjUserPlugin::new(
@@ -2423,8 +2421,10 @@ async fn preprocess_via_engine(
         .map_err(|e| anyhow::anyhow!("css preprocess failed for {}: {e}", css_file.display()))
 }
 
-/// The plugins that open a build's list: the one for
-/// `legacy.inconsistentCjsInterop` when it is set, then the app's aliases.
+/// The plugins that open a bundle's list (the app's, a library's, the SSR
+/// build's, a worker's): the one for `legacy.inconsistentCjsInterop` when
+/// it is set, then the app's aliases. Vite's resolve plugin, which carries
+/// the option, is in each of those bundles' lists too.
 fn resolve_plugins(root: &Path, config: &oj_config::OjConfig) -> Vec<SharedPluginable> {
     let legacy = config
         .legacy
@@ -2480,10 +2480,11 @@ impl Plugin for LegacyCjsInteropPlugin {
             return Ok(None);
         };
         let side_effects = resolved.side_effects.or_else(|| {
-            let verdict = resolved
-                .package_json
-                .as_ref()?
-                .check_side_effects_for(resolved.id.as_str())?;
+            // The patterns are relative to the package's directory, by its
+            // real path, as rolldown and Vite's resolve plugin test them.
+            let package = resolved.package_json.as_ref()?;
+            let relative = resolved.id.relative_path(package.realpath().parent()?);
+            let verdict = package.check_side_effects_for(&relative.to_string_lossy())?;
             Some(if verdict {
                 rolldown_common::side_effects::HookSideEffects::True
             } else {
