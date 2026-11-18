@@ -267,10 +267,47 @@ async fn request_file(
         ensure_watched_file(state, &real);
         return Ok(real);
     }
-    match locate(&state.root, state.public_dir.as_deref(), rel) {
+    match locate_request(state, headers, uri, rel).await {
         Some(file) => Ok(file),
         None => Err(Box::new(serve_missing(state, headers, uri, rel).await)),
     }
+}
+
+/// The file `rel` names for a request to `uri`. Vite's servePublicMiddleware
+/// runs ahead of its transform and static middlewares: a path naming a
+/// publicDir file is that file, beside a root file of the same name too,
+/// unless the request is a module import (`?import`, `?url`, or one the
+/// browser marks `Sec-Fetch-Dest: script`).
+async fn locate_request(
+    state: &ServerState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    rel: &str,
+) -> Option<PathBuf> {
+    if let Some(file) = public_request_file(state, headers, uri).await {
+        return Some(file);
+    }
+    locate(&state.root, state.public_dir.as_deref(), rel)
+}
+
+/// The publicDir file a request names, as Start dev's public check has it
+/// ([`crate::public_file_path`]), past the dev `base`.
+async fn public_request_file(
+    state: &ServerState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Option<PathBuf> {
+    let public = state.public_dir.as_deref()?;
+    if wants_module_import(headers, uri.query()) {
+        return None;
+    }
+    let path = match state.base.as_deref() {
+        Some(base) => strip_base(uri.path(), base)?,
+        None => uri.path(),
+    };
+    let file = crate::public_file_path(public, path, uri.query(), &Method::GET)?;
+    let meta = tokio::fs::metadata(&file).await.ok()?;
+    (meta.is_file() && crate::named_as_written(public, &file).await).then_some(file)
 }
 
 async fn serve_missing(
@@ -311,7 +348,7 @@ async fn serve_rewritten(state: &Arc<ServerState>, headers: &HeaderMap, uri: &Ur
     } else {
         decoded.as_str()
     };
-    if let Some(file) = locate(&state.root, state.public_dir.as_deref(), rel) {
+    if let Some(file) = locate_request(state, headers, uri, rel).await {
         if path_is_denied(&file, &state.root, &state.fs_deny) {
             return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
         }
@@ -348,7 +385,10 @@ async fn serve_fallback(
     (StatusCode::NOT_FOUND, format!("oj: no such file: /{rel}")).into_response()
 }
 
-/// Dispatches a located file by query and extension.
+/// Dispatches a located file. Where a public file and a root file share the
+/// path, which one answers depends on whether the request is a module import
+/// ([`locate_request`]), so the answer varies on `Sec-Fetch-Dest`; the root
+/// file's `?import` (the rewriter's mark for such an import) is its bare url.
 async fn serve_file(
     state: &Arc<ServerState>,
     headers: &HeaderMap,
@@ -356,8 +396,46 @@ async fn serve_file(
     file: &Path,
     rel: &str,
 ) -> Response {
+    let shared = !rel.split('/').any(|seg| seg == "..")
+        && state
+            .public_dir
+            .as_deref()
+            .is_some_and(|p| p.join(rel).is_file())
+        && state.root.join(rel).is_file();
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let query = uri.query();
+    let twin_import = shared
+        && file == state.root.join(rel)
+        && !is_style_ext(ext)
+        && has_query_flag(uri.query(), "import");
+    let response = serve_located(state, headers, uri, file, rel, twin_import).await;
+    let varies = response
+        .headers()
+        .get_all(header::VARY)
+        .iter()
+        .any(|v| v.to_str().is_ok_and(|v| v.contains("sec-fetch-dest")));
+    if shared && !varies {
+        vary_on_fetch_dest(response)
+    } else {
+        response
+    }
+}
+
+/// Dispatches a located file by query and extension; `twin_import` is a
+/// module request whose `import` flag is dropped.
+async fn serve_located(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    uri: &Uri,
+    file: &Path,
+    rel: &str,
+    twin_import: bool,
+) -> Response {
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let stripped = twin_import.then(|| without_import_flag(uri.query()));
+    let query = match &stripped {
+        Some(stripped) => stripped.as_deref(),
+        None => uri.query(),
+    };
     // An inline module the dev HTML transform lifted out of this page
     // (`/index.html?html-proxy&index=0.js`): Vite's html-inline-proxy plugin
     // resolves and loads it, then it compiles like any module.
@@ -436,7 +514,10 @@ async fn serve_file(
     // whatever the extension; the same url fetched as a resource (`<img
     // src>`) is still the file, as its static middlewares serve it. A svg
     // has its own route below (svgr, else its url module).
-    if !ext.eq_ignore_ascii_case("svg") && ext != "html" && wants_module_import(headers, query) {
+    if !ext.eq_ignore_ascii_case("svg")
+        && ext != "html"
+        && (twin_import || wants_module_import(headers, query))
+    {
         let url = url_of(&state.root, file);
         // The id the hooks see: the url with its query, minus the HMR stamp
         // and the `import` flag Vite's middleware strips (removeImportQuery).

@@ -91,7 +91,8 @@ pub(crate) fn rewrite_specifier(
                     url_of(root, &p)
                 })
             })?;
-            return Some(format!("{resolved}?{query}"));
+            let sep = if resolved.contains('?') { '&' } else { '?' };
+            return Some(format!("{resolved}{sep}{query}"));
         }
     }
 
@@ -100,21 +101,18 @@ pub(crate) fn rewrite_specifier(
     // on-disk fast path is for app source.
     if (spec.starts_with("./") || spec.starts_with("../")) && !in_node_modules(dir) {
         if let Some(p) = find_relative_on_disk(dir, dir_cache, spec) {
-            return Some(mark_css_import(
-                root,
-                url_of(root, &p),
-                &p,
-                css_import_marker,
-            ));
+            let url = mark_css_import(root, url_of(root, &p), &p, css_import_marker);
+            return Some(mark_public_twin_import(public_dir, dir_cache, url));
         }
     }
 
     match resolve_in(resolver, dir, importer, spec) {
         // An alias (`@/assets/logo.svg`) or root-absolute import of a style
         // or asset gets the same `?import` / `?url` marks a relative one does.
-        Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
-            mark_css_import(root, url_of(root, &resolved), &resolved, css_import_marker),
-        ),
+        Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => {
+            let url = mark_css_import(root, url_of(root, &resolved), &resolved, css_import_marker);
+            Some(mark_public_twin_import(public_dir, dir_cache, url))
+        }
         Ok(resolved) => {
             allow_package(fs_allow, &resolved);
             Some(url_of(root, &resolved))
@@ -325,6 +323,42 @@ fn mark_css_import(root: &Path, url: String, file: &Path, css_import_marker: boo
         format!("{url}?import")
     } else if css_import_marker && is_asset_path(root, file) {
         format!("{url}?url")
+    } else {
+        url
+    }
+}
+
+/// Vite's `isExplicitImportRequired` mark, for an import whose url a public
+/// file shares: a root file that is neither a script nor a stylesheet
+/// (`/data.json` beside `public/data.json`) is asked for as
+/// `/data.json?import`, so the request is the module, not the public file.
+fn mark_public_twin_import(
+    public_dir: Option<&Path>,
+    dir_cache: &Mutex<DirCache>,
+    url: String,
+) -> String {
+    let Some(public) = public_dir else {
+        return url;
+    };
+    if url.contains('?') || url.starts_with("/@") || is_style_url(&url) {
+        return url;
+    }
+    // Vite's isJSRequest: its knownJsSrcRE, or no extension at all.
+    let ext = Path::new(&url)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    const JS: &[&str] = &[
+        "", "js", "jsx", "ts", "tsx", "mjs", "mts", "vue", "marko", "svelte", "astro", "imba",
+        "mdx",
+    ];
+    if JS.contains(&ext.as_str()) {
+        return url;
+    }
+    let twin = public.join(url.trim_start_matches('/'));
+    if is_file_cached(dir_cache, &twin) {
+        format!("{url}?import")
     } else {
         url
     }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: a request for a path that names a file in `public/` gets that file even when the root has a file of the same name. With `public/data.json` and a `data.json` at the root, a plain `fetch("/data.json")` got the root file compiled as a module (`const __oj_json = …`, `text/javascript`) where the app expected the public JSON. The path is matched as Vite's `servePublicMiddleware` matches it (decoded as `decodeURI` does, in the case it is written), and `/` is still the root's `index.html`. A module request gets the root file: `?import`, `?url`, or an import the browser marks `Sec-Fetch-Dest: script`; an import of such a root file that is neither a script nor a stylesheet is named with `?import` (`/data.json?import`, `/data.json?import&raw`), as Vite's import analysis names it, so it is the root module with or without that header. Either answer varies on `Sec-Fetch-Dest`.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

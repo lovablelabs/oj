@@ -10,7 +10,7 @@
 //! needs to play or seek a video. The body is streamed from the file, as
 //! sirv pipes a read stream, never held whole in memory.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
@@ -216,9 +216,241 @@ pub async fn public_file_response(
     }
 }
 
+/// The file under `public_dir` that `path` names, or None when the request
+/// is not for one. Vite's servePublicMiddleware: the exact path of a file
+/// in the dir, decoded as `decodeURI` does (its `toFilePath`), with no
+/// extension guessing and no `index.html` for a directory (sirv with
+/// `extensions: []`), skipping oj's own `/@` urls (its `isInternalRequest`)
+/// and the `?url` and `?import` requests whose module the transform
+/// pipeline makes (`urlRE`, `isImportRequest`: `/logo.svg?url` is a module).
+/// Only a path of plain segments names a file: nothing that could leave the
+/// dir, on any platform.
+pub fn public_file_path(
+    public_dir: &Path,
+    path: &str,
+    query: Option<&str>,
+    method: &Method,
+) -> Option<PathBuf> {
+    if *method != Method::GET && *method != Method::HEAD {
+        return None;
+    }
+    if path.starts_with("/@") || crate::is_dev_server_path(path) {
+        return None;
+    }
+    // Vite's urlRE is `(\?|&)url(?:&|$)`, its importQueryRE
+    // `(\?|&)import=?(?:&|$)`.
+    if query.is_some_and(|q| {
+        q.split('&')
+            .any(|flag| flag == "url" || flag == "import" || flag == "import=")
+    }) {
+        return None;
+    }
+    // A malformed escape leaves the path as it was written (Vite catches
+    // decodeURI's error), which then names a file only literally.
+    let decoded = if path.contains('%') {
+        decode_uri(path).unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    let rel = decoded.strip_prefix('/')?;
+    if rel.is_empty()
+        || rel
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return None;
+    }
+    // A drive, a root or a separator the platform reads inside a segment.
+    let plain = Path::new(rel)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain || rel.contains('\\') {
+        return None;
+    }
+    Some(public_dir.join(rel))
+}
+
+/// JavaScript's `decodeURI`: every escape decoded but those of the reserved
+/// characters (`; / ? : @ & = + $ , #`), which stay as written, so `%2F` is
+/// never a path separator. None for what `decodeURI` throws on: an escape
+/// that is not two hex digits, or bytes that are not UTF-8.
+fn decode_uri(s: &str) -> Option<String> {
+    const RESERVED: &[u8] = b";/?:@&=+$,#";
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let byte = hex_val(*bytes.get(i + 1)?)? << 4 | hex_val(*bytes.get(i + 2)?)?;
+        if RESERVED.contains(&byte) {
+            out.extend_from_slice(&bytes[i..i + 3]);
+        } else {
+            out.push(byte);
+        }
+        i += 3;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A hex digit's value.
+#[doc(hidden)]
+pub fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Whether `file` (which exists, under `public`) is spelled as its name on
+/// disk is. A case-insensitive file system opens `Hub/Index.html` for
+/// `hub/index.html`; Vite's set of public file names does not hold it. A
+/// name that resolves elsewhere altogether (a symlink) is the file asked for.
+pub async fn named_as_written(public: &Path, file: &Path) -> bool {
+    let (Ok(real_dir), Ok(real)) = (
+        tokio::fs::canonicalize(public).await,
+        tokio::fs::canonicalize(file).await,
+    ) else {
+        return true;
+    };
+    let (Ok(asked), Ok(found)) = (file.strip_prefix(public), real.strip_prefix(&real_dir)) else {
+        return true;
+    };
+    let (asked, found) = (asked.to_string_lossy(), found.to_string_lossy());
+    asked == found || asked.to_lowercase() != found.to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_file_path_is_the_exact_decoded_path_in_the_dir() {
+        let public = Path::new("/app/public");
+        let at =
+            |path: &str, query: Option<&str>| public_file_path(public, path, query, &Method::GET);
+        assert_eq!(
+            at("/hub/index.html", None),
+            Some(PathBuf::from("/app/public/hub/index.html"))
+        );
+        assert_eq!(
+            at("/with%20space.txt", None),
+            Some(PathBuf::from("/app/public/with space.txt"))
+        );
+        assert_eq!(
+            at("/noext", Some("v=1")),
+            Some(PathBuf::from("/app/public/noext"))
+        );
+        // No directory index and nothing for the root: Vite's public
+        // middleware serves files only.
+        assert_eq!(at("/hub/", None), None);
+        assert_eq!(at("/", None), None);
+        // The module requests the transform pipeline owns.
+        assert_eq!(at("/logo.svg", Some("url")), None);
+        assert_eq!(at("/logo.svg", Some("import")), None);
+        assert_eq!(at("/logo.svg", Some("v=1&url")), None);
+        // oj's own urls and a path that tries to leave the dir.
+        assert_eq!(at("/@oj-start/x.js", None), None);
+        assert_eq!(at("/@fs/etc/passwd", None), None);
+        assert_eq!(at("/../package.json", None), None);
+        assert_eq!(at("/a/%2e%2e/package.json", None), None);
+        assert_eq!(at("//etc/passwd", None), None);
+        assert_eq!(at("/a/./b.txt", None), None);
+        assert_eq!(at("/a\\..\\b.txt", None), None);
+        // An encoded backslash decodes to one, and an empty segment between
+        // names is no file either.
+        assert_eq!(at("/a%5C..%5C..%5Cb.txt", None), None);
+        assert_eq!(at("/a//b.txt", None), None);
+        // `%2F` is a name's character, so this is no nested file.
+        assert_eq!(
+            at("/locales%2Fen.json", None),
+            Some(PathBuf::from("/app/public/locales%2Fen.json"))
+        );
+        // Vite's importQueryRE takes `import=` too; `urlRE` only the bare flag.
+        assert_eq!(at("/logo.svg", Some("import=")), None);
+        assert_eq!(
+            at("/logo.svg", Some("url=1")),
+            Some(PathBuf::from("/app/public/logo.svg"))
+        );
+        // decodeURI leaves the reserved characters' escapes as written: an
+        // encoded separator is part of a name, never a separator.
+        assert_eq!(
+            at("/a%2Fb.txt", None),
+            Some(PathBuf::from("/app/public/a%2Fb.txt"))
+        );
+        assert_eq!(
+            at("/caf%C3%A9.txt", None),
+            Some(PathBuf::from("/app/public/café.txt"))
+        );
+        // What decodeURI throws on stays as written.
+        assert_eq!(
+            at("/100%.txt", None),
+            Some(PathBuf::from("/app/public/100%.txt"))
+        );
+        assert_eq!(
+            at("/bad%FFutf8.txt", None),
+            Some(PathBuf::from("/app/public/bad%FFutf8.txt"))
+        );
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::POST),
+            None
+        );
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::HEAD),
+            Some(PathBuf::from("/app/public/a.txt"))
+        );
+    }
+
+    #[test]
+    fn decode_uri_is_javascripts() {
+        assert_eq!(
+            decode_uri("/with%20space.txt").as_deref(),
+            Some("/with space.txt")
+        );
+        assert_eq!(decode_uri("/%E2%9C%93").as_deref(), Some("/✓"));
+        // decodeURI("%2F%3F%23%26%3D%2B%24%2C%3B%3A%40") is its input.
+        let reserved = "%2F%3F%23%26%3D%2B%24%2C%3B%3A%40";
+        assert_eq!(decode_uri(reserved).as_deref(), Some(reserved));
+        // URIError: malformed escapes and bytes that are not UTF-8.
+        assert_eq!(decode_uri("%"), None);
+        assert_eq!(decode_uri("a%2"), None);
+        assert_eq!(decode_uri("a%zz"), None);
+        assert_eq!(decode_uri("%FF"), None);
+        assert_eq!(decode_uri("%C3"), None);
+    }
+
+    // Vite matches a url against the names in the public dir, so one that
+    // differs only in case is no public file, whatever the file system opens.
+    #[tokio::test]
+    async fn a_public_file_is_named_as_it_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
+        std::fs::create_dir_all(public.join("Hub")).unwrap();
+        std::fs::write(public.join("Hub/Index.html"), "x").unwrap();
+        assert!(named_as_written(&public, &public.join("Hub/Index.html")).await);
+        // Only where the file system is case-insensitive does the other
+        // spelling exist at all; there it is refused.
+        let other = public.join("hub/index.html");
+        if other.exists() {
+            assert!(!named_as_written(&public, &other).await);
+        }
+        // A symlink names another file: the one asked for.
+        #[cfg(unix)]
+        {
+            std::fs::write(dir.path().join("outside.txt"), "y").unwrap();
+            std::os::unix::fs::symlink(dir.path().join("outside.txt"), public.join("link.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(public.join("Hub/Index.html"), public.join("alias.html"))
+                .unwrap();
+            assert!(named_as_written(&public, &public.join("link.txt")).await);
+            assert!(named_as_written(&public, &public.join("alias.html")).await);
+        }
+    }
 
     #[test]
     fn byte_ranges_follow_the_spec_and_sirv() {

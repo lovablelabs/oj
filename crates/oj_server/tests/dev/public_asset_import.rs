@@ -210,3 +210,188 @@ async fn a_root_file_that_is_not_in_public_is_imported_as_ever() {
     let main = server.text("/src/main.js").await;
     assert!(main.contains("\"/src/x.js\""), "{main}");
 }
+
+// Vite's servePublicMiddleware runs ahead of its transform and static
+// middlewares: a path naming a public file is that file, as it is, beside a
+// file of the same name under the root too. Only a module request
+// (`?import`, `?url`) and `/` go past the public file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_public_file_is_served_ahead_of_a_root_file_of_the_same_name() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"public-shadow","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("index.html", INDEX_HTML),
+        ("data.json", "{\"root\":1}\n"),
+        ("locales/en.json", "{\"root\":2}\n"),
+        ("lib.js", "window.__ROOT = 1;\n"),
+        ("public/data.json", "{\"public\":1}\n"),
+        ("public/other.json", "{\"other\":1}\n"),
+        ("public/locales/en.json", "{\"public\":2}\n"),
+        ("public/lib.js", "window.__PUBLIC = 1;\n"),
+        ("public/index.html", "<p>public page</p>\n"),
+    ]);
+    let server = app.serve().await;
+
+    let plain = [
+        ("/data.json", "{\"public\":1}\n", "application/json"),
+        ("/other.json", "{\"other\":1}\n", "application/json"),
+        ("/locales/en.json", "{\"public\":2}\n", "application/json"),
+        ("/lib.js", "window.__PUBLIC = 1;\n", "text/javascript"),
+        ("/data.json?t=1", "{\"public\":1}\n", "application/json"),
+        ("/index.html", "<p>public page</p>\n", "text/html"),
+    ];
+    let shapes: [&[(&str, &str)]; 3] = [
+        &[],
+        &[("accept", "application/json")],
+        &[
+            ("accept", "*/*"),
+            ("sec-fetch-dest", "empty"),
+            ("referer", "/src/main.js"),
+        ],
+    ];
+    for (url, body, content_type) in plain {
+        for shape in shapes {
+            let mut req = Request::get(url);
+            for (name, value) in shape {
+                req = req.header(*name, *value);
+            }
+            let res = server.request(req.body(Body::empty()).unwrap()).await;
+            assert_eq!(res.status, 200, "{url} {shape:?}: {}", res.body);
+            assert_eq!(res.body, body, "{url} {shape:?} is the public file");
+            assert!(
+                res.headers["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with(content_type),
+                "{url} {shape:?}: {:?}",
+                res.headers["content-type"]
+            );
+        }
+    }
+
+    // A module request is the transform pipeline's, on the root file.
+    let module = server.get("/data.json?import").await;
+    assert_eq!(module.status, 200, "{}", module.body);
+    assert_eq!(module.headers["content-type"], "text/javascript");
+    assert!(module.body.contains("\"root\":1"), "{}", module.body);
+    let url = server.text("/data.json?url").await;
+    assert!(url.contains("export default \"/data.json\""), "{url}");
+
+    // `/` is the root page, never `public/index.html`.
+    let page = server.text("/").await;
+    assert!(page.contains("/src/main.js"), "{page}");
+}
+
+/// A module importing a root JSON file that has a public twin, as a module
+/// and as `?raw`, and fetching the public file.
+fn twin_app() -> App {
+    App::new(&[
+        (
+            "package.json",
+            r#"{"name":"public-twin","version":"1.0.0"}"#,
+        ),
+        (
+            "src/main.js",
+            "import data from \"../data.json\";\nimport raw from \"../data.json?raw\";\n\
+             window.__DATA = data;\nwindow.__RAW = raw;\n\
+             fetch(\"/data.json\").then((r) => r.text()).then((t) => { window.__FETCHED = t; });\n",
+        ),
+        ("index.html", INDEX_HTML),
+        ("data.json", "{\"root\":1}\n"),
+        ("public/data.json", "{\"public\":1}\n"),
+    ])
+}
+
+// The import of a root file that is neither a script nor a stylesheet is
+// named with `?import`, as Vite's importAnalysis names it
+// (`isExplicitImportRequired`), so it is the root file's module whether or
+// not the request carries `Sec-Fetch-Dest` (plain http to a LAN address, a
+// module worker, a proxy that drops the header). The page's fetch of the url
+// is the public file, and both answers vary on `Sec-Fetch-Dest`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_of_a_root_file_with_a_public_twin_is_the_root_module() {
+    let app = twin_app();
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("\"/data.json?import\"") && main.contains("\"/data.json?import&raw\""),
+        "the imports carry Vite's mark:\n{main}"
+    );
+    let varies = |res: &crate::Response| {
+        res.headers
+            .get_all("vary")
+            .iter()
+            .any(|v| v.to_str().unwrap().contains("sec-fetch-dest"))
+    };
+    let module = |url: &'static str, dest: Option<&'static str>| {
+        let mut req = Request::get(url).header("accept", "*/*");
+        if let Some(dest) = dest {
+            req = req.header("sec-fetch-dest", dest);
+        }
+        req.body(Body::empty()).unwrap()
+    };
+    for (url, dest) in [
+        ("/data.json?import", None),
+        ("/data.json?import", Some("script")),
+        ("/data.json?import", Some("worker")),
+        ("/data.json", Some("script")),
+    ] {
+        let data = server.request(module(url, dest)).await;
+        assert_eq!(data.status, 200, "{url} {dest:?}: {}", data.body);
+        assert_eq!(
+            data.headers["content-type"], "text/javascript",
+            "{url} {dest:?}"
+        );
+        assert!(
+            data.body.contains("\"root\":1"),
+            "{url} {dest:?}: the root module:\n{}",
+            data.body
+        );
+        assert!(varies(&data), "{url} {dest:?}: {:?}", data.headers);
+    }
+    for (url, dest) in [
+        ("/data.json?import&raw", None),
+        ("/data.json?raw", Some("script")),
+    ] {
+        let raw = server.request(module(url, dest)).await;
+        assert_eq!(raw.status, 200, "{url} {dest:?}: {}", raw.body);
+        assert_eq!(
+            raw.headers["content-type"], "text/javascript",
+            "{url} {dest:?}"
+        );
+        assert!(
+            raw.body.contains(r#"export default "{\"root\":1}\n""#),
+            "{url} {dest:?}: the root file's text:\n{}",
+            raw.body
+        );
+    }
+    let fetched = server.get("/data.json").await;
+    assert_eq!(
+        fetched.body, "{\"public\":1}\n",
+        "a fetch is the public file"
+    );
+    assert!(varies(&fetched), "{:?}", fetched.headers);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn page_importing_a_root_file_with_a_public_twin_gets_the_root_file() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = twin_app();
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let page = Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
+    page.wait_for("window.__FETCHED !== undefined", WAIT).await;
+    let data: String = page.eval("JSON.stringify(window.__DATA)").await;
+    assert_eq!(data, "{\"root\":1}", "the import is the root module");
+    let raw: String = page.eval("window.__RAW").await;
+    assert_eq!(raw, "{\"root\":1}\n", "the `?raw` import is the root text");
+    let fetched: String = page.eval("window.__FETCHED").await;
+    assert_eq!(fetched, "{\"public\":1}\n", "the fetch is the public file");
+    assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
+    page.close().await;
+}
