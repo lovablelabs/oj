@@ -121,3 +121,129 @@ async fn stylesheet_imports_serve_compiled_css_and_svg_is_a_url_module() {
         content_type(&img)
     );
 }
+
+/// Not every `<link rel="stylesheet" href="/src/a.css">` request carries
+/// `Sec-Fetch-Dest`: a browser sends fetch metadata only where the request's
+/// url is potentially trustworthy (https, `localhost`, `127.0.0.1`, `[::1]`;
+/// not a LAN address or a custom host name over plain http), Safari before
+/// 16.4 sends none, and a proxy may drop it. Such a request is known only by
+/// its `Accept`, as Vite's transformMiddleware knows it. A server-rendered
+/// document links a `styles.css?url` import that way.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_request_without_fetch_metadata_gets_the_stylesheet() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"csslink-app","version":"1.0.0"}"#,
+        ),
+        ("src/a.css", ".a {\n  color: blue;\n}\n"),
+        ("src/main.js", "import \"./a.css\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let get_accept = |accept: &'static str| {
+        server.request(
+            Request::get("/src/a.css")
+                .header("accept", accept)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+
+    let linked = get_accept("text/css,*/*;q=0.1").await;
+    assert_eq!(linked.status, 200, "link request:\n{}", linked.body);
+    assert!(
+        content_type(&linked).contains("text/css"),
+        "a stylesheet request is answered with {}:\n{}",
+        content_type(&linked),
+        linked.body
+    );
+    assert!(
+        linked.body.contains(".a {") && !linked.body.contains("updateStyle"),
+        "link request body:\n{}",
+        linked.body
+    );
+    let vary: Vec<&str> = linked
+        .headers
+        .get_all("vary")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    assert!(vary.contains(&"accept"), "vary: {vary:?}");
+
+    // The same url imported by a module is still the module.
+    let imported = get_accept("*/*").await;
+    assert!(
+        content_type(&imported).contains("javascript") && imported.body.contains("updateStyle"),
+        "import request ({}):\n{}",
+        content_type(&imported),
+        imported.body
+    );
+}
+
+/// What tells a stylesheet's `<link>` from a module's import of it, case by
+/// case. `Accept: text/css` is the sheet whatever the query says, as in
+/// Vite's transformMiddleware (`removeImportQuery` runs before its `Accept`
+/// test): `?import`, the `?t=` the client puts on a link it swaps after an
+/// edit, a `/@fs/` sheet outside the root. `Sec-Fetch-Dest: style` alone is
+/// the sheet too, where Vite answers the module (no browser sends that).
+#[tokio::test(flavor = "multi_thread")]
+async fn accept_and_fetch_dest_tell_a_link_from_an_import() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"csslink-cases","version":"1.0.0"}"#,
+        ),
+        ("src/a.css", ".a {\n  color: blue;\n}\n"),
+        ("src/main.js", "import \"./a.css\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    // A sheet beside the root, outside it, reached by its `/@fs/` url.
+    let name = format!("{}-shared", app.root.file_name().unwrap().to_string_lossy());
+    let shared = app.root.with_file_name(name);
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("out.css"), ".out {\n  color: red;\n}\n").unwrap();
+    let allow = serde_json::to_string(&shared.to_string_lossy()).unwrap();
+    let config = format!("export default {{ server: {{ fs: {{ allow: [\".\", {allow}] }} }} }};\n");
+    app.write(&[("vite.config.js", config.as_str())]);
+    let outside = format!("/@fs{}", shared.join("out.css").display());
+    let server = app.serve().await;
+
+    const LINK: &str = "text/css,*/*;q=0.1";
+    // (url, headers, whether the answer is the stylesheet)
+    type Headers<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(&str, Headers, bool); 9] = [
+        ("/src/a.css?import", &[("accept", LINK)], true),
+        ("/src/a.css?import", &[("accept", "*/*")], false),
+        ("/src/a.css", &[], false),
+        ("/src/a.css?t=123", &[("accept", LINK)], true),
+        ("/src/a.css?t=123", &[("accept", "*/*")], false),
+        (
+            "/src/a.css",
+            &[("sec-fetch-dest", "style"), ("accept", "*/*")],
+            true,
+        ),
+        // A repeated header: every line counts.
+        ("/src/a.css", &[("accept", "*/*"), ("accept", LINK)], true),
+        (&outside, &[("accept", LINK)], true),
+        (&outside, &[("accept", "*/*")], false),
+    ];
+    for (url, headers, sheet) in cases {
+        let mut request = Request::get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let res = server.request(request.body(Body::empty()).unwrap()).await;
+        assert_eq!(res.status, 200, "{url} {headers:?}:\n{}", res.body);
+        let css = content_type(&res).contains("text/css") && !res.body.contains("updateStyle");
+        let module = content_type(&res).contains("javascript") && res.body.contains("updateStyle");
+        assert!(
+            if sheet { css } else { module },
+            "{url} {headers:?} should be the {}, got {}:\n{}",
+            if sheet { "stylesheet" } else { "module" },
+            content_type(&res),
+            res.body
+        );
+    }
+    let _ = std::fs::remove_dir_all(&shared);
+}
