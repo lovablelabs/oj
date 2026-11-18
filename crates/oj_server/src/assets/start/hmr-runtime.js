@@ -110,6 +110,11 @@ class OjHmrClient {
     this.queue = Promise.resolve();
     // Patches announced and not yet applied.
     this.pending = [];
+    // Modules a hot update changed or re-ran since the page loaded, and the
+    // page's location when the last update came.
+    this.outdated = new Set();
+    this.updatedAt = undefined;
+    this.deferredReload = undefined;
     this.lastSeq = 0;
     this.reloadPending = false;
     this.firstInvalidatedBy = undefined;
@@ -184,6 +189,8 @@ class OjHmrClient {
   }
 
   push(frame) {
+    for (const id of frame.changedIds ?? []) this.outdated.add(id);
+    this.updatedAt = location.href;
     this.pending.push(frame);
     this.queue = this.queue.then(() => this.applyPending()).catch((err) => this.failed(err, frame.changedIds));
   }
@@ -240,6 +247,7 @@ class OjHmrClient {
   // instead, and only then is the patch fetched.
   async applyPending() {
     if (this.reloadPending || !this.pending.length) return;
+    if (this.deferredReload) return this.deferredReload();
     const changedIds = new Set();
     const announced = new Set();
     let update = null;
@@ -298,7 +306,10 @@ class OjHmrClient {
       ...b,
       callbacks: this.hotModules.get(b.boundary)?.callbacks.filter((c) => c.deps.includes(b.acceptedVia)) ?? [],
     }));
-    for (const id of update.updateSet) this.runtime.removeModuleCache(id);
+    for (const id of update.updateSet) {
+      this.outdated.add(id);
+      this.runtime.removeModuleCache(id);
+    }
     for (const { boundary, acceptedVia, circular, callbacks } of applies) {
       let fresh;
       try {
@@ -323,6 +334,35 @@ class OjHmrClient {
     if (dispose) dispose(this.dataMap.get(id));
   }
 
+  // This page alone reloads; its document waits for the current output. A
+  // page still on the location it had at the last update reloads at its next
+  // navigation, or at the next update.
+  reloadSelf(reason) {
+    if (this.reloadPending || this.deferredReload) return;
+    console.debug(`[oj] full reload needed: ${reason}`);
+    const reload = async () => {
+      if (this.reloadPending) return;
+      this.reloadPending = true;
+      await this.notify("vite:beforeFullReload", { type: "full-reload" });
+      location.reload();
+    };
+    if (location.href !== this.updatedAt) return void reload();
+    this.deferredReload = reload;
+    const from = location.href;
+    const moved = () => {
+      if (location.href !== from) reload();
+    };
+    for (const name of ["pushState", "replaceState"]) {
+      const original = history[name];
+      history[name] = function (...args) {
+        const result = original.apply(history, args);
+        moved();
+        return result;
+      };
+    }
+    addEventListener("popstate", moved);
+  }
+
   // The server reloads the page once its bundle output covers every change
   // (a reload straight away could load the bundle from before this edit).
   requestReload(reason) {
@@ -341,6 +381,28 @@ class OjDevRuntime extends DevRuntime {
       createModuleHotContext: (id) => new OjHotContext(hmr, id),
       onModuleCacheRemoval: (id) => hmr.disposeModule(id),
     };
+    // Factories running: what they register is a patch's code.
+    this.factoryRuns = 0;
+  }
+  initModule(id) {
+    this.factoryRuns++;
+    try {
+      return super.initModule(id);
+    } finally {
+      this.factoryRuns--;
+    }
+  }
+  // A chunk that registers, or imports, a module a hot update changed since
+  // the page loaded is from before that update; the page reloads onto the
+  // current bundle (Vite compiles lazy loads for the current graph,
+  // bundledDev.ts). Patches carry stamps; full-build chunks do not.
+  registerGraph(delta) {
+    if (delta.stamps === undefined && this.factoryRuns === 0) {
+      // Its own modules and the targets of its imports.
+      const stale = delta.ids.find((id) => this.hmr.outdated.has(id));
+      if (stale !== undefined) this.hmr.reloadSelf(`a chunk built before the hot update of ${stale} loaded`);
+    }
+    super.registerGraph(delta);
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });

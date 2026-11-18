@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a lazy route an open page first visits after a hot update shows the code of that update. The page's entry still imported the route's chunk by the name it was built with, which the dev server serves with the code from before the edit, bound to the other chunks of that build: the route rendered as it was, with the old values of a module edited with it or of a module the update re-ran in place, and when the update had been skipped (nothing it changed had run on the page) the route's next hot patch bound to the module's old exports, so an export added in the edit was `undefined` and the render threw into the error boundary (`import_event.FEATURED is undefined`) until a manual reload. Vite compiles every lazy load for the current graph. Now, when a chunk that holds or imports a module a hot update changed or re-ran since the page loaded starts to evaluate, that page alone reloads onto the current bundle: at once when the user has navigated since the update, which lands on the route they clicked to, or at the page's next navigation (or next hot update) when its url has stayed put since the update (a link's preload, a lazily loaded component, a route's split error, pending or not-found component), so hovering a link does not reload the page the user is on; until then that page keeps what the stale chunk gave it. A lazy route no update touched still loads in place.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed
