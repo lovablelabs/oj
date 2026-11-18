@@ -49,6 +49,9 @@ pub(crate) struct DevBundler {
     /// tests) the bundle spawns a host of its own.
     dev_host:
         Option<tokio::sync::watch::Receiver<Option<Option<Arc<oj_server::plugins::PluginHost>>>>>,
+    /// Set while the app's routes have made no tree (see
+    /// [`super::RouteTreeRefusal`]).
+    route_tree_refusal: Option<super::RouteTreeRefusal>,
     styles: Arc<Styles>,
     /// The hot-update engine, while one runs; one bundle at a time holds it
     /// (rebundles and output refreshes share the cache directory).
@@ -105,6 +108,7 @@ impl DevBundler {
             config_file,
             host: tokio::sync::OnceCell::new(),
             dev_host: None,
+            route_tree_refusal: None,
             styles,
             session: tokio::sync::Mutex::new(None),
             engine: EngineSlot::default(),
@@ -124,6 +128,12 @@ impl DevBundler {
         dev_host: tokio::sync::watch::Receiver<Option<Option<Arc<oj_server::plugins::PluginHost>>>>,
     ) -> DevBundler {
         self.dev_host = Some(dev_host);
+        self
+    }
+
+    /// Fails its bundles with what `refusal` holds, while it holds anything.
+    pub(crate) fn refusing_on(mut self, refusal: super::RouteTreeRefusal) -> DevBundler {
+        self.route_tree_refusal = Some(refusal);
         self
     }
 
@@ -342,13 +352,22 @@ impl DevBundler {
         // Only this run's failure may read as an app build error.
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
         let _ = std::fs::remove_file(cache.join(CLIENT_HMR_FILE));
-        // Routes the generator could not make a tree of: the page is shown
-        // what it said, as Start's client tree plugin fails the tree's load
-        // with it under Vite, in place of a client built on the tree left
-        // on disk (see `route_tree::ClientRouteTree`).
-        let outcome = match std::fs::read_to_string(cache.join(super::ROUTE_TREE_ERROR)) {
-            Ok(said) => Err(BundleError::from_message(said.trim_end())),
-            Err(_) => match self.host().await {
+        // Routes that have made no tree since this server started: the page
+        // is shown what the generator said, in place of a client built on
+        // the tree an earlier run left on disk. Start's client tree plugin
+        // fails the tree's load the same way under Vite while its generator
+        // has no crawl to build the client's tree from; once one has
+        // succeeded it keeps serving that crawl's tree through a later
+        // failure, as the client tree generate.mjs last wrote is kept here.
+        let refused = self.route_tree_refusal.as_ref().and_then(|refusal| {
+            refusal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+        let outcome = match refused {
+            Some(said) => Err(BundleError::from_message(said)),
+            None => match self.host().await {
                 Ok(host) => self.run(&mut session, host, changed, refresh).await,
                 Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
             },

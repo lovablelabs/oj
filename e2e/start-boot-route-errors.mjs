@@ -262,6 +262,12 @@ async function clientRefused(kind, app) {
   if (kind === "vite") return (await status("/src/routeTree.gen.ts")).status === 500;
   return clientError(app) !== null && (await status("/@oj-start/client-entry.js")).status === 404;
 }
+// Vite: the client's request for the tree is answered. oj: the entry is
+// served and no failed bundle stands.
+async function clientServed(kind, app) {
+  if (kind === "vite") return (await status("/src/routeTree.gen.ts")).status === 200;
+  return clientError(app) === null && (await status("/@oj-start/client-entry.js")).status === 200;
+}
 // What oj's overlay shows for the failed client bundle.
 function clientError(app) {
   const record = path.join(startCache(app), "client-error.json");
@@ -327,6 +333,11 @@ async function boot(kind, broken, withTree) {
       BREAKS[broken].mend(app);
       const [route, marker] = BREAKS[broken].mended ?? ["/about", "about-marker"];
       seen.mended = await renders(route, marker, { timeoutMs: 60000, touch: BREAKS[broken].touch?.(app) });
+      // The client is served again: the fix reached it, not the pages alone.
+      seen.clientBack = await settles(() => clientServed(kind, app), {
+        timeoutMs: 60000,
+        touch: BREAKS[broken].touch?.(app),
+      });
     }
   }
   const out = { name, seen, log: tail(server), app, server };
@@ -334,7 +345,10 @@ async function boot(kind, broken, withTree) {
 }
 
 // oj alone: the route file is fixed as soon as the generator has failed,
-// before the server listens, and never saved again.
+// before the server listens, and never saved again. (Whether the fix reaches
+// the server through the watcher, already subscribed by then, or through
+// the rebundle worker's first run depends on the machine; either way it
+// must be picked up.)
 async function fixedWhileBooting() {
   const app = makeApp("oj-added-fixed-while-booting");
   const good = serve("oj", app);
@@ -373,10 +387,26 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 }
 try {
   for (const [broken, withTree, want] of [
-    ["conflict", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
-    ["syntax", true, { ...UP, home: 500, about: 500, tree: "as it was", clientRefused: true, mended: true }],
-    ["added", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
-    ["redeclared", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
+    [
+      "conflict",
+      true,
+      { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true, clientBack: true },
+    ],
+    [
+      "syntax",
+      true,
+      { ...UP, home: 500, about: 500, tree: "as it was", clientRefused: true, mended: true, clientBack: true },
+    ],
+    [
+      "added",
+      true,
+      { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true, clientBack: true },
+    ],
+    [
+      "redeclared",
+      true,
+      { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true, clientBack: true },
+    ],
     ["syntax", false, { ...UP, home: 500, about: 500, tree: "absent", clientRefused: true }],
   ]) {
     const what = `${broken}, ${withTree ? "a tree on disk" : "no tree on disk"}`;
