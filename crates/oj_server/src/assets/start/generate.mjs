@@ -157,7 +157,20 @@ async function main() {
     root,
   );
   const generator = new Generator({ config, root });
-  await generator.run();
+  try {
+    await generator.run();
+  } catch (e) {
+    // The app's routes cannot make a tree (two files on one path, a file
+    // that does not parse): said to oj apart from every other way this
+    // script can fail, so the dev server stays up on it and its client
+    // bundle shows it, as Start's client tree plugin does under Vite.
+    if (process.env.OJ_ROUTE_TREE_ERROR) {
+      try {
+        writeFileSync(process.env.OJ_ROUTE_TREE_ERROR, String(e?.message ?? e));
+      } catch {}
+    }
+    throw e;
+  }
   // The client's tree, as Start's `tanstack-start:route-tree-client-plugin`
   // loads it for the client environment: server-only subtrees pruned, no
   // types, header or footer. The client bundles load it in place of the

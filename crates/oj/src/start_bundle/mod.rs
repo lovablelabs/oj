@@ -502,6 +502,11 @@ pub(crate) const SERVER_FN_BASE: &str = "/_serverFn/";
 /// [`route_tree::ClientRouteTree`]).
 pub(crate) const CLIENT_ROUTE_TREE: &str = "route-tree.client.js";
 
+/// What the route generator said when the app's routes could not make a
+/// tree, written by generate.mjs in the cache dir; absent after a tree was
+/// generated.
+pub(crate) const ROUTE_TREE_ERROR: &str = "route-tree-error.txt";
+
 /// The router entry for `root`: package.json `imports["#tanstack-router-entry"]`
 /// when it names an existing file, else `src/router.{tsx,ts,jsx,js}`, else
 /// `src/router.tsx` (so the miss is reported against the conventional path).

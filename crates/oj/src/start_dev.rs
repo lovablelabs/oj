@@ -28,6 +28,10 @@ struct StartState {
     /// The scripts' env (see `script_env`), resolved once at boot for the
     /// watch-reload codegen and rebundles.
     script_env: Arc<[(String, String)]>,
+    /// The route files as they were when the last route tree generation
+    /// failed on them (`None`: the tree on disk is theirs). See
+    /// [`route_files_state`].
+    route_tree_failed: Arc<std::sync::Mutex<Option<RouteFilesState>>>,
     /// Where the app's Start keeps its routes and generated route tree.
     routes: RoutePaths,
     /// The session's client bundler, shared by the boot bundle and rebundles.
@@ -399,24 +403,28 @@ pub async fn start_dev(
             script_vars(oj_env::get(), &root, &inputs.app_env).into();
         (vars, RoutePaths::of(&inputs.config, &root))
     };
+    let route_tree_failed = Arc::new(std::sync::Mutex::new(None));
     let route_tree = {
         let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
         let routes = routes.clone();
-        tokio::task::spawn_blocking(move || generate_route_tree(&root, &routes, &cache, &env))
+        let failed = Arc::clone(&route_tree_failed);
+        tokio::task::spawn_blocking(move || {
+            generate_dev_route_tree(&failed, &root, &routes, &cache, &env)
+        })
     };
-    // A tree the generator cannot write is the app's to fix, not a reason
-    // to have no dev server: under Vite the router plugin logs the error and
-    // the server stays up on whatever tree is on disk (its
-    // `generate().catch` in router-plugin's router-generator plugin). The
-    // generator has printed its error, and the tree is written again once
-    // the route files change (the watcher's regeneration, and the router
-    // plugin's own in the plugin host). Failing to run the generator at all
+    // A tree the app's routes cannot make is the app's to fix, not a reason
+    // to have no dev server: under Vite the router plugin logs the
+    // generator's error and the server stays up on whatever tree is on disk
+    // (the `catch` around `generator.run()` in router-plugin's
+    // router-generator plugin). The generator has printed its error; the
+    // tree is generated again once the route files are not the ones it
+    // failed on (`route_tree_failed`). A generator that failed any other way
     // still ends boot.
     match route_tree.await? {
         Ok(()) => oj_server::boot_phase("route tree ready"),
-        Err(e) if e.is::<ScriptFailed>() => {
+        Err(e) if e.is::<RouteTreeError>() => {
             eprintln!(
-                "{}: {e}; serving with the route tree as it is on disk until a route file changes",
+                "{}: route tree generation failed; serving with the route tree as it is on disk until the route files change",
                 oj_server::oj_brand()
             );
             oj_server::boot_phase("route tree stale");
@@ -685,6 +693,7 @@ pub async fn start_dev(
     let state = Arc::new(StartState {
         restarter: Arc::clone(&built.restarter),
         script_env: Arc::clone(&script_vars),
+        route_tree_failed,
         routes: routes.clone(),
         bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
@@ -1721,6 +1730,33 @@ async fn rebundle_worker(
             .unwrap_or_default();
         Arc::new(std::sync::Mutex::new(seeded))
     };
+    // Route files fixed while the server booted over a tree they could not
+    // make: no watcher event names them (the watcher was not armed yet), so
+    // the first run is theirs.
+    {
+        let then = state
+            .route_tree_failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(then) = then {
+            let now = route_files_state(&routes.dir);
+            let moved: Vec<PathBuf> = now
+                .iter()
+                .filter(|(path, meta)| then.get(*path) != Some(*meta))
+                .map(|(path, _)| path.clone())
+                .chain(then.keys().filter(|p| !now.contains_key(*p)).cloned())
+                .collect();
+            if !moved.is_empty() {
+                let mut slot = pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                slot.get_or_insert_with(PendingRebundle::default)
+                    .paths
+                    .extend(moved);
+            }
+        }
+    }
     loop {
         let run = pending
             .lock()
@@ -1759,6 +1795,7 @@ async fn rebundle_worker(
             let deferral = Arc::clone(&state);
             let shapes = Arc::clone(&shapes);
             let routes = routes.clone();
+            let tree_failed = Arc::clone(&state.route_tree_failed);
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
             bundler.note_changes(&changed);
@@ -1783,8 +1820,16 @@ async fn rebundle_worker(
                 };
                 let client_tree = c.join(crate::start_bundle::CLIENT_ROUTE_TREE);
                 let client_tree_before = std::fs::read(&client_tree).ok();
-                if routes_changed || shape_flipped {
-                    let _ = generate_route_tree(&r, &routes, &c, &env);
+                // A tree whose last generation failed is generated again
+                // once the route files are not the ones it failed on: the
+                // fix need change neither the set of routes nor a shape.
+                let failed_on_others = tree_failed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .is_some_and(|then| *then != route_files_state(&routes.dir));
+                if routes_changed || shape_flipped || failed_on_others {
+                    let _ = generate_dev_route_tree(&tree_failed, &r, &routes, &c, &env);
                 }
                 let client_tree_changed = std::fs::read(&client_tree).ok() != client_tree_before;
                 let mut inputs = inputs;
@@ -2538,18 +2583,76 @@ fn route_shapes(
         .collect()
 }
 
+/// Each route file's modification time and size: what tells one state of
+/// the routes directory from another without reading it.
+type RouteFilesState = std::collections::BTreeMap<PathBuf, (Option<std::time::SystemTime>, u64)>;
+
+fn route_files_state(dir: &Path) -> RouteFilesState {
+    list_route_files(dir)
+        .into_iter()
+        .map(|path| {
+            let meta = std::fs::metadata(&path).ok();
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            let len = meta.map_or(0, |m| m.len());
+            (path, (modified, len))
+        })
+        .collect()
+}
+
+/// The generator ran and the app's routes could not make a tree: what it
+/// said (it has printed it too).
+#[derive(Debug)]
+struct RouteTreeError(String);
+
+impl std::fmt::Display for RouteTreeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "route tree generation failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for RouteTreeError {}
+
+/// [`generate_route_tree`] for the dev server, which outlives a tree the
+/// app's routes cannot make: `failed` takes the route files such a
+/// generation ran on, and is cleared by any other outcome.
+fn generate_dev_route_tree(
+    failed: &std::sync::Mutex<Option<RouteFilesState>>,
+    root: &Path,
+    routes: &RoutePaths,
+    cache: &Path,
+    script_env: &[(String, String)],
+) -> anyhow::Result<()> {
+    // Taken first: an edit landing while the generator runs differs from it.
+    let before = route_files_state(&routes.dir);
+    let result = generate_route_tree(root, routes, cache, script_env);
+    *failed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = match &result {
+        Err(e) if e.is::<RouteTreeError>() => Some(before),
+        _ => None,
+    };
+    result
+}
+
 fn generate_route_tree(
     root: &Path,
     routes: &RoutePaths,
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
+    // Where generate.mjs says the app's routes could not make a tree.
+    let error = cache.join(crate::start_bundle::ROUTE_TREE_ERROR);
+    let _ = std::fs::remove_file(&error);
     // The client's pruned tree (generate.mjs), beside the generated one.
     let client = cache.join(crate::start_bundle::CLIENT_ROUTE_TREE);
     let mut script_env = script_env.to_vec();
     script_env.push((
         "OJ_CLIENT_ROUTE_TREE".to_string(),
         client.to_string_lossy().into_owned(),
+    ));
+    script_env.push((
+        "OJ_ROUTE_TREE_ERROR".to_string(),
+        error.to_string_lossy().into_owned(),
     ));
     // Start's paths, passed inline over tsr.config.json as Start passes them.
     for (name, path) in [
@@ -2588,12 +2691,19 @@ fn generate_route_tree(
     // A crawl that fails writes no client tree: the client then loads the
     // generated one, not a tree left by an earlier run.
     let _ = std::fs::remove_file(&client);
-    run_script_process(
+    if let Err(e) = run_script_process(
         root,
         &cache.join("generate.mjs"),
         script_env,
         "route tree generation",
-    )?;
+    ) {
+        // The generator's own verdict on the routes, as opposed to a script
+        // that could not start, was killed or failed anywhere else.
+        return Err(match std::fs::read_to_string(&error) {
+            Ok(said) => RouteTreeError(said.trim_end().to_string()).into(),
+            Err(_) => e,
+        });
+    }
     let inputs: Vec<PathBuf> = list_route_files(&routes.dir).into_iter().collect();
     store.persist(&inputs, &outputs);
     Ok(())
@@ -3177,23 +3287,10 @@ fn run_script_process(
         .map_err(|e| anyhow::anyhow!("could not wait for {what}: {e}"))?;
     oj_server::boot_phase(&format!("{what}: child exited ({status})"));
     if !status.success() {
-        return Err(ScriptFailed(format!("{what} failed")).into());
+        anyhow::bail!("{what} failed");
     }
     Ok(())
 }
-
-/// A script that ran and exited with a failure (it has printed why), as
-/// opposed to one that could not be run.
-#[derive(Debug)]
-struct ScriptFailed(String);
-
-impl std::fmt::Display for ScriptFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ScriptFailed {}
 
 /// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.

@@ -342,9 +342,16 @@ impl DevBundler {
         // Only this run's failure may read as an app build error.
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
         let _ = std::fs::remove_file(cache.join(CLIENT_HMR_FILE));
-        let outcome = match self.host().await {
-            Ok(host) => self.run(&mut session, host, changed, refresh).await,
-            Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
+        // Routes the generator could not make a tree of: the page is shown
+        // what it said, as Start's client tree plugin fails the tree's load
+        // with it under Vite, in place of a client built on the tree left
+        // on disk (see `route_tree::ClientRouteTree`).
+        let outcome = match std::fs::read_to_string(cache.join(super::ROUTE_TREE_ERROR)) {
+            Ok(said) => Err(BundleError::from_message(said.trim_end())),
+            Err(_) => match self.host().await {
+                Ok(host) => self.run(&mut session, host, changed, refresh).await,
+                Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
+            },
         };
         match outcome {
             Ok(Run::Hot { css }) => {

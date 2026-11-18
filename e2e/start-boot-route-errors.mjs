@@ -7,7 +7,7 @@
 // used to end the process instead, so a sandbox that restarted its dev server
 // over a broken route file had no server to show the error or pick up the fix.
 //
-// Four boots, each run under Vite and under oj, and compared:
+// Five boots, each run under Vite and under oj, and compared:
 //   - two route files claim one path, a tree from the last good run on disk:
 //     the pages keep rendering from that tree, which is left as it was;
 //   - a route file that does not parse, the same tree on disk: every page
@@ -15,10 +15,20 @@
 //   - a route file added since that tree was written, which does not parse:
 //     the pages the tree names keep rendering, and the new one appears once
 //     the file is fixed;
-//   - the broken file of the second boot and no tree at all: every page answers 500. (Under
-//     both, the pages keep answering 500 once the file is fixed, until the
-//     server restarts: the first tree is written, but the server side has
-//     already failed to resolve it. Not checked here.)
+//   - the same added file, broken in a way only the generator minds (an
+//     import declared twice: Babel refuses it, a plain parse does not);
+//   - the broken file of the second boot and no tree at all: every page
+//     answers 500. (With no tree the two part ways once the file is fixed,
+//     and neither is held to the other: Vite's pages stay 500 until a
+//     restart.)
+// In each, the client is refused, in place of one built on the tree left on
+// disk: Vite fails the client's load of the tree (Start's route-tree-client
+// plugin), oj fails the client bundle with what the generator said, which
+// its overlay shows. A route with only `server` options never reaches oj's
+// client bundle.
+//
+// Under oj alone: a fix written while the server is still booting is picked
+// up without another save.
 // Run with a built target/debug/oj (or OJ_BIN).
 import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -40,6 +50,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"
 }
 if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
 
+const SERVER_ONLY = "server-only-handler-marker";
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oj-boot-routes-")));
 
 const routeFile = (route, marker) => `import { createFileRoute } from "@tanstack/react-router";
@@ -122,11 +133,22 @@ function Root() {
   );
   write("src/routes/index.tsx", routeFile("/", "home-marker"));
   write("src/routes/about.tsx", routeFile("/about", "about-marker"));
+  // Server-only: the client's tree leaves it out.
+  write(
+    "src/routes/api.ts",
+    `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/api")({
+  server: { handlers: { GET: async () => new Response("${SERVER_ONLY}") } },
+});
+`,
+  );
   fs.symlinkSync(path.join(fixture, "node_modules"), path.join(app, "node_modules"), "dir");
   return app;
 }
 
-// What breaks the tree, and what mends it.
+// What breaks the tree, and what mends it. `touch` fires the watcher again
+// after the fix: a server answers before its watcher has registered every
+// watch (see `settles`).
 const BREAKS = {
   // `index.tsx` and `_auth/index.tsx` are both "/".
   conflict: {
@@ -135,7 +157,8 @@ const BREAKS = {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, routeFile("/_auth/", "conflict-marker"));
     },
-    mend: (app) => fs.rmSync(path.join(app, "src", "routes", "_auth"), { recursive: true }),
+    mend: (app) => fs.rmSync(path.join(app, "src", "routes", "_auth"), { recursive: true, force: true }),
+    touch: (app) => () => fs.writeFileSync(path.join(app, "src", "routes", "index.tsx"), routeFile("/", "home-marker")),
     logged: /Conflicting configuration paths were found/,
   },
   // An unclosed element.
@@ -159,6 +182,19 @@ const BREAKS = {
     },
     mend: (app) =>
       fs.writeFileSync(path.join(app, "src", "routes", "contact.tsx"), routeFile("/contact", "contact-marker")),
+    touch: (app) => () => BREAKS.added.mend(app),
+    logged: /Error transforming route file .*contact\.tsx/,
+    mended: ["/contact", "contact-marker"],
+  },
+  // The added file with an import declared twice: the generator's transform
+  // (Babel) refuses it, so no tree is written, while the file parses.
+  redeclared: {
+    apply(app) {
+      const file = path.join(app, "src", "routes", "contact.tsx");
+      const twice = 'import { useState } from "react";\nimport { useState } from "react";\n';
+      fs.writeFileSync(file, twice + routeFile("/contact", "contact-marker"));
+    },
+    mend: (app) => BREAKS.added.mend(app),
     touch: (app) => () => BREAKS.added.mend(app),
     logged: /Error transforming route file .*contact\.tsx/,
     mended: ["/contact", "contact-marker"],
@@ -217,6 +253,40 @@ const renders = (route, marker, { timeoutMs = 90000, touch } = {}) =>
     },
     { timeoutMs, pollMs: 250, touch },
   );
+// Whether the client is refused, in place of one built on the tree left on
+// disk. Vite: its request for the tree fails (with the generator's error
+// when the routes conflict, "Crawling result not available" when a file
+// could not be transformed). oj: the client bundle fails, and no entry is
+// served.
+async function clientRefused(kind, app) {
+  if (kind === "vite") return (await status("/src/routeTree.gen.ts")).status === 500;
+  return clientError(app) !== null && (await status("/@oj-start/client-entry.js")).status === 404;
+}
+// What oj's overlay shows for the failed client bundle.
+function clientError(app) {
+  const record = path.join(startCache(app), "client-error.json");
+  return fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, "utf8")).message : null;
+}
+function startCache(app) {
+  const cache = path.join(app, ".oj-cache");
+  return path.join(
+    cache,
+    fs.readdirSync(cache).find((d) => /^v\d+$/.test(d)),
+    "start",
+  );
+}
+// The client chunks oj has written that hold the server-only route's handler.
+function serverOnlyChunks(app) {
+  const dir = path.join(startCache(app), "client-chunks");
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir, { recursive: true })
+    .map(String)
+    .filter(
+      (f) =>
+        fs.statSync(path.join(dir, f)).isFile() && fs.readFileSync(path.join(dir, f), "utf8").includes(SERVER_ONLY),
+    );
+}
 const tail = (server) => server.log.replace(/\x1b\[[0-9;]*m/g, "").slice(-2500);
 
 // One boot over a broken tree: what the server did with it.
@@ -242,8 +312,17 @@ async function boot(kind, broken, withTree) {
     seen.logged = await settles(() => BREAKS[broken].logged.test(server.log), { timeoutMs: 30000 });
     seen.home = (await status("/")).status;
     seen.about = (await status("/about")).status;
-    seen.alive = server.proc.exitCode === null;
     seen.tree = read() === null ? "absent" : read() === before ? "as it was" : "rewritten";
+    seen.clientRefused = await settles(() => clientRefused(kind, app), { timeoutMs: 30000 });
+    if (kind === "oj") {
+      const leaked = serverOnlyChunks(app);
+      if (leaked.length)
+        throw new Error(`${name}: the server-only route is in the client bundle (${leaked.join(", ")})`);
+      // The overlay names what the generator said.
+      if (seen.clientRefused && !BREAKS[broken].logged.test(clientError(app) ?? "")) {
+        throw new Error(`${name}: the failed client bundle does not carry the generator's error: ${clientError(app)}`);
+      }
+    }
     if (withTree) {
       BREAKS[broken].mend(app);
       const [route, marker] = BREAKS[broken].mended ?? ["/about", "about-marker"];
@@ -254,14 +333,51 @@ async function boot(kind, broken, withTree) {
   return out;
 }
 
+// oj alone: the route file is fixed as soon as the generator has failed,
+// before the server listens, and never saved again.
+async function fixedWhileBooting() {
+  const app = makeApp("oj-added-fixed-while-booting");
+  const good = serve("oj", app);
+  if (!(await renders("/about", "about-marker"))) throw new Error(`the good boot never rendered:\n${tail(good)}`);
+  await stop(good);
+  BREAKS.added.apply(app);
+  const server = serve("oj", app);
+  const failedAt = await settles(() => /route tree generation failed/.test(server.log), {
+    timeoutMs: 60000,
+    pollMs: 10,
+  });
+  if (!failedAt) throw new Error(`the boot never said the generation failed:\n${tail(server)}`);
+  if (/oj dev \(/.test(server.log))
+    throw new Error("the server was already up when the generation failed: nothing to check");
+  BREAKS.added.mend(app);
+  if (!(await renders("/contact", "contact-marker", { timeoutMs: 90000 }))) {
+    throw new Error(`a route file fixed while oj dev booted was never picked up:\n${tail(server)}`);
+  }
+  await stop(server);
+}
+
+const UP = { up: true, logged: true };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 let failed = false;
+// An interrupted run leaves no server and no app behind.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    for (const server of servers) {
+      try {
+        process.kill(-server.proc.pid, "SIGKILL");
+      } catch {}
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+    process.exit(1);
+  });
+}
 try {
   for (const [broken, withTree, want] of [
-    ["conflict", true, { up: true, logged: true, home: 200, about: 200, alive: true, tree: "as it was", mended: true }],
-    ["syntax", true, { up: true, logged: true, home: 500, about: 500, alive: true, tree: "as it was", mended: true }],
-    ["added", true, { up: true, logged: true, home: 200, about: 200, alive: true, tree: "as it was", mended: true }],
-    ["syntax", false, { up: true, logged: true, home: 500, about: 500, alive: true, tree: "absent" }],
+    ["conflict", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
+    ["syntax", true, { ...UP, home: 500, about: 500, tree: "as it was", clientRefused: true, mended: true }],
+    ["added", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
+    ["redeclared", true, { ...UP, home: 200, about: 200, tree: "as it was", clientRefused: true, mended: true }],
+    ["syntax", false, { ...UP, home: 500, about: 500, tree: "absent", clientRefused: true }],
   ]) {
     const what = `${broken}, ${withTree ? "a tree on disk" : "no tree on disk"}`;
     const vite = await boot("vite", broken, withTree);
@@ -283,6 +399,8 @@ try {
     await stop(got.server);
     console.log(`ok: ${what}: oj dev stays up as vite dev does ${JSON.stringify(got.seen)}`);
   }
+  await fixedWhileBooting();
+  console.log("ok: a route file fixed while oj dev booted is picked up without another save");
   console.log("\nSTART BOOT ROUTE ERRORS PASSED");
 } catch (e) {
   failed = true;
