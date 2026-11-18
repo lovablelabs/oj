@@ -4325,8 +4325,21 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
-    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !served.entry;
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`, and
+    // a name's content never changes. What changes is whether the dev
+    // server still answers for the name: a page that is not reloaded for a
+    // change (hot updates on) can ask for a chunk long after the bundle that
+    // named it, and one the server no longer has is how such a page learns
+    // it is too old (`chunk_gone`). A browser that cached the chunk for good
+    // never asks, and runs the old code out of its cache. So with hot
+    // updates on the browser asks each time and the ETag makes that a 304,
+    // as Vite's dev server sends every module (server/send.ts `send`:
+    // `Cache-Control: no-cache` with an `Etag`, 304 on `If-None-Match`;
+    // server/middlewares/transform.ts keeps `max-age=31536000,immutable`
+    // for versioned dependency urls alone). Without hot updates every
+    // rebundle reloads the pages onto the new names, and a name is fetched
+    // once.
+    let immutable = !served.entry && !state.bundler.hot_bundle();
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
