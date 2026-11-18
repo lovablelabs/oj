@@ -329,7 +329,10 @@ pub(crate) fn is_cjs_dep_file(memo: &Mutex<HashMap<PathBuf, bool>>, path: &Path)
     );
     let v = is_js
         && match std::fs::read_to_string(path) {
-            Ok(src) => !oj_compiler::cjs::has_module_syntax_pub(path, &src),
+            // A file that does not parse (JSX in a `.js`) is not known to
+            // be CommonJS: flagging it would have its importers import a
+            // `default` its pre-bundle may not have.
+            Ok(src) => oj_compiler::cjs::is_commonjs_source(&src),
             Err(_) => false,
         };
     memo.lock().unwrap().insert(path.to_path_buf(), v);
@@ -529,5 +532,29 @@ mod importer_format_tests {
                 "{rel}"
             );
         }
+    }
+
+    /// The provisional verdict for a dep read at serve time: CommonJS only
+    /// when the file parses and has no module syntax.
+    #[test]
+    fn a_dep_file_that_does_not_parse_is_not_taken_for_commonjs() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo = Mutex::new(HashMap::new());
+        let verdict = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            is_cjs_dep_file(&memo, &path)
+        };
+        assert!(verdict("cjs.js", "module.exports = { a: 1 };\n"));
+        assert!(!verdict("esm.js", "export const a = 1;\n"));
+        assert!(!verdict(
+            "jsx.js",
+            "import React from \"react\";\nexport const A = () => <p />;\n"
+        ));
+        assert!(!verdict(
+            "flow.js",
+            "// @flow\nexport function f(a: number): number { return a; }\n"
+        ));
+        assert!(!verdict("style.css", "a { color: red }\n"));
     }
 }

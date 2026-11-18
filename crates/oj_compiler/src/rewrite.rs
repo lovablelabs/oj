@@ -169,6 +169,20 @@ struct DynamicImportRewriter<'a, 'b> {
 
 impl<'a> VisitMut<'a> for DynamicImportRewriter<'a, '_> {
     fn visit_import_expression(&mut self, it: &mut ImportExpression<'a>) {
+        // A template literal without a substitution is a literal specifier
+        // (Vite's importAnalysis, `templateLiteralRE`): it becomes the string
+        // it spells, then is rewritten like one.
+        if let Expression::TemplateLiteral(tpl) = &it.source {
+            let cooked = tpl.quasis.first().and_then(|q| q.value.cooked);
+            if let (true, Some(cooked)) = (tpl.expressions.is_empty(), cooked) {
+                it.source = Expression::new_string_literal(
+                    tpl.span,
+                    cooked,
+                    None,
+                    &oxc_ast::builder::AstBuilder::new(self.allocator),
+                );
+            }
+        }
         if let Expression::StringLiteral(lit) = &mut it.source {
             rewrite_literal(self.allocator, lit, self.rewriter);
             self.dynamic.push(crate::lit_str(lit.value).to_string());

@@ -63,6 +63,16 @@ pub fn has_module_syntax_pub(path: &Path, source_text: &str) -> bool {
     has_module_syntax(path, source_text)
 }
 
+/// Whether `source_text` reads as CommonJS: it parses and has no import or
+/// export. One that does not parse as JavaScript (JSX or Flow shipped in a
+/// `.js` file) is not known to be, where [`has_module_syntax_pub`] says
+/// "no module syntax" for it.
+pub fn is_commonjs_source(source_text: &str) -> bool {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
+    !parsed.fatal_error && !has_module_syntax(Path::new(""), source_text)
+}
+
 #[derive(Debug)]
 pub struct CjsFactoryAnalysis {
     pub body: String,
@@ -1069,6 +1079,11 @@ exports.named = 1;
         assert!(has_module_syntax_pub(p, "export * from './m';"));
         assert!(has_module_syntax_pub(p, "export default 1;"));
         assert!(!has_module_syntax_pub(p, "module.exports = { a: 1 };"));
+        assert!(is_commonjs_source("module.exports = { a: 1 };"));
+        assert!(!is_commonjs_source("export const a = 1;"));
+        // An ES module that only parses as JSX is not CommonJS.
+        let jsx = "import React from 'react';\nexport const A = () => <p />;\n";
+        assert!(!has_module_syntax_pub(p, jsx) && !is_commonjs_source(jsx));
         assert!(!has_module_syntax_pub(p, "const x = require('y');"));
         assert!(!has_module_syntax_pub(p, "const p = import('y');"));
     }

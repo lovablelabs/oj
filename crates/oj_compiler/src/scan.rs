@@ -184,8 +184,17 @@ impl EditCollector<'_> {
 
 impl<'a> Visit<'a> for EditCollector<'_> {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
-        if let Expression::StringLiteral(lit) = &it.source {
-            self.literal(lit);
+        match &it.source {
+            Expression::StringLiteral(lit) => self.literal(lit),
+            // A template literal without a substitution is a literal
+            // specifier (Vite's importAnalysis, `templateLiteralRE`).
+            Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => {
+                let cooked = tpl.quasis.first().and_then(|q| q.value.cooked);
+                if let Some(spec) = cooked.and_then(|c| (self.rewrite)(crate::lit_str(c))) {
+                    self.edits.push((tpl.span, spec));
+                }
+            }
+            _ => {}
         }
         walk::walk_import_expression(self, it);
     }

@@ -75,15 +75,19 @@ fn skip_trivia(source: &str, mut i: usize, parens: bool) -> usize {
     }
 }
 
-/// The contents of a '...' or "..." string starting at byte offset `s`.
+/// The contents of a '...' or "..." string starting at byte offset `s`, or
+/// of a template literal without a substitution or an escape (a literal
+/// specifier to Vite's import analysis too).
 fn quoted_at(source: &str, s: usize) -> Option<&str> {
     let quote = match source.as_bytes().get(s)? {
         b'"' => '"',
         b'\'' => '\'',
+        b'`' => '`',
         _ => return None,
     };
     let body = &source[s + 1..];
-    body.find(quote).map(|end| &body[..end])
+    let text = body.find(quote).map(|end| &body[..end])?;
+    (quote != '`' || !(text.contains("${") || text.contains('\\'))).then_some(text)
 }
 
 /// How Node reads the importing file, which decides Vite's interop of a
@@ -217,45 +221,61 @@ pub fn rewrite_cjs_interop_logged(
     } else {
         hoisted
     };
-    result.insert_str(hoist_index(source, &parsed.program.comments), &head);
+    result.insert_str(hoist_index(source, &parsed.program), &head);
     Some(result)
 }
 
 /// Where the hoisted bindings go: Vite's file start, unless a comment
-/// leading the file holds a JSX pragma (`@jsx`, `@jsxImportSource`,
-/// `@jsxRuntime`, `@jsxFrag`). Vite's import analysis runs after the JSX
-/// transform; here the transform runs on this pass's output and reads a
-/// pragma only from the comments before the first token, so the bindings go
-/// right after the last such comment: after `*/`, or at the start of the
-/// line after a `//` comment.
-fn hoist_index(source: &str, comments: &[oxc_ast::Comment]) -> usize {
+/// before the module's first statement holds a JSX pragma (`@jsx`,
+/// `@jsxImportSource`, `@jsxRuntime`, `@jsxFrag`). Vite's import analysis
+/// runs after the JSX transform; here the transform runs on this pass's
+/// output and reads a pragma from the comments before the first statement
+/// (directives are not statements to it), so the bindings go right after the
+/// last such comment: after `*/`, or at the start of the line after a `//`
+/// comment.
+fn hoist_index(source: &str, program: &oxc_ast::ast::Program) -> usize {
     let start = file_start_index(source);
-    let (mut at, mut end) = (start, start);
-    for comment in comments {
-        let (from, to) = (comment.span.start as usize, comment.span.end as usize);
-        if from < end || !source[end..from].trim().is_empty() {
-            break;
-        }
-        end = to;
-        if source[from..to].contains("@jsx") {
-            at = if comment.is_line() {
+    let Some(first) = program.body.first() else {
+        return start;
+    };
+    let first = oxc_span::GetSpan::span(first).start as usize;
+    program
+        .comments
+        .iter()
+        .map(|comment| {
+            (
+                comment,
+                comment.span.start as usize,
+                comment.span.end as usize,
+            )
+        })
+        .take_while(|(_, from, _)| *from < first)
+        .filter(|(_, from, to)| *from >= start && source[*from..*to].contains("@jsx"))
+        .last()
+        .map_or(start, |(comment, _, to)| {
+            if comment.is_line() {
                 source[to..]
                     .find('\n')
                     .map_or(source.len(), |nl| to + nl + 1)
             } else {
                 to
-            };
-        }
-    }
-    at
+            }
+        })
 }
 
-/// Vite's `getFileStartIndex`: the length of a leading `#!...\n`, else 0.
+/// Vite's `getFileStartIndex`: the length of a leading hashbang line with
+/// its line terminator (`hashbangRE`: `\r\n`, `\r`, `\n`, U+2028 or U+2029,
+/// or none at the end of the file), else 0.
 fn file_start_index(source: &str) -> usize {
     if !source.starts_with("#!") {
         return 0;
     }
-    source.find('\n').map_or(0, |at| at + 1)
+    let is_terminator = |c: char| matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}');
+    match source.char_indices().find(|(_, c)| is_terminator(*c)) {
+        None => source.len(),
+        Some((at, '\r')) if source[at + 1..].starts_with('\n') => at + 2,
+        Some((at, c)) => at + c.len_utf8(),
+    }
 }
 
 struct Edit {
@@ -346,10 +366,22 @@ impl InteropRewriter<'_> {
         let Some(target) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
-        let specs: &[ImportDeclarationSpecifier] = decl
+        let all: &[ImportDeclarationSpecifier] = decl
             .specifiers
             .as_ref()
             .map_or(&[], |specs| specs.as_slice());
+        // An inline `type` specifier is erased by the TypeScript transform,
+        // which runs after this pass (Vite's import analysis runs after it
+        // and never sees one). A declaration of nothing else only has its
+        // URL rewritten, for that transform to drop or keep as it would.
+        let is_type = |spec: &&ImportDeclarationSpecifier| matches!(spec, ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type());
+        if !all.is_empty() && all.iter().all(|spec| is_type(&spec)) {
+            self.next_idx();
+            self.push(decl.source.span, json_str(&target.url));
+            return;
+        }
+        let specs: Vec<&ImportDeclarationSpecifier> =
+            all.iter().filter(|spec| !is_type(spec)).collect();
         let named = specs
             .iter()
             .any(|s| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)));
@@ -361,7 +393,8 @@ impl InteropRewriter<'_> {
             return;
         }
         let n = self.next_idx();
-        if decl.specifiers.is_none() {
+        // Vite's `!node.specifiers.length`: `import "dep"`, `import {} from`.
+        if specs.is_empty() {
             self.push(decl.span, format!("import {};", json_str(&target.url)));
             return;
         }
@@ -420,6 +453,11 @@ impl InteropRewriter<'_> {
             return;
         };
         let n = self.next_idx();
+        // Vite's `!node.specifiers.length`: `export {} from "dep"`.
+        if !decl.specifiers.iter().any(|s| !s.export_kind.is_type()) {
+            self.push(decl.span, format!("import {};", json_str(&target.url)));
+            return;
+        }
         let cjs = format!("__ojcjs{n}");
         self.import_value(decl.span, &target, n);
         let mut out = String::new();
@@ -463,16 +501,22 @@ impl InteropRewriter<'_> {
             return;
         }
         let Some(exported) = &decl.exported else {
-            // Vite's warning, in its words.
             let spec = decl.source.value.display().to_string();
-            let statement = &self.source[decl.span.start as usize..decl.span.end as usize];
-            (self.warn)(format!(
-                "Unable to interop `{statement}` in {}, this may lose module exports. Please export \"{spec}\" as ESM or use named exports instead, e.g. `export {{ A, B }} from \"{spec}\"`",
-                self.path.display(),
-            ));
+            // The statement as Vite quotes it: up to its specifier.
+            let statement = &self.source[decl.span.start as usize..decl.source.span.end as usize];
             if target.kind == InteropKind::PreBundle {
+                // Vite's warning, in its words.
+                (self.warn)(format!(
+                    "Unable to interop `{statement}` in {}, this may lose module exports. Please export \"{spec}\" as ESM or use named exports instead, e.g. `export {{ A, B }} from \"{spec}\"`",
+                    self.path.display(),
+                ));
                 self.next_idx();
                 self.push(decl.source.span, json_str(&target.url));
+            } else {
+                (self.warn)(format!(
+                    "`{statement}` in {} re-exports only the names oj could read off \"{spec}\"; exports it assigns at runtime are lost through a bare star re-export: use named exports, or pre-bundle the dep (optimizeDeps.include)",
+                    self.path.display(),
+                ));
             }
             return;
         };
@@ -516,7 +560,7 @@ fn import_of(kind: InteropKind, n: usize, url: &str) -> (String, String) {
 /// The CommonJS value of the namespace `ns` of a module oj serves itself.
 fn served_value(ns: &str) -> String {
     format!(
-        "({ns}.__cjs_exports !== undefined ? {ns}.__cjs_exports : {ns}.default !== undefined ? {ns}.default : {ns})"
+        "(\"__cjs_exports\" in {ns} ? {ns}.__cjs_exports : {ns}.default !== undefined ? {ns}.default : {ns})"
     )
 }
 
@@ -709,7 +753,7 @@ mod tests {
         let out = served(r#"import Foo, { a } from "cjs-dep";"#);
         assert!(
             out.starts_with(
-                "const __ojcjs0 = (__ojns0.__cjs_exports !== undefined ? __ojns0.__cjs_exports : __ojns0.default !== undefined ? __ojns0.default : __ojns0);const Foo = __ojcjs0;const { a: a } = __ojcjs0;"
+                "const __ojcjs0 = (\"__cjs_exports\" in __ojns0 ? __ojns0.__cjs_exports : __ojns0.default !== undefined ? __ojns0.default : __ojns0);const Foo = __ojcjs0;const { a: a } = __ojcjs0;"
             ),
             "{out}"
         );
@@ -719,9 +763,71 @@ mod tests {
         );
         let out = served("const m = import(\"cjs-dep\");");
         assert!(
-            out.contains(".then((m) => __oj_dyn_interop((m.__cjs_exports !== undefined ? m.__cjs_exports : m.default !== undefined ? m.default : m), 1))"),
+            out.contains(".then((m) => __oj_dyn_interop((\"__cjs_exports\" in m ? m.__cjs_exports : m.default !== undefined ? m.default : m), 1))"),
             "{out}"
         );
+    }
+
+    /// Vite's `!node.specifiers.length`.
+    #[test]
+    fn an_import_or_re_export_of_nothing_is_a_side_effect_import() {
+        for src in [
+            r#"import {} from "cjs-dep";"#,
+            r#"export {} from "cjs-dep";"#,
+        ] {
+            assert_eq!(run(src), format!("import \"{URL}\";"), "{src}");
+        }
+    }
+
+    /// The TypeScript transform runs after this pass and erases type-only
+    /// imports; Vite's import analysis runs after it and never sees them.
+    #[test]
+    fn type_only_specifiers_are_left_to_the_typescript_transform() {
+        let run = |src: &str| {
+            rewrite_cjs_interop(src, Path::new("m.ts"), &target(InteropKind::PreBundle))
+        };
+        // Nothing but types: only the URL, no binding, no default import.
+        assert_eq!(
+            run(r#"import { type T, type U as V } from "cjs-dep";"#),
+            Some(format!("import {{ type T, type U as V }} from \"{URL}\";"))
+        );
+        assert_eq!(run(r#"import type { T } from "cjs-dep";"#), None);
+        assert_eq!(run(r#"export type { T } from "cjs-dep";"#), None);
+        // A value beside a type: the value alone is bound.
+        let out = run(r#"import d, { type T, a } from "cjs-dep";"#).unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "const d = __ojcjs0;const {{ a: a }} = __ojcjs0;import __ojcjs0 from \"{URL}\";"
+            )
+        );
+        // A value-syntax import that TypeScript would elide for being used
+        // only as a type is not told apart here: it stays a binding, and
+        // the import of the dep stays with it.
+        let out = run("import { T } from \"cjs-dep\";\nlet x: T;\n").unwrap();
+        assert!(out.starts_with("const { T: T } = __ojcjs0;"), "{out}");
+    }
+
+    /// The forms of a module oj serves itself read the same value as a
+    /// pre-bundle's: the default by the importer, the namespace by the
+    /// helper.
+    #[test]
+    fn a_served_module_follows_the_importer_and_the_helper_too() {
+        let out = run_as(
+            r#"import d, * as ns from "cjs-dep";"#,
+            InteropKind::Served,
+            NOT_ESM,
+        )
+        .unwrap();
+        assert!(
+            out.contains("const d = (!__ojcjs0.__esModule ? __ojcjs0 : __ojcjs0.default);"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const ns = __oj_dyn_interop(__ojcjs0, 0);"),
+            "{out}"
+        );
+        assert!(out.starts_with("const __oj_dyn_interop = "), "{out}");
     }
 
     #[test]
@@ -1011,6 +1117,15 @@ mod tests {
             ("// license\n/* @jsx h */", " /* @other */\n"),
             ("// @jsxRuntime classic\n", "// later\n"),
             ("#!/usr/bin/env node\n/** @jsxFrag F */", "\n"),
+            // After a directive prologue, a byte order mark, another
+            // comment, all three.
+            ("\"use client\";\n/** @jsxImportSource custom */", "\n"),
+            ("\u{feff}/** @jsxImportSource custom */", "\n"),
+            ("/* license */\n'use strict'\n// @jsx h\n", ""),
+            (
+                "#!/usr/bin/env node\n\"use client\";\n// note\n/** @jsxImportSource custom */",
+                "\n",
+            ),
         ] {
             let src = format!("{before}{after}{import}");
             let out =
@@ -1018,10 +1133,28 @@ mod tests {
                     .unwrap_or_else(|| panic!("{src}"));
             assert_eq!(out, format!("{before}{head}{after}{rewritten}"), "{src}");
         }
-        // A pragma after the first token is no pragma: byte 0.
+        // A pragma after the first statement is no pragma: byte 0.
         let src = format!("{import}/** @jsxImportSource custom */\n");
         let out = run(&src);
         assert!(out.starts_with(head), "{out}");
+    }
+
+    /// Vite's `hashbangRE`: any line terminator ends the hashbang line, and
+    /// one that ends the file is the whole file.
+    #[test]
+    fn the_file_starts_after_the_hashbang_line_and_its_terminator() {
+        for (source, at) in [
+            ("#!/bin/node\nx", 12),
+            ("#!/bin/node\r\nx", 13),
+            ("#!/bin/node\rx", 12),
+            ("#!/bin/node\u{2028}x", 14),
+            ("#!/bin/node\u{2029}x", 14),
+            ("#!/bin/node", 11),
+            ("x\n#!", 0),
+            ("", 0),
+        ] {
+            assert_eq!(file_start_index(source), at, "{source:?}");
+        }
     }
 
     #[test]
@@ -1048,7 +1181,7 @@ mod tests {
         assert_eq!(out, Some(format!("export * from \"{URL}\";")));
         assert_eq!(
             warnings,
-            ["Unable to interop `export * from \"cjs-dep\";` in /app/m.js, this may lose module exports. Please export \"cjs-dep\" as ESM or use named exports instead, e.g. `export { A, B } from \"cjs-dep\"`"]
+            ["Unable to interop `export * from \"cjs-dep\"` in /app/m.js, this may lose module exports. Please export \"cjs-dep\" as ESM or use named exports instead, e.g. `export { A, B } from \"cjs-dep\"`"]
         );
         // No warning when the source is not an interop candidate.
         warnings.clear();
@@ -1075,7 +1208,10 @@ mod tests {
             &mut |w| warnings.push(w),
         );
         assert!(out.is_none());
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            warnings,
+            ["`export * from \"cjs-dep\"` in m.js re-exports only the names oj could read off \"cjs-dep\"; exports it assigns at runtime are lost through a bare star re-export: use named exports, or pre-bundle the dep (optimizeDeps.include)"]
+        );
     }
 
     /// Vite's `browserExternalId` branch: a builtin's stub is interopped for
@@ -1108,6 +1244,16 @@ mod tests {
                 out.ends_with(&format!("import * as __ojns0 from \"{URL}\";")),
                 "{src}: {out}"
             );
+            // The names are read off the stub's value, hoisted.
+            assert!(
+                out.starts_with("const __ojcjs0 = (\"__cjs_exports\" in __ojns0 ? "),
+                "{src}: {out}"
+            );
+            assert!(
+                out.contains("const { readFile: readFile } = __ojcjs0;")
+                    || out.contains(r#"const __ojex0_0 = __ojcjs0["readFile"];"#),
+                "{src}: {out}"
+            );
         }
     }
 
@@ -1133,6 +1279,8 @@ mod tests {
             ("import x from // eol\n 'dep';", "dep"),
             (r#"import(("dep"))"#, "dep"),
             ("import x from\u{00a0}'dep';", "dep"),
+            // a template literal without a substitution is a literal
+            ("import(`dep`)", "dep"),
         ] {
             let specs = bare_import_specifiers(src);
             assert!(
@@ -1158,6 +1306,9 @@ mod tests {
             r#"const s = "written from ./here";"#,
             "export const a = 1;",
             "",
+            // a template with a substitution or an escape names no module
+            "import(`dep-${x}`)",
+            "import(`de\\x70`)",
         ] {
             assert!(
                 bare_import_specifiers(src).is_empty(),

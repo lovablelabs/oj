@@ -88,6 +88,7 @@ import { early } from "./hoisted.js";
 import { probe } from "../legacy/probe.js";
 import * as star from "./star.js";
 import * as builtin from "node:fs";
+import "side-effect-only";
 import builtinDefault, { readFile } from "node:fs";
 
 const keys = (o) => Object.keys(o).sort().join(",");
@@ -151,6 +152,16 @@ await run("templateLiteral", async () => {
   const m = await import(`umd-kit`);
   return [keys(m), m.default === kitDefault];
 });
+await run("templateLiteralEsm", async () => {
+  const m = await import(`plain-esm`);
+  return [keys(m), m.value];
+});
+await run("emptyEntry", () =>
+  import("./empty.js").then(
+    (m) => ["loaded: " + keys(m), globalThis.__sideEffect],
+    (e) => [e.constructor.name, globalThis.__sideEffect],
+  ),
+);
 await run("flaggedWithoutDefault", () =>
   import("./names.js").then(
     (m) => "loaded: " + keys(m),
@@ -167,7 +178,7 @@ await run("instances", () =>
   performance
     .getEntriesByType("resource")
     .map((e) => new URL(e.name).pathname)
-    .filter((path) => path.includes("umd-kit"))
+    .filter((path) => path.includes("umd-kit") || path.includes("plain-esm"))
     .sort(),
 );
 await run("shadowed", () => shadowed());
@@ -322,6 +333,22 @@ fn packages() -> Vec<(&'static str, &'static str)> {
         ),
         ("node_modules/direct-umd/build/kit.js", UMD),
         (
+            "node_modules/plain-esm/package.json",
+            r#"{"name":"plain-esm","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/plain-esm/index.js",
+            "export const value = \"plain-esm\";\n",
+        ),
+        (
+            "node_modules/side-effect-only/package.json",
+            r#"{"name":"side-effect-only","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/side-effect-only/index.js",
+            "globalThis.__sideEffect = true;\n",
+        ),
+        (
             "node_modules/esm-names/package.json",
             r#"{"name":"esm-names","version":"1.0.0","type":"module","main":"index.js"}"#,
         ),
@@ -385,6 +412,10 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         ("legacy/probe.js", PROBE),
         ("legacy/reexport.js", LEGACY_REEXPORT),
         ("src/star.js", "export * from \"umd-kit\";\n"),
+        (
+            "src/empty.js",
+            "import * as empty from \"side-effect-only\";\nexport const keys = Object.keys(empty);\n",
+        ),
         (
             "src/names.js",
             "import * as names from \"esm-names\";\nexport const one = names.one;\n",
@@ -505,6 +536,18 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         "a template literal without a substitution names the dep as a string literal does",
     );
     case(
+        "templateLiteralEsm",
+        json!(["value", "plain-esm"]),
+        "a template literal names an ES dep that needs no interop too",
+    );
+    case(
+        "emptyEntry",
+        json!(["SyntaxError", true]),
+        "a dep with no import or export at all needs interop to Vite too, and its \
+         pre-bundle has no `default`: a side-effect import of it runs, a namespace import \
+         does not link",
+    );
+    case(
         "flaggedWithoutDefault",
         json!("SyntaxError"),
         "an ES module listed in optimizeDeps.needsInterop that has no `default` export \
@@ -519,8 +562,8 @@ async fn a_namespace_import_of_a_commonjs_dep_has_its_runtime_exports() {
         result["instances"]
             .as_array()
             .map(|urls| urls.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
-        Some(vec!["/@oj-deps/umd-kit.mjs"]),
-        "the dep is loaded once, from its pre-bundle, whatever form names it"
+        Some(vec!["/@oj-deps/plain-esm.mjs", "/@oj-deps/umd-kit.mjs"]),
+        "each dep is loaded once, from its pre-bundle, whatever form names it"
     );
     case(
         "hoisted",
@@ -756,7 +799,24 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
             r#"{"name":"cjs-pragma","version":"1.0.0","type":"module"}"#,
         ),
         ("index.html", INDEX),
-        ("src/main.js", "import \"./pragma.jsx\";\n"),
+        (
+            "src/main.js",
+            "import \"./pragma.jsx\";\nimport \"./directive.jsx\";\nimport \"./bom.jsx\";\nimport \"./second.jsx\";\n",
+        ),
+        // The pragma after a directive prologue, a byte order mark, and in
+        // a second comment after a hashbang-less license one.
+        (
+            "src/directive.jsx",
+            "\"use client\";\n/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        (
+            "src/bom.jsx",
+            "\u{feff}/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
+        (
+            "src/second.jsx",
+            "/* license */\n'use strict';\n// note\n/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
+        ),
         (
             "src/pragma.jsx",
             "/** @jsxImportSource custom-jsx */\nimport * as kit from \"umd-kit\";\nexport const el = <p>{typeof kit.Options}</p>;\n",
@@ -773,13 +833,15 @@ async fn a_jsx_pragma_after_the_hoisted_bindings_still_takes_effect() {
     app.write(&packages());
     let server = app.serve().await;
     crate::crawled(&app.root).await;
-    let code = server.text("/src/pragma.jsx").await;
-    assert!(
-        code.contains("const kit = __oj_dyn_interop(__ojcjs0, 1);"),
-        "the namespace import is rewritten:\n{code}"
-    );
-    assert!(
-        code.contains("custom-jsx") && !code.contains("react"),
-        "the pragma names the JSX runtime:\n{code}"
-    );
+    for file in ["pragma", "directive", "bom", "second"] {
+        let code = server.text(&format!("/src/{file}.jsx")).await;
+        assert!(
+            code.contains("const kit = __oj_dyn_interop(__ojcjs0, 1);"),
+            "{file}.jsx: the namespace import is rewritten:\n{code}"
+        );
+        assert!(
+            code.contains("custom-jsx") && !code.contains("react"),
+            "{file}.jsx: the pragma names the JSX runtime:\n{code}"
+        );
+    }
 }
