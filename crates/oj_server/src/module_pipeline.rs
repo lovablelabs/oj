@@ -1987,12 +1987,14 @@ pub(crate) fn wants_raw_resource(headers: &HeaderMap) -> bool {
 
 /// A request whose `Accept` names `text/css`: a `<link rel="stylesheet">`
 /// (`text/css,*/*;q=0.1`), never a module import (`*/*`). Vite's
-/// transformMiddleware answers it with the stylesheet (`?direct`).
+/// transformMiddleware answers it with the stylesheet (`?direct`). Every
+/// `Accept` line counts, as Node joins repeated ones into the value Vite reads.
 pub(crate) fn accepts_css(headers: &HeaderMap) -> bool {
     headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|accept| accept.contains("text/css"))
+        .get_all(axum::http::header::ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|accept| accept.contains("text/css"))
 }
 
 // Assets that resolve to a URL-exporting module when imported from JS. svg is
