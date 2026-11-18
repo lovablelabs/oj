@@ -302,12 +302,17 @@ impl ScanState {
 
     /// The file `id` resolves to from `importer`: the app's plugins first (a
     /// plugin's virtual or external answer is not crawled), then rolldown's
-    /// resolver with the aliases applied.
+    /// resolver with the aliases applied. `plugins: false` skips the app's
+    /// plugins: an include entry resolves through the aliases and the
+    /// resolver alone (Vite's createOptimizeDepsIncludeResolver), so a plugin
+    /// that answers the app's import of it with a virtual module still
+    /// leaves the package itself to pre-bundle.
     async fn resolve(
         &self,
         ctx: &PluginContext,
         id: &str,
         importer: Option<&str>,
+        plugins: bool,
     ) -> Option<String> {
         let include_importer;
         let from = match importer {
@@ -322,7 +327,7 @@ impl ScanState {
             }
             Some(i) => i,
         };
-        let key = format!("{id}\0{from}");
+        let key = format!("{id}\0{from}\0{plugins}");
         let cell = Arc::clone(
             self.resolved
                 .lock()
@@ -331,7 +336,7 @@ impl ScanState {
                 .or_default(),
         );
         cell.get_or_init(|| async {
-            if let Some(host) = &self.host {
+            if let Some(host) = self.host.as_ref().filter(|_| plugins) {
                 // The host's plugins (vite-tsconfig-paths among them) see the
                 // alias's rewrite alone, as in Vite's pipeline.
                 let aliased = self.pre.alias.alias(id);
@@ -469,6 +474,8 @@ impl Plugin for DepScanPlugin {
         if external_url(id) || special_query(id) {
             return externalize(id);
         }
+        // An entry of the include list, not an import the crawl met.
+        let plugins = importer != INCLUDE_ID;
         // Aliased or not, as in Vite's scan: an alias into node_modules
         // records the dep under its bare name, one into the app's source is
         // crawled like any source file.
@@ -481,7 +488,7 @@ impl Plugin for DepScanPlugin {
             // must still pin the root copy.
             let deduped = npm_package_name(id).is_some_and(|p| pre.dedupe.contains(p));
             let from = if deduped { INCLUDE_ID } else { importer };
-            let Some(resolved) = state.resolve(ctx, id, Some(from)).await else {
+            let Some(resolved) = state.resolve(ctx, id, Some(from), plugins).await else {
                 return externalize(id);
             };
             if !Path::new(&resolved).is_absolute() || resolved.contains('\0') {
@@ -521,7 +528,7 @@ impl Plugin for DepScanPlugin {
                 };
             }
         }
-        match state.resolve(ctx, id, Some(importer)).await {
+        match state.resolve(ctx, id, Some(importer), plugins).await {
             Some(r) if Path::new(&r).is_absolute() && is_js_type(&r) => {
                 Ok(Some(HookResolveIdOutput::from_id(clean_url(&r))))
             }
