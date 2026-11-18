@@ -63,6 +63,7 @@ import * as ns from "../dep/index.cjs";
 import reDefault from "./reexport.js";
 import * as re from "./reexport.js";
 const keys = (o) => Object.keys(o).sort().join(",");
+export const spawn = () => new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 export const report = async () => {
   const dynamic = await import("../dep/index.cjs");
   return [
@@ -78,6 +79,9 @@ export const report = async () => {
 };
 "#;
 
+/// A worker, bundled on its own: it reports what the default import is.
+const WORKER: &str = "import d from \"../dep/index.cjs\";\npostMessage(\"worker:\" + typeof d);\n";
+
 const REEXPORT: &str =
     "export { default } from \"../dep/index.cjs\";\nexport * as star from \"../dep/index.cjs\";\n";
 
@@ -87,7 +91,7 @@ fn build_both(legacy: bool) -> Option<[String; 2]> {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let config = format!(
-        "export default {{\n  legacy: {{ inconsistentCjsInterop: {legacy} }},\n  build: {{ minify: false, lib: {{ entry: \"src/main.js\", formats: [\"es\"], fileName: \"out\" }} }},\n}};\n"
+        "export default {{\n  legacy: {{ inconsistentCjsInterop: {legacy} }},\n  build: {{ minify: false, lib: process.env.APP_BUILD ? undefined : {{ entry: \"src/main.js\", formats: [\"es\"], fileName: \"out\" }} }},\n}};\n"
     );
     for (rel, body) in [
         (
@@ -97,6 +101,11 @@ fn build_both(legacy: bool) -> Option<[String; 2]> {
         ("vite.config.js", config.as_str()),
         ("src/main.js", MAIN),
         ("src/reexport.js", REEXPORT),
+        ("src/worker.js", WORKER),
+        (
+            "index.html",
+            "<!doctype html><html><body><script type=\"module\" src=\"/src/main.js\"></script></body></html>",
+        ),
         ("dep/index.cjs", DEP),
         // A package whose `sideEffects` names one file, relative to it: the
         // side-effect import of that file stays, the unused import of
@@ -128,6 +137,49 @@ fn build_both(legacy: bool) -> Option<[String; 2]> {
             .arg(&root)
             .current_dir(&root),
     );
+    // The app's build, for its worker bundle (a library build's worker
+    // bundle is not given the app's config).
+    output(
+        Command::new("node")
+            .arg(modules.join("vite/bin/vite.js"))
+            .args(["build", "--outDir", "vite-app"])
+            .env("APP_BUILD", "1")
+            .current_dir(&root),
+    );
+    output(
+        Command::new(env!("CARGO_BIN_EXE_oj"))
+            .args(["build", "--outDir", "oj-app"])
+            .arg(&root)
+            .env("APP_BUILD", "1")
+            .current_dir(&root),
+    );
+    // The worker's bundle, run with a `postMessage` that prints.
+    let worker = |dist: &str| {
+        let mut stack = vec![root.join(dist)];
+        let mut found = None;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("worker"))
+                {
+                    found = Some(path);
+                }
+            }
+        }
+        let file = found.unwrap_or_else(|| panic!("the worker's file in {dist}"));
+        output(Command::new("node").args([
+            "--input-type=module",
+            "-e",
+            &format!(
+                "globalThis.postMessage = (m) => console.log(m); await import({:?});",
+                file.display().to_string()
+            ),
+        ]))
+    };
     let report = |dist: &str| {
         let file = std::fs::read_dir(root.join(dist))
             .unwrap()
@@ -147,7 +199,14 @@ fn build_both(legacy: bool) -> Option<[String; 2]> {
             ),
         ]))
     };
-    Some([report("vite-dist"), report("oj-dist")])
+    let both = |tool: &str| {
+        format!(
+            "{} | {}",
+            report(&format!("{tool}-dist")),
+            worker(&format!("{tool}-app"))
+        )
+    };
+    Some([both("vite"), both("oj")])
 }
 
 #[test]
@@ -155,7 +214,7 @@ fn the_option_reads_a_flagged_dep_by_its_own_default_in_a_build() {
     let Some([vite, oj]) = build_both(true) else {
         return;
     };
-    let own = "function | function | n | default,named:function | function | default,named:function | default,named:function | polyfill:true pure:undefined";
+    let own = "function | function | n | default,named:function | function | default,named:function | default,named:function | polyfill:true pure:undefined | worker:function";
     assert_eq!(vite, own, "vite build with legacy.inconsistentCjsInterop");
     assert_eq!(oj, own, "oj build with legacy.inconsistentCjsInterop");
 }
@@ -165,7 +224,7 @@ fn without_the_option_a_type_module_importer_gets_module_exports() {
     let Some([vite, oj]) = build_both(false) else {
         return;
     };
-    let whole = "object | object | n | default,named:object | object | default,named:object | default,named:object | polyfill:true pure:undefined";
+    let whole = "object | object | n | default,named:object | object | default,named:object | default,named:object | polyfill:true pure:undefined | worker:object";
     assert_eq!(vite, whole, "vite build");
     assert_eq!(oj, whole, "oj build");
 }
