@@ -197,7 +197,7 @@ async fn an_open_page_follows_the_glob_members() {
     let root = app.0.clone();
     with_notes(&root);
     let dev = Server::oj_dev(&root);
-    let page = Page::open(&dev.url("/")).await;
+    let page = Page::open_with_script(&dev.url("/"), Some(OVERLAY_SEEN)).await;
     const NOTES: &str =
         "(document.querySelector('[data-testid=\"raw-notes\"]')?.textContent ?? '')";
     page.wait_for(
@@ -214,5 +214,20 @@ async fn an_open_page_follows_the_glob_members() {
     std::fs::remove_file(root.join("src/notes/b.md")).unwrap();
     page.wait_for(&format!("{NOTES} === 'rawnotes:a.md,c.md'"), WAIT)
         .await;
+    // Neither change showed the page an error on its way.
+    let overlay: String = page
+        .eval("sessionStorage.getItem('overlay-seen') ?? ''")
+        .await;
+    assert_eq!(overlay, "", "console: {:?}", page.console());
     no_bundle_failure(&dev);
 }
+
+/// Notes the error overlay's text for the tab, whenever one is shown: a
+/// later reload of the page does not forget it.
+const OVERLAY_SEEN: &str = r#"new MutationObserver(() => {
+  const overlay = document.querySelector('vite-error-overlay');
+  if (overlay) {
+    const text = (overlay.shadowRoot?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    sessionStorage.setItem('overlay-seen', text.slice(0, 400) || 'shown');
+  }
+}).observe(document, { childList: true, subtree: true });"#;
