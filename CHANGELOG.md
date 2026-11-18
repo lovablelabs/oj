@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-11-18
+
 ### Changed
 
 - Dev server: imports of a CommonJS dependency give what Vite 8's dev server gives (plugins/importAnalysis.ts: `transformCjsImport`, `interopNamedImports`), where oj had shapes of its own. Each of these takes something away from an app that relied on the old shape:
