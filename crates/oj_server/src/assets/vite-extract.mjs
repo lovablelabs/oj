@@ -381,7 +381,7 @@ let startRouterPaths = null;
 
 // Wraps the router generator Start's router plugin imports (resolved the way
 // Start's own packages resolve it, so it is the same module instance) to
-// record the first run's paths. Returns the undo.
+// record the first run's paths and route file filters. Returns the undo.
 async function recordStartRouterPaths() {
   startRouterPaths = null;
   const generator = await startRouterGenerator(appRoot);
@@ -392,6 +392,10 @@ async function recordStartRouterPaths() {
     const c = this?.config;
     if (!startRouterPaths && typeof c?.routesDirectory === "string" && typeof c?.generatedRouteTree === "string") {
       startRouterPaths = { routesDirectory: c.routesDirectory, generatedRouteTree: c.generatedRouteTree };
+      // The filters that decide which files under the routes directory are routes.
+      for (const k of ["routeFilePrefix", "routeFileIgnorePrefix", "routeFileIgnorePattern"]) {
+        if (typeof c[k] === "string") startRouterPaths[k] = c[k];
+      }
     }
     return run.apply(this, args);
   };

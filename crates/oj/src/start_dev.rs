@@ -1041,13 +1041,35 @@ async fn runner_render_warm(app: axum::Router) -> bool {
 struct RoutePaths {
     dir: PathBuf,
     tree: PathBuf,
+    /// The route file filters Start's generator ran with, as generate.mjs
+    /// takes them (`OJ_ROUTE_FILE_*`).
+    filters: Vec<(String, String)>,
 }
 
 impl RoutePaths {
     fn of(config: &oj_config::OjConfig, root: &Path) -> Self {
+        let recorded = config.vite_start_router.as_ref();
+        let filters = [
+            (
+                "OJ_ROUTE_FILE_PREFIX",
+                recorded.and_then(|r| r.route_file_prefix.clone()),
+            ),
+            (
+                "OJ_ROUTE_FILE_IGNORE_PREFIX",
+                recorded.and_then(|r| r.route_file_ignore_prefix.clone()),
+            ),
+            (
+                "OJ_ROUTE_FILE_IGNORE_PATTERN",
+                recorded.and_then(|r| r.route_file_ignore_pattern.clone()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| Some((name.to_string(), value?)))
+        .collect();
         RoutePaths {
             dir: oj_config::start_routes_dir(config, root),
             tree: oj_config::start_route_tree(config, root),
+            filters,
         }
     }
 }
@@ -2922,6 +2944,7 @@ fn generate_route_tree(
     ] {
         script_env.push((name.to_string(), path.to_string_lossy().into_owned()));
     }
+    script_env.extend(routes.filters.iter().cloned());
     let store = codegen_store(
         root,
         cache,

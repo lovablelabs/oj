@@ -77,8 +77,8 @@ pub struct ViteValues {
     /// The config has an editor's HMR gate plugin: oj's native gate stands
     /// in for it.
     pub editor_hmr_gate: bool,
-    /// The routes directory and route tree TanStack Start's router generator
-    /// ran with (`startRouter`).
+    /// The routes directory, route tree and route file filters TanStack
+    /// Start's router generator ran with (`startRouter`).
     pub start_router: Option<oj_config::StartRouterPaths>,
     /// Why the app's Vite failed to resolve the config (a throwing plugin
     /// hook), which fails Vite's createServer.
@@ -1300,6 +1300,9 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             Some(oj_config::StartRouterPaths {
                 routes_directory: v.get("routesDirectory")?.as_str()?.into(),
                 generated_route_tree: v.get("generatedRouteTree")?.as_str()?.into(),
+                route_file_prefix: str_field(v, "routeFilePrefix"),
+                route_file_ignore_prefix: str_field(v, "routeFileIgnorePrefix"),
+                route_file_ignore_pattern: str_field(v, "routeFileIgnorePattern"),
             })
         }),
         resolve_error: str_field(json, "resolveError"),

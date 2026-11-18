@@ -60,15 +60,21 @@ async function main() {
   // and route tree inline (start-plugin-core's parseStartConfig, from
   // tanstackStart's `srcDirectory` and `router`), so tsr.config.json never sets
   // them under Start; oj passes the same two (OJ_ROUTES_DIRECTORY,
-  // OJ_GENERATED_ROUTE_TREE). The rest are defaults under the file.
+  // OJ_GENERATED_ROUTE_TREE), and the route file filters Start's generator ran
+  // with (`tanstackStart({ router })` or tsr.config.json). The rest are
+  // defaults under the file.
   const START_PATHS = {
     routesDirectory: process.env.OJ_ROUTES_DIRECTORY || pathResolve(root, "src/routes"),
     generatedRouteTree: process.env.OJ_GENERATED_ROUTE_TREE || pathResolve(root, "src/routeTree.gen.ts"),
+    ...(process.env.OJ_ROUTE_FILE_PREFIX != null ? { routeFilePrefix: process.env.OJ_ROUTE_FILE_PREFIX } : {}),
+    ...(process.env.OJ_ROUTE_FILE_IGNORE_PREFIX != null
+      ? { routeFileIgnorePrefix: process.env.OJ_ROUTE_FILE_IGNORE_PREFIX }
+      : {}),
+    ...(process.env.OJ_ROUTE_FILE_IGNORE_PATTERN != null
+      ? { routeFileIgnorePattern: process.env.OJ_ROUTE_FILE_IGNORE_PATTERN }
+      : {}),
   };
-  const OJ_DEFAULTS = {
-    autoCodeSplitting: false,
-    routeFileIgnorePattern: "\\.(test|spec|stories|bench)\\.|\\.d\\.ts$",
-  };
+  const OJ_DEFAULTS = { autoCodeSplitting: false };
   const configured = (() => {
     try {
       return JSON.parse(readFileSync(pathJoin(root, "tsr.config.json"), "utf8"));

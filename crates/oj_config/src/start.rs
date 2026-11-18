@@ -6,19 +6,26 @@
 //! (start-plugin-core's `parseStartConfig`: `<srcDirectory>/<routesDirectory>`
 //! and `<srcDirectory>/<generatedRouteTree>`, default `src/routes` and
 //! `src/routeTree.gen.ts`) and passes them to the router generator inline, so
-//! they win over tsr.config.json. Extraction records the paths that generator
-//! ran with when the app's config resolved (`vite_start_router`).
+//! they win over tsr.config.json. Extraction records the paths and route file
+//! filters that generator ran with when the app's config resolved
+//! (`vite_start_router`).
 
 use std::path::{Path, PathBuf};
 
 use crate::OjConfig;
 
 /// The routes directory and generated route tree Start's router generator
-/// ran with, absolute.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// ran with, absolute, and the route file filters it ran with.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StartRouterPaths {
     pub routes_directory: PathBuf,
     pub generated_route_tree: PathBuf,
+    /// `routeFilePrefix`.
+    pub route_file_prefix: Option<String>,
+    /// `routeFileIgnorePrefix`.
+    pub route_file_ignore_prefix: Option<String>,
+    /// `routeFileIgnorePattern`.
+    pub route_file_ignore_pattern: Option<String>,
 }
 
 /// Start's routes directory for the app at `root`.
@@ -59,6 +66,7 @@ mod tests {
             vite_start_router: Some(StartRouterPaths {
                 routes_directory: "/app/app/pages".into(),
                 generated_route_tree: "/app/app/tree.gen.ts".into(),
+                ..Default::default()
             }),
             ..Default::default()
         };
