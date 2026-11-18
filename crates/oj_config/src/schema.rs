@@ -301,11 +301,14 @@ pub struct HmrOptions {
 }
 
 /// Vite's `legacy` block: `skipWebSocketTokenCheck` lets a browser page attach
-/// to the HMR socket without the per-process `?token=`.
+/// to the HMR socket without the per-process `?token=`;
+/// `inconsistentCjsInterop` reads a CommonJS dep flagged `__esModule` the way
+/// Vite 7 did, whatever the importer's package type.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LegacyConfig {
     pub skip_web_socket_token_check: Option<bool>,
+    pub inconsistent_cjs_interop: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

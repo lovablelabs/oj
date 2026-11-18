@@ -1861,6 +1861,12 @@ fn merge_server_flags(
             legacy.skip_web_socket_token_check = Some(true);
         }
     }
+    if sf.get("inconsistentCjsInterop").and_then(|b| b.as_bool()) == Some(true) {
+        let legacy = config.legacy.get_or_insert_with(Default::default);
+        if legacy.inconsistent_cjs_interop.is_none() {
+            legacy.inconsistent_cjs_interop = Some(true);
+        }
+    }
 }
 
 /// With an oj-side css block only `preprocessorOptions.<lang>.additionalData`

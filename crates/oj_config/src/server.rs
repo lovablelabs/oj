@@ -69,7 +69,7 @@ pub fn nearest_package_dir(dir: &Path) -> Option<&Path> {
 /// BOM dropped, any JSON value but `null` accepted (`const { sideEffects } =
 /// data` throws for `null` alone), and a `sideEffects` array whose member has
 /// no `includes` (anything but a string or an array) throwing too.
-fn manifest_loads(path: &Path) -> bool {
+pub fn manifest_loads(path: &Path) -> bool {
     if !path.is_file() {
         return false;
     }

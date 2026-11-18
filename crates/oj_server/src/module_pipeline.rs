@@ -72,7 +72,7 @@ pub(crate) async fn ensure_module_as(
         None => file_stamp(file).await,
     };
     let track = serves_tracked(state, file, preloaded.is_some());
-    if let Some(hit) = warm_hit(state, url, stamp) {
+    if let Some(hit) = warm_hit(state, file, url, stamp) {
         // The cache serves the bytes its last load read (same stat).
         if track && !state.content.served_again(file) {
             if let Some(hash) = crate::file_content_hash(file) {
@@ -471,8 +471,18 @@ fn serves_tracked(state: &ServerState, file: &Path, preloaded: bool) -> bool {
 }
 
 /// The memory-cached module for an unchanged file, found without reading it.
-fn warm_hit(state: &ServerState, url: &str, stamp: Option<FileStamp>) -> Option<Compiled> {
+fn warm_hit(
+    state: &ServerState,
+    file: &Path,
+    url: &str,
+    stamp: Option<FileStamp>,
+) -> Option<Compiled> {
     let (mtime, size) = stamp?;
+    // A package.json that changed how Node reads the file changes the
+    // compile's key, though the file itself is as it was.
+    if !state.importer_formats.current(url, file) {
+        return None;
+    }
     let key = state
         .mtime_keys
         .lock()
@@ -674,7 +684,8 @@ fn compile_key(
     }
     // So does the importer's package type: the interop of a namespace or
     // dynamic import of a CommonJS dep follows it.
-    let importer_format = importer_format(&state.package_type_memo, file);
+    let importer_format = importer_format(&state.importer_formats, file);
+    state.importer_formats.compiled(url, importer_format);
     if importer_format.esm {
         mode_key.push_str("+esm");
     } else if importer_format.explicit {

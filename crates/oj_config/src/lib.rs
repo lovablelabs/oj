@@ -40,7 +40,7 @@ pub use resolve::{
 };
 pub use schema::*;
 pub use server::{
-    cache_dir, config_defines, env_prefixes, environment_defines, html_csp_nonce,
+    cache_dir, config_defines, env_prefixes, environment_defines, html_csp_nonce, manifest_loads,
     nearest_package_dir, public_dir, server_fs_deny, server_strict_port, server_warmup_files,
 };
 pub use ssr::{package_name_of, ssr_externals, ssr_runner_backed, SsrExternals};

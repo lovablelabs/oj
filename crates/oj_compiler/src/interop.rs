@@ -136,8 +136,10 @@ pub fn rewrite_cjs_interop_logged(
         interop,
         warn,
         path,
+        source,
         format,
         edits: Vec::new(),
+        hoisted: String::new(),
         idx: 0,
         needs_ns_helper: false,
     };
@@ -146,6 +148,7 @@ pub fn rewrite_cjs_interop_logged(
     }
     let InteropRewriter {
         mut edits,
+        hoisted,
         needs_ns_helper,
         ..
     } = rewriter;
@@ -156,6 +159,7 @@ pub fn rewrite_cjs_interop_logged(
     // off the raw ESM wrapper namespace and is undefined.
     let mut dyn_edits = DynamicImportInterop {
         interop,
+        source,
         node_mode: format.explicit,
         edits: Vec::new(),
     };
@@ -167,18 +171,21 @@ pub fn rewrite_cjs_interop_logged(
         return None;
     }
     let mut result = apply_edits(source, edits);
-    if needs_helper {
-        // After the hashbang, when there is one: a dep entry that doubles as
-        // a bin script must keep `#!` at byte 0. The span excludes its newline.
-        match parsed
-            .program
-            .hashbang
-            .as_ref()
-            .map(|h| h.span.end as usize)
-        {
-            Some(at) if at > 0 => result.insert_str(at, &format!("\n{DYN_INTEROP_HELPER}")),
-            _ => result.insert_str(0, DYN_INTEROP_HELPER),
-        }
+    // Vite hoists the bindings to the start of the file (interopNamedImports,
+    // `appendLeft(getFileStartIndex(source))`), so a function declared in
+    // the module and called above the import statement finds them
+    // initialised. Here they go before the first statement, on its line:
+    // past a hashbang, the directives and the leading comments, which keep
+    // their place, and without adding a line. The helper comes first, as
+    // the bindings call it. Every edit starts at or after that statement, so
+    // its offset in the result is its offset in the source.
+    let head = if needs_helper {
+        format!("{DYN_INTEROP_HELPER}{hoisted}")
+    } else {
+        hoisted
+    };
+    if let Some(first) = parsed.program.body.first() {
+        result.insert_str(oxc_span::GetSpan::span(first).start as usize, &head);
     }
     Some(result)
 }
@@ -199,14 +206,24 @@ fn apply_edits(source: &str, mut edits: Vec<Edit>) -> String {
     result
 }
 
+/// The line breaks of a replaced span, appended to its one-line replacement
+/// so every later line keeps its number (Vite's `getLineBreaks`).
+fn line_breaks(text: &str) -> String {
+    "\n".repeat(text.matches('\n').count())
+}
+
 /// The top-level statement pass of `rewrite_cjs_interop_logged`. `idx`
-/// numbers the `__ojns{n}` / `__ojcjs{n}` bindings in source order.
+/// numbers the `__ojns{n}` / `__ojcjs{n}` bindings in source order. A
+/// statement is replaced in place by its import alone; the bindings read off
+/// it collect in `hoisted`.
 struct InteropRewriter<'r> {
     interop: &'r dyn Fn(&str) -> Option<String>,
     warn: &'r mut dyn FnMut(String),
     path: &'r Path,
+    source: &'r str,
     format: ImporterFormat,
     edits: Vec<Edit>,
+    hoisted: String,
     idx: usize,
     needs_ns_helper: bool,
 }
@@ -218,12 +235,11 @@ impl InteropRewriter<'_> {
         n
     }
 
+    /// Replaces the statement at `span` with `text` on one line.
     fn push(&mut self, span: Span, text: String) {
-        self.edits.push(Edit {
-            start: span.start as usize,
-            end: span.end as usize,
-            text,
-        });
+        let (start, end) = (span.start as usize, span.end as usize);
+        let text = text + &line_breaks(&self.source[start..end]);
+        self.edits.push(Edit { start, end, text });
     }
 
     fn statement(&mut self, stmt: &Statement) {
@@ -232,6 +248,17 @@ impl InteropRewriter<'_> {
             Statement::ExportFromDeclaration(decl) => self.export_from(decl),
             Statement::ExportAllDeclaration(decl) => self.export_all(decl),
             _ => {}
+        }
+    }
+
+    /// Vite's default import of a dep that needs interop (transformCjsImport):
+    /// module.exports for an importer that is an ES module to Node, else the
+    /// `default` of one flagged `__esModule`.
+    fn default_of(&self, cjs: &str) -> String {
+        if self.format.esm {
+            cjs.to_string()
+        } else {
+            format!("({cjs} && {cjs}.__esModule ? {cjs}.default : {cjs})")
         }
     }
 
@@ -248,12 +275,16 @@ impl InteropRewriter<'_> {
             return;
         };
         let (ns, cjs) = (format!("__ojns{n}"), format!("__ojcjs{n}"));
-        let mut out = cjs_import(&ns, &cjs, &url);
+        let mut out = cjs_value(&ns, &cjs);
         let mut names: Vec<String> = Vec::new();
         for spec in specs {
             match spec {
                 ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                    out.push_str(&format!("const {} = {cjs};", s.local.name));
+                    out.push_str(&format!(
+                        "const {} = {};",
+                        s.local.name,
+                        self.default_of(&cjs)
+                    ));
                 }
                 // Vite's transformCjsImport: the namespace of a CommonJS dep
                 // is module.exports spread beside `default`, so a name the
@@ -269,15 +300,27 @@ impl InteropRewriter<'_> {
                     ));
                 }
                 ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                    let key = json_key(&export_name(&s.imported));
-                    names.push(format!("{key}: {}", s.local.name));
+                    let imported = export_name(&s.imported);
+                    if imported == "default" {
+                        out.push_str(&format!(
+                            "const {} = {};",
+                            s.local.name,
+                            self.default_of(&cjs)
+                        ));
+                    } else {
+                        names.push(format!("{}: {}", json_key(&imported), s.local.name));
+                    }
                 }
             }
         }
         if !names.is_empty() {
             out.push_str(&format!("const {{ {} }} = {cjs};", names.join(", ")));
         }
-        self.push(decl.span, out);
+        self.hoisted.push_str(&out);
+        self.push(
+            decl.span,
+            format!("import * as {ns} from {};", json_str(&url)),
+        );
     }
 
     /// `export { a, b as c } from "cjs"` and `export { default as X } from
@@ -292,12 +335,12 @@ impl InteropRewriter<'_> {
         };
         let n = self.next_idx();
         let (ns, cjs) = (format!("__ojns{n}"), format!("__ojcjs{n}"));
-        let mut out = cjs_import(&ns, &cjs, &url);
+        let mut out = cjs_value(&ns, &cjs);
         let value_specs = decl.specifiers.iter().filter(|s| !s.export_kind.is_type());
         for (tmp, spec) in value_specs.enumerate() {
             let local = export_name(&spec.local);
             let value = if local == "default" {
-                cjs.clone()
+                self.default_of(&cjs)
             } else {
                 format!("{cjs}[{}]", json_str(&local))
             };
@@ -307,83 +350,69 @@ impl InteropRewriter<'_> {
                 "const {t} = {value};export {{ {t} as {exported} }};"
             ));
         }
-        self.push(decl.span, out);
+        self.hoisted.push_str(&out);
+        self.push(
+            decl.span,
+            format!("import * as {ns} from {};", json_str(&url)),
+        );
     }
 
-    /// `export * as ns from "cjs"`: consumers must see the interop namespace
-    /// (module.exports as `default` plus its properties), the shape the
-    /// dynamic-import helper builds, so build it with that helper. Vite only
-    /// rewrites the URL here, so its `ns` is the pre-bundle's ES namespace:
-    /// `ns.default` is module.exports there too, without the other members.
+    /// `export * as ns from "cjs"`: Vite's transformCjsImport returns nothing
+    /// for an ExportAllDeclaration, so only the URL is rewritten and `ns` is
+    /// the ES namespace of the pre-bundle (its lone `default`). The same here.
     ///
-    /// A bare `export * from "cjs"` is left alone on purpose: ESM has no
-    /// dynamic named exports, so a rewrite could only forward statically known
-    /// names, which the original statement already re-exports. Runtime-only
-    /// names (true UMD) need the dep pre-bundled (optimizeDeps.include), which
-    /// is also how Vite covers the shape.
+    /// A bare `export * from "cjs"` is left alone and warns, as Vite's does:
+    /// ESM has no dynamic named exports, so runtime-assigned names are lost
+    /// through it.
     fn export_all(&mut self, decl: &ExportAllDeclaration) {
         if decl.export_kind.is_type() {
             return;
         }
-        let Some(exported) = &decl.exported else {
-            // Vite warns here too ("Unable to interop ... may lose module
-            // exports").
-            if (self.interop)(crate::lit_str(decl.source.value)).is_some() {
-                (self.warn)(format!(
-                    "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export; use named exports, or pre-bundle the dep (optimizeDeps.include)",
-                    decl.source.value.display(),
-                    self.path.display(),
-                ));
-            }
-            return;
-        };
         let Some(url) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
-        let n = self.next_idx();
-        self.needs_ns_helper = true;
-        let out = format!(
-            "import * as __ojns{n} from {};const __ojex{n} = __oj_dyn_interop(__ojns{n}, 1);export {{ __ojex{n} as {} }};",
-            json_str(&url),
-            json_key(&export_name(exported)),
-        );
-        self.push(decl.span, out);
+        if decl.exported.is_some() {
+            self.next_idx();
+            self.push(decl.source.span, json_str(&url));
+            return;
+        }
+        // Vite warns here too ("Unable to interop ... may lose module
+        // exports").
+        (self.warn)(format!(
+            "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export; use named exports, or pre-bundle the dep (optimizeDeps.include)",
+            decl.source.value.display(),
+            self.path.display(),
+        ));
     }
 }
 
-/// `import * as ns from url` plus `cjs`, the robust CommonJS value (what
-/// `require()` returns): oj-wrapped CJS exposes it as `__cjs_exports`,
-/// esbuild-prebundled and ESM-with-default expose `default`, a plain ESM
-/// namespace is itself. Named imports read off this value, so a barrel that
-/// sets `__esModule` without a `default` but keeps its names on
-/// module.exports still resolves.
-fn cjs_import(ns: &str, cjs: &str, url: &str) -> String {
+/// `cjs`, the CommonJS value (what `require()` returns) of the module
+/// imported as the namespace `ns`: oj-wrapped CJS exposes it as
+/// `__cjs_exports`, a pre-bundle as `default` (what Vite's rewrite imports),
+/// and a module with neither is read as it is, where Vite's default import
+/// would fail to link.
+fn cjs_value(ns: &str, cjs: &str) -> String {
     format!(
-        "import * as {ns} from {};const {cjs} = {ns} && {ns}.__cjs_exports !== undefined ? {ns}.__cjs_exports : ({ns} && {ns}.default !== undefined ? {ns}.default : {ns});",
-        json_str(url)
+        "const {cjs} = {ns} && {ns}.__cjs_exports !== undefined ? {ns}.__cjs_exports : ({ns} && {ns}.default !== undefined ? {ns}.default : {ns});"
     )
 }
 
 /// Vite's `interopHelper` (importAnalysis), for a namespace or dynamic
-/// import of a CommonJS dependency: module.exports becomes `default` and its
-/// own enumerable properties the other members (none for an array or a
-/// primitive). With `n` unset (the importer is not an ES module to Node, see
-/// [`ImporterFormat`]) a module.exports flagged `__esModule` is the namespace
-/// as it is, so its `default` is the package's own.
-///
-/// A module that is not oj-wrapped CommonJS (no `__cjs_exports`) and exports
-/// a name besides `default` keeps its ES namespace: it is an ES module
-/// flagged for interop, whose names are not on its `default`.
+/// import of a dependency that needs interop: its CommonJS value (see
+/// [`cjs_value`]) becomes `default` and that value's own enumerable
+/// properties the other members (none for an array or a primitive). With `n`
+/// unset (the importer is not an ES module to Node, see [`ImporterFormat`]) a
+/// value flagged `__esModule` is the namespace as it is, so its `default` is
+/// the package's own.
 ///
 /// The helper sits in the module's own scope, where a top-level binding may
-/// be called `Object` or `Array` (`import { Array } from "effect"`), so it
-/// reaches both through a literal's constructor. `getOwnPropertyNames` lists
-/// a namespace's names without reading the bindings, which `Object.keys`
-/// does, throwing for one still uninitialised in an import cycle.
-const DYN_INTEROP_HELPER: &str = "const __oj_dyn_interop = (m, n) => { if (m && m.__cjs_exports === undefined && ({}).constructor.getOwnPropertyNames(m).some((k) => k !== \"default\")) return m; const v = m && m.__cjs_exports !== undefined ? m.__cjs_exports : (m && m.default !== undefined ? m.default : m); return n || !(v && v.__esModule) ? { ...((typeof v === \"object\" && ![].constructor.isArray(v)) || typeof v === \"function\" ? v : {}), default: v } : v; };\n";
+/// be called `Array` (`import { Array } from "effect"`), so it reaches
+/// `isArray` through a literal's constructor and names no global.
+const DYN_INTEROP_HELPER: &str = "const __oj_dyn_interop = (m, n) => { const v = m && m.__cjs_exports !== undefined ? m.__cjs_exports : (m && m.default !== undefined ? m.default : m); return n || !(v && v.__esModule) ? { ...((typeof v === \"object\" && ![].constructor.isArray(v)) || typeof v === \"function\" ? v : {}), default: v } : v; };";
 
 struct DynamicImportInterop<'i> {
     interop: &'i dyn Fn(&str) -> Option<String>,
+    source: &'i str,
     /// Vite's `isNodeModeForDynamicImport`.
     node_mode: bool,
     edits: Vec<Edit>,
@@ -393,13 +422,15 @@ impl<'a> Visit<'a> for DynamicImportInterop<'_> {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
         if let Expression::StringLiteral(lit) = &it.source {
             if let Some(url) = (self.interop)(crate::lit_str(lit.value)) {
+                let (start, end) = (it.span.start as usize, it.span.end as usize);
                 self.edits.push(Edit {
-                    start: it.span.start as usize,
-                    end: it.span.end as usize,
+                    start,
+                    end,
                     text: format!(
-                        "import({}).then((m) => __oj_dyn_interop(m, {}))",
+                        "import({}).then((m) => __oj_dyn_interop(m, {})){}",
                         json_str(&url),
-                        u8::from(self.node_mode)
+                        u8::from(self.node_mode),
+                        line_breaks(&self.source[start..end])
                     ),
                 });
                 return;
@@ -528,7 +559,7 @@ mod tests {
     }
 
     /// Vite's `isNodeMode` for the namespace and `isNodeModeForDynamicImport`
-    /// for `import()`; `export * as` does not follow the importer.
+    /// for `import()`; `export * as` is not rewritten.
     #[test]
     fn the_importer_format_sets_the_helper_flag_per_form() {
         let src = "import * as ns from \"cjs-dep\";\nexport * as re from \"cjs-dep\";\nconst m = import(\"cjs-dep\");\n";
@@ -548,10 +579,7 @@ mod tests {
             out.contains("const ns = __oj_dyn_interop(__ojns0, 0);"),
             "{out}"
         );
-        assert!(
-            out.contains("const __ojex1 = __oj_dyn_interop(__ojns1, 1);"),
-            "{out}"
-        );
+        assert!(out.contains("export * as re from \"/u\";"), "{out}");
         assert!(
             out.contains("import(\"/u\").then((m) => __oj_dyn_interop(m, 0))"),
             "{out}"
@@ -577,8 +605,7 @@ mod tests {
         );
     }
 
-    /// The helper names no global a module could shadow, and lists a
-    /// namespace's names without reading its bindings.
+    /// The helper names no global a module could shadow, and adds no line.
     #[test]
     fn interop_helper_names_no_shadowable_global() {
         for global in ["Object.", "Array.", "Reflect.", "globalThis"] {
@@ -587,7 +614,7 @@ mod tests {
                 "{global} in {DYN_INTEROP_HELPER}"
             );
         }
-        assert!(DYN_INTEROP_HELPER.contains("getOwnPropertyNames(m)"));
+        assert!(!DYN_INTEROP_HELPER.contains('\n'));
     }
 
     #[test]
@@ -665,22 +692,107 @@ mod tests {
         )
         .is_none());
     }
+    /// Vite's transformCjsImport returns nothing for `export * as`, so only
+    /// the URL is rewritten: no helper, no binding.
     #[test]
-    fn export_star_as_builds_the_interop_namespace() {
-        let out = run(r#"export * as geo from "cjs-dep";"#);
-        assert!(
-            out.starts_with("const __oj_dyn_interop = "),
-            "helper prepended: {out}"
+    fn export_star_as_only_rewrites_the_url() {
+        let out = run("export * as geo from\n  \"cjs-dep\";\nmarker();\n");
+        assert_eq!(
+            out,
+            "export * as geo from\n  \"/@oj-deps/cjs-dep.mjs\";\nmarker();\n"
         );
+    }
+
+    /// The default member in each of its forms, by the importer (Vite's
+    /// transformCjsImport: `isNodeMode ? m : !m.__esModule ? m : m.default`).
+    #[test]
+    fn default_forms_follow_the_importer_format() {
+        let run = |src: &str, esm| {
+            rewrite_cjs_interop_logged(
+                src,
+                Path::new("m.js"),
+                ImporterFormat { esm, explicit: esm },
+                &interop_all("/u"),
+                &mut |_| {},
+            )
+            .unwrap()
+        };
+        let own = "(__ojcjs0 && __ojcjs0.__esModule ? __ojcjs0.default : __ojcjs0)";
+        for (src, binding) in [
+            (r#"import d from "cjs-dep";"#, "const d = "),
+            (r#"import d, { a } from "cjs-dep";"#, "const d = "),
+            (r#"import { default as d } from "cjs-dep";"#, "const d = "),
+            (
+                r#"export { default } from "cjs-dep";"#,
+                "const __ojex0_0 = ",
+            ),
+            (
+                r#"export { default as d } from "cjs-dep";"#,
+                "const __ojex0_0 = ",
+            ),
+        ] {
+            let out = run(src, true);
+            assert!(out.contains(&format!("{binding}__ojcjs0;")), "{src}: {out}");
+            let out = run(src, false);
+            assert!(out.contains(&format!("{binding}{own};")), "{src}: {out}");
+        }
+        // A named member is read off module.exports either way.
+        let out = run(r#"import d, { a } from "cjs-dep";"#, false);
+        assert!(out.contains("const { a: a } = __ojcjs0;"), "{out}");
+        let out = run(r#"export { a as default } from "cjs-dep";"#, false);
+        assert!(out.contains(r#"const __ojex0_0 = __ojcjs0["a"];"#), "{out}");
+    }
+
+    /// The bindings are hoisted before the first statement, on its line, in
+    /// source order after the helper; each statement keeps its line.
+    #[test]
+    fn bindings_are_hoisted_and_lines_keep_their_numbers() {
+        let src = "#!/usr/bin/env node\n\"use client\";\n// leading\ninit();\nimport {\n  a,\n  b as c,\n} from \"cjs-dep\";\nimport * as ns from \"cjs-dep\";\nconst m = await import(\n  \"cjs-dep\"\n);\nexport {\n  x,\n} from \"cjs-dep\";\nfunction init() { return ns.x; }\nmarker();\n";
+        let out = run(src);
+        let (before, after): (Vec<&str>, Vec<&str>) =
+            (src.lines().collect(), out.lines().collect());
+        assert_eq!(before.len(), after.len(), "{out}");
+        // Untouched lines are where they were.
+        for (i, line) in before.iter().enumerate() {
+            if [
+                "#!",
+                "\"use client\"",
+                "// leading",
+                "function init",
+                "marker()",
+            ]
+            .iter()
+            .any(|p| line.starts_with(p))
+            {
+                assert_eq!(after[i], *line, "line {}: {out}", i + 1);
+            }
+        }
+        let head = after[3];
+        assert!(head.ends_with("init();"), "{head}");
+        let at = |needle: &str| {
+            head.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {head}"))
+        };
+        assert_eq!(at("const __oj_dyn_interop = "), 0);
+        assert!(at("const __oj_dyn_interop = ") < at("const __ojcjs0 = "));
         assert!(
-            out.contains(r#"import * as __ojns0 from "/@oj-deps/cjs-dep.mjs";"#),
-            "{out}"
+            at("const { a: a, b: c } = __ojcjs0;") < at("const ns = __oj_dyn_interop(__ojns1, 1);")
         );
-        assert!(
-            out.contains("const __ojex0 = __oj_dyn_interop(__ojns0, 1);"),
-            "{out}"
+        assert!(at("const ns = ") < at("export { __ojex2_0 as x };"));
+        assert!(at("export { __ojex2_0 as x };") < at("init();"));
+        assert_eq!(
+            after[4],
+            r#"import * as __ojns0 from "/@oj-deps/cjs-dep.mjs";"#
         );
-        assert!(out.contains("export { __ojex0 as geo };"), "{out}");
+        assert_eq!(
+            after[8],
+            r#"import * as __ojns1 from "/@oj-deps/cjs-dep.mjs";"#
+        );
+        assert!(after[9].starts_with("const m = await import("), "{out}");
+        assert_eq!(
+            after[12],
+            r#"import * as __ojns2 from "/@oj-deps/cjs-dep.mjs";"#
+        );
     }
 
     #[test]

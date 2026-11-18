@@ -336,21 +336,69 @@ pub(crate) fn is_cjs_dep_file(memo: &Mutex<HashMap<PathBuf, bool>>, path: &Path)
     v
 }
 
-/// Per directory: the package.json nearest it, that file's stamp when it was
-/// read, and its `type`.
-pub(crate) type PackageTypeMemo =
-    Mutex<HashMap<PathBuf, (PathBuf, Option<std::time::SystemTime>, Option<String>)>>;
+/// What decides how Node reads an importing file, for the interop of its
+/// imports of CommonJS deps (see [`importer_format`]).
+pub(crate) struct ImporterFormats {
+    /// Vite's `legacy.inconsistentCjsInterop`: no importer is in Node mode.
+    legacy: bool,
+    /// Each package.json read so far.
+    manifests: Mutex<HashMap<PathBuf, (ManifestStamp, ManifestType)>>,
+    /// The format each served module was last compiled under, by url: a
+    /// compile the memory cache holds is stale once it differs.
+    compiled: Mutex<HashMap<String, oj_compiler::interop::ImporterFormat>>,
+}
+
+/// A package.json's modification time and size when it was read.
+type ManifestStamp = (Option<std::time::SystemTime>, u64);
+/// What a package.json said: None for one Vite cannot load, else its `type`.
+type ManifestType = Option<Option<String>>;
+
+impl ImporterFormats {
+    pub(crate) fn new(legacy: bool) -> Self {
+        Self {
+            legacy,
+            manifests: Mutex::default(),
+            compiled: Mutex::default(),
+        }
+    }
+
+    /// Records the format `url` is being compiled under.
+    pub(crate) fn compiled(&self, url: &str, format: oj_compiler::interop::ImporterFormat) {
+        self.compiled
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), format);
+    }
+
+    /// Whether `url`'s last compile was under the format `file` has now.
+    pub(crate) fn current(&self, url: &str, file: &Path) -> bool {
+        let last = self.compiled.lock().unwrap().get(url).copied();
+        last.is_none_or(|last| last == importer_format(self, file))
+    }
+}
 
 /// How Node reads `file`, for the interop of its imports of CommonJS deps:
 /// Vite's `isFilePathESM` and `isFilePathFormatExplicit` (utils.ts), by the
-/// extension, else by the `type` of the nearest package.json Vite can load.
-/// The lookup is kept per directory and redone when that package.json's
-/// modification time moves.
+/// extension, else by the `type` of the nearest package.json Vite can load
+/// (`findNearestPackageData`); neither under `legacy.inconsistentCjsInterop`
+/// (importAnalysis.ts, `isNodeMode` and `isNodeModeForDynamicImport`).
+///
+/// Each call walks up from the file's directory with one stat per directory
+/// and reads a package.json only when its stamp moved, so one created,
+/// deleted or changed while the server runs counts from the next request, as
+/// Vite's watcher drops it from the package cache.
 pub(crate) fn importer_format(
-    memo: &PackageTypeMemo,
+    formats: &ImporterFormats,
     file: &Path,
 ) -> oj_compiler::interop::ImporterFormat {
     use oj_compiler::interop::ImporterFormat;
+    let none = ImporterFormat {
+        esm: false,
+        explicit: false,
+    };
+    if formats.legacy {
+        return none;
+    }
     match file.extension().and_then(|e| e.to_str()) {
         Some("mjs" | "mts") => return ImporterFormat::ESM,
         Some("cjs" | "cts") => {
@@ -361,42 +409,44 @@ pub(crate) fn importer_format(
         }
         _ => {}
     }
-    let none = ImporterFormat {
-        esm: false,
-        explicit: false,
-    };
     let Some(dir) = file.parent().filter(|_| file.is_absolute()) else {
         return none;
     };
-    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    let known = memo.lock().unwrap().get(dir).cloned();
-    let kind = match known {
-        Some((manifest, stamp, kind)) if mtime(&manifest) == stamp => kind,
-        _ => {
-            let Some(manifest) =
-                oj_config::nearest_package_dir(dir).map(|d| d.join("package.json"))
-            else {
-                return none;
-            };
-            let stamp = mtime(&manifest);
-            let kind = std::fs::read(&manifest)
-                .ok()
-                .and_then(|bytes| {
+    for dir in dir.ancestors() {
+        let manifest = dir.join("package.json");
+        let Ok(meta) = std::fs::metadata(&manifest) else {
+            continue;
+        };
+        let stamp: ManifestStamp = (meta.modified().ok(), meta.len());
+        let known = formats.manifests.lock().unwrap().get(&manifest).cloned();
+        let kind = match known {
+            Some((at, kind)) if at == stamp => kind,
+            _ => {
+                let kind = oj_config::manifest_loads(&manifest).then(|| {
+                    let bytes = std::fs::read(&manifest).unwrap_or_default();
                     let text = String::from_utf8_lossy(&bytes);
                     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-                    serde_json::from_str::<serde_json::Value>(text).ok()
-                })
-                .and_then(|data| data.get("type")?.as_str().map(str::to_string));
-            memo.lock()
-                .unwrap()
-                .insert(dir.to_path_buf(), (manifest, stamp, kind.clone()));
-            kind
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .ok()
+                        .and_then(|data| data.get("type")?.as_str().map(str::to_string))
+                });
+                formats
+                    .manifests
+                    .lock()
+                    .unwrap()
+                    .insert(manifest, (stamp, kind.clone()));
+                kind
+            }
+        };
+        // One Vite cannot load is passed over for the next one up.
+        if let Some(kind) = kind {
+            return ImporterFormat {
+                esm: kind.as_deref() == Some("module"),
+                explicit: matches!(kind.as_deref(), Some("module" | "commonjs")),
+            };
         }
-    };
-    ImporterFormat {
-        esm: kind.as_deref() == Some("module"),
-        explicit: matches!(kind.as_deref(), Some("module" | "commonjs")),
     }
+    none
 }
 
 pub(crate) fn warn_lingui_macro_shim_once() {
