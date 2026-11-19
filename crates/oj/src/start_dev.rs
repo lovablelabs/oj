@@ -3525,6 +3525,9 @@ fn bundle_client_entry_cached(
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
     bundler.bundle(&[], false)?;
+    // The cold bundle parsed every client module; on a warm boot none of
+    // that is allocated.
+    oj_server::rolldown_runtime::release_freed_heap();
     if !bundler.cacheable() {
         println!("  oj start: client bundle not cached (built without the app's plugin host)");
     } else if let Some((key, pinned)) = persist_as_built(bundler, &store, cache) {

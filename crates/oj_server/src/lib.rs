@@ -50,6 +50,7 @@ mod module_pipeline;
 pub use module_pipeline::*;
 mod memory_cache;
 use memory_cache::*;
+mod quiet_trim;
 mod serve;
 use serve::*;
 mod crawl;
@@ -802,7 +803,8 @@ impl BuiltApp {
 
     /// Serves `app` (this app's router, possibly wrapped) on the listener
     /// `bind_listener` returned, counting its requests for the type checker,
-    /// whose first check waits for the first page.
+    /// whose first check waits for the first page, and for the heap trim
+    /// that follows each burst.
     pub async fn serve(
         &self,
         listener: tokio::net::TcpListener,
@@ -812,6 +814,7 @@ impl BuiltApp {
             Some(typecheck) => typecheck.count_requests(app),
             None => app,
         };
+        let app = quiet_trim::trim_when_quiet(app);
         tls::serve_router(listener, app, self.https.as_ref()).await
     }
 
