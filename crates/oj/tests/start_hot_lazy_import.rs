@@ -1446,8 +1446,9 @@ async fn an_import_the_server_does_not_answer_rejects_without_a_reload() {
 /// Inside a lazily imported module: its own `import()`, a CommonJS
 /// dependency through `import()`, an `import.meta.glob` member, a JSON file
 /// imported with an attribute (`with { type: "json" }`), each edited
-/// (where it is the app's) before the page first imports the module; then
-/// its edits while requests for other modules are in flight. All in place.
+/// (where it is the app's) before the page first imports the module; then a
+/// stylesheet the module starts importing, and its edits while requests for
+/// other modules are in flight. All in place.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lazy_modules_own_imports_are_answered_as_they_are_now() {
     let Some(app) = lazy_app(
@@ -1491,6 +1492,26 @@ export const note = "{tag}|" + inner.inner + "|" + (cjs.default ?? cjs).badge("c
     hot_updated(&dev, before).await;
     notes_once_current(&page, &dev, "n1|inner v2|[CJS]|member v2|json v2").await;
 
+    // Loaded, the module starts importing a stylesheet: the page gets it.
+    write(
+        &root,
+        "src/lib/note.css",
+        "#note { color: rgb(1, 2, 3); }\n",
+    );
+    write(&root, NOTE, &note_of("n2", "import \"./note.css\";\n"));
+    notes_once_current(&page, &dev, "n2|inner v2|[CJS]|member v2|json v2").await;
+    assert!(
+        page.poll(
+            "getComputedStyle(document.querySelector('#note')).color === 'rgb(1, 2, 3)'",
+            Duration::from_secs(20)
+        )
+        .await,
+        "the stylesheet the lazy module started importing did not reach the page: mark {:?}; links {:?}\n{}",
+        page.eval::<String>("String(window.__mark)").await,
+        page.eval::<Vec<String>>("[...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href'))").await,
+        dev.output().lines().filter(|l| l.contains("oj start:") || l.contains("bundl")).map(|l| l.chars().take(120).collect::<String>()).collect::<Vec<_>>().join("\n")
+    );
+
     // Edits while other pages' requests keep the bundler compiling.
     let proxy = proxy_of(&dev, "src/routes/about.tsx?tsr-split=component");
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1518,7 +1539,7 @@ export const note = "{tag}|" + inner.inner + "|" + (cjs.default ?? cjs).badge("c
     };
     for tag in ["n3", "n4", "n5"] {
         let before = hot_updates(&dev);
-        write(&root, NOTE, &note_of(tag, ""));
+        write(&root, NOTE, &note_of(tag, "import \"./note.css\";\n"));
         hot_updated(&dev, before).await;
         notes_once_current(
             &page,
