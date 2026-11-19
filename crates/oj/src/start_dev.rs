@@ -7374,6 +7374,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // `resolve.preserveSymlinks` keys the dev resolver; a link and its
+    // target map once unless it is set.
+    #[cfg(unix)]
+    #[test]
+    fn the_dev_resolver_is_keyed_on_preserve_symlinks_and_maps_a_link_once() {
+        let root = tmp("resolver-preserve-symlinks").canonicalize().unwrap();
+        let cache = root.join(".oj-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            "{ \"name\": \"app\", \"type\": \"module\" }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src/real")).unwrap();
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        std::fs::write(
+            root.join("src/real/real.functions.ts"),
+            "import { createServerFn } from \"@tanstack/react-start\";\nexport const linked = createServerFn({ method: \"POST\" }).handler(async () => 1);\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "../real/real.functions.ts",
+            root.join("src/lib/link.functions.ts"),
+        )
+        .unwrap();
+        let entries = |rel: &str| {
+            let id = oj_compiler::server_fns::server_fn_id(rel, "linked");
+            std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_resolver_file(true)))
+                .unwrap()
+                .matches(&format!("\"{id}\": {{"))
+                .count()
+        };
+        let dirs = |preserve_symlinks: bool| ServerFnDirs {
+            preserve_symlinks,
+            ..src_dirs(&root)
+        };
+
+        assert!(!server_fn_resolver(&root, &dirs(false), &cache).unwrap());
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+        assert_eq!(entries("src/lib/link.functions.ts"), 0);
+
+        assert!(!server_fn_resolver(&root, &dirs(true), &cache).unwrap());
+        assert_eq!(entries("src/lib/link.functions.ts"), 1);
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+
+        server_fn_resolver(&root, &dirs(false), &cache).unwrap();
+        assert_eq!(entries("src/lib/link.functions.ts"), 0);
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // Start's compiler finds a server function in any `.[cm]?[tj]sx?` module
     // an environment loads, so the resolver maps every such module under
     // `src/` and `tanstackStart({ srcDirectory })` ahead of a call (a module

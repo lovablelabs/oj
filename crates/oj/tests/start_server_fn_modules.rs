@@ -3,11 +3,9 @@
 //! A TanStack Start server function in a `.js` module, in a module under
 //! `tanstackStart({ srcDirectory })`, or in a directory outside `src/` that
 //! an alias or a tsconfig `paths` entry names, can be called in dev, and from
-//! the built server. Start's compiler finds server
-//! functions in any module an environment loads, and its dev resolver loads
-//! an id's module in the server environment on demand
-//! (`environment.transformRequest`), so under `vite dev` such a call answers,
-//! after an edit to the module and for a module created while it runs.
+//! the built server. Start's compiler finds server functions in any module an
+//! environment loads, and its dev resolver answers an id once a compile of a
+//! module the app loads has registered it (`validate-server-fn-id`).
 
 #[allow(dead_code)]
 mod start_app;
@@ -732,7 +730,8 @@ fn a_forged_server_fn_id_is_refused_and_runs_no_module() {
     // imports it, as under Vite, and answers once the component does.
     let later = "server/later.functions.ts";
     std::fs::write(root.join(later), functions("later", "later-answer")).unwrap();
-    std::thread::sleep(Duration::from_secs(2));
+    std::fs::write(root.join(rel), functions("rootFn", "root-edited")).unwrap();
+    answers(&dev, rel, "rootFn", "root-edited", SETTLE);
     let (status, _) = dev.call(&oj(later, "later"));
     assert_ne!(status, 200, "{later} answered while nothing imports it");
     std::fs::write(
@@ -769,6 +768,92 @@ fn lookup_refuses(dev: &Server, id: &str, within: Duration) {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Imported by a server route's `server.handlers` alone, it answers in dev as under `vite dev`.
+#[test]
+fn a_functions_module_only_a_server_route_imports_answers_in_dev() {
+    let mut files = app_files("rootFn", "../../server/root.functions");
+    files.push(("vite.config.ts".into(), config("")));
+    files.push((
+        "server/root.functions.ts".into(),
+        functions("rootFn", "root-answer"),
+    ));
+    files.push((
+        "server/only.functions.ts".into(),
+        functions("onlyFn", "only-answer"),
+    ));
+    files.push((
+        "src/routes/api/only.ts".into(),
+        r#"import { createFileRoute } from "@tanstack/react-router";
+import { onlyFn } from "../../../server/only.functions";
+
+export const Route = createFileRoute("/api/only")({
+  server: { handlers: { GET: async () => new Response(await onlyFn()) } },
+});
+"#
+        .into(),
+    ));
+    let Some(app) = app_from("server-fn-server-route-only", &files_ref(&files)) else {
+        return;
+    };
+    let root: &Path = &app.0;
+    let rel = "server/only.functions.ts";
+    let dev = Server::oj_dev(root);
+    renders(&dev);
+    answers(&dev, rel, "onlyFn", "only-answer", Duration::ZERO);
+    let id = oj_compiler::server_fns::server_fn_id(rel, "onlyFn");
+    let code = client_code(&dev);
+    assert!(
+        !code.contains(&id) && !code.contains("only-answer"),
+        "the browser holds a stub for {rel}, or its handler"
+    );
+}
+
+/// Reached only by an `import()` in a click handler, it answers once the client is bundled.
+#[test]
+fn a_functions_module_only_a_click_handler_imports_answers_once_the_client_is_bundled() {
+    click_only("server-fn-click-import", true);
+}
+
+/// The same with no Vite config, where oj's own client compile records it.
+#[test]
+fn a_functions_module_only_a_click_handler_imports_answers_without_a_vite_config() {
+    click_only("server-fn-click-import-no-config", false);
+}
+
+fn click_only(name: &str, with_config: bool) {
+    let mut files = app_files("unused", "../lib/unused.functions");
+    files.retain(|(rel, _)| rel != "src/components/Panel.tsx");
+    if with_config {
+        files.push(("vite.config.ts".into(), config("")));
+    }
+    files.push((
+        "src/components/Panel.tsx".into(),
+        r#"import { useState } from "react";
+
+export default function Panel() {
+  const [out, setOut] = useState("pending");
+  const click = () =>
+    import("../../server/click.functions").then((m) => m.clickFn()).then(setOut);
+  return <button onClick={click}>{out}</button>;
+}
+"#
+        .into(),
+    ));
+    files.push((
+        "server/click.functions.ts".into(),
+        functions("clickFn", "click-answer"),
+    ));
+    let Some(app) = app_from(name, &files_ref(&files)) else {
+        return;
+    };
+    let root: &Path = &app.0;
+    let rel = "server/click.functions.ts";
+    let dev = Server::oj_dev(root);
+    renders(&dev);
+    stub_sends(&dev, rel, "clickFn");
+    answers(&dev, rel, "clickFn", "click-answer", Duration::ZERO);
 }
 
 /// A module no import reaches is never read by the build, as `vite build`

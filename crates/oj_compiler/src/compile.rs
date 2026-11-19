@@ -295,7 +295,7 @@ macro_rules! diagnostics_message {
 }
 
 /// The language `path` compiles as: a `.cts` written with `import`/`export`
-/// is a TypeScript module, as Vite compiles it (`transformWithOxc`).
+/// is a TypeScript module, as a Vite build's bundler parses it.
 fn source_type_of(path: &Path, source_text: &str) -> Option<SourceType> {
     let source_type = SourceType::from_path(path).ok()?;
     if path.extension().and_then(|e| e.to_str()) != Some("cts") {
@@ -871,7 +871,7 @@ import React from "react";
     }
 
     #[test]
-    fn a_cts_module_with_import_syntax_compiles_as_vite_compiles_it() {
+    fn a_cts_module_with_import_syntax_compiles_as_a_vite_build_compiles_it() {
         let esm = "import { a } from \"./a\";\nexport const b: number = a + 1;\n";
         let out = compile(Path::new("/app/src/x.cts"), esm, &CompileOptions::prod()).unwrap();
         assert!(out.code.contains("export const b = a + 1"), "{}", out.code);
