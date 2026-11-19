@@ -127,7 +127,6 @@ async fn a_harness_page_loads_vites_client_beside_the_preamble() {
     let sockets: Vec<String> = page
         .eval(
             r#"import("/@vite/client")
-                .then(() => new Promise((r) => setTimeout(r, 1000)))
                 .then(() => window.__sockets)"#,
         )
         .await;
@@ -179,7 +178,6 @@ async fn under_a_base_a_start_document_keeps_one_socket() {
     let sockets: Vec<String> = page
         .eval(
             r#"import("/app/@vite/client")
-                .then(() => new Promise((r) => setTimeout(r, 1000)))
                 .then(() => window.__sockets)"#,
         )
         .await;
@@ -298,6 +296,100 @@ async fn server_headers_reach_vites_client_under_start() {
             "{path}: {headers:?}"
         );
     }
+}
+
+// `/@vite/client` evaluated while the document still parses (an async script
+// ahead of a slow parser-blocking one) cannot see the live-reload tag yet: a
+// Start document keeps its one Start socket, a harness page gets oj's client
+// socket once parsing ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn vites_client_loaded_while_the_document_parses_waits_for_its_end() {
+    let Some(app) = app("vite-client-parsing") else {
+        return;
+    };
+    let slow = slow_script_server();
+    let tags = format!(
+        r#"<script type="module" async src="/@vite/client"></script>
+<script src="http://127.0.0.1:{slow}/slow.js"></script>"#
+    );
+    let root_route = app.0.join("src/routes/__root.tsx");
+    let text = std::fs::read_to_string(&root_route).unwrap();
+    let with_tags = text.replacen("<HeadContent />", &format!("<HeadContent />\n{tags}"), 1);
+    assert_ne!(text, with_tags, "the fixture's root route changed shape");
+    std::fs::write(&root_route, with_tags).unwrap();
+    std::fs::write(
+        app.0.join("public/parsing.html"),
+        format!("<!doctype html><html><head>\n{tags}\n</head><body></body></html>\n"),
+    )
+    .unwrap();
+    let dev = Server::oj_dev(&app.0);
+    if browser::skip() {
+        return;
+    }
+
+    let page = Page::open_with_script(&dev.url("/parsing.html"), Some(SOCKETS)).await;
+    page.wait_for("window.__sockets.length > 0", Duration::from_secs(60))
+        .await;
+    let seen: (Vec<String>, Option<String>) = page
+        .eval(r#"[window.__sockets, globalThis.__ojPageClient ?? null]"#)
+        .await;
+    page.close().await;
+    assert!(
+        seen.0.len() == 1 && !seen.0[0].ends_with("/@oj-start/hmr"),
+        "the harness page's sockets: {seen:?}"
+    );
+    assert_eq!(
+        seen.1.as_deref(),
+        Some("pending"),
+        "the harness page's client did not run while the document parsed"
+    );
+
+    let page = Page::open_with_script(&dev.url("/"), Some(SOCKETS)).await;
+    page.wait_for(
+        r#"document.readyState === "complete" && window.__slow === true"#,
+        Duration::from_secs(60),
+    )
+    .await;
+    page.wait_for(
+        r#"window.__sockets.some((u) => u.endsWith("/@oj-start/hmr"))"#,
+        Duration::from_secs(60),
+    )
+    .await;
+    let seen: (Vec<String>, Option<String>) = page
+        .eval(r#"[window.__sockets, globalThis.__ojPageClient ?? null]"#)
+        .await;
+    page.close().await;
+    assert_eq!(
+        seen,
+        (
+            vec![format!("ws://127.0.0.1:{}/@oj-start/hmr", dev.port)],
+            Some("pending".to_string())
+        ),
+        "the sockets a still-parsing Start document opened, and its client's decision"
+    );
+}
+
+/// A server answering every request with `window.__slow = true;` after four
+/// seconds: a parser-blocking script that holds the document in parsing.
+fn slow_script_server() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let _ = stream.read(&mut [0; 4096]);
+                std::thread::sleep(Duration::from_secs(4));
+                let body = "window.__slow = true;";
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    port
 }
 
 /// Records the url (without its query) of every WebSocket the page opens.

@@ -134,7 +134,6 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
                 r#"Promise.all([import("/@vite/client"), import("/@oj/client.js")]).then(([vite, oj]) => ({
                     exports: Object.keys(vite).sort(),
                     same: vite.createHotContext === oj.createHotContext,
-                    base: vite.base,
                     query: [vite.injectQuery("/src/a.ts?x=1#h", "import"), vite.injectQuery("react", "import")],
                 }))"#,
             )
@@ -142,9 +141,8 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
         assert_eq!(
             client,
             serde_json::json!({
-                "exports": ["ErrorOverlay", "base", "createHotContext", "injectQuery", "removeStyle", "updateStyle"],
+                "exports": ["ErrorOverlay", "createHotContext", "injectQuery", "removeStyle", "updateStyle"],
                 "same": true,
-                "base": "/",
                 "query": ["/src/a.ts?import&x=1#h", "react"],
             }),
             "{path}: /@vite/client"

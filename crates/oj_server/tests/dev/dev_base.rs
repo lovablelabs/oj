@@ -181,17 +181,13 @@ async fn a_based_page_runs_one_client_and_one_refresh_runtime() {
         ["/app/@oj/client.js", "/app/@oj/refresh-runtime.js"],
         "the page's client and refresh runtime URLs"
     );
-    let vite_client: (bool, String) = page
+    let vite_client: bool = page
         .eval(
             r#"Promise.all([import("/app/@vite/client"), import("/app/@oj/client.js")])
-                .then(([vite, oj]) => [vite.createHotContext === oj.createHotContext, vite.base])"#,
+                .then(([vite, oj]) => vite.createHotContext === oj.createHotContext)"#,
         )
         .await;
-    assert_eq!(
-        vite_client,
-        (true, "/app/".to_string()),
-        "/app/@vite/client is the page's client"
-    );
+    assert!(vite_client, "/app/@vite/client is not the page's client");
 
     page.eval::<bool>(
         r#"(window.__NOT_RELOADED = true, document.querySelector("button").click(), true)"#,

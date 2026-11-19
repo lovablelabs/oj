@@ -442,7 +442,7 @@ function reportHmrFailure(path, error) {
 }
 
 // The dev `base` this client is served under (Vite's __BASE__).
-export const base = new URL(import.meta.url).pathname.replace(/@oj\/client\.js$/, "");
+const base = new URL(import.meta.url).pathname.replace(/@oj\/client\.js$/, "");
 
 // Where the socket lives (Vite's client): `server.hmr.{protocol,host,clientPort,
 // path}` override the page's own origin, and the per-process token lets the
