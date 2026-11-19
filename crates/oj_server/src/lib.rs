@@ -87,8 +87,8 @@ const DEV_SERVER_AT_PREFIXES: &[&str] = &[
     "/@presolve/",
     "/@virtual/",
 ];
-/// oj's own single-path `/@` urls, and `/@vite/client`, which oj does not
-/// serve but Vite reserves (`isInternalRequest`).
+/// oj's own single-path `/@` urls, and Vite's `/@vite/client`, which oj
+/// does not serve.
 const DEV_SERVER_AT_PATHS: &[&str] = &[
     "/@vite/client",
     "/@vite/env",
@@ -98,16 +98,43 @@ const DEV_SERVER_AT_PATHS: &[&str] = &[
     "/@ssr-module",
 ];
 
-/// The paths the dev server itself serves: its `/__` endpoints and its `/@`
-/// urls. Everything else is the app's, as in Vite, which reserves no `/__`
-/// prefix and only its own `/@` urls (`/@fs/`, `/@id/`, `/@vite/client`,
-/// `/@vite/env`): a framework route or a plugin middleware page
-/// (`/__component/preview/X`, `/@someone`) must reach them.
+/// The paths the dev server tries first: its `/__` endpoints and its `/@`
+/// urls. Everything else, and a miss among these, is the app's.
 pub fn is_dev_server_path(path: &str) -> bool {
     matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
         || DEV_SERVER_AT_PATHS.contains(&path)
         || DEV_SERVER_AT_PREFIXES.iter().any(|p| path.starts_with(p))
         || fs_url_path(path).is_some()
+}
+
+/// [`is_dev_server_path`], less a page navigation to one of Vite's urls, which
+/// Vite's transform middleware never answers; oj's own endpoints answer all.
+pub fn is_dev_server_request(path: &str, headers: &HeaderMap) -> bool {
+    is_dev_server_path(path) && !(is_vite_url(path) && is_document_fetch(headers))
+}
+
+/// The urls only Vite's transform middleware serves (`isInternalRequest`,
+/// plugin-react's `/@react-refresh`).
+fn is_vite_url(path: &str) -> bool {
+    matches!(path, "/@vite/client" | "/@vite/env" | "/@react-refresh") || path.starts_with("/@id/")
+}
+
+/// A request for a page: a navigation or one that asks for html. Only such a
+/// request a `/@` url misses goes on to a framework's render.
+pub fn is_page_request(headers: &HeaderMap) -> bool {
+    is_document_fetch(headers)
+        || headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|a| a.contains("text/html"))
+}
+
+/// Vite's `documentFetchDests`: a request the browser makes for a page.
+pub fn is_document_fetch(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|d| matches!(d, "document" | "iframe" | "frame" | "fencedframe"))
 }
 
 /// The absolute path an `/@fs` url names: `/@fs/abs`, or `/@fsC:/abs` for a
@@ -1765,6 +1792,10 @@ fn build_router(
             .route(HMR_WS_PATH, get(ws_upgrade))
             .route(HMR_FLUSH_PATH, post(hmr_flush))
             .route(HMR_GATE_PATH, get(hmr_gate_status))
+            .route_layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                page_navigation_middleware,
+            ))
             .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).

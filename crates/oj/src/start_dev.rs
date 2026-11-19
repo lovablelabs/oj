@@ -3632,10 +3632,8 @@ async fn compile_css(
 #[derive(Debug, PartialEq)]
 enum Route {
     Document,
-    /// A GET whose last segment has an extension (`/robots.txt`,
-    /// `/users/john.doe`): a static file or module if one exists, otherwise the
-    /// SSR handler (a Start server route or a dotted route param), like Vite
-    /// where every request nothing else owns reaches the app.
+    /// A GET whose last segment has an extension (`/robots.txt`), or a page
+    /// request to one of oj's `/@` urls: the file or module, else SSR.
     StaticOrDocument,
     Api,
     Pass,
@@ -3647,6 +3645,7 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
         req.uri().path(),
         req.uri().path(),
         req.method(),
+        req.headers(),
         proxy_prefixes,
     )
 }
@@ -3654,13 +3653,23 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
 /// [`classify`] with `path` the request's path past the dev `base` (what
 /// oj's own routes see) and `raw` the path as sent (what `server.proxy`
 /// matches, as Vite's proxy runs ahead of its base middleware).
-fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[String]) -> Route {
-    // Only oj's own `/__` endpoints and `/@` urls are the dev server's: Vite
-    // reserves no `/__` prefix and only its own `/@` urls, so an app route or
-    // a plugin middleware page there (`/__preview`, `/@someone`) goes through
-    // the middleware and SSR like any document.
-    if oj_server::is_dev_server_path(path) {
-        return Route::Pass;
+fn classify_path(
+    path: &str,
+    raw: &str,
+    method: &Method,
+    headers: &header::HeaderMap,
+    proxy_prefixes: &[String],
+) -> Route {
+    // oj's own urls go first; a page request one of them misses reaches SSR.
+    if oj_server::is_dev_server_request(path, headers) {
+        return if path.starts_with("/@")
+            && matches!(*method, Method::GET | Method::HEAD)
+            && oj_server::is_page_request(headers)
+        {
+            Route::StaticOrDocument
+        } else {
+            Route::Pass
+        };
     }
     if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
@@ -3704,6 +3713,89 @@ fn strip_base<'a>(base: &str, path: &'a str) -> &'a str {
         Some(rest) if !base.is_empty() && rest.starts_with('/') => rest,
         _ => path,
     }
+}
+
+/// The Start dev host's own urls (its client, chunks, patches and route
+/// list); `None` for any other path.
+async fn serve_start_url(
+    state: &Arc<StartState>,
+    path: &str,
+    req: &axum::http::request::Parts,
+) -> Option<Response> {
+    if path == "/@oj-start/live-reload.js" {
+        return Some(match tokio::fs::read_to_string(&state.live_reload).await {
+            Ok(js) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                render_live_reload(
+                    &js,
+                    state.hmr_overlay,
+                    &state.base,
+                    crate::start_reloads::stamp_in(req.uri.query()),
+                    crate::start_hot::hot_change_in(req.uri.query()),
+                    state.hmr_ping,
+                ),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("oj start: live-reload client: {e}"),
+            )
+                .into_response(),
+        });
+    }
+    // The overlay element the live-reload client shows build errors in,
+    // written beside it by write_start_assets.
+    if path == "/@oj-start/error-overlay.js" {
+        let overlay = state.live_reload.with_file_name("error-overlay.js");
+        return Some(serve_js(&overlay, "error overlay").await);
+    }
+    // The app's routes, for a host UI's route picker: oj's own answer, never
+    // the app's router (which has no such route and would render its 404).
+    if path == crate::start_routes::PATH {
+        return Some(routes_json(state, &req.method).await);
+    }
+    if path == crate::start_hot::LAZY_PATH {
+        if req.method != Method::GET {
+            return Some((StatusCode::METHOD_NOT_ALLOWED, "oj start: lazy: GET").into_response());
+        }
+        return Some(lazy_chunk(state, req.uri.query()).await);
+    }
+    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
+        let client = req.uri.query().and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("clientId=").map(percent_decode))
+        });
+        if let Some(kept) = state.bundler.hot.take(name, client.as_deref()) {
+            return Some(kept);
+        }
+        return Some(state.bundler.hot.serve(name));
+    }
+    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
+        return Some(serve_fs_asset(state, &format!("/{rest}")).await);
+    }
+    if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
+        let Some(id) = served_sheet_id(rest) else {
+            return Some(
+                (
+                    StatusCode::FORBIDDEN,
+                    "oj start: not a plugin-served stylesheet",
+                )
+                    .into_response(),
+            );
+        };
+        return Some(match css_body(state, Path::new(&id)).await {
+            Some(body) => css_response(body),
+            None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
+        });
+    }
+    if let Some(name) = path.strip_prefix("/@oj-start/") {
+        let page = oj_server::is_page_request(&req.headers);
+        return Some(serve_client_chunk(state, &req.headers, name, page).await);
+    }
+    None
 }
 
 async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: Next) -> Response {
@@ -3760,75 +3852,18 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             Err(e) => e.into_response(),
         };
     }
-    if path == "/@oj-start/live-reload.js" {
-        return match tokio::fs::read_to_string(&state.live_reload).await {
-            Ok(js) => (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                render_live_reload(
-                    &js,
-                    state.hmr_overlay,
-                    &state.base,
-                    crate::start_reloads::stamp_in(req.uri().query()),
-                    crate::start_hot::hot_change_in(req.uri().query()),
-                    state.hmr_ping,
-                ),
-            )
-                .into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("oj start: live-reload client: {e}"),
-            )
-                .into_response(),
-        };
-    }
-    // The overlay element the live-reload client shows build errors in,
-    // written beside it by write_start_assets.
-    if path == "/@oj-start/error-overlay.js" {
-        let overlay = state.live_reload.with_file_name("error-overlay.js");
-        return serve_js(&overlay, "error overlay").await;
-    }
-    // The app's routes, for a host UI's route picker: oj's own answer, never
-    // the app's router (which has no such route and would render its 404).
-    if path == crate::start_routes::PATH {
-        return routes_json(&state, req.method()).await;
-    }
-    if path == crate::start_hot::LAZY_PATH {
-        if *req.method() != Method::GET {
-            return (StatusCode::METHOD_NOT_ALLOWED, "oj start: lazy: GET").into_response();
+    let (parts, body) = req.into_parts();
+    let own = serve_start_url(&state, path, &parts).await;
+    let req = Request::from_parts(parts, body);
+    if let Some(resp) = own {
+        // A page request for a name oj does not serve (`/@oj-start/posts`).
+        if resp.status() != StatusCode::NOT_FOUND
+            || !matches!(*req.method(), Method::GET | Method::HEAD)
+            || !oj_server::is_page_request(req.headers())
+        {
+            return resp;
         }
-        return lazy_chunk(&state, req.uri().query()).await;
-    }
-    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
-        let client = req.uri().query().and_then(|q| {
-            q.split('&')
-                .find_map(|kv| kv.strip_prefix("clientId=").map(percent_decode))
-        });
-        if let Some(kept) = state.bundler.hot.take(name, client.as_deref()) {
-            return kept;
-        }
-        return state.bundler.hot.serve(name);
-    }
-    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
-        return serve_fs_asset(&state, &format!("/{rest}")).await;
-    }
-    if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
-        let Some(id) = served_sheet_id(rest) else {
-            return (
-                StatusCode::FORBIDDEN,
-                "oj start: not a plugin-served stylesheet",
-            )
-                .into_response();
-        };
-        return match css_body(&state, Path::new(&id)).await {
-            Some(body) => css_response(body),
-            None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
-        };
-    }
-    if let Some(name) = path.strip_prefix("/@oj-start/") {
-        return serve_client_chunk(&state, req.headers(), name).await;
+        return forward_document(&state, path_and_query(&req), req.headers(), None).await;
     }
     if path.starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
@@ -3838,7 +3873,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
-    let route = classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes);
+    let route = classify_path(
+        path,
+        req.uri().path(),
+        req.method(),
+        req.headers(),
+        &state.proxy_prefixes,
+    );
     // A file under `publicDir` answers before the router and the SSR handler
     // see the request, as Vite's servePublicMiddleware runs ahead of its html
     // middlewares for every appType: `/hub/index.html` is that file, not the
@@ -4336,6 +4377,7 @@ async fn serve_client_chunk(
     state: &StartState,
     req: &axum::http::HeaderMap,
     name: &str,
+    page: bool,
 ) -> Response {
     let name = percent_decode(name);
     let served = state
@@ -4344,7 +4386,10 @@ async fn serve_client_chunk(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .chunk(&name);
     let Some(served) = served else {
-        chunk_gone(&state.error_tx, &name);
+        // A page request is no stale chunk of an open page: the app answers it.
+        if !page {
+            chunk_gone(&state.error_tx, &name);
+        }
         return (
             StatusCode::NOT_FOUND,
             format!("oj start: {name} is not in the client bundle manifest"),
@@ -7614,22 +7659,23 @@ mod tests {
         assert_eq!(strip_base("", "/@oj-start/hmr"), "/@oj-start/hmr");
         let get = Method::GET;
         let no_proxy: Vec<String> = vec![];
+        let h = header::HeaderMap::new();
         assert!(matches!(
-            classify_path("/@id/x", "/app/@id/x", &get, &no_proxy),
+            classify_path("/@id/x", "/app/@id/x", &get, &h, &no_proxy),
             Route::Pass
         ));
         assert!(matches!(
-            classify_path("/about", "/app/about", &get, &no_proxy),
+            classify_path("/about", "/app/about", &get, &h, &no_proxy),
             Route::Document
         ));
         // Vite's proxy matches the url as sent, ahead of the base middleware.
         let proxy = vec!["/api".to_string()];
         assert!(matches!(
-            classify_path("/api/x", "/app/api/x", &get, &proxy),
+            classify_path("/api/x", "/app/api/x", &get, &h, &proxy),
             Route::Document
         ));
         assert!(matches!(
-            classify_path("/api/x", "/api/x", &get, &proxy),
+            classify_path("/api/x", "/api/x", &get, &h, &proxy),
             Route::Pass
         ));
     }
@@ -7699,21 +7745,55 @@ mod tests {
             Route::StaticOrDocument
         );
         assert_eq!(classify(&req("POST", "/@someone"), &no_proxy), Route::Api);
+        // oj's own `/@` urls are tried first; a page request reaches SSR on a
+        // miss (`/@id/posts`, `/@oj/posts`), a module request keeps oj's answer.
+        let html = |path: &str| {
+            let mut r = req("GET", path);
+            r.headers_mut()
+                .insert("accept", "text/html".parse().unwrap());
+            classify(&r, &no_proxy)
+        };
         for path in [
             "/@react-refresh",
             "/@fs/app/src/a.ts",
             "/@id/virtual:x",
+            "/@id/posts",
             "/@oj/client.js",
+            "/@oj/posts",
             crate::start_routes::PATH,
             crate::start_hot::PATCH_PREFIX,
             crate::start_bundle::assets::DEV_ID_BASE,
         ] {
+            assert_eq!(html(path), Route::StaticOrDocument, "{path}");
             assert_eq!(
                 classify(&req("GET", path), &no_proxy),
                 Route::Pass,
                 "{path}"
             );
         }
+        assert_eq!(
+            classify(&req("HEAD", "/@oj/client.js"), &no_proxy),
+            Route::Pass
+        );
+        let mut head = req("HEAD", "/@id/posts");
+        head.headers_mut()
+            .insert("accept", "text/html".parse().unwrap());
+        assert_eq!(classify(&head, &no_proxy), Route::StaticOrDocument);
+        // A page navigation to one of Vite's urls is a document (Vite's
+        // transform middleware skips `documentFetchDests`); oj's own
+        // endpoints and `/@fs/` files are still tried first.
+        let page = |path: &str| {
+            let mut r = req("GET", path);
+            r.headers_mut()
+                .insert("sec-fetch-dest", "document".parse().unwrap());
+            classify(&r, &no_proxy)
+        };
+        assert_eq!(page("/@id/posts"), Route::Document);
+        assert_eq!(page("/@vite/client"), Route::Document);
+        assert_eq!(page("/@react-refresh"), Route::Document);
+        assert_eq!(page("/@oj/client.js"), Route::StaticOrDocument);
+        assert_eq!(page("/@oj/diagnostics"), Route::StaticOrDocument);
+        assert_eq!(page("/@fs/etc/passwd"), Route::StaticOrDocument);
         assert!(matches!(
             classify(&req("GET", "/__hmr_gate"), &no_proxy),
             Route::Pass

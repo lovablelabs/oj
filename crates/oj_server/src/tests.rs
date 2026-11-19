@@ -1247,6 +1247,20 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
 }
 
 #[test]
+fn an_updated_module_in_an_at_named_root_folder_is_stamped() {
+    // `<root>/@x/a.js` is served at `/@x/a.js`, a url like any other: its
+    // importer names its new version after an edit, as Vite's does.
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/@x/a.js", 5),
+        "/@x/a.js?t=5"
+    );
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/@id/virtual:x.js", 5),
+        "/@id/virtual:x.js"
+    );
+}
+
+#[test]
 fn proxy_regex_contexts_match_path_and_query_like_vite() {
     let entries: Vec<(String, oj_config::ProxyEntry)> = [
         ("/api", "http://a"),
@@ -1692,7 +1706,7 @@ fn spa_navigation_falls_back_only_for_routes() {
     assert!(is_spa_navigation("report.v2", &html));
     assert!(!is_spa_navigation("missing.png", &empty));
     assert!(!is_spa_navigation("assets/app.js", &empty));
-    assert!(!is_spa_navigation("@vite/client", &html));
+    assert!(is_spa_navigation("@vite/client", &html));
     assert!(!is_spa_navigation("src/does-not-exist.tsx", &html));
     assert!(!is_spa_navigation("node_modules/react/missing.js", &html));
 }
@@ -3248,5 +3262,43 @@ fn dev_server_paths_are_the_urls_oj_serves() {
         "/someone",
     ] {
         assert!(!is_dev_server_path(app), "{app} is the app's");
+    }
+}
+
+#[test]
+fn a_page_navigation_to_a_vite_url_is_not_the_dev_servers() {
+    let dest = |d: &str| {
+        let mut h = HeaderMap::new();
+        h.insert("sec-fetch-dest", d.parse().unwrap());
+        h
+    };
+    for page in ["document", "iframe", "frame", "fencedframe"] {
+        for vite in [
+            "/@id/posts",
+            "/@vite/client",
+            "/@vite/env",
+            "/@react-refresh",
+        ] {
+            assert!(
+                !is_dev_server_request(vite, &dest(page)),
+                "{vite} as {page}"
+            );
+        }
+    }
+    // A module request, or none named, is the dev server's first.
+    for d in ["script", "empty", "worker", "style"] {
+        assert!(is_dev_server_request("/@id/posts", &dest(d)), "{d}");
+    }
+    assert!(is_dev_server_request("/@vite/env", &HeaderMap::new()));
+    // oj's own endpoints, `/@fs/` files and `/__` endpoints answer a page too.
+    for own in [
+        "/@oj/client.js",
+        "/@oj/diagnostics",
+        "/@oj-start/hmr",
+        "/@oj-deps/react.js",
+        "/@fs/etc/passwd",
+        HMR_GATE_PATH,
+    ] {
+        assert!(is_dev_server_request(own, &dest("document")), "{own}");
     }
 }

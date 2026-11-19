@@ -209,7 +209,7 @@ fn module_id(root: &Path, url: &str) -> String {
     if let Some(path) = url.strip_prefix("/@fs/") {
         return format!("/{path}");
     }
-    if url.starts_with("/@") {
+    if crate::is_dev_server_path(url.split('?').next().unwrap_or(&url)) {
         return url;
     }
     format!("{}{url}", root.display())
