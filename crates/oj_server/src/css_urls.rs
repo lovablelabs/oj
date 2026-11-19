@@ -144,7 +144,7 @@ fn decode_uri_strict(s: &str) -> Result<String, String> {
 }
 
 /// Vite's injectQuery: `query` first in the url's query, before the hash.
-fn inject_query(url: &str, query: &str) -> String {
+pub(crate) fn inject_query(url: &str, query: &str) -> String {
     let (rest, hash) = match url.find('#') {
         Some(i) => url.split_at(i),
         None => (url, ""),

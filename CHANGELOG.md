@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: a request for a path that names a file in `public/` gets that file even when the root has a file of the same name, as Vite's `servePublicMiddleware` serves it. With `public/data.json` and a `data.json` at the root, a plain `fetch("/data.json")` got the root file compiled as a module (`const __oj_json = …`, `text/javascript`) where the app expected the public JSON. The path is matched as Vite matches it (decoded as `decodeURI` does, in the case it is written), whatever the request's headers, and `/` is still the root's `index.html`. Only a url that asks for a module (`?import`, `?url`) goes past the public file, so every client import of a root file that is neither a script nor a stylesheet, and that neither oj nor the import marks `?url`, is now named with `?import`, as Vite's import analysis names it: `import` goes first in the query and a `#hash` stays last (`/src/data.json?import`, `/src/data.json?import&raw`, `/src/data.json?import&x=1`, `/src/data.json?import#x`, `/src/abs.json?import&raw` for a root-absolute import, a plain svg a plugin may claim as `/src/logo.svg?import`). A dynamic `import(x)` whose specifier is computed is wrapped in `injectQuery(x, 'import')` unless its text as written is quoted and names a script or a stylesheet (a worker file gets the helper written in, not an import of the dev client), and the hot update of such a module carries `explicitImportRequired`, so the client re-imports it with `?import&t=`. The server drops `import` from every request but a stylesheet's, so a marked and an unmarked url are one module.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

@@ -34,11 +34,11 @@ async fn as_raw_and_as_url_globs_give_the_default_export() {
 
     let js = server.text("/main.js").await;
     for expected in [
-        r#"import { default as __oj_glob_0 } from "/notes/a.md?raw";"#,
-        r#""./notes/a.md": () => import("/notes/a.md?raw").then((m) => m["default"])"#,
+        r#"import { default as __oj_glob_0 } from "/notes/a.md?import&raw";"#,
+        r#""./notes/a.md": () => import("/notes/a.md?import&raw").then((m) => m["default"])"#,
         r#"import { default as __oj_glob_1 } from "/notes/a.md?url";"#,
         r#""./notes/a.md": () => import("/notes/a.md?url").then((m) => m["default"])"#,
-        r#"import * as __oj_glob_2 from "/notes/a.md?raw";"#,
+        r#"import * as __oj_glob_2 from "/notes/a.md?import&raw";"#,
     ] {
         assert!(js.contains(expected), "missing {expected}\n{js}");
     }

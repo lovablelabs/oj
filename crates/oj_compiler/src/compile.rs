@@ -95,6 +95,9 @@ pub struct CompileOptions {
     /// The config's `@stylexjs/unplugin`, run on the parsed source before any
     /// other transform (the plugin is `enforce: 'pre'`).
     pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The dev client's url, which `injectQuery` is imported from to wrap a
+    /// computed `import(x)` as `import(__vite__injectQuery(x, 'import'))`.
+    pub inject_query_from: Option<String>,
 }
 
 /// A glob pattern's mapping from its importing file (see
@@ -126,6 +129,7 @@ impl CompileOptions {
             alias: Arc::from([]),
             glob_paths: None,
             stylex: None,
+            inject_query_from: None,
         }
     }
 
@@ -143,6 +147,7 @@ impl CompileOptions {
             alias: Arc::from([]),
             glob_paths: None,
             stylex: None,
+            inject_query_from: None,
         }
     }
 }
@@ -258,6 +263,13 @@ pub fn compile_module_with_maps(
     // its attributes for the bundler.
     let served = rewriter.is_some() || opts.ssr;
     let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter, served);
+    let inject_query = match &opts.inject_query_from {
+        Some(client) => {
+            crate::rewrite::inject_query_into_dynamic_imports(&allocator, source_text, &mut program)
+                .then_some(client.as_str())
+        }
+        None => None,
+    };
     let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
     if let Some(h) = hot_accept.as_mut() {
         promote_full_export_accept(h, &program);
@@ -267,6 +279,16 @@ pub fn compile_module_with_maps(
     // node, so it stays out of `imports`.
     if let Some(url) = runtime_import {
         prepend_side_effect_import(&allocator, &mut program, &url);
+    }
+    if let Some(client) = inject_query {
+        prepend_import(
+            &allocator,
+            &mut program,
+            &format!(
+                "import {{ injectQuery as __vite__injectQuery }} from {};",
+                serde_json::Value::String(client.into())
+            ),
+        );
     }
 
     let (code, map_json) = codegen(&program, path, opts, synthesized, input_maps);
@@ -532,15 +554,29 @@ fn names_global(program: &Program, global: &str) -> bool {
 /// statement has no origin in the source, and a span past the source's end
 /// would fail the sourcemap builder.
 fn prepend_side_effect_import<'a>(allocator: &'a Allocator, program: &mut Program<'a>, url: &str) {
-    let src: &'a str = allocator.alloc_str(&format!(
-        "import {};",
-        serde_json::Value::String(url.into())
-    ));
+    let src = format!("import {};", serde_json::Value::String(url.into()));
+    prepend_import(allocator, program, &src);
+}
+
+/// Puts the import declaration `src` first in `program`, its spans emptied
+/// as [`prepend_side_effect_import`]'s are.
+fn prepend_import<'a>(allocator: &'a Allocator, program: &mut Program<'a>, src: &str) {
+    let src: &'a str = allocator.alloc_str(src);
     let parsed = Parser::new(allocator, src, SourceType::mjs()).parse();
     for mut stmt in parsed.program.body.into_iter().rev() {
         if let Statement::ImportDeclaration(decl) = &mut stmt {
             decl.span = oxc_span::SPAN;
             decl.source.span = oxc_span::SPAN;
+            for spec in decl.specifiers.iter_mut().flatten() {
+                if let oxc_ast::ast::ImportDeclarationSpecifier::ImportSpecifier(spec) = spec {
+                    spec.span = oxc_span::SPAN;
+                    spec.local.span = oxc_span::SPAN;
+                    if let oxc_ast::ast::ModuleExportName::IdentifierName(name) = &mut spec.imported
+                    {
+                        name.span = oxc_span::SPAN;
+                    }
+                }
+            }
         }
         program.body.insert(0, stmt);
     }
@@ -839,6 +875,7 @@ import React from "react";
                 alias: Arc::from([]),
                 glob_paths: None,
                 stylex: None,
+                inject_query_from: None,
             },
             None,
         )
@@ -932,6 +969,7 @@ import React from "react";
                 alias: Arc::from([]),
                 glob_paths: None,
                 stylex: None,
+                inject_query_from: None,
             },
             None,
         )

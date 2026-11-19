@@ -90,7 +90,7 @@ fn preloads(html: &str) -> Vec<String> {
     Regex::new(r#"<link rel="modulepreload" href="([^"]+)""#)
         .unwrap()
         .captures_iter(html)
-        .map(|c| c[1].to_string())
+        .map(|c| c[1].replace("&amp;", "&"))
         .collect()
 }
 
@@ -141,7 +141,7 @@ fn two_page_app(config: &str) -> App {
 
 const ROOT_PRELOADS: [&str; 5] = [
     "/src/b.js",
-    "/src/data.json",
+    "/src/data.json?import",
     "/src/pic.png?url",
     "/src/style.css?import",
     "/src/a.js",
@@ -242,11 +242,11 @@ const QUERIED_MAIN: &str = "import notes from \"./notes.md?raw\";\n\
 /// Each import under the url its importer names: `shared.js` is the module
 /// for the page's script and `shared.js?raw` for `b.js`, both preloaded.
 const QUERIED_PRELOADS: [&str; 10] = [
-    "/src/accounts.csv?raw",
+    "/src/accounts.csv?import&raw",
     "/src/b.js",
-    "/src/notes.md?raw",
-    "/src/posts/one.md?raw",
-    "/src/posts/two.md?raw",
+    "/src/notes.md?import&raw",
+    "/src/posts/one.md?import&raw",
+    "/src/posts/two.md?import&raw",
     "/src/shared.js",
     "/src/style.css?inline",
     "/src/util.js",
@@ -364,11 +364,11 @@ async fn a_dropped_queried_import_is_no_longer_preloaded() {
     )]);
     preloads_after_edit(&server, |_, links| {
         let gone = |url: &str| !links.iter().any(|l| l == url);
-        gone("/src/notes.md?raw")
+        gone("/src/notes.md?import&raw")
             && gone("/src/notes.md")
             && gone("/src/util.js?raw")
             && !gone("/src/util.js")
-            && !gone("/src/accounts.csv?raw")
+            && !gone("/src/accounts.csv?import&raw")
     })
     .await;
 }

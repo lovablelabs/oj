@@ -457,7 +457,7 @@ pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
     }
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    let (path, _, _) = split_url(url);
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -470,13 +470,25 @@ pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String
     {
         return url.to_string();
     }
+    with_timestamp(url, timestamp)
+}
+
+/// A url's path, query and `#hash`.
+fn split_url(url: &str) -> (&str, &str, &str) {
+    let (rest, hash) = url.split_at(url.find('#').unwrap_or(url.len()));
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    (path, query, hash)
+}
+
+/// `url` stamped `t=` last in its query, before its hash; one already stamped stays.
+fn with_timestamp(url: &str, timestamp: u64) -> String {
+    let (path, query, hash) = split_url(url);
     if query.split('&').any(|kv| kv.starts_with("t=")) {
-        return url.to_string();
-    }
-    if query.is_empty() {
-        format!("{path}?t={timestamp}")
+        url.to_string()
+    } else if query.is_empty() {
+        format!("{path}?t={timestamp}{hash}")
     } else {
-        format!("{url}&t={timestamp}")
+        format!("{path}?{query}&t={timestamp}{hash}")
     }
 }
 
@@ -489,15 +501,7 @@ pub(crate) fn stamp_module_import(state: &ServerState, url: &str, timestamp: u64
     if stamped != url || timestamp == 0 || !plugin_claims_url(state, url) {
         return stamped;
     }
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
-    if query.split('&').any(|kv| kv.starts_with("t=")) {
-        return url.to_string();
-    }
-    if query.is_empty() {
-        format!("{path}?t={timestamp}")
-    } else {
-        format!("{url}&t={timestamp}")
-    }
+    with_timestamp(url, timestamp)
 }
 
 /// `ctx_predefined`: the body already carries the hot-context banner; the glue must
@@ -633,14 +637,18 @@ fn boundary_url(p: &Path) -> String {
 }
 
 /// The `js-update` entry for a boundary: stylesheet boundaries are named by their
-/// `?import` wrapper; carries `isWithinCircularImport` and `firstInvalidatedBy` like Vite's `Update`.
+/// `?import` wrapper; carries `explicitImportRequired`, `isWithinCircularImport`
+/// and `firstInvalidatedBy` like Vite's `Update`.
 pub(crate) fn update_entry_for(
     target: &oj_graph::UpdateTarget,
     timestamp: u64,
     first_invalidated_by: Option<&str>,
 ) -> serde_json::Value {
     let mut entry = update_entry("js-update", &boundary_url(&target.boundary), timestamp);
-    entry["acceptedPath"] = serde_json::Value::String(boundary_url(&target.accepted));
+    let accepted = boundary_url(&target.accepted);
+    entry["explicitImportRequired"] =
+        serde_json::Value::Bool(oj_compiler::explicit_import_required(&accepted));
+    entry["acceptedPath"] = serde_json::Value::String(accepted);
     if target.within_circular_import {
         entry["isWithinCircularImport"] = serde_json::Value::Bool(true);
     }

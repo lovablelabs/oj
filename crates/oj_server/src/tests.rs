@@ -1232,6 +1232,11 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
         "/src/a.css?inline&t=5"
     );
     assert_eq!(
+        stamp_import_url(Path::new("/app"), "/src/data.json?import#x", 5),
+        "/src/data.json?import&t=5#x",
+        "the stamp goes in the query, before the hash"
+    );
+    assert_eq!(
         stamp_import_url(Path::new("/app"), "/src/hero.png?url", 5),
         "/src/hero.png?url&t=5",
         "an updated image's importer must fetch its new url"
@@ -2504,6 +2509,7 @@ fn dev_asset_urls_encode_the_path_and_decode_the_base() {
         asset_export_url("/a.png?import&url&t=5&v=2"),
         "/a.png?t=5&v=2"
     );
+    assert_eq!(asset_export_url("/a.png?import=&url&t=5"), "/a.png?t=5");
 }
 
 // Vite's dev css url rewrite (rewriteCssUrls, doUrlReplace, urlResolver,
@@ -2885,10 +2891,20 @@ fn preload_hints_name_the_exact_import_url() {
         preload_href(Path::new("/app"), "/src/logo.svg", &entries, false),
         "/src/logo.svg?url"
     );
+    // The url the importer names: Vite's `?import` for a file that is
+    // neither a script nor a stylesheet, a componentizable svg's too.
     assert_eq!(
         preload_href(Path::new("/app"), "/src/logo.svg", &entries, true),
-        "/src/logo.svg",
+        "/src/logo.svg?import",
         "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href(Path::new("/app"), "/src/data.json", &entries, false),
+        "/src/data.json?import"
+    );
+    assert_eq!(
+        preload_href(Path::new("/app"), "/src/main.tsx", &entries, false),
+        "/src/main.tsx"
     );
     assert_eq!(
         preload_href(

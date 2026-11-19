@@ -21,7 +21,9 @@ use oj_cache::CachedModule;
 pub mod css_engine;
 pub mod etag;
 mod public_file;
-pub use public_file::{public_content_type, public_file_response};
+pub use public_file::{
+    hex_val, named_as_written, public_content_type, public_file_path, public_file_response,
+};
 pub mod load_error;
 pub mod optimize;
 pub mod plugins;

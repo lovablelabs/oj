@@ -42,7 +42,7 @@ pub(crate) fn asset_export_url(url: &str) -> String {
     let (clean, query) = url.split_once('?').unwrap_or((url, ""));
     let kept: Vec<&str> = query
         .split('&')
-        .filter(|kv| !kv.is_empty() && *kv != "url" && *kv != "import")
+        .filter(|kv| !kv.is_empty() && !matches!(*kv, "url" | "import" | "import="))
         .collect();
     if kept.is_empty() {
         clean.to_string()

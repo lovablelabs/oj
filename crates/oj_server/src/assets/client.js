@@ -14,6 +14,10 @@ const wsToken = __WS_TOKEN__;
 // Vite 8's resolved `server.forwardConsole`: {enabled, unhandledErrors, logLevels}.
 const forwardConsole = __FORWARD_CONSOLE__;
 
+// A worker's module imports the client for `injectQuery`: as in Vite's client
+// (`hasDocument`), a worker clears and shows no overlay.
+const hasDocument = "document" in globalThis;
+
 const customListeners = new Map();
 function emit(event, data) {
   const set = customListeners.get(event);
@@ -94,6 +98,18 @@ export function createHotContext(ownerId) {
 
 const styleTags = new Map();
 
+/** Vite's injectQuery, for a dynamic `import()` url made at runtime. */
+export function injectQuery(url, queryToInject) {
+  // skip urls that won't be handled by vite
+  if (url[0] !== "." && url[0] !== "/") {
+    return url;
+  }
+  // can't use pathname from URL since it may be relative like ../
+  const pathname = url.replace(/[?#].*$/, "");
+  const { search, hash } = new URL(url, "http://vite.dev");
+  return `${pathname}?${queryToInject}${search ? `&` + search.slice(1) : ""}${hash || ""}`;
+}
+
 export function updateStyle(id, css) {
   let tag = styleTags.get(id);
   if (!tag) {
@@ -157,10 +173,15 @@ async function applyUpdate(update) {
   emit("vite:beforeUpdate", { type: "update", updates: [update] });
   try {
     for (const dispose of disposes) await dispose(disposed.data);
-    const sep = acceptedUrl.includes("?") ? "&" : "?";
+    // Vite's importUpdatedModule: a module that is neither a script nor a
+    // stylesheet is asked for with `import&`, never as the bare file.
+    const query = acceptedUrl.split("?")[1];
+    const moduleUrl = update.explicitImportRequired
+      ? `${acceptedPath}?import&t=${update.timestamp}${query ? `&${query}` : ""}`
+      : `${acceptedUrl}${query === undefined ? "?" : "&"}t=${update.timestamp}`;
     let next;
     try {
-      next = await import(acceptedUrl + sep + "t=" + update.timestamp);
+      next = await import(moduleUrl);
     } catch (err) {
       if (update.isWithinCircularImport) {
         // Vite: an accepted module inside an import loop cannot recover its
@@ -208,6 +229,7 @@ let isFirstUpdate = true;
 // file were never registered, so a hot update has nothing to swap into. A full
 // reload is the only way to recover, as in Vite's clearOverlayOrReloadOnFirstUpdate.
 function clearOverlayOrReloadOnFirstUpdate() {
+  if (!hasDocument) return "continue";
   if (isFirstUpdate && overlayEl?.isConnected) {
     location.reload();
     return "reload";
@@ -225,6 +247,7 @@ function showOverlay(err) {
 }
 
 function clearOverlay() {
+  if (!hasDocument) return;
   document.querySelectorAll(overlayId).forEach((n) => n.close());
   overlayEl = null;
 }
@@ -475,6 +498,7 @@ function connect() {
       // Vite's ErrorPayload carries `err`; older oj frames carried `message`.
       const err = msg.err || { message: msg.message };
       emit("vite:error", { err });
+      if (!hasDocument) return;
       if (enableOverlay) showOverlay(err);
       else console.error(`[oj] Internal Server Error\n${err.message}\n${err.stack || ""}`);
     } else if (msg.type === "custom") {

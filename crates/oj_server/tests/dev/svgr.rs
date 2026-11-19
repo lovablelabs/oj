@@ -132,8 +132,8 @@ async fn svgr_plugin_configured_for_plain_svgs_serves_named_components() {
     let server = app.serve().await;
     let main = server.text("/src/main.tsx").await;
     assert!(
-        main.contains("\"/src/logo.svg\""),
-        "the importer keeps the plain svg import (no ?url):\n{main}"
+        main.contains("\"/src/logo.svg?import\""),
+        "the importer names the svg's module, as Vite's `?import` (no ?url):\n{main}"
     );
     let logo = imported(&server, "/src/logo.svg").await;
     assert_eq!(logo.status, 200, "{}", logo.body);
@@ -189,8 +189,8 @@ async fn an_explicit_url_import_stays_the_url_beside_the_component() {
     let server = app.serve().await;
     let main = server.text("/src/main.tsx").await;
     assert!(
-        main.contains("\"/src/logo.svg\"") && main.contains("\"/src/logo.svg?url\""),
-        "the plain import stays plain, the ?url import keeps its query:\n{main}"
+        main.contains("\"/src/logo.svg?import\"") && main.contains("\"/src/logo.svg?url\""),
+        "the plain import is `?import`, the ?url import keeps its query:\n{main}"
     );
     let url = imported(&server, "/src/logo.svg?url").await;
     assert_eq!(url.status, 200, "{}", url.body);
@@ -352,8 +352,8 @@ async fn an_unfiltered_load_hook_is_asked_once_and_the_plain_svg_stays_the_url()
 
     let main = server.text("/src/main.tsx").await;
     assert!(
-        main.contains("\"/src/logo.svg\""),
-        "the import stays plain for the hooks to see:\n{main}"
+        main.contains("\"/src/logo.svg?import\""),
+        "the import is `?import`, not `?url`, for the hooks to see:\n{main}"
     );
     let first = imported(&server, "/src/logo.svg").await;
     assert_eq!(first.status, 200, "{}", first.body);
@@ -414,7 +414,7 @@ async fn an_unfiltered_load_hook_is_asked_once_and_the_plain_svg_stays_the_url()
     );
     close(socket).await;
     let importer = server.text("/src/main.tsx").await;
-    let stamped = stamped_import(&importer, "/src/logo.svg?t=");
+    let stamped = stamped_import(&importer, "/src/logo.svg?import&t=");
     let edited = imported(&server, &stamped).await;
     assert_eq!(edited.status, 200, "{}", edited.body);
     assert!(
@@ -501,8 +501,8 @@ async fn only_a_load_hook_vite_runs_before_vite_asset_claims_a_plain_svg() {
         let asked = svg_loads(&server.text("/__loads").await);
         if claims {
             assert!(
-                importer.contains("\"/src/logo.svg\""),
-                "{shape}: the import stays plain for the plugin to claim:\n{importer}"
+                importer.contains("\"/src/logo.svg?import\""),
+                "{shape}: the import is `?import`, not `?url`, for the plugin to claim:\n{importer}"
             );
             assert!(
                 module.body.contains("claimed"),
@@ -596,5 +596,49 @@ async fn a_bom_prefixed_svg_is_markup_too() {
             .starts_with("export default \"data:image/svg+xml,"),
         "declined by the plugin, the svg is its URL:\n{}",
         plain.body
+    );
+}
+
+// Under a plugin with a load or transform hook, oj takes its `?url` off a
+// plain svg import so the plugin can claim the file. Vite names that import
+// `/src/logo.svg?import`. Asserted: the importer names it so, and that url
+// without `Sec-Fetch-Dest` is the root svg's module, not the public twin.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_svg_import_under_a_load_plugin_is_the_module_beside_a_public_twin_without_fetch_metadata(
+) {
+    let app = plugin_app(
+        TAGGER_LIKE,
+        ("src/logo.svg", ICON),
+        "import url from \"./logo.svg\";\nwindow.__U = url;\n",
+    );
+    app.write(&[("public/src/logo.svg", "<svg>PUBLIC</svg>")]);
+    let server = app.serve().await;
+    middleware_ready(&server).await;
+    let main = server.text("/src/main.tsx").await;
+    assert!(
+        main.contains("\"/src/logo.svg?import\""),
+        "the import is Vite's `?import`:\n{main}"
+    );
+    let headerless = |url: &str| {
+        axum::http::Request::get(url)
+            .header("accept", "*/*")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let module = server.request(headerless("/src/logo.svg?import")).await;
+    assert_eq!(module.status, 200, "{}", module.body);
+    assert_eq!(module.headers["content-type"], "text/javascript");
+    assert!(
+        module
+            .body
+            .starts_with("export default \"data:image/svg+xml,")
+            && !module.body.contains("PUBLIC"),
+        "the root svg's URL module:\n{}",
+        module.body
+    );
+    let fetched = server.request(headerless("/src/logo.svg")).await;
+    assert_eq!(
+        fetched.body, "<svg>PUBLIC</svg>",
+        "a plain fetch is the public file"
     );
 }
