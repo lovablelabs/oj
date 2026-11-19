@@ -471,16 +471,154 @@ pub fn locale_cmp(a: &str, b: &str) -> Result<Ordering, UnverifiedChar> {
     Ok(ka.iter().map(|k| k.2).cmp(kb.iter().map(|k| k.2)))
 }
 
-/// The one localeCompare stand-in for rule and pseudo sorting; outside the
-/// verified alphabet it falls back to UTF-16 order (divergence risk vs ICU).
+/// The one localeCompare stand-in for rule and pseudo sorting. Verified strings compare as
+/// `locale_cmp`. A char outside the verified alphabet takes a primary weight in code point
+/// order: before every verified char for a C0 control (U+0000..U+001F), after every verified
+/// char for any other (divergence risk vs ICU). The comparison stays one total order: a
+/// UTF-16 fallback for just the pairs holding such a char was not transitive.
 pub fn default_locale_cmp(a: &str, b: &str) -> Ordering {
-    locale_cmp(a, b).unwrap_or_else(|UnverifiedChar(_)| utf16_cmp(a, b))
+    locale_cmp(a, b).unwrap_or_else(|UnverifiedChar(_)| {
+        let key = |c: char| match locale_key(c) {
+            Ok((primary, secondary, tertiary)) => ((1, u32::from(primary)), secondary, tertiary),
+            Err(UnverifiedChar(c)) if c < ' ' => ((0, u32::from(c)), 0, 0),
+            Err(UnverifiedChar(c)) => ((2, u32::from(c)), 0, 0),
+        };
+        let ka: Vec<_> = a.chars().map(key).collect();
+        let kb: Vec<_> = b.chars().map(key).collect();
+        (ka.iter().map(|k| k.0).cmp(kb.iter().map(|k| k.0)))
+            .then_with(|| ka.iter().map(|k| k.1).cmp(kb.iter().map(|k| k.1)))
+            .then_with(|| ka.iter().map(|k| k.2).cmp(kb.iter().map(|k| k.2)))
+    })
 }
 
 /// First char the pinned collation cannot order; hash-feeding sorts hard-error
 /// on it instead of guessing (r4#4 policy), non-hash sorts keep the fallback.
 pub fn unverified_collation_char(s: &str) -> Option<char> {
     s.chars().find(|&c| locale_key(c).is_err())
+}
+
+#[cfg(test)]
+mod default_locale_cmp_tests {
+    use super::{default_locale_cmp, locale_cmp, locale_key, unverified_collation_char};
+    use std::cmp::Ordering;
+
+    // Every string of up to two chars over verified lower- and upper-case letters, an accented
+    // letter and a verified emoji, and two chars outside the verified alphabet: all mixes of
+    // verified and unverified pairs.
+    fn strings() -> Vec<String> {
+        let alphabet = [
+            'a',
+            'B',
+            'b',
+            'C',
+            '\u{e9}',
+            '\u{1f600}',
+            '\u{2197}',
+            '\u{2026}',
+            '\t',
+        ];
+        assert_eq!(
+            unverified_collation_char("\u{1f600}\u{2197}\u{2026}"),
+            Some('\u{2197}')
+        );
+        assert_eq!(unverified_collation_char("\t"), Some('\t'));
+        assert_eq!(unverified_collation_char("\u{2026}"), Some('\u{2026}'));
+        let mut out = vec![String::new()];
+        for &c in &alphabet {
+            out.push(c.to_string());
+            for &d in &alphabet {
+                out.push(format!("{c}{d}"));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_string_outside_the_verified_alphabet_does_not_make_a_cycle() {
+        // "a" < "B" by locale; a per-pair UTF-16 fallback put "B" < "C\u{2197}" < "a".
+        assert_eq!(default_locale_cmp("a", "B"), Ordering::Less);
+        assert_eq!(default_locale_cmp("B", "C\u{2197}"), Ordering::Less);
+        assert_eq!(default_locale_cmp("a", "C\u{2197}"), Ordering::Less);
+    }
+
+    #[test]
+    fn verified_chars_keep_their_order_and_unverified_ones_sort_by_code_point() {
+        let verified: Vec<char> = (0..0x3000u32)
+            .chain([0x4e2d, 0x65e5, 0x1f600])
+            .filter_map(char::from_u32)
+            .filter(|&c| locale_key(c).is_ok())
+            .collect();
+        assert!(verified.len() > 200);
+        // C0 controls sort before the alphabet, as in UTF-16 order.
+        let controls = ['\u{0}', '\t', '\n', '\u{1f}'];
+        // DEL, BMP, private use, the last BMP scalar, astral and the last scalar sort after it.
+        // UTF-16 puts the astral ones (surrogate pairs) before U+E000..U+FFFF; code point
+        // order does not.
+        let unverified = [
+            '\u{7f}',
+            '\u{2026}',
+            '\u{2197}',
+            '\u{e000}',
+            '\u{ffff}',
+            '\u{1d11e}',
+            '\u{10ffff}',
+        ];
+        for &c in controls.iter().chain(&unverified) {
+            assert!(locale_key(c).is_err(), "{c:?}");
+        }
+        for &a in &verified {
+            let a = a.to_string();
+            for &b in &verified {
+                let b = b.to_string();
+                assert_eq!(default_locale_cmp(&a, &b), locale_cmp(&a, &b).unwrap());
+            }
+            for &u in &unverified {
+                assert_eq!(
+                    default_locale_cmp(&a, &u.to_string()),
+                    Ordering::Less,
+                    "{a:?} {u:?}"
+                );
+            }
+            for &c in &controls {
+                assert_eq!(
+                    default_locale_cmp(&a, &c.to_string()),
+                    Ordering::Greater,
+                    "{a:?} {c:?}"
+                );
+            }
+        }
+        for pair in controls.windows(2).chain(unverified.windows(2)) {
+            let (a, b) = (pair[0].to_string(), pair[1].to_string());
+            assert_eq!(default_locale_cmp(&a, &b), Ordering::Less, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn default_locale_cmp_is_a_total_order_that_keeps_verified_locale_order() {
+        let strings = strings();
+        for a in &strings {
+            assert_eq!(default_locale_cmp(a, a), Ordering::Equal, "{a:?}");
+            for b in &strings {
+                let ab = default_locale_cmp(a, b);
+                assert_eq!(ab, default_locale_cmp(b, a).reverse(), "{a:?} {b:?}");
+                if let Ok(locale) = locale_cmp(a, b) {
+                    assert_eq!(ab, locale, "{a:?} {b:?}");
+                }
+                if ab == Ordering::Greater {
+                    continue;
+                }
+                for c in &strings {
+                    if default_locale_cmp(b, c) != Ordering::Greater {
+                        assert_ne!(
+                            default_locale_cmp(a, c),
+                            Ordering::Greater,
+                            "{a:?} <= {b:?} <= {c:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ES TrimString WhiteSpace + LineTerminator: WhiteSpace is TAB VT FF SP NBSP

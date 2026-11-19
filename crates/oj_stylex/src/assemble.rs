@@ -7,7 +7,7 @@ use std::hash::{BuildHasher, BuildHasherDefault};
 use std::sync::{Arc, Weak};
 
 use crate::fxhash::{FxHashMap, FxHashSet};
-use crate::jsrt::{ASCII_LOCALE_KEYS, locale_key, utf16_cmp};
+use crate::jsrt::{ASCII_LOCALE_KEYS, locale_key};
 use crate::rules::StylexRule;
 use crate::timings::{self, Stage};
 
@@ -620,7 +620,8 @@ impl RuleKey {
         }
     }
 
-    // default_locale_cmp semantics per step: either side unverified → UTF-16 order.
+    // default_locale_cmp semantics per step: a verified pair compares its keys, any other
+    // pair goes through default_locale_cmp itself, which orders it the same way.
     fn cmp_with_fallback(
         &self,
         other: &RuleKey,
@@ -631,19 +632,19 @@ impl RuleKey {
         if legacy {
             return match (self.full_segments(), other.full_segments()) {
                 (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-                _ => utf16_cmp(&a.class_name, &b.class_name),
+                _ => default_locale_cmp(&a.class_name, &b.class_name),
             };
         }
         let decl = match (self.decl_segments(), other.decl_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(decl_slice(&a.ltr), decl_slice(&b.ltr)),
+            _ => default_locale_cmp(decl_slice(&a.ltr), decl_slice(&b.ltr)),
         };
         if decl != Ordering::Equal {
             return decl;
         }
         match (self.full_segments(), other.full_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(&a.ltr, &b.ltr),
+            _ => default_locale_cmp(&a.ltr, &b.ltr),
         }
     }
 }
