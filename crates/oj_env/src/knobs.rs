@@ -58,7 +58,8 @@ pub struct Knobs {
     /// dev runner accumulates across reloads before it is respawned (500).
     pub start_respawn_stale: Option<usize>,
     /// `OJ_START_HOT_IDLE_SECS`: how long the Start client bundle's hot-update
-    /// engine goes unused before it is closed (300).
+    /// engine goes without a client bundle before it is closed (300; 0 never
+    /// closes it).
     pub start_hot_idle_secs: Option<u64>,
 
     /// `OJ_STYLEX_NATIVE_SCOPE=1`: StyleX binding analysis from oj_stylex's own
@@ -142,9 +143,7 @@ impl Knobs {
             start_respawn_stale: var("OJ_START_RESPAWN_STALE")
                 .and_then(|v| v.trim().parse().ok())
                 .filter(|v| *v > 0),
-            start_hot_idle_secs: var("OJ_START_HOT_IDLE_SECS")
-                .and_then(|v| v.trim().parse().ok())
-                .filter(|v| *v > 0),
+            start_hot_idle_secs: var("OJ_START_HOT_IDLE_SECS").and_then(|v| v.trim().parse().ok()),
             stylex_native_scope: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("1"),
             stylex_stage_timings: var("STYLEX_STAGE_TIMINGS").as_deref() == Some("1"),
             stylex_cache_dir: get("STYLEX_CACHE_DIR")
@@ -309,8 +308,13 @@ mod tests {
         );
         assert_eq!(
             knobs(&[("OJ_START_HOT_IDLE_SECS", "0")]).start_hot_idle_secs,
+            Some(0)
+        );
+        assert_eq!(
+            knobs(&[("OJ_START_HOT_IDLE_SECS", "soon")]).start_hot_idle_secs,
             None
         );
+        assert_eq!(knobs(&[]).start_hot_idle_secs, None);
         assert_eq!(
             knobs(&[("OJ_MEMORY_CACHE_MB", " 0 ")]).memory_cache_mb,
             Some(0)

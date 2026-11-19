@@ -1738,27 +1738,59 @@ fn spawn_start_watcher(
     });
 }
 
-/// How long the client bundle's hot-update engine goes unused before
-/// [`close_idle_hot_engine`] closes it.
+/// How long the client bundle's hot-update engine goes without a client
+/// bundle before [`close_idle_hot_engine`] closes it.
 const HOT_ENGINE_IDLE: Duration = Duration::from_secs(300);
 
-/// Closes the client bundle's hot-update engine when no edit has reached it
-/// for [`HOT_ENGINE_IDLE`] (`OJ_START_HOT_IDLE_SECS`), and returns the heap
-/// it freed. An app nobody is editing then holds what a warm boot holds.
+/// The shortest idle time taken from `OJ_START_HOT_IDLE_SECS`: well past
+/// [`REFRESH_PAUSE`], so the refresh that follows a hot edit finds the
+/// engine that patched the page.
+const HOT_ENGINE_IDLE_MIN: Duration = Duration::from_secs(10);
+
+/// The idle time `OJ_START_HOT_IDLE_SECS` asks for: none when it is 0 (the
+/// engine is never closed), [`HOT_ENGINE_IDLE`] when it is unset.
+fn hot_engine_idle(knob: Option<u64>) -> Option<Duration> {
+    match knob {
+        Some(0) => None,
+        // A day at most: a tick is scheduled this far ahead.
+        Some(secs) => Some(Duration::from_secs(secs.min(86_400)).max(HOT_ENGINE_IDLE_MIN)),
+        None => Some(HOT_ENGINE_IDLE),
+    }
+}
+
+/// Closes the client bundle's hot-update engine once no client bundle has
+/// run for the idle time, and gives the heap it freed back to the OS (on
+/// glibc). The Rust side of an app nobody is editing then holds what it
+/// holds after a warm boot.
 async fn close_idle_hot_engine(
     state: Arc<StartState>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let idle = oj_env::get()
-        .knobs
-        .start_hot_idle_secs
-        .map_or(HOT_ENGINE_IDLE, Duration::from_secs);
-    let mut tick = tokio::time::interval((idle / 4).max(Duration::from_secs(1)));
+    let Some(idle) = hot_engine_idle(oj_env::get().knobs.start_hot_idle_secs) else {
+        return;
+    };
+    let mut tick =
+        tokio::time::interval((idle / 4).clamp(Duration::from_secs(1), Duration::from_secs(15)));
     while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {
         tick.tick().await;
-        if state.bundler.close_idle_session(idle).await {
-            let _ =
-                tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap).await;
+        // The close drops every client module's AST: off the async workers,
+        // as a bundle runs.
+        let bundler = Arc::clone(&state.bundler);
+        let closed = tokio::task::spawn_blocking(move || {
+            let closed =
+                tokio::runtime::Handle::current().block_on(bundler.close_idle_session(idle));
+            if closed {
+                oj_server::rolldown_runtime::release_freed_heap();
+            }
+            closed
+        })
+        .await
+        .unwrap_or(false);
+        if closed {
+            println!(
+                "  oj start: hot-update engine closed after {}s without an edit; the next edit rebuilds the client and reloads",
+                idle.as_secs()
+            );
         }
     }
 }
@@ -5103,6 +5135,18 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hot_engine_idle_knob_disables_at_zero_and_has_a_floor_and_a_ceiling() {
+        assert_eq!(hot_engine_idle(None), Some(HOT_ENGINE_IDLE));
+        assert_eq!(hot_engine_idle(Some(0)), None);
+        assert_eq!(hot_engine_idle(Some(1)), Some(HOT_ENGINE_IDLE_MIN));
+        assert_eq!(hot_engine_idle(Some(60)), Some(Duration::from_secs(60)));
+        assert_eq!(
+            hot_engine_idle(Some(u64::MAX)),
+            Some(Duration::from_secs(86_400))
+        );
+    }
 
     #[test]
     fn start_build_out_dir_follows_vites_empty_out_dir_rule() {

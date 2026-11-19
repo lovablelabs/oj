@@ -379,8 +379,8 @@ impl DevBundler {
         tokio::runtime::Handle::current().block_on(self.bundle_async(changed, refresh))
     }
 
-    /// Closes the hot-update engine once no bundle has run for `idle`, and
-    /// says whether it did. The engine holds the AST of every client module;
+    /// Closes the hot-update engine once no client bundle has run for `idle`,
+    /// and says whether it did. The engine holds the AST of every client module;
     /// the next edit starts a new one with a full bundle, as the first edit
     /// after a warm boot does.
     pub(crate) async fn close_idle_session(&self, idle: std::time::Duration) -> bool {
