@@ -468,7 +468,11 @@ pub async fn start_dev(
                 return Ok(Ok(None));
             }
             tokio::task::spawn_blocking(move || {
-                bundle_client_entry_cached(&bundler, &cache, &mode).map(Some)
+                let bundled = bundle_client_entry_cached(&bundler, &cache, &mode).map(Some);
+                // A cold bundle parsed every client module, whether it then
+                // failed or was persisted.
+                oj_server::rolldown_runtime::release_freed_heap();
+                bundled
             })
             .await
         }
@@ -3525,9 +3529,6 @@ fn bundle_client_entry_cached(
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
     bundler.bundle(&[], false)?;
-    // The cold bundle parsed every client module; on a warm boot none of
-    // that is allocated.
-    oj_server::rolldown_runtime::release_freed_heap();
     if !bundler.cacheable() {
         println!("  oj start: client bundle not cached (built without the app's plugin host)");
     } else if let Some((key, pinned)) = persist_as_built(bundler, &store, cache) {

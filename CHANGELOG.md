@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- On Linux, `oj dev` returns the memory a burst of requests freed. A page load compiles its modules on many threads at once, each with a glibc arena of its own, and those arenas kept the freed pages resident for the rest of the session. The server now calls `malloc_trim` once it has served nothing for five seconds after a burst, and once after a cold client bundle of a Start app. On the TanStack Start template with 1,500 extra modules (Linux arm64, 12 cores, glibc 2.39), RSS a minute after the first page load drops from 1,405–1,441 MB to 1,229–1,254 MB; on the plain template from 404–415 MB to 369–377 MB. Time to the first response is unchanged, and each trim takes 2–14 ms. macOS is unchanged: its allocator reports no such pages in the process's footprint.
+- On Linux, `oj dev` returns the memory a burst of requests freed. A page load compiles its modules on many threads at once, each with a glibc arena of its own, and those arenas kept the freed pages resident for the rest of the session. The server now calls `malloc_trim` five to ten seconds after the last request of a burst, once none is in flight, and once after a Start app's boot client bundle. On the TanStack Start template with 1,500 extra modules (Linux arm64, 12 cores, glibc 2.39), RSS a minute after the first page load drops from 1,405–1,441 MB to 1,229–1,254 MB; on the plain template from 404–415 MB to 369–377 MB. Time to the first response is unchanged, and each trim takes 2–14 ms. macOS is unchanged: its allocator reports no such pages in the process's footprint.
 
 ## [0.4.17] - 2026-11-18
 

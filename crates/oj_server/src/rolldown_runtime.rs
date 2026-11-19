@@ -60,12 +60,13 @@ impl<F: Future> Future for OnRolldown<F> {
     }
 }
 
-/// Returns the heap a finished cold pre-bundle freed to the OS.
+/// Returns freed heap to the OS: after a cold pre-bundle, after the boot
+/// client bundle, and after each burst of requests.
 ///
-/// The bundle's allocations interleave with the module graph's long-lived
-/// ones, so glibc's `free` never empties a page and the process keeps that
-/// peak resident; `malloc_trim` releases the free pages in place. A no-op
-/// off glibc.
+/// Their allocations interleave with the module graph's long-lived ones, so
+/// glibc's `free` never empties a page and the process keeps that peak
+/// resident; `malloc_trim` releases the free pages in place. A no-op off
+/// glibc.
 pub fn release_freed_heap() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: `malloc_trim` only reads and updates glibc's own heap state.
