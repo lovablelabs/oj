@@ -825,7 +825,7 @@ pub async fn start_dev(
     };
     let boot = (!boot.0.is_empty() || !boot.1.is_empty()).then(|| {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        hold_documents(&state, rx);
+        hold_documents(&state.deferred_build, rx);
         BootBatch {
             moved: boot.0,
             added: boot.1,
@@ -906,7 +906,7 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
         return;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
-    hold_documents(state, rx);
+    hold_documents(&state.deferred_build, rx);
     state.flush_timing.rebundle_wanted();
     {
         let mut slot = state
@@ -922,12 +922,15 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
 
 /// Runner documents wait (`ensure_bundle_current`) until `done` fires or is
 /// dropped.
-fn hold_documents(state: &Arc<StartState>, done: tokio::sync::oneshot::Receiver<()>) {
-    state.deferred_build.send_modify(|n| *n += 1);
-    let state = Arc::clone(state);
+fn hold_documents(
+    holds: &tokio::sync::watch::Sender<usize>,
+    done: tokio::sync::oneshot::Receiver<()>,
+) {
+    holds.send_modify(|n| *n += 1);
+    let holds = holds.clone();
     tokio::spawn(async move {
         let _ = done.await;
-        state.deferred_build.send_modify(|n| *n -= 1);
+        holds.send_modify(|n| *n -= 1);
     });
 }
 
@@ -5165,6 +5168,36 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The deferred bundle and the boot's rebuild can both be pending: a
+    // document waits for the last of them, not the first to end.
+    #[tokio::test]
+    async fn documents_wait_for_every_hold() {
+        let holds = tokio::sync::watch::channel(0).0;
+        let (boot, boot_done) = tokio::sync::oneshot::channel();
+        let (deferred, deferred_done) = tokio::sync::oneshot::channel::<()>();
+        hold_documents(&holds, boot_done);
+        hold_documents(&holds, deferred_done);
+        let mut waiting = holds.subscribe();
+        boot.send(()).unwrap();
+        let left = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            waiting.wait_for(|n| *n < 2),
+        )
+        .await
+        .unwrap()
+        .map(|n| *n)
+        .unwrap();
+        assert_eq!(left, 1, "documents let through with a hold still pending");
+        drop(deferred);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            waiting.wait_for(|n| *n == 0),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
 
     #[test]
     fn start_build_out_dir_follows_vites_empty_out_dir_rule() {

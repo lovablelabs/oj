@@ -115,19 +115,25 @@ fn a_route_saved_between_the_restore_and_the_watcher_reaches_the_client() {
 
     // The second restores it, and the route is saved while the server is
     // still held in `configureServer`, which the test then releases.
-    {
-        let dev = held_start(root, "a", || write_about(root, "about-saved-after-restore"));
-        let (status, page) = dev.request("GET", "/about", &[]);
-        assert!(
-            status == 200 && page.contains("about-saved-after-restore"),
-            "the server renders the saved route: {status} {page:?}\n{}",
-            dev.output()
-        );
-        assert_client_holds(&dev, "about-saved-after-restore");
-    }
+    let dev = held_start(root, "a", || write_about(root, "about-saved-after-restore"));
+    let (status, page) = dev.request("GET", "/about", &[]);
+    assert!(
+        status == 200 && page.contains("about-saved-after-restore"),
+        "the server renders the saved route: {status} {page:?}\n{}",
+        dev.output()
+    );
+    assert_client_holds(&dev, "about-saved-after-restore");
+}
 
-    // The third restores that bundle, and a note is created under its glob,
-    // the one change: no file the bundle read moved.
+// No file the restored bundle read moved: the one change is a file its glob
+// now matches.
+#[test]
+fn a_file_created_under_a_glob_between_the_restore_and_the_watcher_reaches_the_client() {
+    let Some(app) = app("restore-watch-gap-glob") else {
+        return;
+    };
+    let root = &app.0;
+    cached_start(root);
     let dev = held_start(root, "b", || {
         write_note(root, "two", "note-added-after-restore")
     });
