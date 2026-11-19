@@ -327,6 +327,29 @@ fn an_at_prefixed_path_renders_under_ssr_dev() {
             "GET {path} from a disallowed host: {status}\n{body}"
         );
     }
+    // A HEAD page request gets 200; a cross-origin request gets the dev
+    // server's cors answer (Vite's corsMiddleware runs first).
+    let (status, _) = dev.request("HEAD", "/someone", &html);
+    assert_eq!(status, 200, "HEAD /someone");
+    let origin = "http://localhost:5173";
+    let (status, headers, body) = dev.fetch(
+        "GET",
+        "/someone",
+        &[
+            ("accept", "text/html".to_string()),
+            ("origin", origin.to_string()),
+        ],
+    );
+    let allowed = headers
+        .iter()
+        .find(|(name, _)| name == "access-control-allow-origin")
+        .map(|(_, v)| v.as_str());
+    assert!(
+        status == 200
+            && String::from_utf8_lossy(&body).contains("ssr-path:/someone")
+            && allowed == Some(origin),
+        "GET /someone from {origin}: {status} {headers:?}"
+    );
     drop(dev);
     let _ = std::fs::remove_dir_all(&root);
 }

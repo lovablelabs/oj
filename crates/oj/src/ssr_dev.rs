@@ -531,14 +531,23 @@ mod tests {
                 "a module request under /@ is the dev server's: {path}"
             );
         }
-        let upgrade = axum::http::Request::get("/@hmr")
-            .header("connection", "upgrade")
-            .header("upgrade", "websocket")
+        for hmr in ["/@hmr", "/hmr"] {
+            let upgrade = axum::http::Request::get(hmr)
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                matches!(classify(&upgrade, &prefixes), Route::Pass),
+                "a socket upgrade to a configured hmr path passes through: {hmr}"
+            );
+        }
+        let head = axum::http::Request::head("/someone")
             .body(axum::body::Body::empty())
             .unwrap();
         assert!(
-            matches!(classify(&upgrade, &prefixes), Route::Pass),
-            "a socket upgrade to a configured hmr path passes through"
+            matches!(classify(&head, &prefixes), Route::Document),
+            "a HEAD is rendered as its GET is"
         );
         assert!(
             route("GET", "/__hmr_gate"),

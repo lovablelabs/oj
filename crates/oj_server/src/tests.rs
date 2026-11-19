@@ -2895,6 +2895,11 @@ fn preload_hints_name_the_exact_import_url() {
         preload_href(Path::new("/app"), "/src/assets/hero.png", &entries, false),
         "/src/assets/hero.png?url"
     );
+    // A root folder named `@x` holds assets like any other.
+    assert_eq!(
+        preload_href(Path::new("/app"), "/@x/hero.png", &entries, false),
+        "/@x/hero.png?url"
+    );
     assert_eq!(
         preload_href(Path::new("/app"), "/src/logo.svg", &entries, false),
         "/src/logo.svg?url"

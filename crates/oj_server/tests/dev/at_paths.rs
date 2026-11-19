@@ -184,17 +184,85 @@ async fn an_oj_endpoint_answers_a_page_navigation_too() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_fs_url_outside_the_allow_list_stays_forbidden() {
-    let outside = "/etc/passwd";
-    if !std::path::Path::new(outside).is_file() {
-        eprintln!("skipping: no {outside}");
-        return;
-    }
-    let app = spa();
-    let server = app.serve().await;
+    let app = App::new(&[
+        ("secret.txt", "outside-the-root\n"),
+        ("web/package.json", r#"{"name":"at-app","private":true}"#),
+        ("web/src/main.js", "export {};\n"),
+        (
+            "web/index.html",
+            "<!doctype html><title>spa-shell-marker</title>",
+        ),
+    ]);
+    let mut dev = app.dev();
+    dev.root = app.root.join("web");
+    let server = crate::serve(dev).await;
+    let outside = std::fs::canonicalize(app.root.join("secret.txt")).unwrap();
     for how in ["document", "html", "script", "none"] {
-        let res = fetch(&server, &format!("/@fs{outside}"), how).await;
-        assert_eq!(res.status, 403, "/@fs{outside} ({how}): {}", res.body);
+        let res = fetch(&server, &format!("/@fs{}", outside.display()), how).await;
+        assert!(
+            res.status == 403 && !res.body.contains("outside-the-root"),
+            "/@fs{} ({how}): {} {}",
+            outside.display(),
+            res.status,
+            res.body
+        );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_fs_url_naming_a_folder_gets_the_spa_fallback() {
+    // sirv skips a directory and hands the request on, as for a missing file.
+    let app = spa();
+    app.write(&[("sub/a.txt", "a\n")]);
+    let server = app.serve().await;
+    let root = std::fs::canonicalize(&app.root).unwrap();
+    for dir in [root.join("sub"), root.clone()] {
+        let path = format!("/@fs{}", dir.display());
+        for how in ["document", "html"] {
+            let page = fetch(&server, &path, how).await;
+            assert!(
+                page.status == 200 && page.body.contains(SHELL),
+                "{path} ({how}): {} {}",
+                page.status,
+                page.body
+            );
+        }
+        let module = fetch(&server, &path, "script").await;
+        assert!(
+            module.status == 404 && !module.body.contains(SHELL),
+            "{path} as a module: {} {}",
+            module.status,
+            module.body
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_request_for_an_html_page_gets_a_404() {
+    // Vite's htmlFallback maps `/page` to `page.html`, which its indexHtml
+    // middleware serves to anything but `Sec-Fetch-Dest: script`.
+    let app = spa();
+    app.write(&[(
+        "page.html",
+        "<!doctype html><html><head><title>page-html-marker</title></head><body></body></html>",
+    )]);
+    let server = app.serve().await;
+    for how in ["document", "html", "none"] {
+        let page = fetch(&server, "/page", how).await;
+        assert!(
+            page.status == 200 && page.body.contains("page-html-marker"),
+            "/page ({how}): {} {}",
+            page.status,
+            page.body
+        );
+    }
+    let module = fetch(&server, "/page", "script").await;
+    assert!(
+        module.status == 404 && !module.body.contains("<html"),
+        "/page as a module: {} {}",
+        module.status,
+        module.body
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -222,6 +290,68 @@ async fn an_updated_module_in_an_at_named_root_folder_is_imported_under_its_stam
     loop {
         let main = server.text("/main.js").await;
         if main.contains("\"/@x/a.js?t=") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the importer still names the cached url after the edit:\n{main}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A `transform` that makes a module of a `.note` file, as an MDX plugin does.
+const NOTE_PLUGIN: &str = r#"export default [
+  {
+    name: "note",
+    transform: {
+      filter: { id: /\.note$/ },
+      handler(code) {
+        return "export default " + JSON.stringify(code.trim()) + ";\n";
+      },
+    },
+  },
+];
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_updated_plugin_module_in_an_at_named_root_folder_is_imported_under_its_stamp() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"at-folder","private":true}"#),
+        (
+            "index.html",
+            "<!doctype html><html><head></head><body>\
+             <script type=\"module\" src=\"/main.js\"></script></body></html>",
+        ),
+        (
+            "main.js",
+            "import v from \"./@x/a.note\";\nconsole.log(v);\nimport.meta.hot?.accept();\n",
+        ),
+        ("@x/a.note", "one\n"),
+        ("oj.plugins.mjs", NOTE_PLUGIN),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/main.js").await;
+    assert!(main.contains("\"/@x/a.note\""), "{main}");
+    let note = server
+        .request(
+            Request::get("/@x/a.note")
+                .header("sec-fetch-dest", "script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert!(
+        note.body.contains("export default \"one\""),
+        "{}",
+        note.body
+    );
+
+    app.write(&[("@x/a.note", "two\n")]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let main = server.text("/main.js").await;
+        if main.contains("\"/@x/a.note?t=") {
             break;
         }
         assert!(
