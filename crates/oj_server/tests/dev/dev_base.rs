@@ -48,10 +48,11 @@ async fn client_scripts_answer_under_the_base() {
     // Shares the base's leading letters but is not under it.
     server.text("/apple.svg").await;
     server.text("/@oj/client.js").await;
-    // Vite's client path under the base is oj's client under the base.
+    // Vite's client path under the base is oj's client under the base, after
+    // the env module, which Vite's client imports first.
     assert_eq!(
         server.text("/app/@vite/client").await,
-        "export * from \"/app/@oj/client.js\";\n"
+        "import \"/app/@vite/env\";\nexport * from \"/app/@oj/client.js\";\n"
     );
 }
 

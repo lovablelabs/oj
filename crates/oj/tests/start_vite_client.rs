@@ -63,7 +63,7 @@ async fn a_harness_page_loads_vites_client_beside_the_preamble() {
     assert_eq!(status, 200, "GET /@vite/client\n{body}\n{}", dev.output());
     assert_eq!(
         body,
-        "import \"/@oj-start/page-client.js\";\nexport * from \"/@oj/client.js\";\n"
+        "import \"/@vite/env\";\nimport \"/@oj-start/page-client.js\";\nexport * from \"/@oj/client.js\";\n"
     );
 
     if browser::skip() {
@@ -164,7 +164,7 @@ async fn under_a_base_a_start_document_keeps_one_socket() {
     );
     assert_eq!(
         body,
-        "import \"/app/@oj-start/page-client.js\";\nexport * from \"/app/@oj/client.js\";\n"
+        "import \"/app/@vite/env\";\nimport \"/app/@oj-start/page-client.js\";\nexport * from \"/app/@oj/client.js\";\n"
     );
 
     if browser::skip() {
@@ -189,6 +189,115 @@ async fn under_a_base_a_start_document_keeps_one_socket() {
         "the sockets a Start document under the base opened"
     );
     page.close().await;
+}
+
+// Vite's client imports `@vite/env` (client.ts), which assigns the client
+// environment's `define`s onto globalThis (env.ts): the fixture's config
+// define.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_define_is_a_global_once_vites_client_loads() {
+    let Some(app) = app("vite-client-define") else {
+        return;
+    };
+    std::fs::write(
+        app.0.join("public/define.html"),
+        r#"<!doctype html><html><head><script type="module" src="/@vite/client"></script></head><body>
+<script type="module">window.__defines = [globalThis.__FIXTURE_DEFINE__ ?? null];</script>
+</body></html>"#,
+    )
+    .unwrap();
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@vite/env", &[]);
+    assert_eq!(status, 200, "GET /@vite/env\n{}", dev.output());
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/define.html")).await;
+    let ran = page
+        .poll("Array.isArray(window.__defines)", Duration::from_secs(60))
+        .await;
+    assert!(
+        ran,
+        "the page never ran: {:?}\n{}",
+        page.errors(),
+        dev.output()
+    );
+    let defines: serde_json::Value = page.eval("window.__defines").await;
+    page.close().await;
+    assert_eq!(defines, serde_json::json!(["fixture-define-marker"]));
+}
+
+// Vite's `ErrorOverlay` is the one class its client defines and registers
+// (overlay.ts). On a Start document Start's client registers its own copy
+// first when it shows an error; `/@vite/client` must export that one, in
+// either order, or constructing it throws `Illegal constructor`.
+#[tokio::test(flavor = "multi_thread")]
+async fn error_overlay_from_vites_client_constructs_beside_starts_overlay() {
+    let Some(app) = app("vite-client-overlay") else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    if browser::skip() {
+        return;
+    }
+    for (order, imports) in [
+        (
+            "Start's overlay first",
+            r#"import("/@oj-start/error-overlay.js").then(() => import("/@vite/client"))"#,
+        ),
+        (
+            "/@vite/client first",
+            r#"import("/@vite/client").then((m) => import("/@oj-start/error-overlay.js").then(() => m))"#,
+        ),
+    ] {
+        let page = Page::open(&dev.url("/")).await;
+        page.wait_for(
+            r#"!!document.querySelector('script[src*="/@oj-start/live-reload.js"]')"#,
+            Duration::from_secs(60),
+        )
+        .await;
+        let constructed: serde_json::Value = page
+            .eval(&format!(
+                r#"{imports}.then((m) => {{
+                    document.body.appendChild(new m.ErrorOverlay({{ message: "x" }}));
+                    return m.ErrorOverlay === customElements.get("vite-error-overlay");
+                }}).catch((e) => String(e))"#
+            ))
+            .await;
+        page.close().await;
+        assert_eq!(constructed, serde_json::json!(true), "{order}");
+    }
+}
+
+// Vite's transform middleware sends `server.headers` on its client module
+// (transform.ts), as oj's plain server does inside its headers layer.
+#[tokio::test(flavor = "multi_thread")]
+async fn server_headers_reach_vites_client_under_start() {
+    let Some(app) = app("vite-client-headers") else {
+        return;
+    };
+    let config = app.0.join("vite.config.ts");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let with_headers = text.replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  server: { headers: { \"X-Harness\": \"1\" } },",
+        1,
+    );
+    assert_ne!(text, with_headers, "the fixture's config changed shape");
+    std::fs::write(&config, with_headers).unwrap();
+    let dev = Server::oj_dev(&app.0);
+    for path in [
+        "/@vite/client",
+        "/@oj-start/page-client.js",
+        "/@oj/client.js",
+    ] {
+        let (status, headers, _) = dev.fetch("GET", path, &[]);
+        assert_eq!(status, 200, "GET {path}\n{}", dev.output());
+        assert!(
+            headers.iter().any(|(k, v)| k == "x-harness" && v == "1"),
+            "{path}: {headers:?}"
+        );
+    }
 }
 
 /// Records the url (without its query) of every WebSocket the page opens.

@@ -368,7 +368,10 @@ pub fn svg_to_data_url(content: &[u8]) -> String {
 /// Vite's `/@vite/env` (client/env.ts): the client environment's user
 /// `define` (`import.meta.env.*` left out, as clientInjections does), keys
 /// sorted as serializeDefine sorts them, assigned onto the global object.
-pub(crate) fn vite_env_module(config: &oj_config::OjConfig) -> String {
+/// A value reading `import.meta.env` gets `env_object` (the client's
+/// `import.meta.env` expression) assigned first, as Vite's import analysis
+/// prepends it to a module that reads it.
+pub(crate) fn vite_env_module(config: &oj_config::OjConfig, env_object: &str) -> String {
     let mut defines: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for (key, value) in oj_config::config_defines(config)
         .into_iter()
@@ -383,8 +386,13 @@ pub(crate) fn vite_env_module(config: &oj_config::OjConfig) -> String {
         .map(|(k, v)| format!("{}: {v}", serde_json::Value::String(k.clone())))
         .collect::<Vec<_>>()
         .join(", ");
+    let prelude = if defines.contains("import.meta.env") {
+        format!("import.meta.env = {env_object};\n")
+    } else {
+        String::new()
+    };
     format!(
-        r#"const context = (() => {{
+        r#"{prelude}const context = (() => {{
   if (typeof globalThis !== "undefined") {{
     return globalThis;
   }} else if (typeof self !== "undefined") {{

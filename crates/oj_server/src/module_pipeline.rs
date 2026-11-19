@@ -1450,6 +1450,9 @@ impl ImportRewrite<'_> {
         if spec == "virtual:oj-routes" {
             return Some("/@oj/routes.js".to_string());
         }
+        if let Some(url) = state.oj_paths.vite_alias(spec) {
+            return Some(url.to_string());
+        }
         // @vitejs/plugin-react's refresh runtime and its virtual preamble (the
         // react-refresh and virtual-preamble plugins, which oj does natively).
         match spec {

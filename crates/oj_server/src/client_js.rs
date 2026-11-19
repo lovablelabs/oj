@@ -24,8 +24,11 @@ pub(crate) struct OjPublicPaths {
     /// share the one instance oj's compiled modules register with.
     pub(crate) react_refresh_js: Bytes,
     /// `/@vite/client`, Vite's client path, which pages written for Vite load
-    /// beside the preamble: oj's client re-exported, one instance and socket.
+    /// beside the preamble: oj's client re-exported, one instance and socket,
+    /// after `/@vite/env`, which Vite's client imports first.
     pub(crate) vite_client_js: Bytes,
+    pub(crate) vite_client: String,
+    pub(crate) vite_env: String,
 }
 
 impl OjPublicPaths {
@@ -41,11 +44,14 @@ impl OjPublicPaths {
         let react_refresh_js = format!(
             "export * from {refresh_runtime:?};\nexport {{ default }} from {refresh_runtime:?};\n"
         );
-        let vite_client_js = format!("export * from {client:?};\n");
+        let (vite_client, vite_env) = (at("/@vite/client"), at("/@vite/env"));
+        let vite_client_js = format!("import {vite_env:?};\nexport * from {client:?};\n");
         OjPublicPaths {
             refresh_preamble: at("/@oj/refresh-preamble.js"),
             react_refresh_js: Bytes::from(react_refresh_js),
             vite_client_js: Bytes::from(vite_client_js),
+            vite_client,
+            vite_env,
             refresh_runtime_js: Bytes::from(refresh_runtime_js),
             refresh_preamble_js: Bytes::from(refresh_preamble_js),
             client,
@@ -60,6 +66,19 @@ impl OjPublicPaths {
             || url == self.client
             || url == self.refresh_runtime
             || url == self.refresh_preamble
+            || url == self.vite_client
+            || url == self.vite_env
+    }
+
+    /// Vite's client aliases (`^\/?@vite\/client`, `^\/?@vite\/env`,
+    /// config.ts `clientAlias`) for the bare specifiers, which no package
+    /// answers: the based dev-server paths.
+    pub(crate) fn vite_alias(&self, spec: &str) -> Option<&str> {
+        match spec {
+            "@vite/client" => Some(&self.vite_client),
+            "@vite/env" => Some(&self.vite_env),
+            _ => None,
+        }
     }
 }
 

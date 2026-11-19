@@ -2315,7 +2315,14 @@ impl DevServer {
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
-            vite_env_js: assets_serve::vite_env_module(&config),
+            vite_env_js: assets_serve::vite_env_module(
+                &config,
+                &import_meta_env
+                    .client_defines()
+                    .into_iter()
+                    .find_map(|(k, v)| (k == "import.meta.env").then_some(v))
+                    .unwrap_or_else(|| "{}".to_string()),
+            ),
             ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()

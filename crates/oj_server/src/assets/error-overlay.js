@@ -17,7 +17,7 @@ function parseError(text) {
 // ({message, stack, id, loc, frame, plugin}) to show their own runtime errors.
 // Vite's overlay.ts: a worker importing the client has no HTMLElement.
 const { HTMLElement = class {} } = globalThis;
-export class ErrorOverlay extends HTMLElement {
+class OjErrorOverlay extends HTMLElement {
   constructor(err, _links = true) {
     super();
     const root = this.attachShadow({ mode: "open" });
@@ -96,5 +96,8 @@ export class ErrorOverlay extends HTMLElement {
 
 const overlayId = "vite-error-overlay";
 if (typeof customElements !== "undefined" && !customElements.get(overlayId)) {
-  customElements.define(overlayId, ErrorOverlay);
+  customElements.define(overlayId, OjErrorOverlay);
 }
+// The registered class, whichever copy of this file ran first (Start's overlay
+// module, the SPA client's inlined one): only that one constructs.
+export const ErrorOverlay = globalThis.customElements?.get(overlayId) ?? OjErrorOverlay;

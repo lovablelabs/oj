@@ -3653,7 +3653,7 @@ fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[Strin
 fn page_client_js(base: &str, path: &str) -> Option<String> {
     match path {
         "/@vite/client" => Some(format!(
-            "import \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
+            "import \"{base}/@vite/env\";\nimport \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
         )),
         "/@oj-start/page-client.js" => Some(
             "if (document.querySelector('script[src*=\"/@oj-start/live-reload.js\"]')) globalThis.__ojPageClient = \"start\";\n\
@@ -3793,7 +3793,11 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         };
     }
     if let Some(js) = page_client_js(&state.base, path) {
-        return ([(header::CONTENT_TYPE, "text/javascript")], js).into_response();
+        // Vite's transform middleware sends `server.headers` on its client.
+        return with_dev_headers(
+            &state,
+            ([(header::CONTENT_TYPE, "text/javascript")], js).into_response(),
+        );
     }
     if let Some(name) = path.strip_prefix("/@oj-start/") {
         return serve_client_chunk(&state, req.headers(), name).await;
@@ -4719,7 +4723,13 @@ async fn public_response(
     method: &Method,
     headers: &header::HeaderMap,
 ) -> Response {
-    let mut response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    let response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    with_dev_headers(state, response)
+}
+
+/// `response` with `server.headers` set over its own, as Vite's `send` and
+/// sirv's `setHeaders` set them.
+fn with_dev_headers(state: &StartState, mut response: Response) -> Response {
     for (name, value) in state.dev_headers.iter() {
         response.headers_mut().insert(name.clone(), value.clone());
     }

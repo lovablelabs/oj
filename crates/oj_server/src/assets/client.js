@@ -93,19 +93,42 @@ export function createHotContext(ownerId) {
 }
 
 const styleTags = new Map();
+const linkSheets = new Map();
+
+// Vite's client adopts the sheets a server rendered under its attribute, so an
+// update replaces them rather than adding a second copy.
+if ("document" in globalThis) {
+  for (const el of document.querySelectorAll("style[data-vite-dev-id]")) {
+    styleTags.set(el.getAttribute("data-vite-dev-id"), el);
+  }
+  for (const el of document.querySelectorAll('link[rel="stylesheet"][data-vite-dev-id]')) {
+    linkSheets.set(el.getAttribute("data-vite-dev-id"), el);
+  }
+}
 
 export function updateStyle(id, css) {
+  if (linkSheets.has(id)) return;
   let tag = styleTags.get(id);
   if (!tag) {
     tag = document.createElement("style");
-    tag.setAttribute("data-oj-id", id);
+    tag.setAttribute("type", "text/css");
+    tag.setAttribute("data-vite-dev-id", id);
+    tag.textContent = css;
     document.head.appendChild(tag);
     styleTags.set(id, tag);
+  } else if (tag.textContent !== css) {
+    // Rewriting identical css still replaces the sheet and its font faces.
+    tag.textContent = css;
   }
-  tag.textContent = css;
 }
 
 export function removeStyle(id) {
+  if (linkSheets.has(id)) {
+    for (const el of document.querySelectorAll(`link[rel="stylesheet"][data-vite-dev-id="${CSS.escape(id)}"]`)) {
+      el.remove();
+    }
+    linkSheets.delete(id);
+  }
   const tag = styleTags.get(id);
   if (tag) {
     tag.remove();
