@@ -174,7 +174,17 @@ impl Server {
 
     /// `oj dev <root> [args]` with extra environment variables.
     pub fn oj_dev_with_args(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Server {
-        let mut server = Server::spawn_oj_dev(root, args, env);
+        Server::oj_dev_port(root, free_port(), args, env)
+    }
+
+    /// `oj dev <root> --port <port>`: a restart on the same port, which the
+    /// cached config extraction is keyed by.
+    pub fn oj_dev_on(root: &Path, port: u16) -> Server {
+        Server::oj_dev_port(root, port, &[], &[])
+    }
+
+    fn oj_dev_port(root: &Path, port: u16, args: &[&str], env: &[(&str, &str)]) -> Server {
+        let mut server = Server::spawn_oj_dev(root, port, args, env);
         server.wait_listening(Instant::now() + WAIT);
         server
     }
@@ -182,7 +192,7 @@ impl Server {
     /// [`Server::oj_dev_with`], running `on` as soon as the output shows
     /// `line`, before the server listens: a step that has to land mid-boot.
     pub fn oj_dev_at(root: &Path, env: &[(&str, &str)], line: &str, on: impl FnOnce()) -> Server {
-        let mut server = Server::spawn_oj_dev(root, &[], env);
+        let mut server = Server::spawn_oj_dev(root, free_port(), &[], env);
         let deadline = Instant::now() + WAIT;
         while !server.output().contains(line) {
             server.assert_alive("oj dev", deadline);
@@ -198,12 +208,12 @@ impl Server {
         server
     }
 
-    fn spawn_oj_dev(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Server {
+    fn spawn_oj_dev(root: &Path, port: u16, args: &[&str], env: &[(&str, &str)]) -> Server {
         Server::spawn(
             Command::new(env!("CARGO_BIN_EXE_oj"))
                 .arg("dev")
                 .arg(root)
-                .args(["--port", &free_port().to_string()])
+                .args(["--port", &port.to_string()])
                 .args(args)
                 .envs(env.iter().copied())
                 .current_dir(root),

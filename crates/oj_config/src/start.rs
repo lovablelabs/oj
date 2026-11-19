@@ -6,8 +6,8 @@
 //! (start-plugin-core's `parseStartConfig`: `<srcDirectory>/<routesDirectory>`
 //! and `<srcDirectory>/<generatedRouteTree>`, default `src/routes` and
 //! `src/routeTree.gen.ts`) and passes them to the router generator inline, so
-//! they win over tsr.config.json. Extraction records the paths and route file
-//! filters that generator ran with when the app's config resolved
+//! they win over tsr.config.json. Extraction records the paths and options
+//! that generator ran with when the app's config resolved
 //! (`vite_start_router`).
 
 use std::path::{Path, PathBuf};
@@ -15,17 +15,13 @@ use std::path::{Path, PathBuf};
 use crate::OjConfig;
 
 /// The routes directory and generated route tree Start's router generator
-/// ran with, absolute, and the route file filters it ran with.
+/// ran with, absolute, and the generator options it ran with that are data
+/// (`virtualRouteConfig`, `indexToken`, `quoteStyle`, ...).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StartRouterPaths {
     pub routes_directory: PathBuf,
     pub generated_route_tree: PathBuf,
-    /// `routeFilePrefix`.
-    pub route_file_prefix: Option<String>,
-    /// `routeFileIgnorePrefix`.
-    pub route_file_ignore_prefix: Option<String>,
-    /// `routeFileIgnorePattern`.
-    pub route_file_ignore_pattern: Option<String>,
+    pub options: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Start's routes directory for the app at `root`.

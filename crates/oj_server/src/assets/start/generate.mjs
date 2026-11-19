@@ -60,19 +60,14 @@ async function main() {
   // and route tree inline (start-plugin-core's parseStartConfig, from
   // tanstackStart's `srcDirectory` and `router`), so tsr.config.json never sets
   // them under Start; oj passes the same two (OJ_ROUTES_DIRECTORY,
-  // OJ_GENERATED_ROUTE_TREE), and the route file filters Start's generator ran
-  // with (`tanstackStart({ router })` or tsr.config.json). The rest are
+  // OJ_GENERATED_ROUTE_TREE), and the generator options Start's generator ran
+  // with (OJ_ROUTER_OPTIONS, recorded at config extraction). The rest are
   // defaults under the file.
+  const { routeTreeFileFooter: appFooter = [], ...routerOptions } = JSON.parse(process.env.OJ_ROUTER_OPTIONS || "{}");
   const START_PATHS = {
     routesDirectory: process.env.OJ_ROUTES_DIRECTORY || pathResolve(root, "src/routes"),
     generatedRouteTree: process.env.OJ_GENERATED_ROUTE_TREE || pathResolve(root, "src/routeTree.gen.ts"),
-    ...(process.env.OJ_ROUTE_FILE_PREFIX != null ? { routeFilePrefix: process.env.OJ_ROUTE_FILE_PREFIX } : {}),
-    ...(process.env.OJ_ROUTE_FILE_IGNORE_PREFIX != null
-      ? { routeFileIgnorePrefix: process.env.OJ_ROUTE_FILE_IGNORE_PREFIX }
-      : {}),
-    ...(process.env.OJ_ROUTE_FILE_IGNORE_PATTERN != null
-      ? { routeFileIgnorePattern: process.env.OJ_ROUTE_FILE_IGNORE_PATTERN }
-      : {}),
+    ...routerOptions,
   };
   const OJ_DEFAULTS = { autoCodeSplitting: false };
   const configured = (() => {
@@ -156,9 +151,8 @@ async function main() {
       ...Object.fromEntries(Object.entries(OJ_DEFAULTS).filter(([k]) => !(k in configured))),
       ...START_PATHS,
       target: "react",
-      // The declare-module footer the framework's plugin writes; an app that sets
-      // routeTreeFileFooter itself keeps its own.
-      ...("routeTreeFileFooter" in configured ? {} : { routeTreeFileFooter: [moduleDeclaration()] }),
+      // Start's footer: its declare-module block, then the app's own.
+      routeTreeFileFooter: [moduleDeclaration(), ...appFooter],
     },
     root,
   );
