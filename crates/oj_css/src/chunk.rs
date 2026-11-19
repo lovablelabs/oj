@@ -125,6 +125,7 @@ mod tests {
             root: None,
             public_dir: None,
             alias: &[],
+            dedupe: &[],
             targets: &[],
             minify,
             production: true,

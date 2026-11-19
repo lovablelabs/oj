@@ -249,10 +249,11 @@ impl Plugin for TsconfigPathsPlugin {
 }
 
 /// `resolve.dedupe` where vite:resolve sits: a bare import of a listed
-/// package resolves from the app root for every importer, as Vite's
-/// tryNodeResolve does (`basedir = root`), so a copy nested under a
+/// package resolves from the app root for every importer, as Vite's resolve
+/// plugin does with its `dedupe` option, so a copy nested under a
 /// dependency's own node_modules never becomes a second instance. Where the
-/// root has no copy the importer's own lookup stands, as in oj's resolver.
+/// root has no such package or file the importer's own lookup stands; any
+/// other error from the root's copy (a subpath its `exports` hide) fails.
 #[derive(Debug)]
 pub(crate) struct DedupePlugin {
     /// A stand-in importer at the root: a bare id resolves from there as a
@@ -286,6 +287,7 @@ impl Plugin for DedupePlugin {
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
         use rolldown_common::ImportKind;
+        use rolldown_resolver::ResolveError;
         let spec = args.specifier;
         let Some(importer) = args.importer else {
             return Ok(None);
@@ -298,9 +300,23 @@ impl Plugin for DedupePlugin {
             return Ok(None);
         }
         let resolver = ctx.resolver();
-        let Ok(from_root) = resolver.resolve(Some(&self.root_importer), spec, args.kind, false)
-        else {
-            return Ok(None);
+        let from_root = match resolver.resolve(Some(&self.root_importer), spec, args.kind, false) {
+            Ok(resolved) => resolved,
+            // A Node built-in stays the bundler's (external on a Node platform).
+            Err(ResolveError::NotFound(_) | ResolveError::Builtin { .. }) => return Ok(None),
+            // The root's `browser` field maps the package to `false`: an empty module, as rolldown gives it.
+            Err(ResolveError::Ignored(path)) => {
+                return Ok(Some(HookResolveIdOutput::from_resolved_id(
+                    rolldown_common::ResolvedId {
+                        id: rolldown_common::ModuleId::new_empty(&path.to_string_lossy()),
+                        ..Default::default()
+                    },
+                )))
+            }
+            Err(e) => anyhow::bail!(
+                "cannot resolve \"{spec}\" from the root's copy of \"{}\" (resolve.dedupe): {e}",
+                oj_resolver::package_name(spec)
+            ),
         };
         let file = importer.split(['?', '#']).next().unwrap_or(importer);
         if Path::new(file).is_absolute() {

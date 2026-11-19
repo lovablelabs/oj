@@ -686,8 +686,7 @@ impl DevBundler {
         }
         plugins.extend(crate::build::dedupe_plugin(
             &start.root,
-            &start.config,
-            "client",
+            oj_config::environment_dedupe(&start.config, "client"),
         ));
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use crate::imports::split_package_specifier;
 use crate::path::{node_modules_load_paths, read_package_json, with_ext};
 use crate::resolve::{CssResolve, CssResolveConfig};
 
@@ -76,7 +77,7 @@ pub fn compile_sass_collecting(
     for nm in &node_modules {
         options = options.load_path(nm);
     }
-    let prepared = prepare_sass_imports(source, &opts.resolve);
+    let prepared = prepare_sass_imports(source, opts.load_dir, &opts.resolve);
     let source = match opts.additional_data {
         Some(data) if !data.is_empty() => format!("{data}\n{prepared}"),
         _ => prepared,
@@ -94,8 +95,13 @@ pub fn compile_sass_collecting(
 /// Rewrite `@use` / `@forward` / `@import` lines into specifiers grass can
 /// resolve: `.scss` / `.sass` dropped (grass mis-probes dotted basenames that
 /// keep it), aliases and root-absolute paths made absolute, `~` stripped.
-/// `url(...)` lines and `.css` imports are left alone.
-pub(crate) fn prepare_sass_imports(source: &str, resolve: &CssResolve<'_>) -> String {
+/// `url(...)` lines and `.css` imports are left alone. `dir` is the
+/// importing file's directory.
+pub(crate) fn prepare_sass_imports(
+    source: &str,
+    dir: Option<&Path>,
+    resolve: &CssResolve<'_>,
+) -> String {
     let has_resolve = resolve.root.is_some() || !resolve.alias.is_empty();
     let mut out = String::with_capacity(source.len());
     for line in source.split_inclusive('\n') {
@@ -114,7 +120,7 @@ pub(crate) fn prepare_sass_imports(source: &str, resolve: &CssResolve<'_>) -> St
             .replace(".sass'", "'");
         // Aliases first, so a configured `~` alias wins over the strip.
         let aliased = if has_resolve {
-            rewrite_quoted(&stripped, |spec| rewrite_sass_spec(spec, resolve))
+            rewrite_quoted(&stripped, |spec| rewrite_sass_spec(spec, dir, resolve))
         } else {
             stripped
         };
@@ -142,15 +148,41 @@ fn rewrite_quoted(line: &str, rewrite: impl Fn(&str) -> Option<String>) -> Strin
     out
 }
 
-/// An aliased or root-absolute specifier as an absolute path. Root-absolute
-/// only when a stylesheet exists under the root (it may be a real absolute
-/// path otherwise).
-fn rewrite_sass_spec(spec: &str, resolve: &CssResolve<'_>) -> Option<String> {
+/// An aliased, root-absolute or deduped specifier as an absolute path.
+/// Root-absolute only when a stylesheet exists under the root (it may be a
+/// real absolute path otherwise).
+fn rewrite_sass_spec(spec: &str, dir: Option<&Path>, resolve: &CssResolve<'_>) -> Option<String> {
     let path = match resolve.alias_path(spec) {
         Some(p) => p,
-        None => resolve.root_path(spec).filter(|p| sass_file_exists(p))?,
+        None => resolve
+            .root_path(spec)
+            .filter(|p| sass_file_exists(p))
+            .or_else(|| deduped_sass_path(spec, dir, resolve))?,
     };
     Some(path.to_string_lossy().into_owned())
+}
+
+/// A `resolve.dedupe` package's stylesheet in the root's copy, as Vite's sass
+/// resolver finds it; None when the importer has a relative match (Sass tries
+/// that first) or the root's copy lacks it.
+fn deduped_sass_path(spec: &str, dir: Option<&Path>, resolve: &CssResolve<'_>) -> Option<PathBuf> {
+    let root = resolve.dedupe_root(spec)?;
+    if dir.is_some_and(|d| sass_file_exists(&d.join(spec))) {
+        return None;
+    }
+    let (pkg, rest) = split_package_specifier(spec)?;
+    let nm = node_modules_load_paths(root)
+        .into_iter()
+        .find(|nm| nm.join(pkg).is_dir())?;
+    let path = nm.join(spec);
+    // A bare package needs a stylesheet entry (`sass` / `style` / `main`) or an index.
+    let entry = || {
+        rest.is_empty()
+            && ["index.scss", "index.sass"]
+                .iter()
+                .any(|i| package_entry(&path.join(i)).is_some())
+    };
+    (sass_file_exists(&path) || entry()).then_some(path)
 }
 
 /// Whether `base` names a stylesheet the way dart-sass probes: the file, an
@@ -256,9 +288,12 @@ impl grass::Fs for SassFs {
             probe_target(p).unwrap_or_else(|| p.to_path_buf())
         };
         let bytes = std::fs::read(&real)?;
+        let dir = real.parent().map(Path::to_path_buf);
         self.seen.borrow_mut().push(real);
         match String::from_utf8(bytes) {
-            Ok(text) => Ok(prepare_sass_imports(&text, &self.resolve.as_ref()).into_bytes()),
+            Ok(text) => Ok(
+                prepare_sass_imports(&text, dir.as_deref(), &self.resolve.as_ref()).into_bytes(),
+            ),
             Err(e) => Ok(e.into_bytes()),
         }
     }
@@ -368,7 +403,7 @@ mod tests {
     use crate::*;
 
     fn strip_sass_import_ext(source: &str) -> String {
-        prepare_sass_imports(source, &CssResolve::default())
+        prepare_sass_imports(source, None, &CssResolve::default())
     }
 
     #[test]
@@ -509,6 +544,69 @@ mod tests {
         );
         assert!(css.contains("padding: 4px"), "~pkg/path resolved: {css}");
         assert!(css.contains(".plain"), "style entry resolved: {css}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_deduped_use_inside_a_dependency_takes_the_root_copy() {
+        let base = std::env::temp_dir().join(format!("oj-css-dedupe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let consumer = base.join("node_modules/consumer");
+        for (dir, marker) in [
+            (base.join("node_modules/shared"), "root"),
+            (consumer.join("node_modules/shared"), "nested"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("package.json"), r#"{"name":"shared"}"#).unwrap();
+            std::fs::write(dir.join("_t.scss"), format!(".{marker} {{ a: b; }}\n")).unwrap();
+        }
+        // Nested: a partial of the dependency read through the importer.
+        std::fs::write(consumer.join("_inner.scss"), "@use \"shared/t\";\n").unwrap();
+        let dedupe = vec!["shared".to_string()];
+        let compile = |src: &str, dedupe: &[String]| {
+            compile_sass_opts(
+                src,
+                &SassOptions {
+                    load_dir: Some(&consumer),
+                    resolve: CssResolve {
+                        root: Some(&base),
+                        dedupe,
+                        ..CssResolve::default()
+                    },
+                    ..SassOptions::default()
+                },
+            )
+            .unwrap()
+        };
+        // A bare `@use "shared"`: the root's copy has no stylesheet entry, so the
+        // importer's copy answers; once it has one, that one.
+        std::fs::write(
+            consumer.join("node_modules/shared/_index.scss"),
+            ".nested-index { a: b; }\n",
+        )
+        .unwrap();
+        assert!(compile("@use \"shared\";\n", &dedupe).contains(".nested-index"));
+        std::fs::write(
+            base.join("node_modules/shared/_index.scss"),
+            ".root-index { a: b; }\n",
+        )
+        .unwrap();
+        let css = compile("@use \"shared\";\n", &dedupe);
+        assert!(
+            css.contains(".root-index") && !css.contains(".nested-index"),
+            "{css}"
+        );
+        for src in ["@use \"shared/t\";\n", "@use \"inner\";\n"] {
+            let css = compile(src, &dedupe);
+            assert!(
+                css.contains(".root") && !css.contains(".nested"),
+                "{src}: {css}"
+            );
+            assert!(
+                compile(src, &[]).contains(".nested"),
+                "{src} without dedupe"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -23,7 +23,8 @@ pub use defaults::{
 };
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
-use spec::{package_name, strip_query};
+pub use spec::package_name;
+use spec::strip_query;
 pub use tsconfig_paths::TsconfigPaths;
 
 pub struct OjResolver {
@@ -438,11 +439,12 @@ impl OjResolver {
 /// Whether `specifier` is a bare import of a `resolve.dedupe` package, which
 /// resolves from the root so nested copies collapse to one instance (Vite's
 /// tryNodeResolve: `dedupe.includes(pkgId)`).
-pub fn dedupes(dedupe: &HashSet<String>, specifier: &str) -> bool {
-    !dedupe.is_empty()
-        && !specifier.starts_with('.')
-        && !specifier.starts_with('/')
-        && dedupe.contains(package_name(strip_query(specifier)))
+pub fn dedupes<'a>(dedupe: impl IntoIterator<Item = &'a String>, specifier: &str) -> bool {
+    if specifier.starts_with('.') || specifier.starts_with('/') {
+        return false;
+    }
+    let name = package_name(strip_query(specifier));
+    dedupe.into_iter().any(|d| d == name)
 }
 
 /// An importer id as a file path: its query and hash dropped.

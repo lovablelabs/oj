@@ -2235,6 +2235,7 @@ impl DevServer {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
             alias: oj_config::resolve_alias(&config, "client"),
+            dedupe: oj_config::environment_dedupe(&config, "client"),
             // Dev lowers to build.cssTarget too (Vite's lightningcss options
             // are resolved once from it); dev output is never minified.
             targets: oj_config::build_css_targets(&config),
