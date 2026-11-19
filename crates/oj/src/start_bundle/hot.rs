@@ -301,7 +301,6 @@ impl HotSession {
     /// failed update, forces the full build that recovers it (Vite does when
     /// a page needs the output).
     pub async fn latest_output(&self) -> Result<(Vec<Output>, Notes), BundleError> {
-        let before = self.events.outputs.load(Ordering::SeqCst);
         // Every build the engine owes, not only the one running: a change
         // that arrived during a build waits for it and starts as it ends,
         // and the build it waited for says the output is current. The
@@ -314,6 +313,11 @@ impl HotSession {
                 break;
             }
         }
+        // Counted from here: an output of a build waited for above is not
+        // the one the build forced below reports, and taking it for that
+        // one would read the engine's output before the forced build's
+        // lands.
+        let before = self.events.outputs.load(Ordering::SeqCst);
         let state = self
             .engine
             .get_bundle_state()
