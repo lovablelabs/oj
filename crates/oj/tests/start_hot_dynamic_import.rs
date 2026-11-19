@@ -83,11 +83,10 @@ fn write(root: &Path, rel: &str, source: &str) {
 /// hot client connected reloads instead of patching.
 async fn hydrated(page: &Page) {
     page.wait_for(
-        "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'",
+        "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok' && (() => { const bus = globalThis.__ojStartHmr; return !!(bus && bus.runtime && bus.send && bus.send({ type: 'oj:client', id: bus.runtime.clientId })); })()",
         WAIT,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
     page.eval::<bool>("(window.__mark = 'kept', true)").await;
 }
 

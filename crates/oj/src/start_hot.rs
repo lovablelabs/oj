@@ -34,6 +34,8 @@ pub(crate) struct Patch {
 pub(crate) struct Frame {
     pub client: Option<String>,
     pub text: String,
+    /// For a patch, its number in its page's sequence.
+    pub seq: Option<u32>,
 }
 
 /// Tells the editor's gate of files that changed.
@@ -62,6 +64,8 @@ pub(crate) struct HotUpdates {
     /// lock a release drains under, so a frame is never stranded by a flush
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
+    /// Each page's last patch sent (see [`HotUpdates::sent_seq`]).
+    sent_seq: Mutex<std::collections::HashMap<String, u32>>,
     /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
     holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
@@ -76,6 +80,7 @@ impl HotUpdates {
             generation: std::sync::atomic::AtomicU64::new(0),
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
+            sent_seq: Mutex::default(),
             holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
             changes: std::sync::atomic::AtomicU64::new(0),
@@ -103,7 +108,11 @@ impl HotUpdates {
             "clients": covered,
         })
         .to_string();
-        self.send(Frame { client: None, text });
+        self.send(Frame {
+            client: None,
+            text,
+            seq: None,
+        });
     }
 
     /// The changes sent so far.
@@ -144,8 +153,40 @@ impl HotUpdates {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for frame in parked.drain(..) {
+            self.sent(&frame);
             let _ = self.tx.send(frame);
         }
+    }
+
+    /// Notes the patch a frame on its way to the pages carries.
+    fn sent(&self, frame: &Frame) {
+        if let (Some(client), Some(seq)) = (&frame.client, frame.seq) {
+            self.sent_seq
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(client.clone(), seq);
+        }
+    }
+
+    /// The last patch sent to the page `client`, by its number in the
+    /// page's sequence (0: none). A module compiled for the page now was
+    /// compiled against it, so the page must have applied it before it runs
+    /// the module; a patch the gate still holds is not counted.
+    pub(crate) fn sent_seq(&self, client: &str) -> u32 {
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(client)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The page `client` is gone.
+    pub(crate) fn forget(&self, client: &str) {
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client);
     }
 
     /// Whether the gate still holds frames for the pages.
@@ -174,6 +215,7 @@ impl HotUpdates {
         if self.gate.get().is_some_and(|held| held()) {
             parked.push(frame);
         } else {
+            self.sent(&frame);
             let _ = self.tx.send(frame);
         }
     }
@@ -215,7 +257,11 @@ impl HotUpdates {
             "change": change,
         })
         .to_string();
-        self.send(Frame { client: None, text });
+        self.send(Frame {
+            client: None,
+            text,
+            seq: None,
+        });
     }
 
     /// A patch for its page: kept for the page to fetch, announced on its
@@ -258,6 +304,7 @@ impl HotUpdates {
         self.send(Frame {
             client: Some(patch.client.clone()),
             text,
+            seq: Some(patch.seq),
         });
     }
 

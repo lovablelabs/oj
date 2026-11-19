@@ -236,20 +236,29 @@ impl HotSession {
             .map(|p| p.to_string_lossy().into_owned())
             .filter(|p| self.engine.get_module_info(p).is_some() || under_a_glob(p))
             .collect();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
-        let watched = loop {
-            let ready = self.events.error.lock().unwrap().is_some() || {
+        // The engine's watcher reports an edit within milliseconds, unless it
+        // is at work: an edit that lands during a build waits for it (the
+        // engine rebuilds its output after each module it compiles for a
+        // page's `import()`), and giving up on it then would turn a hot
+        // update into a reload.
+        let ready = || {
+            self.events.error.lock().unwrap().is_some() || {
                 let seen = self.events.seen.lock().unwrap();
                 known.iter().all(|p| seen.contains_key(p))
-            };
-            if ready {
-                break true;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break false;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
         };
+        let busy = || async {
+            let done = self.events.tasks.load(Ordering::SeqCst);
+            let _ = self.engine.wait_for_ongoing_bundle().await;
+            self.events.tasks.load(Ordering::SeqCst) != done
+        };
+        let watched = reported(
+            ready,
+            busy,
+            Duration::from_millis(1000),
+            Duration::from_secs(60),
+        )
+        .await;
         // A failed hot update over a deleted file is no verdict on the app:
         // the engine re-fetches every module that depends on a changed file,
         // a deleted file's own `?raw` module among them, which no longer
@@ -338,6 +347,29 @@ impl HotSession {
             None => Err(BundleError::from_message(
                 "the client bundle produced no output",
             )),
+        }
+    }
+}
+
+/// Waits for `ready`, a `window` at a time: when one ends, `busy` waits out
+/// what the engine is doing and says whether it was doing anything, which
+/// earns another window, up to `cap`.
+async fn reported<B, F>(ready: impl Fn() -> bool, busy: B, window: Duration, cap: Duration) -> bool
+where
+    B: Fn() -> F,
+    F: std::future::Future<Output = bool>,
+{
+    let end = tokio::time::Instant::now() + cap;
+    loop {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            if ready() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if tokio::time::Instant::now() >= end || !busy().await {
+            return ready();
         }
     }
 }
@@ -667,6 +699,29 @@ mod tests {
         hot.release();
         let frame = pages.try_recv().expect("the flush sends the patch");
         assert_eq!(frame.client.as_deref(), Some("c1"));
+    }
+
+    // An edit made while the engine is rebuilding is reported after that
+    // build: waiting one window for it would give it up (and reload the
+    // pages) on a machine where the build outlasts the window.
+    #[tokio::test(start_paused = true)]
+    async fn an_edit_reported_after_a_running_build_is_waited_for() {
+        let started = tokio::time::Instant::now();
+        let ready = || started.elapsed() >= Duration::from_millis(2500);
+        let window = Duration::from_millis(1000);
+        let cap = Duration::from_secs(60);
+        // The engine at work until the report: the wait goes on.
+        let busy = || async { started.elapsed() < Duration::from_millis(2500) };
+        assert!(reported(ready, busy, window, cap).await);
+        // The engine idle: one window, as before.
+        let started = tokio::time::Instant::now();
+        let ready = || started.elapsed() >= Duration::from_millis(2500);
+        assert!(!reported(ready, || async { false }, window, cap).await);
+        assert!(started.elapsed() < Duration::from_millis(1100));
+        // Never reported: bounded.
+        let started = tokio::time::Instant::now();
+        assert!(!reported(|| false, || async { true }, window, Duration::from_secs(5)).await);
+        assert!(started.elapsed() <= Duration::from_secs(6));
     }
 
     #[test]

@@ -343,28 +343,77 @@ class OjDevRuntime extends DevRuntime {
     };
   }
   // The module behind an `import()`, as the dev server has it now
-  // (rolldown's lazy boundary; the URL is the server's to choose).
+  // (rolldown's lazy boundary; the URL is the server's to choose). A URL of
+  // its own for each request: the browser keeps a module by URL, a failed
+  // one too.
   loadLazyChunk(proxyModuleId) {
     return import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
   }
   lazyChunkUrl(proxyModuleId) {
-    const again = this.lazyRetries?.get(proxyModuleId);
-    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}${again ? `&retry=${again}` : ""}`;
+    this.lazyAsked = (this.lazyAsked ?? 0) + 1;
+    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}`;
+  }
+  // A module with top-level `await` is an async factory, which rolldown's
+  // runtime starts and does not wait for: its promise is kept, so an
+  // `import()` of the module settles when it has finished evaluating, and
+  // rejects if it threw, as the module's own `import()` does in a browser.
+  registerFactory(id, factory, stamp) {
+    const runtime = this;
+    return super.registerFactory(
+      id,
+      function (moduleId) {
+        const result = factory(moduleId);
+        if (result && typeof result.then === "function") {
+          const evaluating = (runtime.evaluating ??= new Map());
+          evaluating.set(moduleId, result);
+          result.then(
+            () => evaluating.get(moduleId) === result && evaluating.delete(moduleId),
+            () => {},
+          );
+        }
+        return result;
+      },
+      stamp,
+    );
+  }
+  removeModuleCache(id) {
+    this.evaluating?.delete(id);
+    super.removeModuleCache(id);
   }
   // rolldown's runtime keeps a failed request for good, as `import()` keeps
   // a module that threw. A module whose chunk never arrived (the server
-  // could not compile it: a syntax error mid-edit) has run nothing, so the
-  // next `import()` asks again, under a URL the browser has not seen fail
-  // (it keeps a module that failed to load, or threw, by URL).
+  // could not answer) has run nothing, so the next `import()` asks again:
+  // the request is dropped, if it is still the one that failed.
   requestLazy(id, proxyModuleId, isNodeMode) {
     const pending = super.requestLazy(id, proxyModuleId, isNodeMode);
+    const asked = this.lazyRequests.get(id);
     pending.catch(() => {
-      if (this.moduleCache.has(id) || this.lazyRequests.get(id) === undefined) return;
-      this.lazyRequests.delete(id);
-      const retries = (this.lazyRetries ??= new Map());
-      retries.set(proxyModuleId, (retries.get(proxyModuleId) ?? 0) + 1);
+      if (!this.moduleCache.has(id) && this.lazyRequests.get(id) === asked) this.lazyRequests.delete(id);
     });
-    return pending;
+    return pending.then(async (exports) => {
+      // The module, and the modules it imports statically, as far as they
+      // are still evaluating (not everything that is: a module that awaits
+      // this very import is).
+      const seen = new Set([id]);
+      for (const current of seen) {
+        await this.evaluating?.get(current);
+        for (const dep of this.staticImports?.get(current)?.edges ?? []) seen.add(dep);
+      }
+      return exports;
+    });
+  }
+  // The dev server compiled a module for an `import()` after it sent this
+  // page hot update number `seq`: the module must not run before the page
+  // has applied that update (it was compiled against it, and a frame can
+  // be slower than this answer). Bounded: a page whose socket is down gets
+  // no update at all, and reloads when it is back.
+  async ojPatched(seq) {
+    const hmr = this.hmr;
+    const deadline = Date.now() + 10000;
+    while (hmr.lastSeq < seq && !hmr.reloadPending && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await hmr.queue;
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });

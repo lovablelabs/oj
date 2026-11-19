@@ -691,11 +691,7 @@ pub async fn start_dev(
             .set_gate(Arc::new(move || gate.reload_is_held()));
         // The files the watcher below would rebuild for, as it holds them.
         bundler.hot.set_holder(Arc::new(move |files| {
-            let paths: Vec<PathBuf> = files
-                .iter()
-                .map(PathBuf::from)
-                .filter(|p| watch_relevant(p))
-                .collect();
+            let paths = changed_files(files);
             if !paths.is_empty() {
                 holder.hold_reload(&paths);
             }
@@ -1967,10 +1963,22 @@ async fn rebundle_worker(
                 if let Some(frame) = &frame {
                     let _ = state.error_tx.send(frame.clone());
                 }
+                let recovered = frame.is_none()
+                    && state
+                        .build_error
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some();
                 *state
                     .build_error
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = frame;
+                // The pages showing the error are told it is over: a fix to
+                // a module a page has not loaded brings it no update to
+                // clear the overlay with.
+                if recovered {
+                    let _ = state.error_tx.send(BUILD_OK_FRAME.to_string());
+                }
                 match outcome {
                     ClientRun::Fresh(pinned) => {
                         install_bundle(&state, &cache, pinned);
@@ -3393,6 +3401,9 @@ fn run_script_process(
     Ok(())
 }
 
+/// Tells the pages the client bundle builds again after a failure.
+const BUILD_OK_FRAME: &str = r#"{"type":"oj:build-ok"}"#;
+
 /// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.
 const CLIENT_ERROR_FILE: &str = "client-error.json";
@@ -4416,6 +4427,7 @@ fn render_live_reload(
 /// its module registry, which asks for the module, and the static imports
 /// the page lacks, by id.
 async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
+    use crate::start_bundle::dev::LazyAnswer;
     let param = |name: &str| {
         query.unwrap_or("").split('&').find_map(|kv| {
             let (k, v) = kv.split_once('=')?;
@@ -4436,59 +4448,109 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
             .into_response()
     };
     // A tab left open across a restart of the dev server runs a bundle this
-    // run never made: no module of this one fits it. It reloads, as it does
-    // when it asks for a chunk this run never had (`chunk_gone`); the import
-    // stays pending meanwhile.
-    if state.bundler.page_from_another_run(&client).await {
+    // run never made: no module of this one fits it. It is told to reload
+    // as its socket reconnects; an `import()` it makes before that reloads
+    // it too, and stays pending meanwhile.
+    if state.bundler.page_from_another_run(&client) {
         return module("location.reload();\nawait new Promise(() => {});\n".to_string());
     }
-    let mut compiled = state.bundler.lazy_chunk(&id, &client).await;
-    // While the editor's gate holds changes, a chunk that carries a module
-    // among them would run code the gate has not released, next to the
-    // modules whose patches it holds. Its answer waits for the flush (the
-    // editor's, or the hold cap's) and is compiled again then, after the
-    // patches the flush released went to the pages.
-    if let (Some(gate), Some(Ok(code))) = (&state.gate, &compiled) {
-        let mut flushes = gate.subscribe_flush();
-        if gate.reload_is_held()
-            && carries_held_change(code, state.bundler.root(), &gate.pending_paths())
-        {
-            let _ = tokio::time::timeout(LAZY_HOLD_CAP, flushes.recv()).await;
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-            while (gate.reload_is_held() || state.bundler.hot.has_parked())
-                && tokio::time::Instant::now() < deadline
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let end = tokio::time::Instant::now() + LAZY_WAIT_CAP;
+    let mut unconnected = false;
+    let answer = loop {
+        // Subscribed before the gate is read: a flush between the two is
+        // not missed.
+        let mut flushes = state.gate.as_ref().map(|gate| gate.subscribe_flush());
+        let answer = state.bundler.lazy_chunk(&id, &client).await;
+        if !unconnected {
+            // Compiled for a page with no socket open: the engine forgets
+            // it again unless one connects.
+            unconnected = true;
+            let bundler = Arc::clone(&state.bundler);
+            let client = client.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                bundler.forget_unconnected(&client);
+            });
+        }
+        let now = tokio::time::Instant::now();
+        match &answer {
+            // While the editor's gate holds changes, a chunk that carries a
+            // module among them would run code the gate has not released,
+            // next to the modules whose patches it holds. Its answer waits
+            // for the flush (the editor's, or the hold cap's) and for the
+            // patches the flush releases to go out, and is compiled again:
+            // the rule is asked again of what it carries then (another
+            // change may be held by now).
+            LazyAnswer::Compiled(code) if now < end => {
+                let Some(gate) = &state.gate else {
+                    break answer;
+                };
+                if !gate.reload_is_held() && !state.bundler.hot.has_parked() {
+                    break answer;
+                }
+                if gate.reload_is_held()
+                    && !carries_held_change(code, state.bundler.root(), &gate.pending_paths())
+                {
+                    break answer;
+                }
+                if gate.reload_is_held() {
+                    if let Some(flushes) = &mut flushes {
+                        let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                    }
+                } else {
+                    // Flushed, its patches not sent yet (a flush that lands
+                    // while a rebundle runs releases at the run's end).
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
             }
-            compiled = state.bundler.lazy_chunk(&id, &client).await;
+            // The bundle does not build right now (an edit that does not
+            // compile, in this module or another; the overlay shows it to
+            // every page from the rebundle that failed): the import waits
+            // for a bundle that builds, rather than fail for an error that
+            // may not be its own.
+            LazyAnswer::Unavailable(_) if now < end => {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            _ => break answer,
         }
-    }
-    match compiled {
-        Some(Ok(code)) => module(code),
-        // Not a module of the bundle: nothing is compiled for it.
-        Some(Err(e)) if e.message.contains("Lazy entry module not found") => {
-            (StatusCode::NOT_FOUND, "oj start: no such module").into_response()
-        }
-        // The module does not compile (a syntax error mid-edit): the import
-        // rejects with the error and the overlay shows it, as a failed
-        // transform does under Vite. A module that throws, not a failed
-        // response: the page's guard against chunks gone from the server
-        // reloads for those.
-        Some(Err(e)) => {
-            let frame = serde_json::json!({ "type": "error", "err": e.payload() }).to_string();
-            let _ = state.error_tx.send(frame);
-            module(format!(
-                "throw new Error({});\n",
-                serde_json::Value::String(e.message.clone())
-            ))
-        }
-        None => (StatusCode::NOT_FOUND, "oj start: no hot client bundle").into_response(),
+    };
+    let rejects = |e: &crate::start_bundle::errors::BundleError| {
+        // A module that throws, with the error as the bundler gave it.
+        module(format!(
+            "throw new Error({});\n",
+            serde_json::Value::String(e.message.clone())
+        ))
+    };
+    match answer {
+        // Compiled against every patch sent to the page so far: the page
+        // applies them before it runs the module (a frame can be slower than
+        // this answer).
+        LazyAnswer::Compiled(code) => module(format!(
+            "await __rolldown_runtime__.ojPatched({});\n{code}",
+            state.bundler.hot.sent_seq(&client)
+        )),
+        LazyAnswer::Restored(code) => module(code),
+        LazyAnswer::Unknown => (StatusCode::NOT_FOUND, "oj start: no such module").into_response(),
+        LazyAnswer::Unavailable(e) | LazyAnswer::Failed(e) => rejects(&e),
     }
 }
 
-/// How long a page's `import()` waits for the editor's gate at most: past
-/// the gate's own hold cap, which flushes.
-const LAZY_HOLD_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+/// The files among what the bundler's engine reports as changed, which is
+/// also `*` (everything, before a full rebuild) and module ids that are no
+/// file (a lazy boundary's proxy, a virtual module): the ones the dev
+/// server's watcher would rebuild for.
+fn changed_files(reported: &[String]) -> Vec<PathBuf> {
+    reported
+        .iter()
+        .filter(|id| !id.contains(['?', '\0', '*']))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && watch_relevant(p))
+        .collect()
+}
+
+/// How long a page's `import()` waits at most, for the editor's gate (past
+/// the gate's own hold cap, which flushes) or for a bundle that builds.
+const LAZY_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Whether a lazy chunk carries a module whose file is among `pending` (the
 /// changes the editor's gate holds). The chunk opens with rolldown's
@@ -7018,6 +7080,22 @@ mod tests {
         assert_eq!(served_sheet_id("..%2Fsecret.css"), None);
         assert_eq!(served_sheet_id("__x00__virtual:data.js"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_files_among_the_engines_changed_ids_are_held() {
+        let reported: Vec<String> = [
+            "/app/src/a.tsx",
+            "*",
+            "/app/src/b.ts?rolldown-lazy=1",
+            "/app/src/routes/c.tsx?tsr-split=component",
+            "\0virtual:x",
+            "src/relative.ts",
+            "/app/src/routeTree.gen.ts",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(changed_files(&reported), [PathBuf::from("/app/src/a.tsx")]);
     }
 
     // The modules a lazy chunk carries are the first `localCount` ids of its

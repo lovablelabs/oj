@@ -89,7 +89,11 @@ impl Plugin for LazyImports {
                 return Ok(None);
             }
         }
-        let target = ctx
+        // What the specifier does not resolve to is not this plugin's to
+        // report: left to the resolution that follows, the import fails the
+        // bundle as an unresolved import that names it and its importer, as
+        // it does without this plugin.
+        let Ok(Ok(target)) = ctx
             .resolve(
                 args.specifier,
                 args.importer,
@@ -101,7 +105,10 @@ impl Plugin for LazyImports {
                     attributes: args.attributes.clone(),
                 }),
             )
-            .await??;
+            .await
+        else {
+            return Ok(None);
+        };
         // An external has no factory in the page's registry.
         if target.external.is_external() {
             return Ok(None);

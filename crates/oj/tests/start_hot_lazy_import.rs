@@ -199,10 +199,68 @@ async fn open_home(dev: &Server) -> Page {
 
 async fn open_at(dev: &Server, path: &str) -> Page {
     let page = Page::open(&dev.url(path)).await;
-    page.wait_for("self.__ojHydrated === true", WAIT).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    page.eval::<bool>("(window.__mark = 'kept', true)").await;
+    hot_ready(&page).await;
     page
+}
+
+/// The page hydrated and told the dev server which hot client it is, over
+/// an open socket: an edit made before that reloads it instead of patching.
+const HOT_CLIENT: &str = "(() => { const bus = globalThis.__ojStartHmr; return !!(bus && bus.runtime && bus.send && bus.send({ type: 'oj:client', id: bus.runtime.clientId })); })()";
+
+/// Waits for a new document (no mark on it yet) that hydrated with its hot
+/// client up, and marks it: a reload takes the mark away.
+async fn hot_ready(page: &Page) {
+    page.wait_for(
+        &format!("window.__mark === undefined && self.__ojHydrated === true && {HOT_CLIENT}"),
+        WAIT,
+    )
+    .await;
+    page.eval::<bool>("(window.__mark = 'kept', true)").await;
+}
+
+/// How many changes the dev server has taken in: hot updates and rebuilds.
+fn taken_in(dev: &Server) -> usize {
+    let out = dev.output();
+    out.matches("oj start: hot updated").count() + out.matches("oj start: rebuilt").count()
+}
+
+/// Waits until the bundler took in a change made after `before` was read.
+async fn took_in(dev: &Server, before: usize) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while taken_in(dev) <= before {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the bundler never took the change in\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Imports the note from the layout's button until the page shows `text`:
+/// an import made before the bundler took an edit in is of the module from
+/// before it.
+async fn notes_once_current(page: &Page, dev: &Server, text: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        load_note(page).await;
+        if page
+            .poll(
+                &format!("{NOTE_SHOWN} === {}", serde_json::to_string(text).unwrap()),
+                Duration::from_millis(700),
+            )
+            .await
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the page never showed the note {text:?}: shows {:?}; page errors: {:?}\n{}",
+            page.eval::<String>(NOTE_SHOWN).await,
+            page.errors(),
+            dev.output()
+        );
+    }
 }
 
 /// Waits until the page took in its hot update number `seq` (the runtime
@@ -654,6 +712,7 @@ async fn a_lazy_route_changed_in_a_held_change_waits_for_the_flush() {
     let dev = Server::oj_dev_with(&root, GATE);
     let page = open_home(&dev).await;
 
+    let before = taken_in(&dev);
     held(
         &dev,
         &root,
@@ -663,8 +722,7 @@ async fn a_lazy_route_changed_in_a_held_change_waits_for_the_flush() {
         ],
     )
     .await;
-    // Past the bundler taking the change in.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    took_in(&dev, before).await;
     go_to_about(&page).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
@@ -700,8 +758,9 @@ async fn a_lazy_route_a_held_change_left_alone_loads_during_the_hold() {
     let dev = Server::oj_dev_with(&root, GATE);
     let page = open_home(&dev).await;
 
+    let before = taken_in(&dev);
     held(&dev, &root, &[(INDEX, &index("home v2"))]).await;
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    took_in(&dev, before).await;
     go_to_about(&page).await;
     shows(&page, &dev, "2").await;
     flush(&dev);
@@ -846,24 +905,81 @@ async fn an_import_that_failed_to_compile_is_asked_for_again() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    load_note(&page).await;
+    // The overlay shows the error of the file, with the file's name.
+    let overlay = "(document.querySelector('vite-error-overlay')?.shadowRoot?.textContent ?? '')";
     assert!(
-        page.poll(
-            &format!("{NOTE_SHOWN}.startsWith('failed: ')"),
-            Duration::from_secs(40)
-        )
-        .await,
-        "the import of a module that does not compile: {:?}\n{}",
-        page.eval::<String>(NOTE_SHOWN).await,
+        page.poll(&format!("{overlay}.includes('note.ts')"), WAIT)
+            .await,
+        "the overlay does not show the broken file: {:?}",
+        page.eval::<String>(overlay).await
+    );
+    // The import of the broken module rejects with the module's own error,
+    // or waits for a bundle that builds: never an error about the bundle.
+    load_note(&page).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let during = page.eval::<String>(NOTE_SHOWN).await;
+    assert!(
+        during == "none" || (during.starts_with("failed: ") && during.contains("note.ts")),
+        "the import of a module that does not compile: {during:?}\n{}",
         dev.output()
     );
+    // A module the broken file has nothing to do with is not failed for it
+    // (it loads, at once or once the bundle builds again).
+    go_to_about(&page).await;
 
     write(&root, NOTE, "export const note = \"note fixed\";\n");
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    load_note(&page).await;
-    notes(&page, &dev, "note fixed").await;
+    notes_once_current(&page, &dev, "note fixed").await;
+    shows_despite_overlay(&page, &dev, "2").await;
+    assert!(
+        page.poll(&format!("{overlay} === ''"), WAIT).await,
+        "the overlay stayed up after the fix: {:?}; mark {:?}; console {:?}\n{}",
+        page.eval::<String>(overlay)
+            .await
+            .chars()
+            .take(80)
+            .collect::<String>(),
+        page.eval::<String>("String(window.__mark)").await,
+        page.console()
+            .iter()
+            .map(|l| l.chars().take(160).collect::<String>())
+            .collect::<Vec<_>>(),
+        dev.output()
+            .lines()
+            .filter(|l| l.contains("oj start:") || l.contains("bundl"))
+            .map(|l| l.chars().take(140).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let said: Vec<String> = page
+        .console()
+        .into_iter()
+        .chain(page.errors())
+        .filter(|line| line.contains("last full build failed"))
+        .collect();
+    assert!(
+        said.is_empty(),
+        "an import failed for the bundle's state: {said:?}"
+    );
     kept(&page, &dev).await;
     page.close().await;
+}
+
+/// [`shows`], for a page whose console holds the build error an overlay
+/// shows.
+async fn shows_despite_overlay(page: &Page, dev: &Server, text: &str) {
+    let shown = page
+        .poll(
+            &format!("{SHOWN} === {}", serde_json::to_string(text).unwrap()),
+            Duration::from_secs(40),
+        )
+        .await;
+    assert!(
+        shown,
+        "the page never showed {text:?}: shows {:?}; page errors: {:?}\n{}",
+        page.eval::<String>(SHOWN).await,
+        page.errors(),
+        dev.output()
+    );
 }
 
 /// Under a dev `base` the page asks for the module under it.
@@ -914,7 +1030,9 @@ fn restored(root: &Path) -> Server {
         let (status, _) = first.request("GET", "/", &[]);
         assert_eq!(status, 200, "the first boot\n{}", first.output());
         let deadline = std::time::Instant::now() + WAIT;
-        while !first.output().contains("client bundle cached") {
+        while !first.output().contains("client bundle cached")
+            && !first.output().contains("client bundle restored from cache")
+        {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the first boot cached no bundle\n{}",
@@ -984,18 +1102,12 @@ async fn a_restored_boot_edited_before_an_import_answers_it_as_edited() {
     let page = open_home(&dev).await;
 
     write(&root, NOTE, "export const note = \"note v2\";\n");
-    page.wait_for(
-        "window.__mark === undefined && self.__ojHydrated === true",
-        WAIT,
-    )
-    .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    hot_ready(&page).await;
     load_note(&page).await;
     notes(&page, &dev, "note v2").await;
 
     // The bundler runs now: the next edit of the module, loaded, is a hot
     // update, and so is one of the lazy route before its first visit.
-    page.eval::<bool>("(window.__mark = 'kept', true)").await;
     let before = hot_updates(&dev);
     write(&root, NOTE, "export const note = \"note v3\";\n");
     hot_updated(&dev, before).await;
@@ -1043,9 +1155,546 @@ async fn a_module_imported_on_a_restored_boot_and_then_edited_is_current() {
     );
     shows(&page, &dev, "3").await;
     write(&root, NOTE, "export const note = \"note v2\";\n");
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    load_note(&page).await;
-    notes(&page, &dev, "note v2").await;
+    notes_once_current(&page, &dev, "note v2").await;
     assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    page.close().await;
+}
+
+/// The proxy id the entry asks the dev server for, for the module whose id
+/// ends in `module`.
+fn proxy_of(dev: &Server, module: &str) -> String {
+    let (_, entry) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    let end = entry
+        .find(&format!("{module}?rolldown-lazy=1\""))
+        .unwrap_or_else(|| panic!("the entry asks for no {module}"))
+        + module.len()
+        + "?rolldown-lazy=1".len();
+    let start = entry[..end].rfind('"').unwrap() + 1;
+    entry[start..end].to_string()
+}
+
+fn encoded(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn lazy_url(proxy: &str, client: &str) -> String {
+    format!(
+        "/@oj-start/hmr/lazy?id={}&clientId={client}",
+        encoded(proxy)
+    )
+}
+
+/// An `import()` of something that does not resolve fails the bundle as an
+/// unresolved import that names it and its importer, in the first build and
+/// in an edit, as Vite reports `Failed to resolve import "x" from "file"`.
+#[test]
+fn an_import_that_does_not_resolve_names_itself_and_its_importer() {
+    for (case, missing) in [("relative", "./no-such-file"), ("bare", "no-such-dep-typo")] {
+        let broken = format!(
+            "export const note = \"note v1\";\nexport const more = () => import(\"{missing}\");\n"
+        );
+        let named = |out: &str| {
+            let out = out.to_lowercase();
+            out.contains(&format!("failed to resolve import \"{missing}\""))
+                && out.contains("note.ts")
+        };
+        let waits = |dev: &Server, what: &str| {
+            let deadline = std::time::Instant::now() + WAIT;
+            while !named(&dev.output()) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{case}, {what}: the unresolved import was not named\n{}",
+                    dev.output()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(
+                !dev.output().contains("oj:start-lazy-imports"),
+                "{case}, {what}: reported as a plugin's error\n{}",
+                dev.output()
+            );
+        };
+
+        // In the first build.
+        let Some(app) = lazy_app(
+            &format!("lazy-import-unresolved-boot-{case}"),
+            "export const EVENTS = [\"a\"];\n",
+        ) else {
+            return;
+        };
+        write(&app.0, NOTE, &broken);
+        let dev = Server::oj_dev(&app.0);
+        let _ = dev.request("GET", "/", &[]);
+        waits(&dev, "first build");
+        drop(dev);
+
+        // In an edit.
+        let Some(app) = lazy_app(
+            &format!("lazy-import-unresolved-edit-{case}"),
+            "export const EVENTS = [\"a\"];\n",
+        ) else {
+            return;
+        };
+        let dev = Server::oj_dev(&app.0);
+        let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+        assert_eq!(status, 200, "{}", dev.output());
+        write(&app.0, NOTE, &broken);
+        waits(&dev, "edit");
+    }
+}
+
+/// A lazily imported module with top-level `await`: the import settles when
+/// the module has finished evaluating, and rejects if it throws, as it does
+/// in a browser.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_waits_for_the_modules_top_level_await() {
+    let Some(app) = lazy_app("lazy-import-tla", "export const EVENTS = [\"a\", \"b\"];\n") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(
+        &root,
+        NOTE,
+        "export const note = await new Promise((resolve) => setTimeout(() => resolve(\"awaited\"), 300));\n",
+    );
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+    load_note(&page).await;
+    notes(&page, &dev, "awaited").await;
+
+    let before = hot_updates(&dev);
+    write(
+        &root,
+        NOTE,
+        "await new Promise((resolve) => setTimeout(resolve, 100));\nthrow new Error(\"tla threw\");\nexport const note = \"never\";\n",
+    );
+    hot_updated(&dev, before).await;
+    notes_once_current(&page, &dev, "failed: tla threw").await;
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// One edit gives a module the page runs a new export and makes the lazy
+/// route call it. The page goes to the route when its hot update is still
+/// on its way (held back here): the route's module must not run before the
+/// page applied the update it was compiled against.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lazy_module_does_not_run_ahead_of_the_update_it_was_compiled_against() {
+    let Some(app) = lazy_app(
+        "lazy-import-order",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(&root, INDEX, INDEX_READS);
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+    // The page's hot updates reach it two seconds late.
+    page.eval::<bool>(
+        "(() => { const rt = globalThis.__rolldown_runtime__; const apply = rt.ojApply.bind(rt); \
+         rt.ojApply = (frame) => setTimeout(() => apply(frame), 2000); return true; })()",
+    )
+    .await;
+
+    let before = hot_updates(&dev);
+    write(
+        &root,
+        EVENT,
+        "export const EVENTS = [\"a\", \"b\"];\nexport const count = () => EVENTS.length + 1;\n",
+    );
+    write(&root, ABOUT, &about("count", "\"v2 \" + count()"));
+    hot_updated(&dev, before).await;
+    go_to_about(&page).await;
+    shows(&page, &dev, "v2 3").await;
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// A request for a module costs the dev server no build, whatever it asks
+/// for, and a page with no socket open is answered at once with the module
+/// alone (not everything it imports).
+#[test]
+fn a_request_for_a_module_starts_no_build_and_does_not_wait_for_a_socket() {
+    let Some(app) = lazy_app(
+        "lazy-import-request",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let proxy = proxy_of(&dev, "src/lib/note.ts");
+    let builds = |dev: &Server| dev.output().matches("client bundling").count();
+    let built = builds(&dev);
+
+    let started = std::time::Instant::now();
+    let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "the answer waited {:?} for a socket",
+        started.elapsed()
+    );
+    assert!(
+        body.contains("note v1") && body.len() < 4096,
+        "the module with what the entry already holds: {} bytes",
+        body.len()
+    );
+
+    for id in [
+        "/etc/passwd?rolldown-lazy=1",
+        "garbage",
+        &format!("{proxy}x"),
+    ] {
+        let (status, body) = dev.request("GET", &lazy_url(id, "no-socket"), &[]);
+        assert_eq!(status, 404, "{id}: {body}");
+    }
+    assert_eq!(
+        builds(&dev),
+        built,
+        "a request started a build\n{}",
+        dev.output()
+    );
+    drop(dev);
+
+    // The same on a boot restored from the cache, which runs no bundler.
+    let dev = restored(&app.0);
+    let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
+    assert!(
+        status == 200 && body.starts_with("import \"../"),
+        "{status} {body}"
+    );
+    for id in ["/etc/passwd?rolldown-lazy=1", "garbage"] {
+        let (status, body) = dev.request("GET", &lazy_url(id, "no-socket"), &[]);
+        assert_eq!(status, 404, "{id}: {body}");
+    }
+    assert_eq!(
+        builds(&dev),
+        0,
+        "a request started a build\n{}",
+        dev.output()
+    );
+}
+
+/// A module with nothing to run (types only) imports as an empty module on
+/// a restored boot too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_boot_imports_a_module_with_no_code() {
+    let Some(app) = lazy_app(
+        "lazy-import-restored-empty",
+        "export const EVENTS = [\"a\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(&root, NOTE, "export type Note = string;\n");
+    let dev = restored(&root);
+    let page = open_home(&dev).await;
+    load_note(&page).await;
+    // `m.note` is undefined: the span is empty, and no import failed.
+    notes(&page, &dev, "").await;
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// An `import()` the dev server cannot answer (no such module) rejects, and
+/// the page stays: it is not taken for a chunk gone from the server, which
+/// reloads the page.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_the_server_does_not_answer_rejects_without_a_reload() {
+    let Some(app) = lazy_app("lazy-import-rejects", "export const EVENTS = [\"a\"];\n") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let page = open_home(&dev).await;
+    // Left uncaught, as an app's own `import()` may be.
+    page.eval::<bool>(
+        "(void globalThis.__rolldown_runtime__.requestLazy('src/nope.ts', '/nope.ts?rolldown-lazy=1'), true)",
+    )
+    .await;
+    assert!(
+        page.poll(
+            "performance.getEntriesByType('resource').some((e) => e.name.includes('/@oj-start/hmr/lazy') && e.name.includes('nope'))",
+            WAIT
+        )
+        .await
+    );
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// Inside a lazily imported module: its own `import()`, a CommonJS
+/// dependency through `import()`, an `import.meta.glob` member, a JSON file
+/// imported with an attribute (`with { type: "json" }`), each edited
+/// (where it is the app's) before the page first imports the module; then a
+/// stylesheet the module starts importing, and its edits while requests for
+/// other modules are in flight. All in place.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lazy_modules_own_imports_are_answered_as_they_are_now() {
+    let Some(app) = lazy_app(
+        "lazy-import-nested",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let inner = "src/lib/inner.ts";
+    let member = "src/lib/members/one.ts";
+    let note_of = |tag: &str, extra: &str| {
+        format!(
+            r#"{extra}const members = import.meta.glob("./members/*.ts");
+const inner = await import("./inner");
+const cjs = await import("legacy-cjs");
+const one = (await members["./members/one.ts"]()) as {{ member: string }};
+const data = await import("./nested.json", {{ with: {{ type: "json" }} }});
+export const note = "{tag}|" + inner.inner + "|" + (cjs.default ?? cjs).badge("cjs") + "|" + one.member + "|" + data.default.k;
+"#
+        )
+    };
+    write(&root, inner, "export const inner = \"inner v1\";\n");
+    write(&root, member, "export const member = \"member v1\";\n");
+    write(&root, "src/lib/nested.json", "{ \"k\": \"json v1\" }\n");
+    write(&root, NOTE, &note_of("n1", ""));
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+
+    let before = hot_updates(&dev);
+    write(&root, inner, "export const inner = \"inner v2\";\n");
+    hot_updated(&dev, before).await;
+    let before = hot_updates(&dev);
+    write(&root, member, "export const member = \"member v2\";\n");
+    hot_updated(&dev, before).await;
+    let before = hot_updates(&dev);
+    write(&root, "src/lib/nested.json", "{ \"k\": \"json v2\" }\n");
+    hot_updated(&dev, before).await;
+    notes_once_current(&page, &dev, "n1|inner v2|[CJS]|member v2|json v2").await;
+
+    // Loaded, the module starts importing a stylesheet: the page gets it.
+    write(
+        &root,
+        "src/lib/note.css",
+        "#note { color: rgb(1, 2, 3); }\n",
+    );
+    write(&root, NOTE, &note_of("n2", "import \"./note.css\";\n"));
+    notes_once_current(&page, &dev, "n2|inner v2|[CJS]|member v2|json v2").await;
+    assert!(
+        page.poll(
+            "getComputedStyle(document.querySelector('#note')).color === 'rgb(1, 2, 3)'",
+            WAIT
+        )
+        .await,
+        "the stylesheet the lazy module started importing did not reach the page"
+    );
+
+    // Edits while other pages' requests keep the bundler compiling.
+    let proxy = proxy_of(&dev, "src/routes/about.tsx?tsr-split=component");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let asking = {
+        let (stop, url) = (stop.clone(), dev.url(""));
+        let port = url
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .trim_end_matches('/')
+            .to_string();
+        std::thread::spawn(move || {
+            let mut n = 0;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                n += 1;
+                let _ = std::process::Command::new("curl")
+                    .args(["-s", "-o", "/dev/null", "-m", "5"])
+                    .arg(format!(
+                        "http://127.0.0.1:{port}{}",
+                        lazy_url(&proxy, &format!("other-{n}"))
+                    ))
+                    .status();
+            }
+        })
+    };
+    for tag in ["n3", "n4", "n5"] {
+        let before = hot_updates(&dev);
+        write(&root, NOTE, &note_of(tag, "import \"./note.css\";\n"));
+        hot_updated(&dev, before).await;
+        notes_once_current(
+            &page,
+            &dev,
+            &format!("{tag}|inner v2|[CJS]|member v2|json v2"),
+        )
+        .await;
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = asking.join();
+    kept(&page, &dev).await;
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    page.close().await;
+}
+
+/// A component in a lazily loaded route keeps its state when the route is
+/// edited (Fast Refresh), and when it was first loaded after an edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lazily_loaded_component_keeps_its_state_across_an_edit() {
+    let Some(app) = lazy_app(
+        "lazy-import-refresh",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let counting = |tag: &str| {
+        format!(
+            r#"import {{ createFileRoute }} from "@tanstack/react-router";
+import {{ useState }} from "react";
+
+export const Route = createFileRoute("/about")({{
+  component: AboutPage,
+}});
+
+function AboutPage() {{
+  const [n, setN] = useState(0);
+  return (
+    <p>
+      <span id="about">{tag}</span>
+      <button id="about-count" onClick={{() => setN((v) => v + 1)}}>{{n}}</button>
+    </p>
+  );
+}}
+"#
+        )
+    };
+    write(&root, ABOUT, &counting("r1"));
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+
+    let before = hot_updates(&dev);
+    write(&root, ABOUT, &counting("r2"));
+    hot_updated(&dev, before).await;
+    go_to_about(&page).await;
+    shows(&page, &dev, "r2").await;
+    page.eval::<bool>(
+        "(document.querySelector('#about-count').click(), document.querySelector('#about-count').click(), true)",
+    )
+    .await;
+    write(&root, ABOUT, &counting("r3"));
+    shows(&page, &dev, "r3").await;
+    assert_eq!(
+        page.eval::<String>("document.querySelector('#about-count').textContent")
+            .await,
+        "2",
+        "the component lost its state"
+    );
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// `oj dev` on a port of the test's choosing, killed when dropped.
+struct OnPort(std::process::Child);
+
+impl OnPort {
+    fn start(root: &Path, port: u16) -> OnPort {
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_oj"))
+            .arg("dev")
+            .arg(root)
+            .args(["--port", &port.to_string()])
+            .current_dir(root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let server = OnPort(child);
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            let up = std::process::Command::new("curl")
+                .args(["-s", "-o", "/dev/null", "-m", "5", "-w", "%{http_code}"])
+                .arg(format!("http://127.0.0.1:{port}/"))
+                .output()
+                .is_ok_and(|out| out.stdout == b"200");
+            if up {
+                return server;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "oj dev never answered on {port}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for OnPort {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A tab left open across a restart of the dev server runs a bundle the new
+/// run never made. It reloads when its socket reconnects, as a page under
+/// Vite does once the server it lost answers again, without waiting for
+/// something of the page to fail.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tab_open_across_a_restart_reloads_when_the_server_is_back() {
+    let Some(app) = lazy_app(
+        "lazy-import-restart",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let port = start_app::free_port();
+    let first = OnPort::start(&root, port);
+    let page = Page::open(&format!("http://127.0.0.1:{port}/")).await;
+    hot_ready(&page).await;
+    drop(first);
+    write(
+        &root,
+        NOTE,
+        "export const note = \"note after the restart\";\n",
+    );
+    let _second = OnPort::start(&root, port);
+
+    // A new document, with no import made by the old one.
+    hot_ready(&page).await;
+    load_note(&page).await;
+    let shown = page
+        .poll(
+            &format!("{NOTE_SHOWN} === 'note after the restart'"),
+            Duration::from_secs(40),
+        )
+        .await;
+    assert!(
+        shown,
+        "the reloaded page shows {:?}; page errors: {:?}",
+        page.eval::<String>(NOTE_SHOWN).await,
+        page.errors()
+    );
     page.close().await;
 }

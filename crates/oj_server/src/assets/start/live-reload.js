@@ -286,6 +286,10 @@
     const at = url.indexOf(CHUNKS);
     if (at < 0) return null;
     const name = url.slice(at + CHUNKS.length);
+    // A hot update, or the answer to an `import()`, is no chunk of the
+    // bundle: one that fails rejects its import, as under Vite, and is
+    // asked for again.
+    if (name.startsWith("hmr/")) return null;
     try {
       return decodeURIComponent(name);
     } catch {
@@ -423,6 +427,17 @@
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
         showError(msg.err);
+        return;
+      }
+      // The client bundle builds again. An update this page applies clears
+      // the overlay itself; a fix with nothing for this page to run (the
+      // broken module was one it has not loaded) sends no update, and the
+      // overlay would stay up. Only a page whose bundle ran: one that
+      // opened on the failed build is reloaded onto the fixed one.
+      if (msg && msg.type === "oj:build-ok") {
+        if (bus.runtime && enableOverlay) {
+          document.querySelectorAll("vite-error-overlay").forEach((n) => (n.close ? n.close() : n.remove()));
+        }
         return;
       }
       // A chunk some page asked for is gone from the server: this page

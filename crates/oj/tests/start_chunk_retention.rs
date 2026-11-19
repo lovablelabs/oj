@@ -96,12 +96,44 @@ fn write_note(root: &Path, text: &str) {
 /// The editor's gate reloading the pages on every edit: no hot updates.
 const RELOADS: &[(&str, &str)] = &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")];
 
-/// The name of the note's chunk, as the served entry imports it.
-fn note_chunk(entry: &str) -> Option<String> {
-    let at = entry.find("lazy-note-")?;
-    let rest = &entry[at..];
-    let end = rest.find(".js")? + ".js".len();
-    Some(rest[..end].to_string())
+/// With hot updates on, as `oj dev` runs by default.
+const HOT: &[(&str, &str)] = &[];
+
+/// Each dev server's app, by its port.
+static ROOTS: Mutex<Vec<(u16, std::path::PathBuf)>> = Mutex::new(Vec::new());
+
+/// `oj dev` on `root` with `env`, its app noted for [`note_chunk`].
+fn boot(root: &Path, env: &[(&str, &str)]) -> Server {
+    let dev = Server::oj_dev_with(root, env);
+    ROOTS.lock().unwrap().push((dev.port, root.to_path_buf()));
+    dev
+}
+
+/// The name of the note's chunk in the current bundle: as the served entry
+/// imports it, where the entry imports chunks by name; with hot updates on
+/// the entry asks for the module by id, and the chunk is the one of the
+/// bundle's index that holds the note (it is served by name all the same).
+fn note_chunk(server: &Server, entry: &str) -> Option<String> {
+    if let Some(at) = entry.find("lazy-note-") {
+        let rest = &entry[at..];
+        let end = rest.find(".js")? + ".js".len();
+        return Some(rest[..end].to_string());
+    }
+    let root = ROOTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(port, _)| *port == server.port)
+        .map(|(_, root)| root.clone())?;
+    let index = std::fs::read_to_string(root.join(".oj-cache/v1/start/client-chunks.json")).ok()?;
+    let index: serde_json::Value = serde_json::from_str(&index).ok()?;
+    index["files"].as_array()?.iter().find_map(|file| {
+        let name = file["name"].as_str()?;
+        let holds = name.starts_with("lazy-note-")
+            && std::fs::read_to_string(root.join(".oj-cache/v1/start/client-chunks").join(name))
+                .is_ok_and(|code| code.contains("const note = "));
+        holds.then(|| name.to_string())
+    })
 }
 
 fn entry(server: &Server) -> String {
@@ -113,10 +145,21 @@ fn entry(server: &Server) -> String {
 /// The note chunk's name once the entry imports one other than `not`.
 fn wait_for_note_chunk(server: &Server, not: Option<&str>) -> String {
     let deadline = Instant::now() + Duration::from_secs(60);
+    // The same name over a few looks: the dev server takes a bundle in
+    // right after its files are written, and asking it for a name it does
+    // not serve yet would be a request for a chunk that is gone.
+    let mut seen: Option<(String, u32)> = None;
     loop {
-        if let Some(name) = note_chunk(&entry(server)) {
+        if let Some(name) = note_chunk(server, &entry(server)) {
             if Some(name.as_str()) != not {
-                return name;
+                let looks = match &seen {
+                    Some((last, looks)) if *last == name => looks + 1,
+                    _ => 1,
+                };
+                if looks >= 6 {
+                    return name;
+                }
+                seen = Some((name, looks));
             }
         }
         assert!(
@@ -130,11 +173,14 @@ fn wait_for_note_chunk(server: &Server, not: Option<&str>) -> String {
 
 /// The fixture with the lazily imported note, its dev server, and the note
 /// chunk's first name and content.
-fn started(name: &str) -> Option<(start_app::App, Server, String, String)> {
-    let app = app(name)?;
+fn started(name: &str, env: &[(&str, &str)]) -> Option<(start_app::App, Server, String, String)> {
+    let app = app(&format!(
+        "{name}{}",
+        if env.is_empty() { "-hot" } else { "" }
+    ))?;
     std::fs::write(app.0.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(&app.0, "lazy-note-one");
-    let dev = Server::oj_dev_with(&app.0, RELOADS);
+    let dev = boot(&app.0, env);
     let first = wait_for_note_chunk(&dev, None);
     let (status, body) = dev.request("GET", &format!("/@oj-start/{first}"), &[]);
     assert!(
@@ -210,13 +256,22 @@ impl PageSocket {
 
 #[test]
 fn a_rebundle_keeps_serving_the_chunks_of_the_bundle_before_it() {
-    let Some(app) = app("chunk-retention") else {
+    rebundle_keeps_the_chunks_before_it("chunk-retention", RELOADS);
+}
+
+#[test]
+fn a_rebundle_after_a_hot_update_keeps_serving_the_chunks_before_it() {
+    rebundle_keeps_the_chunks_before_it("chunk-retention-hot", HOT);
+}
+
+fn rebundle_keeps_the_chunks_before_it(name: &str, env: &[(&str, &str)]) {
+    let Some(app) = app(name) else {
         return;
     };
     let root = &app.0;
     std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(root, "lazy-note-one");
-    let dev = Server::oj_dev_with(root, RELOADS);
+    let dev = boot(root, env);
 
     let old = wait_for_note_chunk(&dev, None);
     let (status, old_body) = dev.request("GET", &format!("/@oj-start/{old}"), &[]);
@@ -258,7 +313,16 @@ fn a_rebundle_keeps_serving_the_chunks_of_the_bundle_before_it() {
 // way: the error goes to the overlay, not to the modules already loaded.
 #[test]
 fn a_failed_rebundle_keeps_every_served_chunk() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-failed") else {
+    failed_rebundle_keeps_every_chunk(RELOADS);
+}
+
+#[test]
+fn a_failed_rebundle_after_hot_updates_keeps_every_served_chunk() {
+    failed_rebundle_keeps_every_chunk(HOT);
+}
+
+fn failed_rebundle_keeps_every_chunk(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-failed", env) else {
         return;
     };
     let root = &app.0;
@@ -317,7 +381,16 @@ fn a_failed_rebundle_keeps_every_served_chunk() {
 // that is served tells the pages nothing.
 #[test]
 fn a_chunk_of_the_bundle_eight_rebundles_back_is_still_served() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-window") else {
+    chunk_eight_rebundles_back_is_served(RELOADS);
+}
+
+#[test]
+fn a_chunk_from_eight_hot_updates_back_is_still_served() {
+    chunk_eight_rebundles_back_is_served(HOT);
+}
+
+fn chunk_eight_rebundles_back_is_served(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-window", env) else {
         return;
     };
     let root = &app.0;
@@ -502,7 +575,16 @@ fn remove_files_with(dir: &Path, content: &[u8]) -> usize {
 // the pages, not a server fault.
 #[test]
 fn a_retained_chunk_whose_file_was_swept_is_not_found_and_the_pages_are_told() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-swept") else {
+    swept_chunk_is_not_found(RELOADS);
+}
+
+#[test]
+fn a_swept_chunk_is_not_found_and_the_pages_are_told_with_hot_updates_on() {
+    swept_chunk_is_not_found(HOT);
+}
+
+fn swept_chunk_is_not_found(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-swept", env) else {
         return;
     };
     let root = &app.0;

@@ -130,41 +130,99 @@ test("hot.send posts a custom event for the dev server's ws listeners", () => {
 });
 
 // The page's `import()` of a module asks the dev server for it by id
-// (rolldown's `requestLazy`, which keeps the request per module).
-test("an import() whose module the server could not compile is asked for again, under a url the browser has not seen fail", async () => {
-  const stub = `class DevRuntime {
-    constructor(id) { this.clientId = id; this.moduleCache = new Map(); this.lazyRequests = new Map(); }
-    requestLazy(id, proxy) {
-      let pending = this.lazyRequests.get(id);
-      if (!pending) {
-        pending = Promise.resolve().then(() => this.loadLazyChunk(proxy)).then(() => this.moduleCache.get(id));
-        this.lazyRequests.set(id, pending);
-      }
-      return pending;
+// (rolldown's `requestLazy`, which keeps the request per module and hands
+// each caller a promise derived from it).
+const LAZY_STUB = `class DevRuntime {
+  constructor(id) { this.clientId = id; this.moduleCache = new Map(); this.factories = new Map(); this.lazyRequests = new Map(); }
+  registerFactory(id, fn) { this.factories.set(id, fn); }
+  removeModuleCache(id) { this.moduleCache.delete(id); this.lazyRequests.delete(id); }
+  initModule(id) { if (!this.moduleCache.has(id)) this.factories.get(id)(id); return this.moduleCache.get(id); }
+  requestLazy(id, proxy) {
+    let pending = this.lazyRequests.get(id);
+    if (!pending) {
+      pending = Promise.resolve().then(() => this.loadLazyChunk(proxy)).then(() => this.initModule(id));
+      this.lazyRequests.set(id, pending);
     }
-  }`;
+    return pending.then((exports) => exports);
+  }
+}`;
+
+function lazyRuntime() {
   const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
-  const page = { console: { debug() {}, error() {} }, __ojStartHmr: {} };
+  const page = { console: { debug() {}, error() {} }, __ojStartHmr: {}, setTimeout, Date };
   page.globalThis = page;
   vm.createContext(page);
-  vm.runInContext(`${stub}\n${source}`, page);
-  const runtime = page.__rolldown_runtime__;
+  vm.runInContext(`${LAZY_STUB}\n${source}`, page);
+  return page.__rolldown_runtime__;
+}
+
+test("an import() the server did not answer is asked for again, each request under a url of its own", async () => {
+  const runtime = lazyRuntime();
   const proxy = "/abs/src/note.ts?rolldown-lazy=1";
   const first = runtime.lazyChunkUrl(proxy);
   assert.ok(first.startsWith("/app/@oj-start/hmr/lazy?id=%2Fabs%2Fsrc%2Fnote.ts%3Frolldown-lazy%3D1&clientId="), first);
+  assert.notEqual(runtime.lazyChunkUrl(proxy), first, "the browser keeps a module, failed or not, by url");
 
   // The vm has no module loader: the import of the chunk fails, as the
-  // browser's does when the server answers with an error.
-  await assert.rejects(runtime.requestLazy("src/note.ts", proxy));
+  // browser's does when the server does not answer. Two call sites await it.
+  const [a, b] = [runtime.requestLazy("src/note.ts", proxy), runtime.requestLazy("src/note.ts", proxy)];
+  await assert.rejects(a);
+  await assert.rejects(b);
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(runtime.lazyChunkUrl(proxy), first + "&retry=1");
-  const asked = [];
-  runtime.loadLazyChunk = async (p) => {
-    asked.push(runtime.lazyChunkUrl(p));
-    runtime.moduleCache.set("src/note.ts", { note: "fixed" });
+  let asked = 0;
+  runtime.loadLazyChunk = async () => {
+    asked++;
+    runtime.registerFactory("src/note.ts", (id) => runtime.moduleCache.set(id, { note: "fixed" }));
   };
-  assert.deepEqual(await runtime.requestLazy("src/note.ts", proxy), { note: "fixed" });
-  // Loaded, it is not asked for again.
+  // The next import asks again; the first failure's handlers, both run by
+  // now, do not drop the request that replaced it.
+  const again = runtime.requestLazy("src/note.ts", proxy);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(await again, { note: "fixed" });
   await runtime.requestLazy("src/note.ts", proxy);
-  assert.deepEqual(asked, [first + "&retry=1"]);
+  assert.equal(asked, 1);
+});
+
+test("an import() settles when a module with top-level await has finished, and rejects if it threw", async () => {
+  const runtime = lazyRuntime();
+  let finish;
+  runtime.loadLazyChunk = async () => {
+    runtime.registerFactory("src/tla.ts", async (id) => {
+      const exports = {};
+      runtime.moduleCache.set(id, exports);
+      await new Promise((r) => (finish = r));
+      exports.done = true;
+    });
+  };
+  let settled = false;
+  const imported = runtime
+    .requestLazy("src/tla.ts", "/abs/src/tla.ts?rolldown-lazy=1")
+    .then((m) => ((settled = true), m));
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(settled, false, "the import settled before the module finished evaluating");
+  finish();
+  assert.deepEqual(await imported, { done: true });
+
+  runtime.loadLazyChunk = async () => {
+    runtime.registerFactory("src/throws.ts", async (id) => {
+      runtime.moduleCache.set(id, {});
+      await null;
+      throw new Error("tla threw");
+    });
+  };
+  const proxy = "/abs/src/throws.ts?rolldown-lazy=1";
+  await assert.rejects(runtime.requestLazy("src/throws.ts", proxy), /tla threw/);
+  await assert.rejects(runtime.requestLazy("src/throws.ts", proxy), /tla threw/, "as a module that threw stays failed");
+});
+
+test("a module compiled after a hot update waits for the page to have applied it", async () => {
+  const runtime = lazyRuntime();
+  let applied = false;
+  const waited = runtime.ojPatched(2).then(() => (applied = runtime.hmr.lastSeq));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(applied, false, "it did not wait for update 2");
+  runtime.hmr.lastSeq = 2;
+  assert.equal(await waited, 2);
+  // Nothing sent: nothing to wait for.
+  await lazyRuntime().ojPatched(0);
 });
