@@ -1567,6 +1567,10 @@ fn spawn_start_watcher(
         cache.clone(),
         Arc::clone(&state),
     ));
+    rt.spawn(close_idle_hot_engine(
+        Arc::clone(&state),
+        Arc::clone(&shutdown),
+    ));
     rt.spawn(rebundle_worker(
         root,
         cache,
@@ -1732,6 +1736,31 @@ fn spawn_start_watcher(
             wake.notify_one();
         }
     });
+}
+
+/// How long the client bundle's hot-update engine goes unused before
+/// [`close_idle_hot_engine`] closes it.
+const HOT_ENGINE_IDLE: Duration = Duration::from_secs(300);
+
+/// Closes the client bundle's hot-update engine when no edit has reached it
+/// for [`HOT_ENGINE_IDLE`] (`OJ_START_HOT_IDLE_SECS`), and returns the heap
+/// it freed. An app nobody is editing then holds what a warm boot holds.
+async fn close_idle_hot_engine(
+    state: Arc<StartState>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let idle = oj_env::get()
+        .knobs
+        .start_hot_idle_secs
+        .map_or(HOT_ENGINE_IDLE, Duration::from_secs);
+    let mut tick = tokio::time::interval((idle / 4).max(Duration::from_secs(1)));
+    while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+        tick.tick().await;
+        if state.bundler.close_idle_session(idle).await {
+            let _ =
+                tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap).await;
+        }
+    }
 }
 
 /// The coalescing rebundle worker: route-tree/server-fn regeneration and the

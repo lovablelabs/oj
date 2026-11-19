@@ -57,6 +57,8 @@ pub(crate) struct DevBundler {
     /// The hot-update engine, while one runs; one bundle at a time holds it
     /// (rebundles and output refreshes share the cache directory).
     session: tokio::sync::Mutex<Option<HotSession>>,
+    /// When a bundle last ran, for [`Self::close_idle_session`].
+    last_run: Mutex<std::time::Instant>,
     engine: EngineSlot,
     /// The bundler's hot updates on their way to the pages.
     pub(crate) hot: Arc<crate::start_hot::HotUpdates>,
@@ -118,6 +120,7 @@ impl DevBundler {
             route_tree_refusal: None,
             styles,
             session: tokio::sync::Mutex::new(None),
+            last_run: Mutex::new(std::time::Instant::now()),
             engine: EngineSlot::default(),
             hot,
             hot_enabled: std::sync::atomic::AtomicBool::new(hot_enabled),
@@ -376,6 +379,24 @@ impl DevBundler {
         tokio::runtime::Handle::current().block_on(self.bundle_async(changed, refresh))
     }
 
+    /// Closes the hot-update engine once no bundle has run for `idle`, and
+    /// says whether it did. The engine holds the AST of every client module;
+    /// the next edit starts a new one with a full bundle, as the first edit
+    /// after a warm boot does.
+    pub(crate) async fn close_idle_session(&self, idle: std::time::Duration) -> bool {
+        let mut session = self.session.lock().await;
+        if self.last_run.lock().unwrap().elapsed() < idle {
+            return false;
+        }
+        match session.take() {
+            Some(old) => {
+                old.close(&self.engine).await;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(crate) async fn bundle_async(
         &self,
         changed: &[PathBuf],
@@ -407,6 +428,7 @@ impl DevBundler {
                 Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
             },
         };
+        *self.last_run.lock().unwrap() = std::time::Instant::now();
         match outcome {
             Ok(Run::Hot { css }) => {
                 write_json(

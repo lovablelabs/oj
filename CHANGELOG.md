@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- TanStack Start dev: the client bundle's hot-update engine is closed once no edit has reached it for five minutes (`OJ_START_HOT_IDLE_SECS` sets the seconds). The engine keeps the AST of every client module so an edit patches the page; a cold boot started one and held it for the rest of the session, where a warm boot starts none until the first edit. An app nobody is editing now returns to what a warm boot holds on the Rust side, and the next edit starts an engine with a full client bundle and a reload, as the first edit after a warm boot does. On the TanStack Start template with 1,500 extra modules (Linux arm64, glibc 2.39), the allocator's live heap after the close drops from 446 MB to 85 MB and RSS from 1,266 MB to about 1,000 MB; a warm boot of the same app holds 618 MB.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

@@ -57,6 +57,9 @@ pub struct Knobs {
     /// `OJ_START_RESPAWN_STALE`: how many stale module instances the Start
     /// dev runner accumulates across reloads before it is respawned (500).
     pub start_respawn_stale: Option<usize>,
+    /// `OJ_START_HOT_IDLE_SECS`: how long the Start client bundle's hot-update
+    /// engine goes unused before it is closed (300).
+    pub start_hot_idle_secs: Option<u64>,
 
     /// `OJ_STYLEX_NATIVE_SCOPE=1`: StyleX binding analysis from oj_stylex's own
     /// walk instead of oxc_semantic.
@@ -137,6 +140,9 @@ impl Knobs {
             debug_hook_gate: debug_enabled(&debug, "oj:hook-gate"),
             start_max_body: var("OJ_START_MAX_BODY").and_then(|v| v.trim().parse().ok()),
             start_respawn_stale: var("OJ_START_RESPAWN_STALE")
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|v| *v > 0),
+            start_hot_idle_secs: var("OJ_START_HOT_IDLE_SECS")
                 .and_then(|v| v.trim().parse().ok())
                 .filter(|v| *v > 0),
             stylex_native_scope: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("1"),
@@ -297,6 +303,14 @@ mod tests {
             None
         );
         assert_eq!(knobs(&[]).start_respawn_stale, None);
+        assert_eq!(
+            knobs(&[("OJ_START_HOT_IDLE_SECS", " 20 ")]).start_hot_idle_secs,
+            Some(20)
+        );
+        assert_eq!(
+            knobs(&[("OJ_START_HOT_IDLE_SECS", "0")]).start_hot_idle_secs,
+            None
+        );
         assert_eq!(
             knobs(&[("OJ_MEMORY_CACHE_MB", " 0 ")]).memory_cache_mb,
             Some(0)
