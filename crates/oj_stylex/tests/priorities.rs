@@ -162,7 +162,7 @@ fn unverified_strings_use_flagged_utf16_fallback() {
             locale_cmp(a, b).is_err(),
             "expected UnverifiedChar for ({a:?}, {b:?})"
         );
-        // the shared fallback is deterministic UTF-16 order, both paths alike
+        // the shared fallback orders these pairs as UTF-16 order does, both paths alike
         assert_eq!(default_locale_cmp(a, b), utf16_cmp(a, b));
     }
 }

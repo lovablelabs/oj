@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- StyleX: stylesheet assembly sorts rules in one order when a declaration or rule holds a character outside the collation table `localeCompare` is pinned to (`content: "Checking…"`). A pair holding such a character compared by UTF-16 code unit while every other pair collated, so the comparison was not transitive (`''` < `""` by collation, `""` < `"Checking…"` < `''` by UTF-16): the sort could panic ("user-provided comparison function does not correctly implement a total order"), and otherwise the sheet's order followed the input's. Such a character now sorts by code point, before every character in the table if it is a C0 control character (U+0000 to U+001F) and after them otherwise; rules made only of characters in the table sort as before, and the pinned ICU pairs for such characters keep their order.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed

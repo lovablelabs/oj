@@ -581,3 +581,76 @@ fn duplicates_outside_keyed_preconditions_match_comparator_path() {
         }
     }
 }
+
+// Equal priority, so the declaration slices decide. Collation ordered `''` before `""`,
+// but a pair holding `…` (outside the pinned alphabet) fell back to UTF-16: `""` before
+// `"Checking…"` before `''`, a cycle. Every input order must give one sheet.
+#[test]
+fn rules_mixing_verified_and_unverified_text_sort_in_one_order() {
+    use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
+    let cfg = AssembleConfig::default();
+    let rules = [
+        plain_rule("xa", ".xa::after{content:''}", 8000.0),
+        plain_rule("xb", ".xb::after{content:\"\"}", 8000.0),
+        plain_rule("xc", ".xc::before{content:\"Checking\u{2026}\"}", 8000.0),
+    ];
+    let expected = ".xa::after{content:''}\n.xb::after{content:\"\"}\n.xc::before{content:\"Checking\u{2026}\"}";
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let input: Vec<StylexRule> = order.iter().map(|&i| rules[i].clone()).collect();
+        assert_eq!(assemble(&input, &cfg).unwrap(), expected, "{order:?}");
+        assert_eq!(
+            assemble(&input, &cfg),
+            assemble_with_comparator(&input, &cfg, default_locale_cmp),
+            "{order:?}"
+        );
+    }
+}
+
+// The same cycle over 60 rules ("a" < "B" by collation, "B" < "C↗" < "a" by UTF-16) can
+// make the standard sort panic; shuffled inputs must neither panic nor change the sheet.
+#[test]
+fn many_mixed_collation_rules_sort_without_panicking() {
+    use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
+    let configs = [
+        AssembleConfig::default(),
+        AssembleConfig::from_json(&serde_json::json!({"useLegacyClassnamesSort": true})).unwrap(),
+    ];
+    let values = ["a", "B", "C\u{2197}"];
+    let mut rules: Vec<StylexRule> = (0..60)
+        .map(|i| {
+            let value = values[i % values.len()];
+            plain_rule(
+                &format!("{value}{i}"),
+                &format!(".x{i}{{content:\"{value}{i}\"}}"),
+                3000.0,
+            )
+        })
+        .collect();
+    let mut rng = Lcg(0x5eed_0f00_d00d_0001);
+    for cfg in &configs {
+        let mut expected = None;
+        for _ in 0..64 {
+            for i in (1..rules.len()).rev() {
+                rules.swap(i, rng.below(i + 1));
+            }
+            let css = std::panic::catch_unwind(|| assemble(&rules, cfg))
+                .expect("the sort panicked")
+                .unwrap();
+            assert_eq!(
+                Ok(css.clone()),
+                assemble_with_comparator(&rules, cfg, default_locale_cmp)
+            );
+            match &expected {
+                None => expected = Some(css),
+                Some(expected) => assert_eq!(&css, expected),
+            }
+        }
+    }
+}
