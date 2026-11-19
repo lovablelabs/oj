@@ -615,8 +615,9 @@ fn worker_app() -> App {
 }
 
 // A classic worker cannot hold a static import: Vite appends its helper to
-// the worker instead of importing it. Asserted: the worker file holds the
-// helper and no import of the dev client, classic or module.
+// a classic worker only (importAnalysis.ts `isClassicWorker`), and a module
+// worker imports `injectQuery` from the dev client. oj differs: it writes the
+// helper into both. Asserted: each worker file holds it and no client import.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_with_a_computed_import_gets_the_helper_not_an_import_of_the_client() {
     let app = worker_app();
@@ -751,7 +752,8 @@ async fn page_hot_updates_an_accepted_json_module_with_a_public_twin() {
 // A module worker whose module makes a computed `import()` loads the dev
 // client for the helper. Vite's client keeps the page-only work behind
 // `hasDocument`: a worker shows no overlay and reloads nothing. Asserted: the
-// worker runs, and a server error frame raises no error in it.
+// worker posts `root`, then `after-error` from its `vite:error` listener, and
+// no error between them.
 #[tokio::test(flavor = "multi_thread")]
 async fn page_module_worker_importing_the_client_survives_a_server_error() {
     if crate::browser::skip() {
@@ -762,16 +764,19 @@ async fn page_module_worker_importing_the_client_survives_a_server_error() {
         (
             "src/main.js",
             "const w = new Worker(\"/src/w.js?worker_file&type=module\", { type: \"module\" });\n\
-             w.onmessage = (e) => { window.__FROM = e.data; };\n\
-             w.onerror = (e) => { window.__WERR = String(e.message || e); };\n",
+             window.__MSGS = [];\n\
+             w.onmessage = (e) => { window.__MSGS.push(e.data); };\n\
+             w.onerror = (e) => { window.__MSGS.push(\"onerror:\" + (e.message || e)); };\n",
         ),
         (
             "src/w.js",
-            "import { load } from \"./lib.js\";\nload().then((v) => postMessage(v));\n",
+            "self.addEventListener(\"error\", (e) => postMessage(\"error:\" + e.message));\n\
+             import { load } from \"./lib.js\";\nload().then((v) => postMessage(v));\n",
         ),
         (
             "src/lib.js",
-            "export const load = () => { const n = \"./data.json\"; return import(n).then((m) => m.default.from); };\n",
+            "export const load = () => { const n = \"./data.json\"; return import(n).then((m) => m.default.from); };\n\
+             import.meta.hot.on(\"vite:error\", () => setTimeout(() => postMessage(\"after-error\")));\n",
         ),
         ("src/data.json", "{\"from\":\"root\"}\n"),
         ("src/broken.js", "export const x = 1;\n"),
@@ -786,9 +791,9 @@ async fn page_module_worker_importing_the_client_survives_a_server_error() {
     let listening = server.listen().await;
     let before = server.built.reload_tx.receiver_count();
     let page = Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
-    page.wait_for("window.__FROM !== undefined", WAIT).await;
-    let from: String = page.eval("window.__FROM").await;
-    assert_eq!(from, "root");
+    page.wait_for("window.__MSGS.length > 0", WAIT).await;
+    let first: Vec<String> = page.eval("window.__MSGS").await;
+    assert_eq!(first, ["root"], "the worker ran and imported the module");
     // The page's socket and the worker's.
     let deadline = tokio::time::Instant::now() + WAIT;
     while server.built.reload_tx.receiver_count() < before + 2 {
@@ -804,9 +809,14 @@ async fn page_module_worker_importing_the_client_survives_a_server_error() {
         broken.status, 200,
         "the compile error is sent as an error frame"
     );
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    let err: Option<String> = page.eval("window.__WERR ?? null").await;
-    assert_eq!(err, None, "the worker's client threw on the error frame");
+    page.wait_for("window.__MSGS.includes(\"after-error\")", WAIT)
+        .await;
+    let msgs: Vec<String> = page.eval("window.__MSGS").await;
+    assert_eq!(
+        msgs,
+        ["root", "after-error"],
+        "the worker's client threw on the error frame"
+    );
     page.close().await;
 }
 
@@ -939,5 +949,100 @@ async fn a_marked_query_import_runs_the_loader_its_unmarked_spelling_runs() {
             ),
             "{file}?import&{query} against {file}?{query}"
         );
+    }
+}
+
+const REWRITE_TWIN: &str = r#"
+const rewriteTwin = {
+  name: "rewrite-twin",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const [path, query] = req.url.split("?");
+      if (path === "/twin") req.url = "/data.json" + (query ? "?" + query : "");
+      next();
+    });
+  },
+};
+export default { plugins: [rewriteTwin] };
+"#;
+
+// A plugin middleware runs ahead of Vite's servePublicMiddleware, so its rewrite is served as asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_url_a_plugin_rewrites_to_a_public_file_with_a_root_twin_is_the_public_file() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"rewrite-twin","version":"1.0.0"}"#,
+        ),
+        ("vite.config.mjs", REWRITE_TWIN),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("index.html", INDEX_HTML),
+        ("data.json", "{\"root\":1}\n"),
+        ("public/data.json", "{\"public\":1}\n"),
+    ]);
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    let res = headerless(&server, "/twin").await;
+    assert_eq!(res.status, 200, "{}", res.body);
+    assert_eq!(res.body, "{\"public\":1}\n", "/twin is the public file");
+    assert!(
+        res.headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "{:?}",
+        res.headers["content-type"]
+    );
+    assert_root_module(&headerless(&server, "/twin?import").await, "/twin?import");
+}
+
+// Vite's baseMiddleware strips the base before servePublicMiddleware runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn under_a_base_a_public_file_is_served_ahead_of_its_root_twin() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"base-twin","version":"1.0.0"}"#),
+        ("vite.config.js", "export default { base: \"/app/\" };\n"),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("index.html", INDEX_HTML),
+        ("data.json", "{\"root\":1}\n"),
+        ("public/data.json", "{\"public\":1}\n"),
+    ]);
+    let server = app.serve().await;
+    for url in ["/app/data.json", "/app/data.json?t=1"] {
+        let res = headerless(&server, url).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(res.body, "{\"public\":1}\n", "{url} is the public file");
+    }
+    assert_root_module(
+        &headerless(&server, "/app/data.json?import").await,
+        "/app/data.json?import",
+    );
+}
+
+// Vite's importQueryRE takes `import=` as the flag on a stylesheet too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stylesheet_import_flag_with_an_equals_sign_is_a_module_request() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"css-import-eq","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("src/a.css", ".a { color: red; }\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    for url in ["/src/a.css?import", "/src/a.css?import="] {
+        let res = headerless(&server, url).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(res.headers["content-type"], "text/javascript", "{url}");
+        assert!(res.body.contains("red"), "{url}:\n{}", res.body);
+    }
+    for url in ["/src/a.css?import&url", "/src/a.css?import=&url"] {
+        let res = headerless(&server, url).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        // oj's `?direct` on a stylesheet's url module is an older difference from Vite.
+        let body = res.body.replace("?direct", "");
+        assert_eq!(body.trim_end(), "export default \"/src/a.css\";", "{url}");
     }
 }

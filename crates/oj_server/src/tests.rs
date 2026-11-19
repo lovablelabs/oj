@@ -2509,6 +2509,7 @@ fn dev_asset_urls_encode_the_path_and_decode_the_base() {
         asset_export_url("/a.png?import&url&t=5&v=2"),
         "/a.png?t=5&v=2"
     );
+    assert_eq!(asset_export_url("/a.png?import=&url&t=5"), "/a.png?t=5");
 }
 
 // Vite's dev css url rewrite (rewriteCssUrls, doUrlReplace, urlResolver,
