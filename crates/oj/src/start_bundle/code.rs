@@ -7,7 +7,7 @@
 //! RPC stub in the browser, the provider export on the server).
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -43,6 +43,10 @@ pub(crate) enum CodeTarget {
     Worker { entry: PathBuf },
 }
 
+/// The server-function modules the app compiled: those a client bundle stubbed
+/// and, in dev, those the module host compiled for the server.
+pub(crate) type ServerFnModules = Arc<Mutex<BTreeSet<PathBuf>>>;
+
 pub(crate) struct StartCodePlugin {
     root: PathBuf,
     target: CodeTarget,
@@ -50,6 +54,9 @@ pub(crate) struct StartCodePlugin {
     /// server's rebundle gate (a file created or deleted that one matches
     /// changes the bundle) and its server graphs (the importer re-expands).
     glob_scopes: Option<Arc<Mutex<Vec<GlobScope>>>>,
+    /// Where a client bundle records each module it stubs: what the build's
+    /// resolver maps and dev's lazy lookup accepts (Start's `serverFnsById`).
+    server_fns: Option<ServerFnModules>,
     /// The app's `resolve.alias`, which an aliased glob pattern resolves
     /// through (Vite's toAbsoluteGlob -> resolveId).
     alias: Vec<AliasEntry>,
@@ -80,6 +87,7 @@ impl StartCodePlugin {
             root: root.to_path_buf(),
             target,
             glob_scopes: None,
+            server_fns: None,
             alias: Vec::new(),
             compiled_in_host: false,
             routes_split_in_host: false,
@@ -112,6 +120,11 @@ impl StartCodePlugin {
 
     pub fn recording_globs(mut self, scopes: Arc<Mutex<Vec<GlobScope>>>) -> Self {
         self.glob_scopes = Some(scopes);
+        self
+    }
+
+    pub fn recording_server_fns(mut self, modules: Option<ServerFnModules>) -> Self {
+        self.server_fns = modules;
         self
     }
 
@@ -149,14 +162,7 @@ fn route_tree_imports(tree: &Path, text: &str) -> HashSet<PathBuf> {
 /// App source the server-fn and glob rewrites own: not a dependency, not a
 /// virtual module, a script.
 fn is_app_code(id: &str) -> bool {
-    !id.contains("/node_modules/")
-        && !id.starts_with('\0')
-        && matches!(
-            Path::new(id.split('?').next().unwrap_or(id))
-                .extension()
-                .and_then(|e| e.to_str()),
-            Some("ts" | "tsx" | "js" | "jsx" | "mjs")
-        )
+    !id.contains("/node_modules/") && is_script(id)
 }
 
 fn is_script(id: &str) -> bool {
@@ -363,8 +369,12 @@ impl StartCodePlugin {
             let modules = oj_compiler::server_fns::FsModules::new(&self.root);
             let rewritten = match self.target {
                 CodeTarget::Client => {
-                    oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                    let out = oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    if let (Some(_), Some(record)) = (&out, &self.server_fns) {
+                        record.lock().unwrap().insert(file.clone());
+                    }
+                    out
                 }
                 CodeTarget::Server => {
                     oj_compiler::server_fns::rewrite_server(&code, &rel, &modules)
@@ -654,6 +664,16 @@ mod tests {
         assert!(!is_app_code("/app/node_modules/x/a.js"));
         assert!(!is_app_code("\0virtual"));
         assert!(!is_app_code("/app/src/a.css"));
+        // Start's compiler takes every `.[cm]?[tj]sx?` module (TRANSFORM_ID_REGEX).
+        for id in [
+            "/app/src/a.mts",
+            "/app/src/a.cts",
+            "/app/src/a.cjs",
+            "/app/src/a.mts?x",
+        ] {
+            assert!(is_app_code(id), "{id}");
+        }
+        assert!(!is_app_code("/app/node_modules/x/a.cts"));
         assert!(is_script("/app/node_modules/x/a.cjs"));
     }
 }

@@ -23,7 +23,7 @@ use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
 use super::alias::AppAliasPlugin;
 use super::assets::{AssetMode, Emitter, StartAssetsPlugin, Styles, WorkerBundler};
 use super::cloudflare::{self, CloudflareWorkerPlugin};
-use super::code::{CodeTarget, StartCodePlugin};
+use super::code::{CodeTarget, ServerFnModules, StartCodePlugin};
 use super::errors::{unresolved_import_in, BundleError};
 use super::facts::{fn_handle, js_regex, Facts};
 use super::host::StartHostPlugin;
@@ -176,6 +176,7 @@ fn ssr_external(start: &StartConfig) -> Option<IsExternal> {
 /// The plugins every client-side bundle (the app's client, a worker entry)
 /// runs, in Vite's order: the alias, the app's plugins, oj's source
 /// rewrites, the asset conventions, the Node built-in stubs.
+#[allow(clippy::too_many_arguments)]
 fn client_plugins(
     start: &StartConfig,
     host: Option<&BundleHost>,
@@ -184,6 +185,7 @@ fn client_plugins(
     styles: &Arc<Styles>,
     emitter: &Arc<Emitter>,
     emit: &Arc<EmitState>,
+    server_fns: Option<ServerFnModules>,
 ) -> Vec<SharedPluginable> {
     let mut plugins: Vec<SharedPluginable> = Vec::new();
     if let Some(plugin) = &start.stylex {
@@ -216,7 +218,8 @@ fn client_plugins(
                 StartCodePlugin::new(&start.root, target.clone())
                     .with_route_tree(start.route_tree())
                     .with_alias(h.facts.alias.clone())
-                    .routes_split_in_host(true),
+                    .routes_split_in_host(true)
+                    .recording_server_fns(server_fns.clone()),
             ),
         ));
     }
@@ -238,7 +241,8 @@ fn client_plugins(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())
             .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
-            .compiled_in_host(host.is_some()),
+            .compiled_in_host(host.is_some())
+            .recording_server_fns(server_fns),
     ));
     plugins.push(Pluginable::new_shared(
         StartAssetsPlugin::new(
@@ -422,6 +426,7 @@ pub(crate) async fn build(
         emitter.set_worker_bundler(bundler, worker_options.is_module());
     }
 
+    let server_fns = Arc::clone(&start.server_fns);
     let build_all = async {
         // The client.
         let policy = match &client_host {
@@ -437,6 +442,7 @@ pub(crate) async fn build(
                 &styles,
                 &emitter,
                 &emit,
+                Some(Arc::clone(&server_fns)),
             ))
             .with_options(BundlerOptions {
                 input: Some(vec![input("client", &start.cache.join("client-entry.tsx"))]),
@@ -509,6 +515,16 @@ pub(crate) async fn build(
             })
             .ok_or_else(|| anyhow::anyhow!("the client bundle has no entry chunk"))?;
         let client_url = format!("{}{entry}", start.base);
+        // The server's resolver maps the modules the client compile stubbed,
+        // as Start's build maps the functions its compile saw: a module no
+        // client import reaches is never read.
+        let stubbed: Vec<PathBuf> = server_fns.lock().unwrap().iter().cloned().collect();
+        let none = super::ServerFnDirs {
+            roots: Vec::new(),
+            excluded: Vec::new(),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(&start.config),
+        };
+        super::write_server_fn_resolver(&start.root, &none, &stubbed, &start.cache, false)?;
 
         // The server bundle bakes this manifest in (its alias maps the manifest
         // virtual to the same file), so it serves the shape every framework
@@ -896,6 +912,7 @@ async fn bundle_worker(
         styles,
         emitter,
         &emit,
+        None,
     );
     // The worker's own `rolldownOptions.external` (its function a handle on
     // the worker's host).
