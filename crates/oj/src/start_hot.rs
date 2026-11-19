@@ -12,6 +12,9 @@ use tokio::sync::broadcast;
 
 /// Where a page fetches its patches.
 pub(crate) const PATCH_PREFIX: &str = "/@oj-start/hmr/";
+/// Where a page asks for the module behind an `import()`
+/// (`?id=<proxy id>&clientId=<runtime id>`).
+pub(crate) const LAZY_PATH: &str = "/@oj-start/hmr/lazy";
 /// Patches a page fetches right after its frame; older ones only matter to a
 /// page far behind, which the sequence check reloads anyway.
 const KEPT_PATCHES: usize = 64;
@@ -32,6 +35,9 @@ pub(crate) struct Frame {
     pub client: Option<String>,
     pub text: String,
 }
+
+/// Tells the editor's gate of files that changed.
+pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
@@ -56,6 +62,8 @@ pub(crate) struct HotUpdates {
     /// lock a release drains under, so a frame is never stranded by a flush
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
+    /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
+    holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
 }
 
@@ -68,6 +76,7 @@ impl HotUpdates {
             generation: std::sync::atomic::AtomicU64::new(0),
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
+            holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
@@ -114,6 +123,18 @@ impl HotUpdates {
         let _ = self.gate.set(held);
     }
 
+    /// How the bundler's engine tells the gate of the files it saw change.
+    pub(crate) fn set_holder(&self, holder: Holder) {
+        let _ = self.holder.set(holder);
+    }
+
+    /// The engine saw `files` change: the gate, if there is one, holds them.
+    pub(crate) fn hold(&self, files: &[String]) {
+        if let Some(holder) = self.holder.get() {
+            holder(files);
+        }
+    }
+
     /// The gate flushed: send what it held, in order. Sent under the lock, so
     /// a frame made after the flush cannot overtake them (a patch sequence
     /// gap reloads the page).
@@ -125,6 +146,15 @@ impl HotUpdates {
         for frame in parked.drain(..) {
             let _ = self.tx.send(frame);
         }
+    }
+
+    /// Whether the gate still holds frames for the pages.
+    pub(crate) fn has_parked(&self) -> bool {
+        !self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
     }
 
     /// The gate flushed with a page reload: the parked frames are moot.

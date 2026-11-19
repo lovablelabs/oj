@@ -111,6 +111,17 @@ impl Epochs {
         PageEpoch { rx, has }
     }
 
+    /// Whether `query` carries the stamp of a document another run of the
+    /// dev server rendered.
+    pub(crate) fn another_run(&self, query: Option<&str>) -> bool {
+        stamp_in(query).is_some_and(|stamp| {
+            stamp
+                .split_once('-')
+                .and_then(|(boot, _)| u64::from_str_radix(boot, 16).ok())
+                .is_some_and(|boot| boot != self.boot)
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn receivers(&self) -> usize {
         self.published.receiver_count()
@@ -264,6 +275,17 @@ impl FlushTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamp_of_another_run_is_told_from_this_ones() {
+        let epochs = Epochs::new(None);
+        let own = epochs.stamp();
+        assert!(!epochs.another_run(Some(&format!("g={own}&h=0"))));
+        assert!(epochs.another_run(Some("g=1-0&h=0")));
+        // No stamp, or none that parses: nothing says it is another run's.
+        assert!(!epochs.another_run(Some("h=0")));
+        assert!(!epochs.another_run(None));
+    }
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
     fn gated() -> (Epochs, Arc<AtomicBool>) {

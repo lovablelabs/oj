@@ -9,8 +9,13 @@
 //! document was built with instead of a 404 and a blank page.
 //!
 //! The app is the Start fixture (see `start_app`) with a route that imports a
-//! module lazily, so the module gets a chunk of its own. The browser test
-//! skips without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
+//! module lazily, so the module gets a chunk of its own, under a dev server
+//! whose bundle takes no hot updates (every edit reloads its pages): there
+//! the entry imports that chunk by name. A bundle that takes hot updates
+//! asks the dev server for the module behind an `import()` by id instead
+//! (see `start_hot_lazy_import`), and only the chunks it imports statically
+//! go by name. The browser test skips without Chrome, unless
+//! `OJ_REQUIRE_BROWSER` is set.
 
 #[path = "../../oj_server/tests/dev/browser.rs"]
 #[allow(dead_code)]
@@ -88,6 +93,9 @@ fn write_note(root: &Path, text: &str) {
     std::fs::write(root.join(LAZY_NOTE), note(text)).unwrap();
 }
 
+/// The editor's gate reloading the pages on every edit: no hot updates.
+const RELOADS: &[(&str, &str)] = &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")];
+
 /// The name of the note's chunk, as the served entry imports it.
 fn note_chunk(entry: &str) -> Option<String> {
     let at = entry.find("lazy-note-")?;
@@ -126,7 +134,7 @@ fn started(name: &str) -> Option<(start_app::App, Server, String, String)> {
     let app = app(name)?;
     std::fs::write(app.0.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(&app.0, "lazy-note-one");
-    let dev = Server::oj_dev(&app.0);
+    let dev = Server::oj_dev_with(&app.0, RELOADS);
     let first = wait_for_note_chunk(&dev, None);
     let (status, body) = dev.request("GET", &format!("/@oj-start/{first}"), &[]);
     assert!(
@@ -208,7 +216,7 @@ fn a_rebundle_keeps_serving_the_chunks_of_the_bundle_before_it() {
     let root = &app.0;
     std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(root, "lazy-note-one");
-    let dev = Server::oj_dev(root);
+    let dev = Server::oj_dev_with(root, RELOADS);
 
     let old = wait_for_note_chunk(&dev, None);
     let (status, old_body) = dev.request("GET", &format!("/@oj-start/{old}"), &[]);

@@ -72,7 +72,10 @@ impl Plugin for StylexTransform {
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
         let id = args.id;
-        if id.starts_with('\0') || !self.plugin.handles(id, args.code) {
+        if rolldown_common::is_lazy_proxy(id)
+            || id.starts_with('\0')
+            || !self.plugin.handles(id, args.code)
+        {
             return Ok(None);
         }
         let file = id.split('?').next().unwrap_or(id);

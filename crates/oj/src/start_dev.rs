@@ -685,9 +685,21 @@ pub async fn start_dev(
         built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
     ));
     if let Some(gate) = built.hmr_gate.clone() {
+        let holder = gate.clone();
         bundler
             .hot
             .set_gate(Arc::new(move || gate.reload_is_held()));
+        // The files the watcher below would rebuild for, as it holds them.
+        bundler.hot.set_holder(Arc::new(move |files| {
+            let paths: Vec<PathBuf> = files
+                .iter()
+                .map(PathBuf::from)
+                .filter(|p| watch_relevant(p))
+                .collect();
+            if !paths.is_empty() {
+                holder.hold_reload(&paths);
+            }
+        }));
     }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
@@ -3695,6 +3707,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     let weak = Arc::downgrade(&state);
                     HotPage {
                         has,
+                        another_run: state.reloads.another_run(parts.uri.query()),
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
                         reload_needed: Arc::new(move || {
@@ -3754,6 +3767,9 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     // the app's router (which has no such route and would render its 404).
     if path == crate::start_routes::PATH {
         return routes_json(&state, req.method()).await;
+    }
+    if path == crate::start_hot::LAZY_PATH {
+        return lazy_chunk(&state, req.uri().query()).await;
     }
     if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
         return state.bundler.hot.serve(name);
@@ -3841,6 +3857,8 @@ struct HotPage {
     reload_needed: Arc<dyn Fn() + Send + Sync>,
     /// The hot changes the page says it has (`h` on its socket's url).
     has: Option<u64>,
+    /// Its document was served by another run of the dev server.
+    another_run: bool,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -4037,7 +4055,7 @@ async fn start_hmr_socket(
                                 if let Some(old) = page.replace(id.clone()) {
                                     h.bundler.page_gone(&old);
                                 }
-                                h.bundler.page_connected(&id);
+                                h.bundler.page_connected(&id, h.another_run);
                             }
                             Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
                             Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
@@ -4387,6 +4405,125 @@ fn render_live_reload(
         "__OJ_PING_MS__",
         &ping.map_or(0, |p| p.as_millis()).to_string(),
     )
+}
+
+/// `GET /@oj-start/hmr/lazy?id=<proxy id>&clientId=<runtime id>`: the module
+/// behind an open page's `import()`, as it is now. Under Vite's dev server
+/// the page's `import()` is a request for the module itself, which the
+/// transform middleware answers `no-cache` with the module's current code
+/// (and import analysis has given the importer the module's url with the
+/// `?t=` of its last hot update); here the page's bundle holds a call into
+/// its module registry, which asks for the module, and the static imports
+/// the page lacks, by id.
+async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
+    let param = |name: &str| {
+        query.unwrap_or("").split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k == name).then(|| percent_decode(v))
+        })
+    };
+    let (Some(id), Some(client)) = (param("id"), param("clientId")) else {
+        return (StatusCode::BAD_REQUEST, "oj start: lazy: id and clientId").into_response();
+    };
+    let module = |code: String| {
+        (
+            [
+                (header::CONTENT_TYPE, "text/javascript"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            code,
+        )
+            .into_response()
+    };
+    // A tab left open across a restart of the dev server runs a bundle this
+    // run never made: no module of this one fits it. It reloads, as it does
+    // when it asks for a chunk this run never had (`chunk_gone`); the import
+    // stays pending meanwhile.
+    if state.bundler.page_from_another_run(&client).await {
+        return module("location.reload();\nawait new Promise(() => {});\n".to_string());
+    }
+    let mut compiled = state.bundler.lazy_chunk(&id, &client).await;
+    // While the editor's gate holds changes, a chunk that carries a module
+    // among them would run code the gate has not released, next to the
+    // modules whose patches it holds. Its answer waits for the flush (the
+    // editor's, or the hold cap's) and is compiled again then, after the
+    // patches the flush released went to the pages.
+    if let (Some(gate), Some(Ok(code))) = (&state.gate, &compiled) {
+        let mut flushes = gate.subscribe_flush();
+        if gate.reload_is_held()
+            && carries_held_change(code, state.bundler.root(), &gate.pending_paths())
+        {
+            let _ = tokio::time::timeout(LAZY_HOLD_CAP, flushes.recv()).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while (gate.reload_is_held() || state.bundler.hot.has_parked())
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            compiled = state.bundler.lazy_chunk(&id, &client).await;
+        }
+    }
+    match compiled {
+        Some(Ok(code)) => module(code),
+        // Not a module of the bundle: nothing is compiled for it.
+        Some(Err(e)) if e.message.contains("Lazy entry module not found") => {
+            (StatusCode::NOT_FOUND, "oj start: no such module").into_response()
+        }
+        // The module does not compile (a syntax error mid-edit): the import
+        // rejects with the error and the overlay shows it, as a failed
+        // transform does under Vite. A module that throws, not a failed
+        // response: the page's guard against chunks gone from the server
+        // reloads for those.
+        Some(Err(e)) => {
+            let frame = serde_json::json!({ "type": "error", "err": e.payload() }).to_string();
+            let _ = state.error_tx.send(frame);
+            module(format!(
+                "throw new Error({});\n",
+                serde_json::Value::String(e.message.clone())
+            ))
+        }
+        None => (StatusCode::NOT_FOUND, "oj start: no hot client bundle").into_response(),
+    }
+}
+
+/// How long a page's `import()` waits for the editor's gate at most: past
+/// the gate's own hold cap, which flushes.
+const LAZY_HOLD_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Whether a lazy chunk carries a module whose file is among `pending` (the
+/// changes the editor's gate holds). The chunk opens with rolldown's
+/// `registerGraph({ids:[…],localCount:N,…})`: its first `localCount` ids are
+/// the modules it carries, each a path from the app root with the module's
+/// query.
+fn carries_held_change(code: &str, root: &Path, pending: &[PathBuf]) -> bool {
+    let Some(at) = code.find("registerGraph({ids:") else {
+        return false;
+    };
+    let rest = &code[at + "registerGraph({ids:".len()..];
+    let mut ids = serde_json::Deserializer::from_str(rest).into_iter::<Vec<String>>();
+    let Some(Ok(list)) = ids.next() else {
+        return false;
+    };
+    let after = &rest[ids.byte_offset()..];
+    let local = after
+        .strip_prefix(",localCount:")
+        .map(|s| {
+            s.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(list.len());
+    list.iter().take(local).any(|id| {
+        let file = root.join(id.split('?').next().unwrap_or(id));
+        pending.iter().any(|p| {
+            *p == file
+                || std::fs::canonicalize(p)
+                    .ok()
+                    .zip(std::fs::canonicalize(&file).ok())
+                    .is_some_and(|(a, b)| a == b)
+        })
+    })
 }
 
 /// `GET /@oj/tanstack/routes.json`: the generated route tree's routes, read
@@ -5403,6 +5540,7 @@ mod tests {
                                 frames: bundler.hot.subscribe(),
                                 reload_needed: Arc::new(|| {}),
                                 has: None,
+                                another_run: false,
                             });
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
@@ -6880,6 +7018,30 @@ mod tests {
         assert_eq!(served_sheet_id("..%2Fsecret.css"), None);
         assert_eq!(served_sheet_id("__x00__virtual:data.js"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The modules a lazy chunk carries are the first `localCount` ids of its
+    // `registerGraph` prelude; the rest are modules it only refers to.
+    #[test]
+    fn a_lazy_chunk_carrying_a_held_file_is_told_from_one_referring_to_it() {
+        let root = Path::new("/app");
+        let chunk = |local: usize| {
+            format!(
+                "__rolldown_runtime__.registerGraph({{ids:[\"src/routes/about.tsx?tsr-split=component\",\"src/lib/event.ts\"],localCount:{local},edges:[[1],[]],stamps:{{}}}});\n//#region src/routes/about.tsx"
+            )
+        };
+        let about = [PathBuf::from("/app/src/routes/about.tsx")];
+        let event = [PathBuf::from("/app/src/lib/event.ts")];
+        assert!(carries_held_change(&chunk(1), root, &about));
+        assert!(!carries_held_change(&chunk(1), root, &event));
+        assert!(carries_held_change(&chunk(2), root, &event));
+        assert!(!carries_held_change(&chunk(2), root, &[]));
+        // A restored chunk imported by name carries nothing compiled now.
+        assert!(!carries_held_change(
+            "import \"../about-abc.js\";\nexport {};\n",
+            root,
+            &about
+        ));
     }
 
     #[test]

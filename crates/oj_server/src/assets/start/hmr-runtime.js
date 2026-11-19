@@ -342,6 +342,30 @@ class OjDevRuntime extends DevRuntime {
       onModuleCacheRemoval: (id) => hmr.disposeModule(id),
     };
   }
+  // The module behind an `import()`, as the dev server has it now
+  // (rolldown's lazy boundary; the URL is the server's to choose).
+  loadLazyChunk(proxyModuleId) {
+    return import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
+  }
+  lazyChunkUrl(proxyModuleId) {
+    const again = this.lazyRetries?.get(proxyModuleId);
+    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}${again ? `&retry=${again}` : ""}`;
+  }
+  // rolldown's runtime keeps a failed request for good, as `import()` keeps
+  // a module that threw. A module whose chunk never arrived (the server
+  // could not compile it: a syntax error mid-edit) has run nothing, so the
+  // next `import()` asks again, under a URL the browser has not seen fail
+  // (it keeps a module that failed to load, or threw, by URL).
+  requestLazy(id, proxyModuleId, isNodeMode) {
+    const pending = super.requestLazy(id, proxyModuleId, isNodeMode);
+    pending.catch(() => {
+      if (this.moduleCache.has(id) || this.lazyRequests.get(id) === undefined) return;
+      this.lazyRequests.delete(id);
+      const retries = (this.lazyRetries ??= new Map());
+      retries.set(proxyModuleId, (retries.get(proxyModuleId) ?? 0) + 1);
+    });
+    return pending;
+  }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });
   }

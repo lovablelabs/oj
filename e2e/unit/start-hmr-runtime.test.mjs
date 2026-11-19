@@ -128,3 +128,43 @@ test("hot.send posts a custom event for the dev server's ws listeners", () => {
   runtime.hooks.createModuleHotContext("src/a.tsx").send("app:ping", { n: 1 });
   assert.deepEqual(JSON.parse(JSON.stringify(runtime.log)), [{ type: "custom", event: "app:ping", data: { n: 1 } }]);
 });
+
+// The page's `import()` of a module asks the dev server for it by id
+// (rolldown's `requestLazy`, which keeps the request per module).
+test("an import() whose module the server could not compile is asked for again, under a url the browser has not seen fail", async () => {
+  const stub = `class DevRuntime {
+    constructor(id) { this.clientId = id; this.moduleCache = new Map(); this.lazyRequests = new Map(); }
+    requestLazy(id, proxy) {
+      let pending = this.lazyRequests.get(id);
+      if (!pending) {
+        pending = Promise.resolve().then(() => this.loadLazyChunk(proxy)).then(() => this.moduleCache.get(id));
+        this.lazyRequests.set(id, pending);
+      }
+      return pending;
+    }
+  }`;
+  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
+  const page = { console: { debug() {}, error() {} }, __ojStartHmr: {} };
+  page.globalThis = page;
+  vm.createContext(page);
+  vm.runInContext(`${stub}\n${source}`, page);
+  const runtime = page.__rolldown_runtime__;
+  const proxy = "/abs/src/note.ts?rolldown-lazy=1";
+  const first = runtime.lazyChunkUrl(proxy);
+  assert.ok(first.startsWith("/app/@oj-start/hmr/lazy?id=%2Fabs%2Fsrc%2Fnote.ts%3Frolldown-lazy%3D1&clientId="), first);
+
+  // The vm has no module loader: the import of the chunk fails, as the
+  // browser's does when the server answers with an error.
+  await assert.rejects(runtime.requestLazy("src/note.ts", proxy));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(runtime.lazyChunkUrl(proxy), first + "&retry=1");
+  const asked = [];
+  runtime.loadLazyChunk = async (p) => {
+    asked.push(runtime.lazyChunkUrl(p));
+    runtime.moduleCache.set("src/note.ts", { note: "fixed" });
+  };
+  assert.deepEqual(await runtime.requestLazy("src/note.ts", proxy), { note: "fixed" });
+  // Loaded, it is not asked for again.
+  await runtime.requestLazy("src/note.ts", proxy);
+  assert.deepEqual(asked, [first + "&retry=1"]);
+});

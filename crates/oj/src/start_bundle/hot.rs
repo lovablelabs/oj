@@ -53,6 +53,8 @@ struct Events {
     /// was produced (the engine loads again after it, for the next patch).
     output: Mutex<Option<NotedOutput>>,
     outputs: AtomicU64,
+    /// The engine's tasks that ended: its builds and its updates.
+    tasks: AtomicU64,
     changed: tokio::sync::Notify,
 }
 
@@ -129,6 +131,12 @@ impl HotSession {
             inline_const: Some(rolldown_common::InlineConstOption::Bool(false)),
             ..Default::default()
         });
+        // First: an `import()` resolves to its proxy before any other plugin
+        // names the target.
+        parts.plugins.insert(
+            0,
+            rolldown_plugin::__inner::Pluginable::new_shared(super::lazy::LazyImports::default()),
+        );
         let events = Arc::new(Events::default());
         let on_updates = {
             let events = Arc::clone(&events);
@@ -162,6 +170,7 @@ impl HotSession {
                     // can load a module the build read.
                     *events.output.lock().unwrap() = Some((recorded, loaded.snapshot()));
                     events.outputs.fetch_add(1, Ordering::SeqCst);
+                    events.tasks.fetch_add(1, Ordering::SeqCst);
                     events.changed.notify_waiters();
                 },
             )
@@ -284,7 +293,18 @@ impl HotSession {
     /// a page needs the output).
     pub async fn latest_output(&self) -> Result<(Vec<Output>, Notes), BundleError> {
         let before = self.events.outputs.load(Ordering::SeqCst);
-        let _ = self.engine.wait_for_ongoing_bundle().await;
+        // Every build the engine owes, not only the one running: a change
+        // that arrived during a build waits for it and starts as it ends,
+        // and the build it waited for says the output is current. The
+        // engine rebuilds after each module it compiles for a page's
+        // `import()`, so an edit often lands during one.
+        for _ in 0..8 {
+            let done = self.events.tasks.load(Ordering::SeqCst);
+            let _ = self.engine.wait_for_ongoing_bundle().await;
+            if self.events.tasks.load(Ordering::SeqCst) == done {
+                break;
+            }
+        }
         let state = self
             .engine
             .get_bundle_state()
@@ -329,6 +349,7 @@ fn on_hmr_updates(
     declared: &Declared,
     result: rolldown_error::BuildResult<(Vec<rolldown_common::ClientHmrUpdate>, Vec<String>)>,
 ) {
+    events.tasks.fetch_add(1, Ordering::SeqCst);
     let (updates, changed) = match result {
         Ok(ok) => ok,
         Err(errs) => {
@@ -338,6 +359,12 @@ fn on_hmr_updates(
         }
     };
     *events.error.lock().unwrap() = None;
+    // The editor's gate holds these files from here, before any patch for
+    // them is handed to the pages and, as the engine's build task still has
+    // the bundler, before a page's `import()` can be compiled against them.
+    // The dev server's own watcher reports the same files later (it waits
+    // for a quiet moment), which left a patch made meanwhile unheld.
+    hot.hold(&changed);
     let kind = if updates
         .iter()
         .any(|u| matches!(u.update, HmrUpdate::FullReload { .. }))
@@ -588,6 +615,58 @@ mod tests {
         assert!(unresolved_in_patch(text_only, "/app/src/a.tsx", &declared).is_none());
         let ext: Declared = Arc::new(|s| s == "cdn-only-dep");
         assert!(unresolved_in_patch("import \"cdn-only-dep\";", "/app/a.ts", &ext).is_none());
+    }
+
+    // The engine's watcher reports an edit before the dev server's own does
+    // (which waits for a quiet moment before it tells the gate): the gate
+    // holds the files from the engine's report, so the patch made with it
+    // waits for the flush instead of reaching the pages unheld.
+    #[test]
+    fn a_patch_is_held_from_the_engines_report_of_its_files() {
+        use std::sync::atomic::AtomicBool;
+        let hot = Arc::new(HotUpdates::new(""));
+        let held = Arc::new(AtomicBool::new(false));
+        let told: Arc<Mutex<Vec<String>>> = Arc::default();
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        hot.set_holder({
+            let (held, told) = (Arc::clone(&held), Arc::clone(&told));
+            Arc::new(move |files| {
+                told.lock().unwrap().extend(files.iter().cloned());
+                held.store(true, Ordering::SeqCst);
+            })
+        });
+        let mut pages = hot.subscribe();
+        let update = rolldown_common::ClientHmrUpdate {
+            client_id: "c1".into(),
+            update: HmrUpdate::Patch(rolldown_common::HmrPatch {
+                code: "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});".into(),
+                filename: "hmr_patch_0.js".into(),
+                sourcemap: None,
+                sourcemap_filename: None,
+                changed_ids: vec!["src/a.tsx".into()],
+                seq: 1,
+                carried: Vec::new(),
+            }),
+        };
+        on_hmr_updates(
+            &Events::default(),
+            Path::new("/app"),
+            &hot,
+            &none_declared(),
+            Ok((vec![update], vec!["/app/src/a.tsx".into()])),
+        );
+        assert_eq!(*told.lock().unwrap(), ["/app/src/a.tsx"]);
+        assert!(
+            pages.try_recv().is_err(),
+            "the patch reached the pages while the gate holds its file"
+        );
+        assert!(hot.has_parked());
+        hot.release();
+        let frame = pages.try_recv().expect("the flush sends the patch");
+        assert_eq!(frame.client.as_deref(), Some("c1"));
     }
 
     #[test]
