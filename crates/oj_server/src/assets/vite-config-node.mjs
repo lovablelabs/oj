@@ -37,6 +37,17 @@ export function appViteEntry(root) {
   return esmEntry(createRequire(join(root, "package.json")).resolve("vite"), "vite");
 }
 
+/** Vite's basePluginContextMeta as the app's `vite` module has it: `viteVersion`
+ *  from Vite 7, `rolldownVersion` when exported; without one, Vite 8's. */
+export function pluginContextMeta(vite) {
+  const version = typeof vite?.version === "string" ? vite.version : "8.0.0";
+  const meta = parseInt(version, 10) < 7 ? {} : { viteVersion: version };
+  meta.rollupVersion = typeof vite?.rollupVersion === "string" ? vite.rollupVersion : "4.0.0";
+  const rolldownVersion = vite ? vite.rolldownVersion : "1.0.0";
+  if (typeof rolldownVersion === "string") meta.rolldownVersion = rolldownVersion;
+  return meta;
+}
+
 // The package `name` as Node resolves it from `fromDir` (its real directory).
 function packageDir(fromDir, name) {
   for (let dir = fromDir; ; dir = dirname(dir)) {

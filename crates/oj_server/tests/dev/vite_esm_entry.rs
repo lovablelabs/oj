@@ -5,14 +5,14 @@
 //! `import` condition of its exports. Vite 5 and 6 map `require` to a CJS
 //! proxy exporting little more than `defineConfig`, which `require.resolve`
 //! picked: the host then saw no `version`, `resolveConfig` or `parseAst`. Here
-//! a plugin reports the `this.meta.viteVersion` the host read from vite.
+//! a plugin reports the `this.meta.rollupVersion` the host read from vite.
 
 use crate::{App, INDEX_HTML};
 
 const PLUGINS: &str = r#"export default [{
   name: "report-vite-version",
   transform(code, id) {
-    return id.endsWith("/main.js") ? code.replace("__VITE__", this.meta.viteVersion) : null;
+    return id.endsWith("/main.js") ? code.replace("__VITE__", this.meta.rollupVersion) : null;
   },
 }];
 "#;
@@ -27,7 +27,7 @@ async fn the_host_imports_vites_esm_entry_not_its_cjs_proxy() {
         ),
         (
             "node_modules/vite/dist/node/index.js",
-            "export const version = \"5.99.0-esm\";\nexport const defineConfig = (c) => c;\n",
+            "export const version = \"5.99.0\";\nexport const rollupVersion = \"4.99.0-esm\";\nexport const defineConfig = (c) => c;\n",
         ),
         (
             "node_modules/vite/index.cjs",
@@ -40,7 +40,7 @@ async fn the_host_imports_vites_esm_entry_not_its_cjs_proxy() {
     let server = app.serve().await;
     let main = server.text("/src/main.js").await;
     assert!(
-        main.contains("5.99.0-esm"),
+        main.contains("4.99.0-esm"),
         "the plugin saw vite's ESM build:\n{main}"
     );
 }

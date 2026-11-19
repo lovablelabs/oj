@@ -20,7 +20,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
-import { appViteEntry, asNode, startRouterGenerator } from "./vite-config-node.mjs";
+import { appViteEntry, asNode, pluginContextMeta, startRouterGenerator } from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
@@ -2011,40 +2011,26 @@ let viteParseAst = null;
 // Vite's own `transformWithOxc`, what its `vite:oxc` plugin strips TS/JSX with.
 let viteTransformWithOxc = null;
 let viteCreateFilter = null;
-// Vite's plugin context meta carries `viteVersion` (pluginContainer's
-// basePluginContextMeta); plugins feature-detect on it. The app's own Vite
-// reports its version; without one, the Vite line oj tracks. `rolldownVersion`
-// is there only when the app's Vite is rolldown-based (it exports one, as
-// Vite 8 does); Vite 7 and older have no such key, and plugins branch on it.
-let viteVersion = "8.0.0";
-let rollupVersion = "4.0.0";
-let rolldownVersion = "1.0.0";
+// The plugin context's version meta, as the app's Vite has it; plugins
+// feature-detect on its keys.
+let baseMeta = pluginContextMeta(null);
 try {
   const _root = initial.config?.root ?? process.cwd();
   const _vite = await import(appViteEntry(_root));
+  baseMeta = pluginContextMeta(_vite);
   if (typeof _vite.parseAst === "function") viteParseAst = _vite.parseAst;
   if (typeof _vite.transformWithOxc === "function") viteTransformWithOxc = _vite.transformWithOxc;
   if (typeof _vite.createFilter === "function") viteCreateFilter = _vite.createFilter;
-  if (typeof _vite.version === "string") viteVersion = _vite.version;
-  if (typeof _vite.rollupVersion === "string") rollupVersion = _vite.rollupVersion;
-  rolldownVersion = typeof _vite.rolldownVersion === "string" ? _vite.rolldownVersion : undefined;
   if (!viteTransformWithOxc) {
     // An app Vite too old to export transformWithOxc: the vite:oxc-slot strip
     // cannot run, so normal/post plugins will see raw TS/JSX, exactly as
     // before the strip existed. Say so once instead of silently degrading.
     process.stderr.write(
-      `oj plugin host: the app's vite (${viteVersion ?? "unknown"}) does not export transformWithOxc; ` +
+      `oj plugin host: the app's vite (${_vite.version ?? "unknown"}) does not export transformWithOxc; ` +
         `normal/post transform plugins will receive raw TS/JSX.\n`,
     );
   }
 } catch {}
-
-// Vite's basePluginContextMeta (server/pluginContainer.ts), as the app's Vite has it.
-function versionMeta() {
-  return rolldownVersion === undefined
-    ? { viteVersion, rollupVersion }
-    : { viteVersion, rollupVersion, rolldownVersion };
-}
 
 // Vite logs a hook's this.warn through the logger with the plugin's name
 // (`warning: <message>` then `  Plugin: <name>`, buildErrorMessage) so the
@@ -2115,7 +2101,7 @@ function contextOf(c) {
 function pluginContext(c) {
   return {
     environment: c.environment,
-    meta: { ...versionMeta(), watchMode: command === "serve", framework: "oj" },
+    meta: { ...baseMeta, watchMode: command === "serve", framework: "oj" },
     parse: (code, opts) => (viteParseAst ? viteParseAst(code, opts) : {}),
     get pluginName() {
       return (this && this._plugin && this._plugin.name) || "";
@@ -2364,7 +2350,7 @@ function resolveHookCtx(c, p, skipCalls, scan) {
 // configResolved and buildApp), logging and error(), no environment.
 function minimalContext(meta) {
   return {
-    meta: { ...versionMeta(), ...meta },
+    meta: { ...baseMeta, ...meta },
     get pluginName() {
       return "";
     },

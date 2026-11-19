@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Dev server and build: plugins see `this.meta.rolldownVersion` only when the app's Vite is rolldown-based (it exports one, as Vite 8 does). oj advertised it whatever Vite the app installed, so a plugin that picks `transformWithOxc` over `transformWithEsbuild` by it (vite-plugin-svgr 5) called a function Vite 7, 6 and 5 do not export, and every `*.svg?react` import answered 500 with "transformWithOxc is not a function". The plugin context's version meta is now the app's Vite's: Vite 7 and older have no `rolldownVersion` key, so such plugins take their esbuild path, as under `vite dev`.
+- Dev server and build: plugins see `this.meta.rolldownVersion` only when the app's Vite is rolldown-based (it exports one, as Vite 8 does). oj advertised it whatever Vite the app installed, so a plugin that picks `transformWithOxc` over `transformWithEsbuild` by it (vite-plugin-svgr 5) called a function Vite 7, 6 and 5 do not export, and every `*.svg?react` import answered 500 with "transformWithOxc is not a function". The plugin context's version meta is now the app's Vite's: Vite 7 and older have no `rolldownVersion` key, so such plugins take their esbuild path, as under `vite dev`, and Vite 6 and 5 have no `viteVersion` key either (Vite 7 added it). The config extractor's run of the plugins' `config` and `configEnvironment` hooks sees the same meta, where it saw a fixed `{ rollupVersion, watchMode }`, so a plugin that declares a dev environment only under a rolldown-based Vite is detected as it is under `vite dev`.
 
 ## [0.4.17] - 2026-11-18
 

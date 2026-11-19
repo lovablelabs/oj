@@ -367,6 +367,48 @@ fn extraction_counts_the_plugins_a_host_would_run() {
     );
 }
 
+/// A plugin whose `config` declares a runner-backed environment only when
+/// `this.meta.rolldownVersion` is set, over a `node_modules/vite` that is 8
+/// (exports `rolldownVersion`) or 7 (does not), neither with a config loader:
+/// the extractor runs the config hooks itself.
+fn runner_backed_under_vite(rolldown: bool) -> bool {
+    let dir = app(r#"export default { plugins: [{
+  name: "rolldown-only-worker",
+  config() {
+    if (this.meta.rolldownVersion) return { environments: { worker: { dev: { createEnvironment() {} } } } };
+  },
+}] };"#);
+    let vite = dir.path().join("node_modules/vite");
+    std::fs::create_dir_all(&vite).unwrap();
+    let (version, extra) = if rolldown {
+        ("8.0.3", "export const rolldownVersion = \"1.2.19\";\n")
+    } else {
+        ("7.3.1", "")
+    };
+    std::fs::write(
+        vite.join("package.json"),
+        format!(r#"{{"name":"vite","version":"{version}","type":"module","exports":{{".":"./index.js"}}}}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        vite.join("index.js"),
+        format!("export const version = \"{version}\";\nexport const rollupVersion = \"4.0.0\";\n{extra}"),
+    )
+    .unwrap();
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true)
+        .expect("the config extracts");
+    v.ssr.as_ref().and_then(|s| s.get("runnerBacked")) == Some(&serde_json::Value::Bool(true))
+}
+
+// The extractor's run of a `config` hook sees the app's Vite's meta, as the
+// plugin host's does: `rolldownVersion` under Vite 8 only.
+#[test]
+fn the_extractor_config_hook_sees_rolldown_version_only_under_vite_8() {
+    let _g = lock();
+    assert!(runner_backed_under_vite(true), "under vite 8");
+    assert!(!runner_backed_under_vite(false), "under vite 7");
+}
+
 /// The process env with `vars` set over it, as a later launch would see it.
 fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
     let mut all: Vec<(String, String)> = oj_env::get()

@@ -69,10 +69,27 @@ export default [{
 }];
 "#;
 
+/// Whether `config` (the minimal context) sees a `viteVersion` key, and the
+/// `viteVersion` `load` sees.
+const VITE_VERSION_PROBE: &str = r#"let configMeta;
+export default [{
+  name: "vite-version-probe",
+  config() { configMeta = { ...this.meta }; },
+  load(id) {
+    if (!id.endsWith("logo.svg?react")) return;
+    return JSON.stringify({ config: "viteVersion" in configMeta, load: this.meta.viteVersion ?? null });
+  },
+}];
+"#;
+
 async fn load_under(tag: &str, version: &str, rolldown: bool) -> String {
+    load_with(tag, version, rolldown, SVGR_LIKE).await
+}
+
+async fn load_with(tag: &str, version: &str, rolldown: bool, source: &str) -> String {
     let root = app_with_vite(tag, version, rolldown);
     let plugins = root.join("oj.plugins.mjs");
-    std::fs::write(&plugins, SVGR_LIKE).unwrap();
+    std::fs::write(&plugins, source).unwrap();
     let config = serde_json::json!({
         "config": { "root": root.display().to_string() },
         "env": { "command": "serve", "mode": "development" },
@@ -111,4 +128,30 @@ async fn under_vite_8_the_meta_has_the_app_rolldown_version() {
         out,
         "/*oxc*/export default 1;\n//{\"config\":true,\"load\":true,\"rolldownVersion\":\"1.2.19\"}"
     );
+}
+
+// `viteVersion` joined the meta in Vite 7 (`basePluginContextMeta`); Vite 6
+// and 5 have no such key, in any hook.
+#[tokio::test]
+async fn under_vite_6_and_older_the_meta_has_no_vite_version() {
+    for (version, rolldown, has_key) in [
+        ("8.0.3", true, true),
+        ("7.3.1", false, true),
+        ("6.4.1", false, false),
+        ("5.4.21", false, false),
+    ] {
+        let out = load_with(
+            &format!("vv{version}"),
+            version,
+            rolldown,
+            VITE_VERSION_PROBE,
+        )
+        .await;
+        let expected = if has_key {
+            format!(r#"{{"config":true,"load":"{version}"}}"#)
+        } else {
+            r#"{"config":false,"load":null}"#.to_string()
+        };
+        assert_eq!(out, expected, "under vite {version}");
+    }
 }
