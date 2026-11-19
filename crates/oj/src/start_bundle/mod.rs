@@ -54,6 +54,8 @@ pub(crate) struct StartConfig {
     pub stylex: Option<std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
     /// The runtime the bundles run on (see `oj_server::rolldown_runtime`).
     pub rolldown: tokio::runtime::Handle,
+    /// The compiled server-function modules ([`code::ServerFnModules`]).
+    pub server_fns: code::ServerFnModules,
 }
 
 /// TanStack Start's load-env plugin: `Object.assign(process.env,
@@ -327,43 +329,37 @@ impl StartConfig {
 }
 
 /// Writes `<cache>/server-fn-resolver.mjs`, the module behind
-/// `#tanstack-start-server-fn-resolver`: every server function under `src/`
-/// (the ids the client stubs call) mapped to the handler export the server
-/// rewrite adds. Each module loads on first call through a literal relative
-/// `import()`, which the dev module host resolves and the server bundle
-/// bundles, as Start's own build resolver does (`importer`, memoizing the
-/// loaded module): a static import would evaluate every `*.functions.ts`
-/// inside the framework's import of the resolver, a cycle back through
-/// `@tanstack/react-start` that can run one before its middleware
-/// initializes. In dev (`dev`) each function also answers to Start's own Vite
-/// dev id; a build maps oj's ids only, as a Vite build knows only its build
-/// ids. Each writes its own file (`server_fn_resolver_file`), so a build run
+/// `#tanstack-start-server-fn-resolver`: every server function in the
+/// modules under `dirs` ([`server_fn_sources`]; the ids the client stubs
+/// call) mapped to the handler export the server rewrite adds. Each module
+/// loads on first call through a literal relative `import()`, which the dev
+/// module host resolves and the server bundle bundles, as Start's own build
+/// resolver does (`importer`, memoizing the loaded module): a static import
+/// would evaluate every `*.functions.ts` inside the framework's import of the
+/// resolver, a cycle back through `@tanstack/react-start` that can run one
+/// before its middleware initializes. `stubbed` adds the modules a client
+/// compile stubbed (the build); in dev (`dev`) an unmapped id goes to the
+/// lazy lookup ([`lazy_server_fn`]) and each function also answers to
+/// Start's own Vite dev id; a build maps oj's ids only, as a Vite build knows
+/// only its build ids. Each writes its own file (`server_fn_resolver_file`), so a build run
 /// beside a dev server never swaps the dev resolver out. How many functions
 /// it maps.
 pub(crate) fn write_server_fn_resolver(
     root: &Path,
+    dirs: &ServerFnDirs,
+    stubbed: &[PathBuf],
     cache: &Path,
     dev: bool,
 ) -> std::io::Result<usize> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.join("src")];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("ts" | "tsx")
-            ) {
-                files.push(path);
-            }
-        }
-    }
+    // Each module once, at the path its stub id is made from: a link and its
+    // target are one module.
+    let mut files: Vec<PathBuf> = server_fn_sources(dirs)
+        .iter()
+        .chain(stubbed)
+        .map(|path| module_path(path, dirs.preserve_symlinks).unwrap_or_else(|| path.clone()))
+        .collect();
     files.sort();
+    files.dedup();
     let mut modules = String::new();
     let mut manifest = String::new();
     let mut count = 0;
@@ -419,10 +415,30 @@ pub(crate) fn write_server_fn_resolver(
     // Start's client-reference check on `access` is left out as Start leaves
     // it out when SSR provides the functions (`includeClientReferencedCheck:
     // !ssrIsProvider`), which React Start always does.
+    // In dev an id with no entry is looked up on demand (`LAZY_SERVER_FN`).
+    let (lazy, lookup) = if dev {
+        (
+            format!(
+                "async function lazy(id) {{\n  \
+                 let mod;\n  \
+                 try {{\n    mod = await import({prefix} + id);\n  }} catch (e) {{\n    \
+                 if (String(e?.message ?? e).includes({refused})) return undefined;\n    \
+                 throw e;\n  }}\n  \
+                 const text = Buffer.from(id, \"base64url\").toString(\"utf8\");\n  \
+                 const functionName = text.startsWith(\"{{\") ? JSON.parse(text).export : text.slice(text.lastIndexOf(\"#\") + 1) + \"_createServerFn_handler\";\n  \
+                 return {{ functionName, importer: async () => mod }};\n}}\n",
+                prefix = json(LAZY_SERVER_FN),
+                refused = json(LAZY_SERVER_FN_REFUSED),
+            ),
+            "manifest[id] ?? (await lazy(id))",
+        )
+    } else {
+        (String::new(), "manifest[id]")
+    };
     let out = format!(
-        "// Generated by oj. Maps server-function ids to their handlers.\n{modules}const manifest = {{\n  __proto__: null,\n{manifest}}};\n\
+        "// Generated by oj. Maps server-function ids to their handlers.\n{modules}const manifest = {{\n  __proto__: null,\n{manifest}}};\n{lazy}\
          export async function getServerFnById(id) {{\n  \
-         const info = manifest[id];\n  \
+         const info = {lookup};\n  \
          if (!info) throw new Error(\"Server function info not found for \" + id);\n  \
          const mod = await info.importer();\n  \
          if (!mod) throw new Error(\"Server function module not resolved for \" + id);\n  \
@@ -454,6 +470,113 @@ pub(crate) fn write_server_fn_resolver(
     Ok(count)
 }
 
+/// The directories the server-fn resolver scans, and the ones inside them
+/// it never reads (the build output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerFnDirs {
+    pub roots: Vec<PathBuf>,
+    pub excluded: Vec<PathBuf>,
+    /// `resolve.preserveSymlinks`: a module's id is its path as reached, not
+    /// its real path, as the bundler gives the client stub its id.
+    pub preserve_symlinks: bool,
+}
+
+/// The directories the server-fn resolver scans: `src/` and `candidates`
+/// (Start's source and routes directories),
+/// each inside the project but never the project itself, outside
+/// `node_modules`, hidden directories and `excluded`, and none inside another.
+pub(crate) fn server_fn_dirs(
+    root: &Path,
+    candidates: impl IntoIterator<Item = PathBuf>,
+    excluded: &[PathBuf],
+) -> ServerFnDirs {
+    let excluded: Vec<PathBuf> = excluded
+        .iter()
+        .map(|e| crate::ssr_dev::normalize_path(e))
+        .collect();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for dir in std::iter::once(root.join("src")).chain(candidates) {
+        let dir = crate::ssr_dev::normalize_path(&dir);
+        let Ok(rel) = dir.strip_prefix(root) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty()
+            || !is_scanned_dir(rel)
+            || excluded.iter().any(|e| dir.starts_with(e))
+        {
+            continue;
+        }
+        if !roots.iter().any(|d| dir.starts_with(d)) {
+            roots.retain(|d| !d.starts_with(&dir));
+            roots.push(dir);
+        }
+    }
+    ServerFnDirs {
+        roots,
+        excluded,
+        preserve_symlinks: false,
+    }
+}
+
+/// Whether a directory, relative to a scanned one, is scanned: none of it is
+/// `node_modules` or hidden.
+fn is_scanned_dir(rel: &Path) -> bool {
+    rel.components().all(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        name != "node_modules" && !name.starts_with('.')
+    })
+}
+
+/// An extension Start's server-fn compiler transforms (`TRANSFORM_ID_REGEX`)
+/// that an import may resolve to: Vite's `DEFAULT_EXTENSIONS` without
+/// `.json`, plus `.cjs`/`.cts`.
+pub(crate) fn is_module(ext: &str) -> bool {
+    matches!(
+        ext,
+        "mjs" | "js" | "mts" | "ts" | "jsx" | "tsx" | "cjs" | "cts"
+    )
+}
+
+/// Whether `path` is one of the modules the server-fn resolver scans: a
+/// module under one of `dirs`, outside `node_modules`, hidden directories and
+/// the excluded ones.
+pub(crate) fn is_server_fn_source(dirs: &ServerFnDirs, path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(is_module)
+        && !dirs.excluded.iter().any(|e| path.starts_with(e))
+        && dirs.roots.iter().any(|dir| {
+            path.strip_prefix(dir)
+                .is_ok_and(|rel| rel.parent().is_none_or(is_scanned_dir))
+        })
+}
+
+/// The modules the server-fn resolver scans ([`is_server_fn_source`]),
+/// sorted. Symlinked directories are not followed, so a link back into an
+/// ancestor ends the walk.
+pub(crate) fn server_fn_sources(dirs: &ServerFnDirs) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack: Vec<PathBuf> = dirs.roots.clone();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if is_scanned_dir(Path::new(&entry.file_name())) && !dirs.excluded.contains(&path) {
+                    stack.push(path);
+                }
+            } else if is_server_fn_source(dirs, &path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// What a line of the reads file starts with when it names a relative import
 /// the scan asked for, app-relative as written (no extension added).
 pub(crate) const SERVER_FN_ASKED: &str = "?";
@@ -474,6 +597,86 @@ pub(crate) fn server_fn_reads_file(dev: bool) -> &'static str {
         "server-fn-resolver.reads"
     } else {
         "server-fn-resolver.build.reads"
+    }
+}
+
+/// What the dev resolver imports, followed by an id it has no entry for; the
+/// module host answers with the declaring module ([`lazy_server_fn`]).
+pub(crate) const LAZY_SERVER_FN: &str = "oj-server-fn:";
+
+/// What the module host's refusal of a [`LAZY_SERVER_FN`] id starts with,
+/// which no module's own error says.
+pub(crate) const LAZY_SERVER_FN_REFUSED: &str = "oj-server-fn: no server function for";
+
+/// The module declaring the function `id` names: one of `compiled` (a
+/// module a compile gave server functions), spelled exactly as `id` does.
+pub(crate) fn lazy_server_fn(
+    root: &Path,
+    id: &str,
+    preserve_symlinks: bool,
+    compiled: &std::collections::BTreeSet<PathBuf>,
+) -> Option<PathBuf> {
+    use base64::Engine;
+    let text = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(id)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())?;
+    let (spelled, name) = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(start) => {
+            let file = start.get("file")?.as_str()?;
+            let file = file.strip_suffix("?tss-serverfn-split")?;
+            let file = match file.strip_prefix("/@fs") {
+                Some(abs) => abs,
+                None => file.strip_prefix('/')?,
+            };
+            let export = start.get("export")?.as_str()?;
+            let name = export.strip_suffix("_createServerFn_handler")?;
+            (file.to_string(), name.to_string())
+        }
+        Err(_) => {
+            let (rel, name) = text.rsplit_once('#')?;
+            (rel.to_string(), name.to_string())
+        }
+    };
+    let real = module_path(&root.join(&spelled), preserve_symlinks)?;
+    let rel = real
+        .strip_prefix(root)
+        .unwrap_or(&real)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if oj_compiler::server_fns::server_fn_id(&rel, &name) != id
+        && oj_compiler::server_fns::vite_dev_server_fn_id(&rel, &name) != id
+    {
+        return None;
+    }
+    if !real.is_file()
+        || !real
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(is_module)
+        || real.components().any(|c| c.as_os_str() == "node_modules")
+        || !compiled
+            .iter()
+            .any(|p| *p == real || module_path(p, preserve_symlinks).as_ref() == Some(&real))
+    {
+        return None;
+    }
+    let code = std::fs::read_to_string(&real).ok()?;
+    let modules = oj_compiler::server_fns::FsModules::new(root);
+    oj_compiler::server_fns::find_server_fns(&code, &rel, &modules)
+        .iter()
+        .any(|f| f.name == name)
+        .then_some(real)
+}
+
+/// The path a module's ids are made from: its real path, or under
+/// `resolve.preserveSymlinks` its normalized path as reached.
+fn module_path(path: &Path, preserve_symlinks: bool) -> Option<PathBuf> {
+    if preserve_symlinks {
+        let path = crate::ssr_dev::normalize_path(path);
+        path.is_file().then_some(path)
+    } else {
+        std::fs::canonicalize(path).ok()
     }
 }
 
@@ -598,11 +801,15 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("src/plain.tsx"), "export const x = 1;\n").unwrap();
         std::fs::write(
-            root.join("src/server/skip.js"),
+            root.join("src/server/more.js"),
             "export const c = createServerFn().handler(() => 3);\n",
         )
         .unwrap();
-        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 2);
+        assert_eq!(
+            write_server_fn_resolver(&root, &server_fn_dirs(&root, [], &[]), &[], &cache, true)
+                .unwrap(),
+            3
+        );
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         // Loaded on the first call, never imported statically: a static import
         // runs the module inside the framework's import of the resolver.
@@ -615,8 +822,8 @@ mod tests {
             ),
             "{out}"
         );
-        // Both functions of the file share its one importer.
-        assert_eq!(out.matches("import(").count(), 1, "{out}");
+        // Both functions of the file share its one importer: one per file.
+        assert_eq!(out.matches("await import(\"../").count(), 2, "{out}");
         // Under oj's id and Start's Vite dev id alike.
         for id in [
             oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB"),
@@ -634,7 +841,20 @@ mod tests {
             out.contains("const manifest = {\n  __proto__: null,\n"),
             "{out}"
         );
-        assert!(out.contains("const info = manifest[id];"), "{out}");
+        // In dev an id with no entry is looked up on demand.
+        assert!(
+            out.contains("const info = manifest[id] ?? (await lazy(id));"),
+            "{out}"
+        );
+        assert!(
+            out.contains("await import(\"oj-server-fn:\" + id)"),
+            "{out}"
+        );
+        // Only the host's refusal is a miss, never a module's own error.
+        assert!(
+            out.contains(".includes(\"oj-server-fn: no server function for\")) return undefined;"),
+            "{out}"
+        );
         // Each failure throws Start's build resolver error for that step.
         for error in [
             "if (!info) throw new Error(\"Server function info not found for \" + id);",
@@ -643,11 +863,23 @@ mod tests {
         ] {
             assert!(out.contains(error), "{error}\n{out}");
         }
-        assert!(!out.contains("skip.js") && !out.contains("plain"), "{out}");
+        // A `.js` module is mapped as a `.ts` one is.
+        let id = oj_compiler::server_fns::server_fn_id("src/server/more.js", "c");
+        assert!(
+            out.contains(&format!(
+                "\"{id}\": {{ functionName: \"c_createServerFn_handler\", importer: __m1_load }},"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("plain"), "{out}");
         assert!(out.contains("export async function getServerFnById(id)"));
         // A build maps oj's ids only: a Vite build knows no dev id.
         // Into its own file: the dev resolver stays as it was.
-        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 2);
+        assert_eq!(
+            write_server_fn_resolver(&root, &server_fn_dirs(&root, [], &[]), &[], &cache, false)
+                .unwrap(),
+            3
+        );
         let dev_out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         assert_eq!(dev_out, out);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.build.mjs")).unwrap();
@@ -655,7 +887,134 @@ mod tests {
         assert!(out.contains(&format!("\"{id}\": ")), "{out}");
         let dev_id = oj_compiler::server_fns::vite_dev_server_fn_id("src/server/data.ts", "getB");
         assert!(!out.contains(&dev_id), "{out}");
+        assert!(out.contains("const info = manifest[id];"), "{out}");
+        assert!(!out.contains("oj-server-fn:"), "{out}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_server_fn_id_with_no_entry_resolves_only_to_the_module_declaring_it() {
+        let base = tempfile_dir().canonicalize().unwrap();
+        let root = base.join("app");
+        let fns = "import { createServerFn } from \"@tanstack/react-start\";\nexport const x = createServerFn().handler(async () => 1);\n";
+        for (rel, code) in [
+            ("app/server/x.functions.ts", fns),
+            ("app/src/plain.ts", "export const x = () => 1;\n"),
+            ("app/node_modules/pkg/x.functions.ts", fns),
+            ("shared/x.functions.ts", fns),
+            ("app/src/x.functions.json", fns),
+        ] {
+            std::fs::create_dir_all(base.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(base.join(rel), code).unwrap();
+        }
+        std::os::unix::fs::symlink(base.join("shared"), root.join("linked")).unwrap();
+        let oj = oj_compiler::server_fns::server_fn_id;
+        let start = oj_compiler::server_fns::vite_dev_server_fn_id;
+        let json_id = |json: &str| {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+        };
+        // The well-formed Start id is accepted, so the variants below are
+        // refused for their form alone.
+        assert_eq!(
+            json_id(
+                r#"{"file":"/server/x.functions.ts?tss-serverfn-split","export":"x_createServerFn_handler"}"#
+            ),
+            start("server/x.functions.ts", "x")
+        );
+        let outside = base.join("shared/x.functions.ts");
+        let outside_rel = outside.to_string_lossy().into_owned();
+        // The modules a compile gave server functions; `other/` declares the
+        // same function and no compile reached it.
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        std::fs::write(root.join("other/x.functions.ts"), fns).unwrap();
+        let compiled: std::collections::BTreeSet<PathBuf> = [
+            root.join("server/x.functions.ts"),
+            outside.clone(),
+            root.join("node_modules/pkg/x.functions.ts"),
+            root.join("src/x.functions.json"),
+            root.join("linked/x.functions.ts"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            lazy_server_fn(&root, &oj("other/x.functions.ts", "x"), false, &compiled),
+            None
+        );
+        // In the root, outside it, under oj's id and Start's dev id.
+        for (id, file) in [
+            (
+                oj("server/x.functions.ts", "x"),
+                root.join("server/x.functions.ts"),
+            ),
+            (
+                start("server/x.functions.ts", "x"),
+                root.join("server/x.functions.ts"),
+            ),
+            (oj(&outside_rel, "x"), outside.clone()),
+            (start(&outside_rel, "x"), outside.clone()),
+        ] {
+            assert_eq!(
+                lazy_server_fn(&root, &id, false, &compiled),
+                Some(file),
+                "{id}"
+            );
+        }
+        // Refused: a function the file does not declare, a file declaring
+        // none, any spelling but the real path's (a traversal, an absolute
+        // path inside the root, a symlink), `node_modules`, a non-module, a
+        // missing file, an id that is no id.
+        for id in [
+            oj("server/x.functions.ts", "y"),
+            oj("src/plain.ts", "x"),
+            oj("src/../server/x.functions.ts", "x"),
+            oj("../shared/x.functions.ts", "x"),
+            oj(&root.join("server/x.functions.ts").to_string_lossy(), "x"),
+            oj("linked/x.functions.ts", "x"),
+            oj("node_modules/pkg/x.functions.ts", "x"),
+            oj("src/x.functions.json", "x"),
+            oj("server/missing.functions.ts", "x"),
+            start("../shared/x.functions.ts", "x"),
+            "not base64!".to_string(),
+            // Padded, percent-encoded, backslashes, a NUL.
+            format!("{}==", oj("server/x.functions.ts", "x")),
+            oj("server/x.functions.ts", "x").replacen('c', "%63", 1),
+            oj("server\\x.functions.ts", "x"),
+            oj("server/x.functions.ts\0", "x"),
+            // `#` or `?` inside the path.
+            oj("server/x.functions.ts#y", "x"),
+            oj("server/x.functions.ts?y", "x"),
+            // Start's form: `/@id/`, keys reordered or added, another query.
+            json_id(
+                r#"{"file":"/@id/server/x.functions.ts?tss-serverfn-split","export":"x_createServerFn_handler"}"#,
+            ),
+            json_id(
+                r#"{"export":"x_createServerFn_handler","file":"/server/x.functions.ts?tss-serverfn-split"}"#,
+            ),
+            json_id(
+                r#"{"file":"/server/x.functions.ts?tss-serverfn-split","export":"x_createServerFn_handler","x":1}"#,
+            ),
+            json_id(
+                r#"{"file":"/server/x.functions.ts?x&tss-serverfn-split","export":"x_createServerFn_handler"}"#,
+            ),
+        ] {
+            assert_eq!(lazy_server_fn(&root, &id, false, &compiled), None, "{id}");
+        }
+        // Under `resolve.preserveSymlinks` a module's id is its path as
+        // reached: the link's spelling, never a traversal.
+        let linked = root.join("linked/x.functions.ts");
+        assert_eq!(
+            lazy_server_fn(&root, &oj("linked/x.functions.ts", "x"), true, &compiled),
+            Some(linked)
+        );
+        for id in [
+            oj("src/../server/x.functions.ts", "x"),
+            oj("linked/../server/x.functions.ts", "x"),
+            oj("server/x.functions.ts", "y"),
+        ] {
+            assert_eq!(lazy_server_fn(&root, &id, true, &compiled), None, "{id}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

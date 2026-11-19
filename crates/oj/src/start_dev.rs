@@ -19,6 +19,7 @@ use oj_server::needs_css_compile;
 use oj_server::{hmr_ping, send_within, silent_deadline};
 use tokio::sync::broadcast;
 
+use crate::start_bundle::{is_module, ServerFnDirs};
 use crate::start_chunks::{respond, Chunk, ServedBundles};
 use crate::start_host::{StartEngine, StartRequest, StartResponse};
 
@@ -430,10 +431,14 @@ pub async fn start_dev(
     }
     let resolver = {
         let (root, cache) = (root.clone(), cache.clone());
-        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, true))
+        let dirs = routes.server_fn_dirs(&root);
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &dirs, &cache))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
+    // The modules a compile gave server functions, client and server: the
+    // only ones the dev resolver looks an id up in.
+    let server_fns = crate::start_bundle::code::ServerFnModules::default();
     let bundler = {
         let inputs = script_inputs(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?;
         let start = crate::start_bundle::StartConfig {
@@ -447,6 +452,7 @@ pub async fn start_dev(
             config: inputs.config,
             app_env: inputs.app_env,
             rolldown,
+            server_fns: Arc::clone(&server_fns),
         };
         Arc::new(
             ClientBundler::new(start, config_file.clone())
@@ -537,6 +543,8 @@ pub async fn start_dev(
             public_dir.clone(),
             crate::start_bundle::assets::client_inline_limit(&config),
             init_env,
+            oj_config::resolve_preserve_symlinks(&config),
+            Arc::clone(&server_fns),
         )?);
         (engine, public_dir, oj_config::html_csp_nonce(&config))
     };
@@ -986,6 +994,8 @@ async fn runner_render_warm(app: axum::Router) -> bool {
 struct RoutePaths {
     dir: PathBuf,
     tree: PathBuf,
+    out_dir: PathBuf,
+    preserve_symlinks: bool,
 }
 
 impl RoutePaths {
@@ -993,6 +1003,23 @@ impl RoutePaths {
         RoutePaths {
             dir: oj_config::start_routes_dir(config, root),
             tree: oj_config::start_route_tree(config, root),
+            out_dir: root.join(oj_config::build_out_dir(config)),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+        }
+    }
+
+    /// What the dev resolver maps ahead of a call: `src/` and Start's source
+    /// and routes directories.
+    fn server_fn_dirs(&self, root: &Path) -> ServerFnDirs {
+        let candidates = self.tree.parent().map(Path::to_path_buf).into_iter();
+        let candidates = candidates.chain([self.dir.clone()]);
+        ServerFnDirs {
+            preserve_symlinks: self.preserve_symlinks,
+            ..crate::start_bundle::server_fn_dirs(
+                root,
+                candidates,
+                std::slice::from_ref(&self.out_dir),
+            )
         }
     }
 }
@@ -1749,6 +1776,8 @@ async fn rebundle_worker(
 ) {
     let routes = state.routes.clone();
     let mut prev_routes = list_route_files(&routes.dir);
+    // What the resolver scans.
+    let server_fn_dirs = Arc::new(routes.server_fn_dirs(&root));
     // Each route file's server-only shape, for the edits that flip it.
     let shapes = {
         let dir = routes.dir.clone();
@@ -1803,7 +1832,7 @@ async fn rebundle_worker(
         // cannot change the client bundle (rollup watch semantics; Vite only
         // acts on files its module graphs know). Regen checks still run below
         // either way: a server fn can live in a file the client never
-        // imports, since the resolver scans all of src.
+        // imports, since the resolver scans every source directory.
         let needs_bundle = run.force || client_bundle_affected(&state, &paths);
         let inputs = client_inputs(&state, &paths);
         let pages_run_bundle = state.pages_run_bundle();
@@ -1818,6 +1847,7 @@ async fn rebundle_worker(
             let deferral = Arc::clone(&state);
             let shapes = Arc::clone(&shapes);
             let routes = routes.clone();
+            let server_fn_dirs = Arc::clone(&server_fn_dirs);
             let dev_tree = Arc::clone(&state.route_tree);
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
@@ -1863,8 +1893,9 @@ async fn rebundle_worker(
                 // it gets is another. Counted on the trigger alone, a temp
                 // file that came and went beside an edit reloaded the page
                 // the edit would have patched in place.
-                let trigger = server_fn_trigger(&r, &c, &changed);
-                let resolver_changed = refresh_server_fn_resolver(&r, &c, trigger, routes_changed);
+                let trigger = server_fn_trigger(&r, &server_fn_dirs, &c, &changed);
+                let resolver_changed =
+                    refresh_server_fn_resolver(&r, &server_fn_dirs, &c, trigger, routes_changed);
                 // Vite's reloadOnTsconfigChange: a `tsconfig.json` clears
                 // every environment's modules and reloads the page, whatever
                 // it holds and whatever the resolver made of it.
@@ -2477,11 +2508,10 @@ pub async fn start_build(
         let gen_env = script_vars(oj_env::get(), &root, &app_env);
         let (r, c) = (root.clone(), cache.clone());
         let routes = RoutePaths::of(&config, &root);
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &routes, &c, &gen_env, false)?;
-            generate_server_fn_resolver(&r, &c, false)
-        })
-        .await??;
+        // The build's server-fn resolver is written once the client is
+        // bundled, from what its compile stubbed.
+        tokio::task::spawn_blocking(move || generate_route_tree(&r, &routes, &c, &gen_env, false))
+            .await??;
     }
     let build_cfg = config.build.clone().unwrap_or_default();
     let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
@@ -2502,6 +2532,7 @@ pub async fn start_build(
         config,
         app_env,
         rolldown,
+        server_fns: Default::default(),
     };
     crate::start_bundle::prod::build(start, config_file, output).await?;
     println!(
@@ -2806,23 +2837,30 @@ fn generate_route_tree(
 /// (`authedFn.handler(..)`) sits in a file that does not name the factory,
 /// and what the import resolves to depends on the modules between the two.
 /// So do the tsconfig files, whose `paths` an import may be spelled through,
-/// and the modules the last scan read that are not source files under
-/// `src/` (a `.js` builder, a `shared/` directory an alias names).
-fn generate_server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<()> {
-    server_fn_resolver(root, cache, dev).map(|_| ())
+/// and the modules the last scan read outside the scanned directories.
+fn generate_server_fn_resolver(
+    root: &Path,
+    dirs: &ServerFnDirs,
+    cache: &Path,
+) -> anyhow::Result<()> {
+    server_fn_resolver(root, dirs, cache).map(|_| ())
 }
 
 /// [`generate_server_fn_resolver`], answering whether the resolver came from
 /// the cache.
-fn server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<bool> {
-    let kind = if dev { "server-fn" } else { "server-fn-build" };
-    let store = codegen_store(root, cache, kind, None, None, &[]);
-    let file = crate::start_bundle::server_fn_resolver_file(dev);
+fn server_fn_resolver(root: &Path, dirs: &ServerFnDirs, cache: &Path) -> anyhow::Result<bool> {
+    // `resolve.preserveSymlinks` picks the path each id is made from.
+    let keyed = [(
+        "resolve.preserveSymlinks".to_string(),
+        dirs.preserve_symlinks.to_string(),
+    )];
+    let store = codegen_store(root, cache, "server-fn", None, None, &keyed);
+    let file = crate::start_bundle::server_fn_resolver_file(true);
     let dest = cache.join(file);
-    let reads_file = crate::start_bundle::server_fn_reads_file(dev);
+    let reads_file = crate::start_bundle::server_fn_reads_file(true);
     let reads_dest = cache.join(reads_file);
     let outputs = [(file, dest.as_path()), (reads_file, reads_dest.as_path())];
-    let inputs = server_fn_inputs(root, &reads_dest);
+    let inputs = server_fn_inputs(root, dirs, &reads_dest);
     match store.restore(&inputs, &outputs) {
         Ok(stats) => {
             println!(
@@ -2837,21 +2875,21 @@ fn server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<bo
             // resolver's (the app went from one state to another and back):
             // the restored one names what this resolver depends on, and it
             // is this resolver's only when it gives the same inputs.
-            if same_files(&inputs, &server_fn_inputs(root, &reads_dest)) {
+            if same_files(&inputs, &server_fn_inputs(root, dirs, &reads_dest)) {
                 return Ok(true);
             }
             println!("  oj start: server-fn resolver cache miss (a module it read changed)");
         }
         Err(miss) => println!("  oj start: server-fn resolver cache miss ({miss})"),
     }
-    let count = crate::start_bundle::write_server_fn_resolver(root, cache, dev)
+    let count = crate::start_bundle::write_server_fn_resolver(root, dirs, &[], cache, true)
         .map_err(|e| anyhow::anyhow!("server-fn resolver: {e}"))?;
     eprintln!(
         "{}: server-fn resolver ({count} function(s))",
         oj_server::oj_brand()
     );
     // The scan just written names the modules this resolver depends on.
-    store.persist(&server_fn_inputs(root, &reads_dest), &outputs);
+    store.persist(&server_fn_inputs(root, dirs, &reads_dest), &outputs);
     Ok(false)
 }
 
@@ -2888,15 +2926,15 @@ fn scan_lines(reads: &str) -> impl Iterator<Item = ScanLine<'_>> {
     })
 }
 
-/// The files keying the server-fn resolver: the source files under `src/`,
+/// The files keying the server-fn resolver: the modules it scans under `dirs`,
 /// the modules the scan recorded in `reads_file` read wherever they are (a
-/// `.js` or `.mts` module, one outside `src/`), and the file that answers
+/// module outside the scanned directories), and the file that answers
 /// each import the scan asked for as of now: one created where the scan
 /// found none, or one that takes another's place (a `barrel.js` beside the
 /// `barrel.ts` read). With no reads file yet the key is one no resolver was
 /// kept under, or one whose own reads file gives other inputs.
-fn server_fn_inputs(root: &Path, reads_file: &Path) -> Vec<PathBuf> {
-    let mut inputs = list_src_ts_files(root);
+fn server_fn_inputs(root: &Path, dirs: &ServerFnDirs, reads_file: &Path) -> Vec<PathBuf> {
+    let mut inputs = crate::start_bundle::server_fn_sources(dirs);
     let reads = std::fs::read_to_string(reads_file).unwrap_or_default();
     // Built for an unresolved import alone.
     let modules = oj_compiler::server_fns::FsModules::new(root);
@@ -2961,7 +2999,8 @@ enum ServerFnTrigger {
 /// Whether a batch of changed paths may change the server-fn resolver.
 #[cfg(test)]
 fn server_fn_inputs_changed(root: &Path, cache: &Path, changed: &[PathBuf]) -> bool {
-    server_fn_trigger(root, cache, changed) != ServerFnTrigger::None
+    let dirs = crate::start_bundle::server_fn_dirs(root, [], &[]);
+    server_fn_trigger(root, &dirs, cache, changed) != ServerFnTrigger::None
 }
 
 /// A file Vite's `reloadOnTsconfigChange` reloads the page for: one named
@@ -2977,6 +3016,7 @@ fn is_tsconfig_json(path: &Path) -> bool {
 /// leaves is another, or could not be made (what it holds is then unknown).
 fn refresh_server_fn_resolver(
     root: &Path,
+    dirs: &ServerFnDirs,
     cache: &Path,
     trigger: ServerFnTrigger,
     routes_changed: bool,
@@ -2986,7 +3026,7 @@ fn refresh_server_fn_resolver(
     }
     let resolver = cache.join(crate::start_bundle::server_fn_resolver_file(true));
     let before = std::fs::read(&resolver).ok();
-    let made = generate_server_fn_resolver(root, cache, true);
+    let made = generate_server_fn_resolver(root, dirs, cache);
     match trigger {
         ServerFnTrigger::Declares => true,
         ServerFnTrigger::Scan => made.is_err() || std::fs::read(&resolver).ok() != before,
@@ -2996,7 +3036,12 @@ fn refresh_server_fn_resolver(
 
 /// What `changed` is to the server-fn resolver ([`ServerFnTrigger`]): the
 /// strongest of what each path is.
-fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFnTrigger {
+fn server_fn_trigger(
+    root: &Path,
+    dirs: &ServerFnDirs,
+    cache: &Path,
+    changed: &[PathBuf],
+) -> ServerFnTrigger {
     let reads =
         std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_reads_file(true)))
             .unwrap_or_default();
@@ -3023,8 +3068,8 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
     for p in changed {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        let source = matches!(ext, "ts" | "tsx");
         let rel = spelled.relative(p);
+        let source = crate::start_bundle::is_server_fn_source(dirs, &root.join(&rel));
         let is_read = || {
             scan_lines(&reads).any(|line| matches!(line, ScanLine::Read(read) if read == rel))
                 || any_read
@@ -3044,8 +3089,8 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
                             .contains(&real)
                     })
         };
-        // A source file, or a module of another kind the scan read for a
-        // builder (`authed.mts`, a `.js` one), that may declare one.
+        // A module the scan reads, or one it read for a builder outside the
+        // scanned directories, that may declare one.
         if (source || is_module(ext) && is_read())
             && std::fs::read_to_string(p).is_ok_and(|s| oj_compiler::server_fns::may_declare(&s))
         {
@@ -3098,12 +3143,14 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
                 ))
         };
         // A directory: the watcher may name it alone for the files that
-        // came or went with it (a rename, `rm -r`). One under `src/` may
+        // came or went with it (a rename, `rm -r`). One the scan walks may
         // hold source files; one that is gone held what the scan read or
         // the resolver imports under it.
         let directory = || {
             if p.is_dir() {
-                rel == "src" || rel.starts_with("src/")
+                let dir = root.join(&rel);
+                dirs.roots.iter().any(|d| dir.starts_with(d))
+                    && !dirs.excluded.iter().any(|e| dir.starts_with(e))
             } else if p.exists() {
                 false
             } else {
@@ -3188,17 +3235,6 @@ impl<'a> Spelling<'a> {
 #[cfg(test)]
 fn app_relative(root: &Path, path: &Path) -> String {
     Spelling::new(root).relative(path)
-}
-
-/// An extension an import of the app's may be answered by: Vite's
-/// `DEFAULT_EXTENSIONS` less `.json`, which declares nothing, and the
-/// CommonJS pair, which an import names in full (`./x.cjs`, answered by
-/// `x.cts` too).
-fn is_module(ext: &str) -> bool {
-    matches!(
-        ext,
-        "mjs" | "js" | "mts" | "ts" | "jsx" | "tsx" | "cjs" | "cts"
-    )
 }
 
 /// Whether the file at `rel` could answer a relative import written as
@@ -3308,25 +3344,6 @@ fn resolution_configs_with(root: &Path, with_missing: bool) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
-}
-
-fn list_src_ts_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "ts" || x == "tsx") {
-                out.push(p);
-            }
-        }
-    }
-    walk(&root.join("src"), &mut out);
     out
 }
 
@@ -5935,6 +5952,11 @@ mod tests {
         server.wait_for_no_subscribers().await;
     }
 
+    /// The directories the resolver scans in an app with Start's defaults.
+    fn src_dirs(root: &Path) -> ServerFnDirs {
+        crate::start_bundle::server_fn_dirs(root, [], &[])
+    }
+
     fn tmp(label: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("oj-startdev-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -7299,13 +7321,13 @@ mod tests {
     #[test]
     fn the_server_fn_resolver_is_regenerated_when_a_file_it_depends_on_changes() {
         let (root, cache) = aliased_builder_app("resolver-stale");
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_maps(&cache, "first"));
         assert!(!resolver_maps(&cache, "second"));
 
         // Unchanged: restored, the same content.
         let before = std::fs::read(cache.join("server-fn-resolver.mjs")).unwrap();
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert_eq!(
             std::fs::read(cache.join("server-fn-resolver.mjs")).unwrap(),
             before
@@ -7319,7 +7341,7 @@ mod tests {
             format!("{code}export const second = authedFn.handler(async () => 2);\n"),
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_maps(&cache, "first") && resolver_maps(&cache, "second"));
 
         // The barrel stops re-exporting the builder: no function is left.
@@ -7328,7 +7350,7 @@ mod tests {
             "export const nothing = 1;\n",
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_maps(&cache, "first") && !resolver_maps(&cache, "second"));
         std::fs::write(
             root.join("src/lib/barrel.ts"),
@@ -7336,7 +7358,7 @@ mod tests {
         )
         .unwrap();
         // The files are those of two steps back: that resolver is restored.
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_maps(&cache, "first") && resolver_maps(&cache, "second"));
 
         // The alias stops naming the app's module.
@@ -7345,10 +7367,136 @@ mod tests {
             "{ \"compilerOptions\": { \"baseUrl\": \".\", \"paths\": { \"@other/*\": [\"./src/*\"] } } }\n",
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_maps(&cache, "first") && !resolver_maps(&cache, "second"));
         // And once more unchanged: restored.
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // `resolve.preserveSymlinks` keys the dev resolver; a link and its
+    // target map once unless it is set.
+    #[cfg(unix)]
+    #[test]
+    fn the_dev_resolver_is_keyed_on_preserve_symlinks_and_maps_a_link_once() {
+        let root = tmp("resolver-preserve-symlinks").canonicalize().unwrap();
+        let cache = root.join(".oj-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            "{ \"name\": \"app\", \"type\": \"module\" }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src/real")).unwrap();
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        std::fs::write(
+            root.join("src/real/real.functions.ts"),
+            "import { createServerFn } from \"@tanstack/react-start\";\nexport const linked = createServerFn({ method: \"POST\" }).handler(async () => 1);\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "../real/real.functions.ts",
+            root.join("src/lib/link.functions.ts"),
+        )
+        .unwrap();
+        let entries = |rel: &str| {
+            let id = oj_compiler::server_fns::server_fn_id(rel, "linked");
+            std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_resolver_file(true)))
+                .unwrap()
+                .matches(&format!("\"{id}\": {{"))
+                .count()
+        };
+        let dirs = |preserve_symlinks: bool| ServerFnDirs {
+            preserve_symlinks,
+            ..src_dirs(&root)
+        };
+
+        assert!(!server_fn_resolver(&root, &dirs(false), &cache).unwrap());
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+        assert_eq!(entries("src/lib/link.functions.ts"), 0);
+
+        assert!(!server_fn_resolver(&root, &dirs(true), &cache).unwrap());
+        assert_eq!(entries("src/lib/link.functions.ts"), 1);
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+
+        server_fn_resolver(&root, &dirs(false), &cache).unwrap();
+        assert_eq!(entries("src/lib/link.functions.ts"), 0);
+        assert_eq!(entries("src/real/real.functions.ts"), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Start's compiler finds a server function in any `.[cm]?[tj]sx?` module
+    // an environment loads, so the resolver maps every such module under
+    // `src/` and `tanstackStart({ srcDirectory })` ahead of a call (a module
+    // elsewhere is looked up when called). The cache key and the edit trigger
+    // follow the same modules.
+    #[test]
+    fn the_server_fn_resolver_maps_every_module_kind_under_the_apps_source_directories() {
+        use ServerFnTrigger::*;
+        let root = tmp("resolver-module-kinds");
+        let cache = root.join(".oj-cache/v1/start");
+        std::fs::create_dir_all(&cache).unwrap();
+        let fns = |name: &str| {
+            format!("import {{ createServerFn }} from \"@tanstack/react-start\";\nexport const {name} = createServerFn().handler(async () => 1);\n")
+        };
+        write_app(
+            &root,
+            &[
+                ("src/lib/notes.functions.js", &fns("notes")),
+                ("src/lib/panel.functions.jsx", &fns("panel")),
+                ("app/account.functions.mts", &fns("account")),
+                ("app/api.functions.cts", &fns("api")),
+                ("other/stray.functions.ts", &fns("stray")),
+                ("src/lib/legacy.functions.cjs", &fns("legacy")),
+                ("app/dist/built.functions.js", &fns("built")),
+                ("src/node_modules/dep/index.js", &fns("dep")),
+                ("src/.hidden/stash.functions.js", &fns("stash")),
+            ],
+        );
+        let routes = RoutePaths {
+            dir: root.join("app/routes"),
+            tree: root.join("app/routeTree.gen.ts"),
+            out_dir: root.join("app/dist"),
+            preserve_symlinks: false,
+        };
+        // A link back into an ancestor is not followed.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("src"), root.join("src/lib/loop")).unwrap();
+        let dirs = routes.server_fn_dirs(&root);
+        assert_eq!(dirs.roots, [root.join("src"), root.join("app")]);
+        let maps = |rel: &str, name: &str| {
+            resolver_text(&cache).contains(&oj_compiler::server_fns::server_fn_id(rel, name))
+        };
+        assert!(!server_fn_resolver(&root, &dirs, &cache).unwrap());
+        assert!(maps("src/lib/notes.functions.js", "notes"));
+        assert!(maps("src/lib/panel.functions.jsx", "panel"));
+        assert!(maps("app/account.functions.mts", "account"));
+        assert!(maps("app/api.functions.cts", "api"));
+        assert!(maps("src/lib/legacy.functions.cjs", "legacy"));
+        assert!(!maps("other/stray.functions.ts", "stray"));
+        assert!(!maps("app/dist/built.functions.js", "built"));
+        assert!(!resolver_text(&cache).contains("loop"));
+        assert!(!maps("src/node_modules/dep/index.js", "dep"));
+        assert!(!maps("src/.hidden/stash.functions.js", "stash"));
+
+        let trigger = |rel: &str| server_fn_trigger(&root, &dirs, &cache, &[root.join(rel)]);
+        assert_eq!(trigger("src/lib/notes.functions.js"), Declares);
+        assert_eq!(trigger("app/account.functions.mts"), Declares);
+        assert_eq!(trigger("other/stray.functions.ts"), None);
+        assert_eq!(trigger("src/node_modules/dep/index.js"), None);
+        assert_eq!(trigger("app/dist/built.functions.js"), None);
+
+        // A module created while the server runs keys the resolver: not
+        // restored, and mapped.
+        write_app(&root, &[("app/late.functions.js", &fns("late"))]);
+        assert_eq!(trigger("app/late.functions.js"), Declares);
+        assert!(!server_fn_resolver(&root, &dirs, &cache).unwrap());
+        assert!(maps("app/late.functions.js", "late"));
+        // And deleted: the resolver forgets it.
+        std::fs::remove_file(root.join("app/late.functions.js")).unwrap();
+        assert_eq!(trigger("app/late.functions.js"), Scan);
+        assert!(server_fn_resolver(&root, &dirs, &cache).unwrap());
+        assert!(!maps("app/late.functions.js", "late"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -7396,9 +7544,9 @@ mod tests {
             resolution_configs(&root),
             [root.join("config/base.json"), root.join("tsconfig.json")]
         );
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
         assert!(changed("shared/authed.js"));
         assert!(changed("config/base.json"));
@@ -7424,10 +7572,10 @@ mod tests {
             "export const authedFn = 1;\n",
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_text(&cache).contains(&id));
         std::fs::write(root.join("shared/authed.js"), builder).unwrap();
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id));
 
         // The extended file stops naming the directory.
@@ -7436,15 +7584,15 @@ mod tests {
             base.replace("@shared", "@other"),
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_text(&cache).contains(&id));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     // A relative import no file answers is kept beside the resolver: the
-    // file created there (here a `.js` barrel, not a source file the key
-    // lists) regenerates the resolver in dev and at the next start. Only the
-    // modules read were kept, so the handler on the builder the new barrel
+    // file created there (here a barrel outside the scanned directories, not
+    // a module the key lists) regenerates the resolver in dev and at the next
+    // start. Only the modules read were kept, so the handler on the builder the new barrel
     // exports stayed out of the resolver until a restart, or past one.
     #[test]
     fn a_file_created_where_an_import_found_none_regenerates_the_resolver() {
@@ -7461,34 +7609,35 @@ mod tests {
                 ),
                 (
                     "src/lib/fns.ts",
-                    "import { authedFn } from \"./barrel\";\nexport const first = authedFn.handler(async () => 1);\n",
+                    "import { authedFn } from \"../../vendor/barrel\";\nexport const first = authedFn.handler(async () => 1);\n",
                 ),
             ],
         );
         let id = oj_compiler::server_fns::server_fn_id("src/lib/fns.ts", "first");
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_text(&cache).contains(&id));
         let reads =
             std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_reads_file(true)))
                 .unwrap();
-        assert_eq!(reads.lines().collect::<Vec<_>>(), ["?src/lib/barrel"]);
+        assert_eq!(reads.lines().collect::<Vec<_>>(), ["?vendor/barrel"]);
         let changed = |rel: &str| server_fn_inputs_changed(&root, &cache, &[root.join(rel)]);
-        assert!(changed("src/lib/barrel.js"));
-        assert!(changed("src/lib/barrel.tsx"));
-        assert!(changed("src/lib/barrel/index.mts"));
-        assert!(!changed("src/lib/barrels.js"));
-        assert!(!changed("src/lib/barrel/other.js"));
-        assert!(!changed("src/barrel.js"));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(changed("vendor/barrel.js"));
+        assert!(changed("vendor/barrel.tsx"));
+        assert!(changed("vendor/barrel/index.mts"));
+        assert!(!changed("vendor/barrels.js"));
+        assert!(!changed("vendor/barrel/other.js"));
+        assert!(!changed("barrel.js"));
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
 
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
         std::fs::write(
-            root.join("src/lib/barrel.js"),
-            "export * from \"./authed\";\n",
+            root.join("vendor/barrel.js"),
+            "export * from \"../src/lib/authed\";\n",
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -7517,11 +7666,11 @@ mod tests {
             ],
         );
         let id = oj_compiler::server_fns::server_fn_id("src/lib/fns.ts", "first");
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_text(&cache).contains(&id));
 
         std::fs::write(root.join("src/lib/fns.ts"), "export const nothing = 1;\n").unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         let reads =
             std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_reads_file(true)))
                 .unwrap();
@@ -7533,9 +7682,9 @@ mod tests {
             "export * from \"./authed\";\n",
         )
         .unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7569,7 +7718,7 @@ mod tests {
             ],
         );
         let id = |name: &str| oj_compiler::server_fns::server_fn_id("src/lib/fns.ts", name);
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(!resolver_text(&cache).contains(&id("first")));
         assert!(!resolver_text(&cache).contains(&id("second")));
         let reads =
@@ -7602,18 +7751,18 @@ mod tests {
         std::fs::create_dir_all(root.join("shared")).unwrap();
         std::fs::write(root.join("shared/authed.js"), builder).unwrap();
         assert!(changed("shared/authed.js"));
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id("first")));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
 
         // A `.js` file takes the place of the `.ts` one read.
         std::fs::write(root.join("src/lib/authed.js"), builder).unwrap();
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(resolver_text(&cache).contains(&id("second")));
-        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         std::fs::remove_file(root.join("src/lib/authed.js")).unwrap();
         assert!(!resolver_text(&cache).is_empty());
-        server_fn_resolver(&root, &cache, true).unwrap();
+        server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         assert!(!resolver_text(&cache).contains(&id("second")));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7629,10 +7778,10 @@ mod tests {
     fn a_batch_is_a_declaring_edit_a_scan_or_nothing_to_the_resolver() {
         use ServerFnTrigger::{Declares, None, Scan};
         let (root, cache) = aliased_builder_app("resolver-trigger-kinds");
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let trigger = |rels: &[&str]| {
             let paths: Vec<PathBuf> = rels.iter().map(|rel| root.join(rel)).collect();
-            server_fn_trigger(&root, &cache, &paths)
+            server_fn_trigger(&root, &src_dirs(&root), &cache, &paths)
         };
         // Declares `.handler(..)`.
         assert_eq!(trigger(&["src/lib/aliased.functions.ts"]), Declares);
@@ -7670,7 +7819,7 @@ mod tests {
         let before = std::fs::read(&resolver).unwrap();
         let tsconfig = std::fs::read(root.join("tsconfig.json")).unwrap();
         std::fs::write(root.join("tsconfig.json"), &tsconfig).unwrap();
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         assert_eq!(std::fs::read(&resolver).unwrap(), before);
         // One that changes what an import resolves to is.
         std::fs::write(
@@ -7678,7 +7827,7 @@ mod tests {
             "{ \"compilerOptions\": { \"paths\": { \"@other/*\": [\"./src/*\"] } } }\n",
         )
         .unwrap();
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         assert_ne!(std::fs::read(&resolver).unwrap(), before);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7782,8 +7931,9 @@ mod tests {
                 ("src/lib/plain.ts", "export const plain = 1;\n"),
             ],
         );
-        generate_server_fn_resolver(&real, &cache, true).unwrap();
-        let through_link = |path: &str| server_fn_trigger(&real, &cache, &[link.join(path)]);
+        generate_server_fn_resolver(&real, &src_dirs(&real), &cache).unwrap();
+        let through_link =
+            |path: &str| server_fn_trigger(&real, &src_dirs(&real), &cache, &[link.join(path)]);
         assert_eq!(through_link("src/lib/barrel.ts"), ServerFnTrigger::Scan);
         assert_eq!(through_link("src/lib/barrel.js"), ServerFnTrigger::Scan);
         assert_eq!(through_link("config/base.json"), ServerFnTrigger::Scan);
@@ -7802,7 +7952,7 @@ mod tests {
 
     fn trigger_of(root: &Path, cache: &Path, rels: &[&str]) -> ServerFnTrigger {
         let paths: Vec<PathBuf> = rels.iter().map(|rel| root.join(rel)).collect();
-        server_fn_trigger(root, cache, &paths)
+        server_fn_trigger(root, &src_dirs(root), cache, &paths)
     }
 
     // Vite reloads the page for a file named `tsconfig.json` and no other.
@@ -7837,39 +7987,111 @@ mod tests {
     fn the_worker_counts_a_scan_when_the_resolver_it_leaves_is_another() {
         use ServerFnTrigger::{Declares, None, Scan};
         let (root, cache) = aliased_builder_app("resolver-worker");
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let resolver = cache.join(crate::start_bundle::server_fn_resolver_file(true));
         let before = std::fs::read(&resolver).unwrap();
-        assert!(!refresh_server_fn_resolver(&root, &cache, None, false));
-        assert!(!refresh_server_fn_resolver(&root, &cache, None, true));
-        assert!(!refresh_server_fn_resolver(&root, &cache, Scan, false));
-        assert!(!refresh_server_fn_resolver(&root, &cache, Scan, true));
-        assert!(refresh_server_fn_resolver(&root, &cache, Declares, false));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            None,
+            false
+        ));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            None,
+            true
+        ));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            true
+        ));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Declares,
+            false
+        ));
         assert_eq!(std::fs::read(&resolver).unwrap(), before);
 
         // The resolver is regenerated for a route change alone, uncounted.
         std::fs::remove_file(&resolver).unwrap();
-        assert!(!refresh_server_fn_resolver(&root, &cache, None, true));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            None,
+            true
+        ));
         assert_eq!(std::fs::read(&resolver).unwrap(), before);
         // No trigger and no route change: left alone.
         std::fs::remove_file(&resolver).unwrap();
-        assert!(!refresh_server_fn_resolver(&root, &cache, None, false));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            None,
+            false
+        ));
         assert!(!resolver.exists());
         // A scan that finds no resolver where it makes one.
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
 
         // A scan that leaves another resolver.
         std::fs::remove_file(root.join("src/lib/aliased.functions.ts")).unwrap();
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
         assert!(!resolver_maps(&cache, "first"));
-        assert!(!refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
 
         // One that could not be made: what the page would call is unknown.
         std::fs::remove_dir_all(&cache).unwrap();
         std::fs::write(&cache, "not a directory").unwrap();
-        assert!(generate_server_fn_resolver(&root, &cache, true).is_err());
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
-        assert!(!refresh_server_fn_resolver(&root, &cache, None, true));
+        assert!(generate_server_fn_resolver(&root, &src_dirs(&root), &cache).is_err());
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
+        assert!(!refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            None,
+            true
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -7889,23 +8111,26 @@ mod tests {
                 ("package.json", "{ \"name\": \"app\", \"type\": \"module\" }\n"),
                 ("src/lib/authed.mts", BUILDER),
                 ("shared/second.js", BUILDER),
-                // Names the factory, and nothing imports it.
-                ("src/lib/unread.mts", BUILDER),
+                // Names the factory, outside the scanned directories, and
+                // nothing imports it.
+                ("shared/unread.mts", BUILDER),
                 (
                     "src/lib/fns.ts",
                     "import { authedFn } from \"./authed.mjs\";\nimport { authedFn as second } from \"../../shared/second\";\nimport { lateFn } from \"./late.cjs\";\nexport const first = authedFn.handler(async () => 1);\nexport const other = second.handler(async () => 2);\nexport const late = lateFn.handler(async () => 3);\n",
                 ),
             ],
         );
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let trigger = |rels: &[&str]| trigger_of(&root, &cache, rels);
         assert_eq!(trigger(&["src/lib/authed.mts"]), Declares);
         assert_eq!(trigger(&["shared/second.js"]), Declares);
         assert_eq!(trigger(&["src/styles.css", "shared/second.js"]), Declares);
         assert_eq!(trigger(&["tsconfig.json", "src/lib/authed.mts"]), Declares);
-        // Not one the scan read: oj compiles server functions in `.ts` and
-        // `.tsx` files alone.
-        assert_eq!(trigger(&["src/lib/unread.mts"]), None);
+        // Not one the scan reads or read.
+        assert_eq!(trigger(&["shared/unread.mts"]), None);
+        // A module of any kind under `src/` is one it reads.
+        std::fs::write(root.join("src/lib/unread.mts"), BUILDER).unwrap();
+        assert_eq!(trigger(&["src/lib/unread.mts"]), Declares);
         // Read, and declaring nothing any more.
         std::fs::write(
             root.join("shared/second.js"),
@@ -7939,7 +8164,7 @@ mod tests {
     fn a_file_the_resolver_imports_is_a_scan_once_it_declares_nothing() {
         use ServerFnTrigger::{Declares, None, Scan};
         let (root, cache) = aliased_builder_app("resolver-dead-entry");
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let trigger = |rels: &[&str]| trigger_of(&root, &cache, rels);
         assert_eq!(trigger(&["src/lib/aliased.functions.ts"]), Declares);
         std::fs::write(
@@ -7953,7 +8178,13 @@ mod tests {
         std::fs::write(root.join("src/lib/aliased.ts"), "export const a = 1;\n").unwrap();
         assert_eq!(trigger(&["src/lib/aliased.ts"]), None);
         assert!(resolver_maps(&cache, "first"));
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
         assert!(!resolver_maps(&cache, "first"));
         // The resolver imports it no longer: an edit of it is nothing.
         assert_eq!(trigger(&["src/lib/aliased.functions.ts"]), None);
@@ -7988,7 +8219,7 @@ mod tests {
                 ("docs/notes.md", "notes\n"),
             ],
         );
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let trigger = |rels: &[&str]| trigger_of(&root, &cache, rels);
         // Directories as they stand: under `src/` or not.
         assert_eq!(trigger(&["src/features/a"]), Scan);
@@ -8004,7 +8235,13 @@ mod tests {
             "the resolver imports under it"
         );
         assert_eq!(trigger(&["src/features/b"]), Scan);
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
         assert!(resolver_text(&cache).contains("src/features/b/fns.ts"));
         assert!(!resolver_text(&cache).contains("src/features/a/fns.ts"));
         assert_eq!(
@@ -8028,7 +8265,13 @@ mod tests {
             "the scan read a module under it"
         );
         assert_eq!(trigger(&["share"]), None);
-        assert!(refresh_server_fn_resolver(&root, &cache, Scan, false));
+        assert!(refresh_server_fn_resolver(
+            &root,
+            &src_dirs(&root),
+            &cache,
+            Scan,
+            false
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -8068,9 +8311,9 @@ mod tests {
             ))
         };
         let reads = cache.join(crate::start_bundle::server_fn_reads_file(true));
-        assert!(!server_fn_resolver(&root, &cache, true).unwrap());
+        assert!(!server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap());
         assert!(maps(&cache));
-        let inputs = server_fn_inputs(&root, &reads);
+        let inputs = server_fn_inputs(&root, &src_dirs(&root), &reads);
         assert!(inputs.contains(&root.join("src/package.json")));
         assert!(inputs.contains(&root.join("src/lib/deep/tsconfig.json")));
         assert!(
@@ -8082,7 +8325,7 @@ mod tests {
             "above no module"
         );
         assert!(
-            server_fn_resolver(&root, &cache, true).unwrap(),
+            server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap(),
             "unchanged: restored"
         );
 
@@ -8093,6 +8336,7 @@ mod tests {
         );
         assert!(refresh_server_fn_resolver(
             &root,
+            &src_dirs(&root),
             &cache,
             ServerFnTrigger::Scan,
             false
@@ -8101,6 +8345,7 @@ mod tests {
         std::fs::write(root.join("src/package.json"), imports("authed")).unwrap();
         assert!(refresh_server_fn_resolver(
             &root,
+            &src_dirs(&root),
             &cache,
             ServerFnTrigger::Scan,
             false
@@ -8142,7 +8387,7 @@ mod tests {
             ],
         );
         std::os::unix::fs::symlink(root.join("kept"), root.join("src/linked")).unwrap();
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let reads =
             std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_reads_file(true)))
                 .unwrap();
@@ -8169,7 +8414,7 @@ mod tests {
                 "export const first = 1;\n",
             )
             .unwrap();
-            generate_server_fn_resolver(&root, &cache, true).unwrap();
+            generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
             let reads = std::fs::read_to_string(
                 cache.join(crate::start_bundle::server_fn_reads_file(true)),
             )
@@ -8195,7 +8440,7 @@ mod tests {
     #[test]
     fn a_dev_edit_regenerates_the_resolver_when_its_scan_read_the_file() {
         let (root, cache) = aliased_builder_app("resolver-trigger");
-        generate_server_fn_resolver(&root, &cache, true).unwrap();
+        generate_server_fn_resolver(&root, &src_dirs(&root), &cache).unwrap();
         let reads =
             std::fs::read_to_string(cache.join(crate::start_bundle::server_fn_reads_file(true)))
                 .unwrap();
@@ -8220,7 +8465,7 @@ mod tests {
     }
 
     #[test]
-    fn list_src_ts_files_walks_all_of_src() {
+    fn the_server_fn_sources_walk_all_of_src() {
         let root = tmp("srcwalk");
         let src = root.join("src");
         std::fs::create_dir_all(src.join("routes")).unwrap();
@@ -8229,8 +8474,8 @@ mod tests {
         std::fs::write(src.join("lib").join("fns.ts"), "").unwrap();
         std::fs::write(src.join("lib").join("types.d.ts"), "").unwrap();
         std::fs::write(src.join("styles.css"), "").unwrap();
-        let found = list_src_ts_files(&root);
-        assert_eq!(found.len(), 3, "ts/tsx (incl. .d.ts) only: {found:?}");
+        let found = crate::start_bundle::server_fn_sources(&src_dirs(&root));
+        assert_eq!(found.len(), 3, "modules (incl. .d.ts) only: {found:?}");
     }
 
     #[test]

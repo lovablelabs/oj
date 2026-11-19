@@ -235,8 +235,8 @@ pub fn compile_module_with_maps(
     mut rewriter: Option<&mut ImportRewriter>,
     input_maps: &[String],
 ) -> Result<CompileOutput, CompileError> {
-    let source_type = SourceType::from_path(path)
-        .map_err(|_| CompileError::UnsupportedFileType(path.to_path_buf()))?;
+    let source_type = source_type_of(path, source_text)
+        .ok_or_else(|| CompileError::UnsupportedFileType(path.to_path_buf()))?;
     let allocator = Allocator::default();
 
     let mut program = parse(&allocator, path, source_text, source_type)?;
@@ -292,6 +292,26 @@ macro_rules! diagnostics_message {
             .collect::<Vec<_>>()
             .join("\n")
     };
+}
+
+/// The language `path` compiles as: a `.cts` written with `import`/`export`
+/// is a TypeScript module, as a Vite build's bundler parses it.
+fn source_type_of(path: &Path, source_text: &str) -> Option<SourceType> {
+    let source_type = SourceType::from_path(path).ok()?;
+    if path.extension().and_then(|e| e.to_str()) != Some("cts") {
+        return Some(source_type);
+    }
+    let allocator = Allocator::default();
+    let probe = SourceType::ts().with_unambiguous(true);
+    if Parser::new(&allocator, source_text, probe)
+        .parse()
+        .module_record
+        .has_module_syntax
+    {
+        Some(source_type.with_module(true))
+    } else {
+        Some(source_type)
+    }
 }
 
 fn parse<'a>(
@@ -368,7 +388,7 @@ pub fn transform_for_bundle(
     jsx: &JsxConfig,
     dev: bool,
 ) -> Result<(String, Option<String>), CompileError> {
-    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
+    let source_type = source_type_of(path, source_text).unwrap_or_else(SourceType::mjs);
     let opts = CompileOptions {
         dev,
         refresh: dev,
@@ -848,6 +868,42 @@ import React from "react";
             dev_no_refresh.code.contains("jsx-dev-runtime"),
             "dev runtime regardless of refresh"
         );
+    }
+
+    #[test]
+    fn a_cts_module_with_import_syntax_compiles_as_a_vite_build_compiles_it() {
+        let esm = "import { a } from \"./a\";\nexport const b: number = a + 1;\n";
+        let out = compile(Path::new("/app/src/x.cts"), esm, &CompileOptions::prod()).unwrap();
+        assert!(out.code.contains("export const b = a + 1"), "{}", out.code);
+        // A CommonJS `.cts` keeps its script grammar: a top-level `return`.
+        let cjs = "const a: number = require(\"./a\");\nif (!a) return;\nmodule.exports = a;\n";
+        let out = compile(Path::new("/app/src/y.cts"), cjs, &CompileOptions::prod()).unwrap();
+        assert!(out.code.contains("module.exports = a"), "{}", out.code);
+    }
+
+    #[test]
+    fn a_cts_server_function_compiles_for_the_dev_server_render() {
+        let source = "import { createServerFn } from \"@tanstack/react-start\";\n\nexport const ctsFn = createServerFn({ method: \"POST\" }).handler(async () => \"cts-answer\");\n";
+        let rel = "src/lib/a.functions.cts";
+        let rewritten = crate::server_fns::rewrite_server(source, rel, &()).unwrap();
+        let mut opts = CompileOptions::dev();
+        opts.refresh = false;
+        opts.ssr = true;
+        let out = compile(&Path::new("/app").join(rel), &rewritten, &opts).unwrap();
+        assert!(
+            out.code.contains("ctsFn_createServerFn_handler"),
+            "{}",
+            out.code
+        );
+        // The bundler's transform takes the same rule.
+        let (code, _) = transform_for_bundle(
+            &Path::new("/app").join(rel),
+            &rewritten,
+            &JsxConfig::default(),
+            true,
+        )
+        .unwrap();
+        assert!(code.contains("export const ctsFn"), "{code}");
     }
 
     #[test]

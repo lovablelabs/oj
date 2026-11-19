@@ -20,7 +20,7 @@
 //! - The on-disk transform cache keyed on the Node version is gone: the
 //!   pipeline's own caches and the isolate's module map cover it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -589,9 +589,18 @@ pub struct StartHost {
     warned_schemes: Mutex<HashSet<String>>,
     /// Memoized CJS detection (package type per dir, ESM sniff per file).
     cjs: CjsCache,
+    /// Each server-function id the lazy lookup took, with its module and the
+    /// module's mtime then, as Start's dev resolver keeps a validated id.
+    lazy_server_fns: Mutex<HashMap<String, (PathBuf, Option<std::time::SystemTime>)>>,
+    /// `resolve.preserveSymlinks`, which picks the path a module's ids name.
+    preserve_symlinks: bool,
+    /// The modules a compile gave server functions (this host's and the
+    /// client bundle's): the only ones an id is looked up in.
+    compiled: crate::start_bundle::code::ServerFnModules,
 }
 
 impl StartHost {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         root: PathBuf,
         cache: &Path,
@@ -599,6 +608,8 @@ impl StartHost {
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
         inline_limit: u64,
+        preserve_symlinks: bool,
+        compiled: crate::start_bundle::code::ServerFnModules,
     ) -> Arc<StartHost> {
         let aliases = framework_aliases(&root, cache);
         Arc::new(StartHost {
@@ -612,7 +623,35 @@ impl StartHost {
             plugins_started: tokio::sync::OnceCell::new(),
             warned_schemes: Mutex::new(HashSet::new()),
             cjs: CjsCache::default(),
+            lazy_server_fns: Mutex::new(HashMap::new()),
+            preserve_symlinks,
+            compiled,
         })
+    }
+
+    /// [`crate::start_bundle::lazy_server_fn`], kept per id while the module
+    /// is unchanged. A refused id is not kept: it answers once its function
+    /// exists.
+    fn lazy_server_fn(&self, id: &str) -> Option<PathBuf> {
+        if let Some((file, mtime)) = self.lazy_server_fns.lock().unwrap().get(id) {
+            if crate::ssr_host::mtime_of(&file.to_string_lossy()) == *mtime {
+                return Some(file.clone());
+            }
+        }
+        let compiled = self.compiled.lock().unwrap().clone();
+        let file =
+            crate::start_bundle::lazy_server_fn(&self.root, id, self.preserve_symlinks, &compiled);
+        let mut kept = self.lazy_server_fns.lock().unwrap();
+        match &file {
+            Some(file) => {
+                let mtime = crate::ssr_host::mtime_of(&file.to_string_lossy());
+                kept.insert(id.to_string(), (file.clone(), mtime));
+            }
+            None => {
+                kept.remove(id);
+            }
+        }
+        file
     }
 
     pub(crate) fn graph(&self) -> &VersionGraph {
@@ -663,6 +702,18 @@ impl StartHost {
         spec: &str,
     ) -> Result<Option<HostResolved>, String> {
         let importer_id = importer_id(importer);
+
+        // The dev resolver's lookup of an id it has no entry for: the
+        // declaring module, or no module at all.
+        if let Some(id) = spec.strip_prefix(crate::start_bundle::LAZY_SERVER_FN) {
+            return match self.lazy_server_fn(id) {
+                Some(file) => Ok(Some(self.module_url(&file.to_string_lossy(), importer_id))),
+                None => Err(format!(
+                    "{} {id}",
+                    crate::start_bundle::LAZY_SERVER_FN_REFUSED
+                )),
+            };
+        }
 
         // The framework-seam aliases first, from every importer (tanstack's
         // own dist imports `tanstack-start-manifest:v` and friends). For
@@ -1167,12 +1218,17 @@ impl StartHost {
             )
             .map_err(|e| format!("{clean}: {e}"))?
             .unwrap_or(raw);
-            oj_compiler::server_fns::rewrite_server(
+            match oj_compiler::server_fns::rewrite_server(
                 &raw,
                 &rel,
                 &oj_compiler::server_fns::FsModules::new(&self.root),
-            )
-            .unwrap_or(raw)
+            ) {
+                Some(out) => {
+                    self.compiled.lock().unwrap().insert(PathBuf::from(&clean));
+                    out
+                }
+                None => raw,
+            }
         } else {
             raw
         };
@@ -1495,6 +1551,8 @@ impl StartEngine {
         public_dir: Option<PathBuf>,
         inline_limit: u64,
         init_env: Vec<(String, String)>,
+        preserve_symlinks: bool,
+        compiled: crate::start_bundle::code::ServerFnModules,
     ) -> anyhow::Result<StartEngine> {
         let bootstrap = cache.join("start-bootstrap.mjs");
         std::fs::write(&bootstrap, START_BOOTSTRAP_JS)?;
@@ -1505,6 +1563,8 @@ impl StartEngine {
             no_external,
             public_dir,
             inline_limit,
+            preserve_symlinks,
+            compiled,
         );
         let engine = spawn_engine(&root, &host)?;
         Ok(StartEngine {

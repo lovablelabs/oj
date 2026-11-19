@@ -664,7 +664,8 @@ impl DevBundler {
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
                         .with_route_tree(start.route_tree())
                         .with_alias(h.facts.alias.clone())
-                        .routes_split_in_host(true),
+                        .routes_split_in_host(true)
+                        .recording_server_fns(Some(Arc::clone(&start.server_fns))),
                 ),
             ));
         }
@@ -689,7 +690,8 @@ impl DevBundler {
                 .with_route_tree(start.route_tree())
                 .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .compiled_in_host(host.is_some())
-                .recording_globs(Arc::clone(&glob_scopes)),
+                .recording_globs(Arc::clone(&glob_scopes))
+                .recording_server_fns(Some(Arc::clone(&start.server_fns))),
         ));
         plugins.push(Pluginable::new_shared(
             StartAssetsPlugin::new(
@@ -1251,6 +1253,7 @@ pub(crate) mod tests {
             base: "/".into(),
             stylex: None,
             rolldown: test_runtime(),
+            server_fns: Default::default(),
         }
     }
 

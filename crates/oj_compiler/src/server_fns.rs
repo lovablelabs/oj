@@ -88,12 +88,14 @@ pub fn server_fn_id(rel: &str, name: &str) -> String {
 /// The id Start's own compiler gives the same function in Vite dev
 /// (`generateFunctionId` in dev mode): `base64url(JSON.stringify({ file, export }))`,
 /// `file` being the dev-server specifier of the split provider module
-/// (`/<path>?tss-serverfn-split`) and `export` its handler. A module served
-/// file by file, outside oj's bundles, is compiled by Start's plugin and calls
-/// under this id.
+/// (`/<path>?tss-serverfn-split`, `/@fs/<abs>?tss-serverfn-split` for a file
+/// outside the root, as `createViteDevServerFnModuleSpecifierEncoder` writes
+/// it) and `export` its handler. A module served file by file, outside oj's
+/// bundles, is compiled by Start's plugin and calls under this id.
 pub fn vite_dev_server_fn_id(rel: &str, name: &str) -> String {
     use base64::Engine;
-    let file = serde_json::Value::String(format!("/{rel}?tss-serverfn-split"));
+    let at = if rel.starts_with('/') { "/@fs" } else { "/" };
+    let file = serde_json::Value::String(format!("{at}{rel}?tss-serverfn-split"));
     let export = serde_json::Value::String(format!("{name}_createServerFn_handler"));
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("{{\"file\":{file},\"export\":{export}}}").as_bytes())
@@ -1152,6 +1154,11 @@ mod tests {
         assert_eq!(
             vite_dev_server_fn_id("src/server/data.ts", "getB"),
             "eyJmaWxlIjoiL3NyYy9zZXJ2ZXIvZGF0YS50cz90c3Mtc2VydmVyZm4tc3BsaXQiLCJleHBvcnQiOiJnZXRCX2NyZWF0ZVNlcnZlckZuX2hhbmRsZXIifQ"
+        );
+        // Outside the root: `file: "/@fs/work/shared/x.functions.ts?tss-serverfn-split"`.
+        assert_eq!(
+            vite_dev_server_fn_id("/work/shared/x.functions.ts", "x"),
+            "eyJmaWxlIjoiL0Bmcy93b3JrL3NoYXJlZC94LmZ1bmN0aW9ucy50cz90c3Mtc2VydmVyZm4tc3BsaXQiLCJleHBvcnQiOiJ4X2NyZWF0ZVNlcnZlckZuX2hhbmRsZXIifQ"
         );
     }
 
