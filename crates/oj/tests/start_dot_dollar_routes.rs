@@ -786,25 +786,40 @@ fn plain_routes() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Each option alone shapes its own part of the tree; `quoteStyle` and
+/// `semicolons` act through the generator's formatting (on by default).
 #[test]
-fn quote_style_semicolons_and_extensions_in_the_plugin_shape_the_generated_tree() {
-    let Some(app) = routed_app("tree-text-options", &plain_routes()) else {
-        return;
-    };
-    set_plugin_router(
-        &app.0,
-        r#"{ quoteStyle: "double", semicolons: true, addExtensions: true }"#,
-    );
-    let dev = Server::oj_dev(&app.0);
-    assert_renders(&dev, "tree text options", &[("/about", "about-page")]);
-    let tree = generated_tree(&app.0);
-    for line in [
-        r#"import { Route as AboutRouteImport } from "./routes/about.tsx";"#,
-        r#"  id: "/about","#,
+fn quote_style_semicolons_and_extensions_in_the_plugin_each_shape_the_generated_tree() {
+    for (name, option, has, lacks) in [
+        (
+            "tree-quote-style",
+            r#"{ quoteStyle: "double" }"#,
+            r#"  id: "/about","#,
+            "} as any);",
+        ),
+        (
+            "tree-semicolons",
+            "{ semicolons: true }",
+            "} as any);",
+            r#"  id: "/about","#,
+        ),
+        (
+            "tree-add-extensions",
+            "{ addExtensions: true }",
+            "./routes/about.tsx",
+            "'./routes/about'",
+        ),
     ] {
+        let Some(app) = routed_app(name, &plain_routes()) else {
+            return;
+        };
+        set_plugin_router(&app.0, option);
+        let dev = Server::oj_dev(&app.0);
+        assert_renders(&dev, name, &[("/about", "about-page")]);
+        let tree = generated_tree(&app.0);
         assert!(
-            tree.contains(line),
-            "the generated tree lacks {line:?}\n{tree}"
+            tree.contains(has) && !tree.contains(lacks),
+            "{name}: the generated tree should hold {has:?} and not {lacks:?}\n{tree}"
         );
     }
 }
@@ -896,4 +911,248 @@ fn a_virtual_route_config_is_the_tree_in_the_build() {
         "the built server: GET /about: {status}\n{html}\n{}",
         served.output()
     );
+}
+
+/// `routeTreeFileHeader` opens the tree, and `enableRouteTreeFormatting:
+/// false` leaves the generator's raw text unformatted.
+#[test]
+fn the_apps_route_tree_header_opens_an_unformatted_tree() {
+    let Some(app) = routed_app("tree-header-unformatted", &plain_routes()) else {
+        return;
+    };
+    set_plugin_router(
+        &app.0,
+        r#"{ routeTreeFileHeader: ["// app header"], enableRouteTreeFormatting: false }"#,
+    );
+    let dev = Server::oj_dev(&app.0);
+    assert_renders(&dev, "header, unformatted", &[("/about", "about-page")]);
+    let tree = generated_tree(&app.0);
+    assert!(
+        tree.starts_with("// app header\n"),
+        "the tree does not start with the app's header\n{tree}"
+    );
+    assert!(tree.contains("}as any)"), "the tree was formatted\n{tree}");
+}
+
+/// `importRoutesUsingAbsolutePaths` imports each route by its absolute path,
+/// and the route still renders on the server and hydrates in the client.
+#[tokio::test(flavor = "multi_thread")]
+async fn routes_imported_by_absolute_path_render_and_hydrate() {
+    let Some(app) = routed_app("tree-absolute-imports", &plain_routes()) else {
+        return;
+    };
+    set_plugin_router(&app.0, "{ importRoutesUsingAbsolutePaths: true }");
+    let dev = Server::oj_dev(&app.0);
+    let how = "importRoutesUsingAbsolutePaths";
+    assert_renders(&dev, how, &[("/", "home-page"), ("/about", "about-page")]);
+    let tree = generated_tree(&app.0);
+    let import = format!("from '{}'", app.0.join("src/routes/about").display());
+    assert!(tree.contains(&import), "the tree lacks {import:?}\n{tree}");
+    assert_client_routes(&dev, how, &["/", "/about"]);
+
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r#"document.getElementById("named")?.textContent === "about-page" && !!self.__TSR_ROUTER__ && self.__TSR_ROUTER__.state.matches.some((m) => m.routeId === "/about")"#,
+            Duration::from_secs(60),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let errors = page.errors();
+    page.close().await;
+    assert!(
+        hydrated,
+        "/about did not hydrate on its route: {errors:?}\n{}",
+        start_lines(&dev)
+    );
+    assert_eq!(errors, Vec::<String>::new(), "page errors");
+}
+
+/// With `routeFilePrefix`, only the prefixed files are routes: an unprefixed
+/// file exporting a `Route` is out of the tree and answers 404.
+#[test]
+fn a_route_file_prefix_makes_only_prefixed_files_routes() {
+    let routes = vec![
+        ("r-__root.tsx", ROOT.to_string()),
+        ("r-index.tsx", named_route("/", "home-page")),
+        ("r-about.tsx", named_route("/about", "about-page")),
+        ("contact.tsx", named_route("/contact", "contact-page")),
+    ];
+    let Some(app) = routed_app("tree-route-file-prefix", &routes) else {
+        return;
+    };
+    set_plugin_router(&app.0, r#"{ routeFilePrefix: "r-" }"#);
+    let dev = Server::oj_dev(&app.0);
+    let how = "routeFilePrefix";
+    assert_renders(&dev, how, &[("/", "home-page"), ("/about", "about-page")]);
+    let (status, html) = dev.request("GET", "/contact", &[]);
+    assert!(
+        status == 404 && !html.contains("contact-page"),
+        "{how}: GET /contact: {status}\n{html}\n{}",
+        dev.output()
+    );
+    let tree = generated_tree(&app.0);
+    assert!(
+        tree.contains("./routes/r-about") && !tree.contains("contact"),
+        "{how}: the generated tree\n{tree}"
+    );
+    let ids = client_route_ids(&client_bundle(&dev));
+    assert!(
+        !ids.iter().any(|id| id == "/contact"),
+        "{how}: the client's route tree: {ids:?}\n{}",
+        dev.output()
+    );
+    assert_client_routes(&dev, how, &["/", "/about"]);
+}
+
+/// `f` holds within the start-up wait, checked every 100ms.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + start_app::WAIT;
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// An empty route file added while dev runs is scaffolded from the app's
+/// `customScaffolding` template, and the generator works in the app's
+/// `tmpDir`, not in `.tanstack`.
+#[test]
+fn a_route_file_added_during_dev_is_scaffolded_from_the_apps_template_in_its_tmp_dir() {
+    let Some(app) = routed_app("tree-scaffolding", &plain_routes()) else {
+        return;
+    };
+    let root = &app.0;
+    set_plugin_router(
+        root,
+        r#"{ customScaffolding: { routeTemplate: "%%tsrImports%%\n\n// app scaffold\n%%tsrExportStart%%{ component: () => <p>scaffolded-page</p> }%%tsrExportEnd%%\n" }, tmpDir: "./.tree-tmp" }"#,
+    );
+    let dev = Server::oj_dev(root);
+    assert_renders(&dev, "customScaffolding", &[("/about", "about-page")]);
+    let fresh = root.join("src/routes/fresh.tsx");
+    std::fs::write(&fresh, "").unwrap();
+    let scaffolded = eventually(|| {
+        std::fs::read_to_string(&fresh).is_ok_and(|code| {
+            code.contains("// app scaffold") && code.contains("createFileRoute('/fresh')")
+        })
+    });
+    assert!(
+        scaffolded,
+        "fresh.tsx was not scaffolded from the app's template: {:?}\n{}",
+        std::fs::read_to_string(&fresh),
+        dev.output()
+    );
+    let rendered = eventually(|| {
+        let (status, html) = dev.request("GET", "/fresh", &[]);
+        status == 200 && html.contains("scaffolded-page")
+    });
+    assert!(rendered, "/fresh never rendered\n{}", dev.output());
+    assert!(
+        root.join(".tree-tmp").is_dir(),
+        "the generator's tmpDir was not created\n{}",
+        dev.output()
+    );
+    assert!(
+        !root.join(".tanstack").exists(),
+        "the generator wrote .tanstack despite tmpDir\n{}",
+        dev.output()
+    );
+}
+
+/// A `__virtual.ts` subtree config importing a module outside the routes
+/// folder: an edit to that module is in the tree after a restart with
+/// `.oj-cache` kept.
+#[test]
+fn a_virtual_subtree_importing_a_module_outside_the_routes_is_not_restored_from_the_cache() {
+    let mut routes = plain_routes();
+    routes.push((
+        "blog/__virtual.ts",
+        "import { blogRoutes } from \"../../blog-routes\";\nexport default blogRoutes;\n"
+            .to_string(),
+    ));
+    routes.push(("blog/home.tsx", named_route("/blog/", "blog-home-page")));
+    routes.push(("blog/post.tsx", named_route("/blog/post", "blog-post-page")));
+    let Some(app) = file_routed_app("virtual-subtree-import", &[]) else {
+        return;
+    };
+    let root = &app.0;
+    for (file, code) in &routes {
+        let path = root.join("src/routes").join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, code).unwrap();
+    }
+    let module = |routes: &str| {
+        std::fs::write(
+            root.join("src/blog-routes.ts"),
+            format!("import {{ index, route }} from \"@tanstack/virtual-file-routes\";\nexport const blogRoutes = [{routes}];\n"),
+        )
+        .unwrap();
+    };
+    module(r#"index("home.tsx")"#);
+    let port = start_app::free_port();
+    {
+        let dev = Server::oj_dev_on(root, port);
+        let how = "__virtual.ts subtree";
+        assert_renders(&dev, how, &[("/blog", "blog-home-page")]);
+        let (status, _) = dev.request("GET", "/blog/post", &[]);
+        assert_eq!(
+            status,
+            404,
+            "{how}: /blog/post is not in the subtree yet\n{}",
+            dev.output()
+        );
+    }
+    module(r#"index("home.tsx"), route("/post", "post.tsx")"#);
+    let dev = Server::oj_dev_on(root, port);
+    let how = "the subtree's module edited, server restarted";
+    assert_renders(&dev, how, &[("/blog/post", "blog-post-page")]);
+    assert_client_routes(&dev, how, &["/blog/post"]);
+}
+
+/// A tsr.config.json edit while dev runs reaches the tree: oj restarts on
+/// it, where Vite applies it at the next start.
+#[test]
+fn a_tsr_config_edit_reaches_the_tree_without_a_manual_restart() {
+    let drafts = named_route(DRAFT.1, DRAFT.2);
+    let Some(app) = file_routed_app(
+        "tsr-config-live-edit",
+        &[
+            ("__root.tsx", ROOT),
+            ("index.tsx", INDEX),
+            ("about.draft.tsx", &drafts),
+        ],
+    ) else {
+        return;
+    };
+    let root = &app.0;
+    let tsr = |json: serde_json::Value| {
+        std::fs::write(root.join("tsr.config.json"), json.to_string()).unwrap();
+    };
+    tsr(serde_json::json!({ "routeFileIgnorePattern": r"\.draft\." }));
+    let dev = Server::oj_dev(root);
+    let (status, _) = dev.request("GET", DRAFT.1, &[]);
+    assert_eq!(status, 404, "the ignored route rendered\n{}", dev.output());
+    tsr(serde_json::json!({}));
+    let rendered = eventually(|| {
+        let (status, html) = dev.request("GET", DRAFT.1, &[]);
+        status == 200 && html.contains(DRAFT.2)
+    });
+    assert!(
+        rendered,
+        "{} never rendered after the tsr.config.json edit\n{}",
+        DRAFT.1,
+        dev.output()
+    );
+    assert!(
+        generated_tree(root).contains("about.draft"),
+        "the generated tree lacks the route\n{}",
+        generated_tree(root)
+    );
+    assert_client_routes(&dev, "tsr.config.json edited during dev", &[DRAFT.1]);
 }
