@@ -110,9 +110,15 @@ class OjHmrClient {
     this.queue = Promise.resolve();
     // Patches announced and not yet applied.
     this.pending = [];
-    // Modules a hot update changed or re-ran since the page loaded, and the
-    // page's location when the last update came.
+    // Modules a hot update changed or re-ran since the page loaded.
     this.outdated = new Set();
+    // Modules whose patch failed to load: a chunk naming one cannot be
+    // brought up to date in place.
+    this.unpatched = new Set();
+    // Chunks built before a hot update, or holding a module a patch factory
+    // already ran, that ran and wait for refreshStale.
+    this.staleChunks = [];
+    // The page's location when the last update came.
     this.updatedAt = undefined;
     this.deferredReload = undefined;
     this.lastSeq = 0;
@@ -262,18 +268,23 @@ class OjHmrClient {
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
       const next = this.compute([...changedIds]);
-      if (!next) continue;
-      if (next.reload) return this.requestReload(next.reload);
-      update = next;
-      const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
-      for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
-      if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
-      if (this.beforeApply() === "reload") return;
-      for (const { url } of frames) {
+      if (next?.reload) return this.requestReload(next.reload);
+      if (next) {
+        update = next;
+        const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
+        for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
+        if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+        if (this.beforeApply() === "reload") return;
+      }
+      // Imported even when none of its modules ran here: a lazy chunk built
+      // before it runs its modules' factories instead (refreshStale).
+      for (const { url, changedIds: ids } of frames) {
         try {
           await import(/* @vite-ignore */ url);
+          for (const id of ids) this.unpatched.delete(id);
         } catch {
-          return this.requestReload(`failed to import hmr patch ${url}`);
+          if (update) return this.requestReload(`failed to import hmr patch ${url}`);
+          for (const id of ids) this.unpatched.add(id);
         }
       }
     }
@@ -297,9 +308,9 @@ class OjHmrClient {
     await this.notify("vite:afterUpdate", payload);
   }
 
-  async apply(update, firstInvalidatedBy) {
+  async apply(update, firstInvalidatedBy, reload = (why) => this.requestReload(why)) {
     for (const id of update.updateSet) {
-      if (!this.runtime.hasFactory(id)) return this.requestReload(`no factory for module ${id}`);
+      if (!this.runtime.hasFactory(id)) return reload(`no factory for module ${id}`);
     }
     // Collected before the caches drop: re-execution registers new ones.
     const applies = update.boundaries.map((b) => ({
@@ -309,6 +320,13 @@ class OjHmrClient {
     for (const id of update.updateSet) {
       this.outdated.add(id);
       this.runtime.removeModuleCache(id);
+      // Its factory runs now: a chunk waiting with an older copy keeps this
+      // one, and the page's instance it held is disposed.
+      for (const c of this.staleChunks) {
+        c.fresh.add(id);
+        c.before.get(id)?.hot.dispose?.(this.dataMap.get(id));
+        c.before.delete(id);
+      }
     }
     for (const { boundary, acceptedVia, circular, callbacks } of applies) {
       let fresh;
@@ -316,7 +334,7 @@ class OjHmrClient {
         this.runtime.initModule(acceptedVia);
         fresh = this.runtime.loadExports(acceptedVia);
       } catch (err) {
-        if (circular) return this.requestReload(`${acceptedVia} is within a circular import`);
+        if (circular) return reload(`${acceptedVia} is within a circular import`);
         throw err;
       }
       try {
@@ -334,19 +352,147 @@ class OjHmrClient {
     if (dispose) dispose(this.dataMap.get(id));
   }
 
+  // Re-runs on their patch factories the stale modules of chunks from before
+  // a hot update; what cannot re-run reloads.
+  async refreshStale() {
+    if (this.reloadPending || !this.staleChunks.length) return;
+    // A patch announced since: its factories register first.
+    if (this.pending.length) {
+      this.queue = this.queue.then(() => this.refreshStale()).catch((err) => this.failed(err, "stale chunk"));
+      return;
+    }
+    const chunks = this.staleChunks.splice(0);
+    const locals = chunks.flatMap((c) => c.locals);
+    const edges = chunks.flatMap((c) => c.edges);
+    const before = new Map(chunks.flatMap((c) => [...c.before]));
+    const fresh = new Set(chunks.flatMap((c) => [...c.fresh]));
+    for (const [id, { mod, hot }] of before) {
+      this.runtime.moduleCache.set(id, mod);
+      this.restoreHot(id, hot);
+    }
+    // A module that ran here before the chunk is the page's instance; the
+    // chunk's own copy of it is stale for what imports it.
+    const stale = new Set([...this.outdated, ...before.keys()]);
+    for (let grew = true; grew;) {
+      grew = false;
+      locals.forEach((id, i) => {
+        if (stale.has(id) || !edges[i].some((dep) => stale.has(dep))) return;
+        stale.add(id);
+        grew = true;
+      });
+    }
+    // What a patch re-ran while the chunks waited is current already.
+    const ids = locals.filter((id) => stale.has(id) && !before.has(id) && !fresh.has(id));
+    if (!ids.length) return;
+    const reads = new Set([...locals, ...edges.flat()]);
+    const unpatched = [...reads].find((id) => stale.has(id) && this.unpatched.has(id));
+    if (unpatched !== undefined) return this.reloadSelf(`the hot patch of ${unpatched} failed to load`);
+    const imported = (id) => this.runtime.getImporters(id).some((p) => p !== id && this.runtime.isExecuted(p));
+    // What the current code no longer imports does not run again.
+    const live = ids.filter(imported);
+    // A chunk that imports a dropped copy later is stale too.
+    for (const id of ids) if (!live.includes(id)) this.outdated.add(id);
+    if (live.length) {
+      const update = this.compute(live);
+      const missing = update?.updateSet?.find((id) => !this.runtime.hasFactory(id));
+      const outside = update?.boundaries?.find((b) => b.boundary !== b.acceptedVia || !locals.includes(b.boundary));
+      if (!update || update.reload || missing !== undefined || outside !== undefined) {
+        const why =
+          update?.reload ??
+          (missing !== undefined ? `no factory for ${missing}` : `${outside?.boundary ?? ids[0]} accepts it`);
+        return this.reloadSelf(`a chunk built before a hot update loaded (${why})`);
+      }
+      // A boundary another updated module imports re-runs through that module.
+      const imports = (id) => (this.runtime.staticImports.get(id)?.edges ?? []).filter((dep) => dep !== id);
+      const tops = update.boundaries.filter((b) => !update.updateSet.some((id) => imports(id).includes(b.boundary)));
+      const reached = new Set();
+      const queue = tops.map((b) => b.boundary);
+      for (const id of queue) {
+        if (reached.has(id) || !update.updateSet.includes(id)) continue;
+        reached.add(id);
+        queue.push(...imports(id));
+      }
+      if (tops.length && update.updateSet.every((id) => reached.has(id))) update.boundaries = tops;
+      // A stale module only the current code's new imports reach runs again
+      // on its factory, not from the chunk's copy.
+      for (const id of ids) if (!live.includes(id)) this.runtime.removeModuleCache(id);
+      try {
+        await this.apply(update, undefined, (why) => this.reloadSelf(why, true));
+      } catch (err) {
+        console.error("[oj]", err);
+        // The update's modules have left the cache: no old code is left to keep.
+        return this.reloadSelf(`re-running ${ids[0]} on its current code threw`, true);
+      }
+    }
+    // The chunks' modules nothing running imports any more (Vite's prune).
+    const paths = locals.filter(
+      (id) =>
+        !before.has(id) &&
+        !this.runtime.isEntry(id) &&
+        (this.runtime.isExecuted(id) ? !imported(id) : ids.includes(id) && !live.includes(id)),
+    );
+    if (!paths.length) return;
+    await this.notify("vite:beforePrune", { type: "prune", paths });
+    for (const id of paths) if (this.runtime.isExecuted(id)) this.runtime.removeModuleCache(id);
+    for (const id of paths) this.pruneMap.get(id)?.(this.dataMap.get(id));
+    for (const id of paths) this.dataMap.delete(id);
+  }
+
+  // A module's accept callbacks, listeners and dispose and prune handlers.
+  saveHot(id) {
+    return {
+      mod: this.hotModules.get(id),
+      callbacks: this.hotModules.get(id)?.callbacks,
+      own: this.ownListeners.get(id),
+      dispose: this.disposeMap.get(id),
+      prune: this.pruneMap.get(id),
+    };
+  }
+
+  restoreHot(id, hot) {
+    // The chunk's copy cleared and refilled the same entry's callbacks.
+    if (hot.mod) hot.mod.callbacks = hot.callbacks;
+    const dispose = this.disposeMap.get(id);
+    if (dispose && dispose !== hot.dispose) dispose(this.dataMap.get(id));
+    const own = this.ownListeners.get(id);
+    if (own && own !== hot.own) {
+      for (const [event, fns] of own) {
+        const list = (this.listeners.get(event) ?? []).filter((l) => !fns.includes(l));
+        if (list.length) this.listeners.set(event, list);
+        else this.listeners.delete(event);
+      }
+      for (const [event, fns] of hot.own ?? [])
+        this.listeners.set(event, [...(this.listeners.get(event) ?? []), ...fns]);
+    }
+    for (const [map, value] of [
+      [this.hotModules, hot.mod],
+      [this.ownListeners, hot.own],
+      [this.disposeMap, hot.dispose],
+      [this.pruneMap, hot.prune],
+    ]) {
+      if (value === undefined) map.delete(id);
+      else map.set(id, value);
+    }
+  }
+
   // This page alone reloads; its document waits for the current output. A
   // page still on the location it had at the last update reloads at its next
   // navigation, or at the next update.
-  reloadSelf(reason) {
-    if (this.reloadPending || this.deferredReload) return;
+  reloadSelf(reason, now = false) {
+    if (this.reloadPending) return;
+    if (this.deferredReload) {
+      if (now) this.deferredReload();
+      return;
+    }
     console.debug(`[oj] full reload needed: ${reason}`);
+    this.reloadReason = reason;
     const reload = async () => {
       if (this.reloadPending) return;
       this.reloadPending = true;
-      await this.notify("vite:beforeFullReload", { type: "full-reload" });
+      await this.notify("vite:beforeFullReload", { type: "full-reload", path: "*" });
       location.reload();
     };
-    if (location.href !== this.updatedAt) return void reload();
+    if (now || location.href !== this.updatedAt) return void reload();
     this.deferredReload = reload;
     const from = location.href;
     const moved = () => {
@@ -392,17 +538,46 @@ class OjDevRuntime extends DevRuntime {
       this.factoryRuns--;
     }
   }
-  // A chunk that registers, or imports, a module a hot update changed since
-  // the page loaded is from before that update; the page reloads onto the
-  // current bundle (Vite compiles lazy loads for the current graph,
-  // bundledDev.ts). Patches carry stamps; full-build chunks do not.
+  // A full-build chunk from before a hot update (patches carry stamps):
+  // patch rows win, and its stale modules re-run after it (refreshStale).
   registerGraph(delta) {
-    if (delta.stamps === undefined && this.factoryRuns === 0) {
-      // Its own modules and the targets of its imports.
-      const stale = delta.ids.find((id) => this.hmr.outdated.has(id));
-      if (stale !== undefined) this.hmr.reloadSelf(`a chunk built before the hot update of ${stale} loaded`);
+    if (delta.stamps !== undefined || this.factoryRuns > 0) return super.registerGraph(delta);
+    const hmr = this.hmr;
+    const locals = delta.ids.slice(0, delta.localCount);
+    const waiting = new Set(hmr.staleChunks.flatMap((c) => c.locals));
+    const ran = locals.filter((id) => this.moduleCache.has(id));
+    // Queued when a module of it already ran, or it reads an outdated or queued module.
+    if (ran.length || delta.ids.some((id) => hmr.outdated.has(id) || waiting.has(id))) {
+      const edges = delta.edges.map((row) => row.map((j) => delta.ids[j]));
+      const before = new Map(ran.map((id) => [id, { mod: this.moduleCache.get(id), hot: hmr.saveHot(id) }]));
+      // After every chunk of this evaluation, behind the update queue.
+      if (!hmr.staleChunks.push({ locals, edges, before, fresh: new Set() }) - 1) {
+        queueMicrotask(() => {
+          hmr.queue = hmr.queue.then(() => hmr.refreshStale()).catch((err) => hmr.failed(err, "stale chunk"));
+        });
+      }
     }
-    super.registerGraph(delta);
+    // A patch's rows are newer than the chunk's: its factory is what runs.
+    const kept = locals.filter((id) => !this.rowStamps.has(id));
+    if (kept.length === locals.length) return super.registerGraph(delta);
+    const ids = [...kept, ...delta.ids.filter((id) => !kept.includes(id))];
+    const at = new Map(ids.map((id, i) => [id, i]));
+    const row = (i) => at.get(delta.ids[i]);
+    const rows = kept.map((id) => locals.indexOf(id));
+    super.registerGraph({
+      ids,
+      localCount: kept.length,
+      edges: rows.map((i) => delta.edges[i].map(row)),
+      bindings:
+        delta.bindings &&
+        Object.fromEntries(rows.flatMap((i, k) => (delta.bindings[i] ? [[k, delta.bindings[i]]] : []))),
+      dynamicEdges:
+        delta.dynamicEdges &&
+        Object.fromEntries(
+          rows.flatMap((i, k) => (delta.dynamicEdges[i] ? [[k, delta.dynamicEdges[i].map(row)]] : [])),
+        ),
+      entries: delta.entries?.map((i) => rows.indexOf(i)).filter((k) => k !== -1),
+    });
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });
