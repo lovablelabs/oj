@@ -309,8 +309,9 @@ fn twin_app() -> App {
 // named with `?import`, as Vite's importAnalysis names it
 // (`isExplicitImportRequired`), so it is the root file's module whether or
 // not the request carries `Sec-Fetch-Dest` (plain http to a LAN address, a
-// module worker, a proxy that drops the header). The page's fetch of the url
-// is the public file, and both answers vary on `Sec-Fetch-Dest`.
+// module worker, a proxy that drops the header). A url without the mark is
+// the public file whatever the headers, as Vite's servePublicMiddleware,
+// which reads none, serves it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_import_of_a_root_file_with_a_public_twin_is_the_root_module() {
     let app = twin_app();
@@ -320,13 +321,7 @@ async fn an_import_of_a_root_file_with_a_public_twin_is_the_root_module() {
         main.contains("\"/data.json?import\"") && main.contains("\"/data.json?import&raw\""),
         "the imports carry Vite's mark:\n{main}"
     );
-    let varies = |res: &crate::Response| {
-        res.headers
-            .get_all("vary")
-            .iter()
-            .any(|v| v.to_str().unwrap().contains("sec-fetch-dest"))
-    };
-    let module = |url: &'static str, dest: Option<&'static str>| {
+    let request = |url: &'static str, dest: Option<&'static str>| {
         let mut req = Request::get(url).header("accept", "*/*");
         if let Some(dest) = dest {
             req = req.header("sec-fetch-dest", dest);
@@ -337,9 +332,8 @@ async fn an_import_of_a_root_file_with_a_public_twin_is_the_root_module() {
         ("/data.json?import", None),
         ("/data.json?import", Some("script")),
         ("/data.json?import", Some("worker")),
-        ("/data.json", Some("script")),
     ] {
-        let data = server.request(module(url, dest)).await;
+        let data = server.request(request(url, dest)).await;
         assert_eq!(data.status, 200, "{url} {dest:?}: {}", data.body);
         assert_eq!(
             data.headers["content-type"], "text/javascript",
@@ -350,30 +344,22 @@ async fn an_import_of_a_root_file_with_a_public_twin_is_the_root_module() {
             "{url} {dest:?}: the root module:\n{}",
             data.body
         );
-        assert!(varies(&data), "{url} {dest:?}: {:?}", data.headers);
     }
-    for (url, dest) in [
-        ("/data.json?import&raw", None),
-        ("/data.json?raw", Some("script")),
-    ] {
-        let raw = server.request(module(url, dest)).await;
-        assert_eq!(raw.status, 200, "{url} {dest:?}: {}", raw.body);
-        assert_eq!(
-            raw.headers["content-type"], "text/javascript",
-            "{url} {dest:?}"
-        );
-        assert!(
-            raw.body.contains(r#"export default "{\"root\":1}\n""#),
-            "{url} {dest:?}: the root file's text:\n{}",
-            raw.body
-        );
-    }
-    let fetched = server.get("/data.json").await;
-    assert_eq!(
-        fetched.body, "{\"public\":1}\n",
-        "a fetch is the public file"
+    let raw = server.request(request("/data.json?import&raw", None)).await;
+    assert_eq!(raw.status, 200, "{}", raw.body);
+    assert_eq!(raw.headers["content-type"], "text/javascript");
+    assert!(
+        raw.body.contains(r#"export default "{\"root\":1}\n""#),
+        "the root file's text:\n{}",
+        raw.body
     );
-    assert!(varies(&fetched), "{:?}", fetched.headers);
+    for (url, dest) in [("/data.json", None), ("/data.json", Some("script"))] {
+        let public = server.request(request(url, dest)).await;
+        assert_eq!(
+            public.body, "{\"public\":1}\n",
+            "{url} {dest:?} is the public file"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -394,4 +380,564 @@ async fn page_importing_a_root_file_with_a_public_twin_gets_the_root_file() {
     assert_eq!(fetched, "{\"public\":1}\n", "the fetch is the public file");
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;
+}
+
+/// `server.get` sends no `Sec-Fetch-Dest`: what a browser sends to a
+/// non-trustworthy origin (`oj dev --host` from another machine), an older
+/// Safari, or a request through a proxy that drops the header.
+async fn headerless(server: &crate::Server, url: &str) -> crate::Response {
+    server
+        .request(
+            Request::get(url)
+                .header("accept", "*/*")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+}
+
+/// The url `importer` names a module by: the quoted import that starts with
+/// `prefix`.
+fn imported_url(importer: &str, prefix: &str) -> String {
+    let start = importer
+        .find(&format!("\"{prefix}"))
+        .unwrap_or_else(|| panic!("no import of {prefix}:\n{importer}"))
+        + 1;
+    let rest = &importer[start..];
+    rest[..rest.find('"').unwrap()].to_string()
+}
+
+/// A JSON module of `src/data.json` (`"root"`), never the public file's bytes.
+fn assert_root_module(res: &crate::Response, what: &str) {
+    assert_eq!(res.status, 200, "{what}: {}", res.body);
+    assert_eq!(res.headers["content-type"], "text/javascript", "{what}");
+    assert!(
+        res.body.contains("\"root\""),
+        "{what}: the root module:\n{}",
+        res.body
+    );
+}
+
+// A public twin created while the server runs: the importer, compiled
+// before it existed, is not recompiled, so its import must not depend on the
+// public dir: Vite names it `/src/data.json?import` either way. Asserted:
+// that url, asked for without `Sec-Fetch-Dest`, is the root module.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_public_twin_created_while_dev_runs_does_not_shadow_an_import_without_fetch_metadata() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"late-twin","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import data from \"./data.json\";\nwindow.__DATA = data;\n",
+        ),
+        ("src/data.json", "{\"from\":\"root\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    std::fs::create_dir_all(app.root.join("public")).unwrap();
+    let server = app.serve().await;
+    let before = server.text("/src/main.js").await;
+    app.write(&[("public/src/data.json", "{\"from\":\"public\"}\n")]);
+    let importer = server.text("/src/main.js").await;
+    assert_eq!(
+        imported_url(&before, "/src/data.json"),
+        imported_url(&importer, "/src/data.json"),
+        "the importer is the one compiled before the twin existed"
+    );
+    let url = imported_url(&importer, "/src/data.json");
+    assert_root_module(&headerless(&server, &url).await, &url);
+    // The public file is still what a plain fetch of the url gets.
+    let fetched = headerless(&server, "/src/data.json").await;
+    assert_eq!(fetched.body, "{\"from\":\"public\"}\n");
+}
+
+// A dynamic import whose specifier is computed: Vite wraps it in
+// `__vite__injectQuery(x, 'import')`, so the browser asks for
+// `/src/dyn.json?import`, the root module, while a plain fetch of
+// `/src/dyn.json` is the public twin.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_literal_dynamic_import_of_a_root_file_with_a_public_twin_is_the_module_without_fetch_metadata(
+) {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"dyn-twin","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "const name = \"./dyn.json\";\nimport(name).then((m) => { window.__DYN = m.default; });\n",
+        ),
+        ("src/dyn.json", "{\"from\":\"root\"}\n"),
+        ("public/src/dyn.json", "{\"from\":\"public\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("import { injectQuery as __vite__injectQuery } from \"/@oj/client.js\";")
+            && main.contains("import(__vite__injectQuery(name, \"import\"))"),
+        "the computed import asks for the module, as Vite's importAnalysis writes it:\n{main}"
+    );
+    let client = server.text("/@oj/client.js").await;
+    assert!(
+        client.contains("export function injectQuery("),
+        "the client exports the helper"
+    );
+    // `injectQuery("./dyn.json", "import")`, resolved against the importer.
+    assert_root_module(
+        &headerless(&server, "/src/dyn.json?import").await,
+        "/src/dyn.json?import",
+    );
+    let fetched = headerless(&server, "/src/dyn.json").await;
+    assert_eq!(
+        fetched.body, "{\"from\":\"public\"}\n",
+        "a plain fetch is the public file"
+    );
+}
+
+// The hot update of an accepted JSON module: Vite's update carries
+// `explicitImportRequired` and its client re-imports `?import&t=`. Asserted:
+// the flag, and that url without `Sec-Fetch-Dest` is the new root module.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hot_update_of_an_accepted_json_module_with_a_public_twin_is_the_module_without_fetch_metadata(
+) {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"hot-twin","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import hot from \"./hot.json\";\nwindow.__HOT = hot;\n\
+             if (import.meta.hot) import.meta.hot.accept(\"./hot.json\", (m) => { window.__HOT = m.default; });\n",
+        ),
+        ("src/hot.json", "{\"from\":\"root\",\"n\":1}\n"),
+        ("public/src/hot.json", "{\"from\":\"public\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    let url = imported_url(&main, "/src/hot.json");
+    assert_root_module(&headerless(&server, &url).await, &url);
+
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
+    app.write(&[("src/hot.json", "{\"from\":\"root\",\"n\":2}\n")]);
+    let frame =
+        crate::listen::frame_matching(&mut socket, "the json's update", |f| f["type"] == "update")
+            .await;
+    crate::listen::close(socket).await;
+    let update = &frame["updates"][0];
+    assert_eq!(update["acceptedPath"], "/src/hot.json", "{frame}");
+    assert_eq!(
+        update["explicitImportRequired"], true,
+        "the update says the module needs `import`, as Vite's does: {frame}"
+    );
+    let client = server.text("/@oj/client.js").await;
+    assert!(
+        client.contains("explicitImportRequired") && client.contains("?import&t="),
+        "the client re-imports with `import&`, as Vite's importUpdatedModule does"
+    );
+    // The url the client asks for: `${acceptedPath}?import&t=${timestamp}`.
+    let next = format!("/src/hot.json?import&t={}", update["timestamp"]);
+    let res = headerless(&server, &next).await;
+    assert_root_module(&res, &next);
+    assert!(
+        res.body.contains("\"n\": 2") || res.body.contains("\"n\":2"),
+        "{}",
+        res.body
+    );
+}
+
+// The url of a public file with a root twin, asked for by a plain fetch, is
+// the public file's bytes, headers or not (Vite's servePublicMiddleware).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_fetch_of_a_public_file_with_a_root_twin_is_the_file_without_fetch_metadata() {
+    let app = twin_app();
+    let server = app.serve().await;
+    for url in ["/data.json", "/data.json?t=1"] {
+        let res = headerless(&server, url).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(res.body, "{\"public\":1}\n", "{url} is the public file");
+        assert!(
+            res.headers["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("application/json"),
+            "{url}: {:?}",
+            res.headers["content-type"]
+        );
+    }
+}
+
+// `?import` is the transform pipeline's flag, not part of the module's id
+// (Vite's removeImportQuery): a root file asked for with and without it is
+// one module, under one key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_marked_and_an_unmarked_request_for_a_root_file_are_one_module() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"one-module","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import data from \"./data.json\";\nwindow.__DATA = data;\n",
+        ),
+        ("src/data.json", "{\"from\":\"root\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("\"/src/data.json?import\""),
+        "the import carries Vite's mark:\n{main}"
+    );
+    let marked = headerless(&server, "/src/data.json?import").await;
+    let unmarked = headerless(&server, "/src/data.json").await;
+    assert_root_module(&marked, "?import");
+    assert_root_module(&unmarked, "bare");
+    assert_eq!(marked.body, unmarked.body, "one module's code");
+    assert_eq!(
+        marked.headers.get("etag"),
+        unmarked.headers.get("etag"),
+        "one module's key"
+    );
+    assert!(
+        !marked.body.contains("?import\""),
+        "the module names itself by its bare url:\n{}",
+        marked.body
+    );
+}
+
+/// A worker whose computed `import(n)` names a JSON file.
+fn worker_app() -> App {
+    App::new(&[
+        ("package.json", r#"{"name":"worker-dyn","version":"1.0.0"}"#),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        (
+            "src/w.js",
+            "const n = \"./data.json\";\nimport(n).then((m) => postMessage(m.default));\n",
+        ),
+        ("src/data.json", "{\"from\":\"root\"}\n"),
+        ("index.html", INDEX_HTML),
+    ])
+}
+
+// A classic worker cannot hold a static import: Vite appends its helper to
+// the worker instead of importing it. Asserted: the worker file holds the
+// helper and no import of the dev client, classic or module.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_with_a_computed_import_gets_the_helper_not_an_import_of_the_client() {
+    let app = worker_app();
+    let server = app.serve().await;
+    for url in [
+        "/src/w.js?worker_file&type=classic",
+        "/src/w.js?worker_file&type=module",
+    ] {
+        let body = server.text(url).await;
+        assert!(
+            body.contains("function __vite__injectQuery(url, queryToInject)")
+                && body.contains("import(__vite__injectQuery(n, \"import\"))"),
+            "{url}: the computed import calls the helper written in:\n{body}"
+        );
+        assert!(
+            !body.contains("/@oj/client.js") && !body.contains("import {"),
+            "{url}: no import of the dev client:\n{body}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn page_classic_worker_with_a_computed_import_runs() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = worker_app();
+    app.write(&[(
+        "src/main.js",
+        "const w = new Worker(\"/src/w.js?worker_file&type=classic\");\n\
+         w.onmessage = (e) => { window.__FROM = e.data.from; };\n\
+         w.onerror = (e) => { window.__FROM = \"error: \" + e.message; };\n",
+    )]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let page = Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
+    page.wait_for("window.__FROM !== undefined", WAIT).await;
+    let from: String = page.eval("window.__FROM").await;
+    assert_eq!(from, "root", "the worker ran and imported the module");
+    page.close().await;
+}
+
+// Vite wraps a template literal only when its text needs `?import`: a
+// script's (`/src/pages/${n}`, no extension) is left as written, so it is
+// the same browser module as the page's static import of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computed_import_of_a_script_is_left_as_written() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"tpl-script","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import { a } from \"/src/pages/a.js\";\nconst n = \"a.js\";\nimport(`/src/pages/${n}`);\nwindow.__A = a;\n",
+        ),
+        ("src/pages/a.js", "export const a = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("import(`/src/pages/${n}`)") && !main.contains("__vite__injectQuery"),
+        "the script's computed import is left as written:\n{main}"
+    );
+    assert!(
+        main.contains("from \"/src/pages/a.js\""),
+        "the static import names the script unmarked:\n{main}"
+    );
+}
+
+// A root-absolute import with an asset query is marked as a relative one is:
+// Vite writes `/src/abs.json?import&raw`, which a public twin created later
+// does not shadow.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_absolute_import_with_a_query_carries_the_mark() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"abs-raw","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import raw from \"/src/abs.json?raw\";\nimport data from \"/src/abs.json\";\nwindow.__ABS = [raw, data];\n",
+        ),
+        ("src/abs.json", "{\"from\":\"root\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("\"/src/abs.json?import&raw\"") && main.contains("\"/src/abs.json?import\""),
+        "{main}"
+    );
+    let raw = headerless(&server, "/src/abs.json?import&raw").await;
+    assert!(
+        raw.body
+            .contains(r#"export default "{\"from\":\"root\"}\n""#),
+        "{}",
+        raw.body
+    );
+}
+
+// The page's hot update of an accepted JSON module with a public twin: the
+// client re-imports `?import&t=`, which the public dir steps aside for, and
+// the page shows the new value without a reload.
+#[tokio::test(flavor = "multi_thread")]
+async fn page_hot_updates_an_accepted_json_module_with_a_public_twin() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = App::new(&[
+        ("package.json", r#"{"name":"hot-twin-page","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import hot from \"./hot.json\";\nwindow.__HOT = hot.n;\n\
+             if (import.meta.hot) import.meta.hot.accept(\"./hot.json\", (m) => { window.__HOT = m.default.n; });\n",
+        ),
+        ("src/hot.json", "{\"n\":1}\n"),
+        ("public/src/hot.json", "{\"n\":\"public\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let page = Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
+    page.wait_for("window.__HOT === 1", WAIT).await;
+    assert!(page.eval::<bool>("window.__KEPT = true").await);
+    app.write(&[("src/hot.json", "{\"n\":2}\n")]);
+    page.wait_for("window.__HOT === 2", WAIT).await;
+    assert!(
+        page.eval::<bool>("window.__KEPT === true").await,
+        "the update reloaded the page"
+    );
+    assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
+    page.close().await;
+}
+
+// A module worker whose module makes a computed `import()` loads the dev
+// client for the helper. Vite's client keeps the page-only work behind
+// `hasDocument`: a worker shows no overlay and reloads nothing. Asserted: the
+// worker runs, and a server error frame raises no error in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn page_module_worker_importing_the_client_survives_a_server_error() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = App::new(&[
+        ("package.json", r#"{"name":"worker-client","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "const w = new Worker(\"/src/w.js?worker_file&type=module\", { type: \"module\" });\n\
+             w.onmessage = (e) => { window.__FROM = e.data; };\n\
+             w.onerror = (e) => { window.__WERR = String(e.message || e); };\n",
+        ),
+        (
+            "src/w.js",
+            "import { load } from \"./lib.js\";\nload().then((v) => postMessage(v));\n",
+        ),
+        (
+            "src/lib.js",
+            "export const load = () => { const n = \"./data.json\"; return import(n).then((m) => m.default.from); };\n",
+        ),
+        ("src/data.json", "{\"from\":\"root\"}\n"),
+        ("src/broken.js", "export const x = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let lib = server.text("/src/lib.js").await;
+    assert!(
+        lib.contains("from \"/@oj/client.js\""),
+        "the worker's module imports the client for the helper:\n{lib}"
+    );
+    let listening = server.listen().await;
+    let before = server.built.reload_tx.receiver_count();
+    let page = Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
+    page.wait_for("window.__FROM !== undefined", WAIT).await;
+    let from: String = page.eval("window.__FROM").await;
+    assert_eq!(from, "root");
+    // The page's socket and the worker's.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while server.built.reload_tx.receiver_count() < before + 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker's client never connected"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    app.write(&[("src/broken.js", "export const = ;\n")]);
+    let broken = server.get("/src/broken.js").await;
+    assert_ne!(
+        broken.status, 200,
+        "the compile error is sent as an error frame"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let err: Option<String> = page.eval("window.__WERR ?? null").await;
+    assert_eq!(err, None, "the worker's client threw on the error frame");
+    page.close().await;
+}
+
+// Vite's importQueryRE (`(\?|&)import=?(?:&|$)`) takes `import=` as the flag
+// too: `/src/logo.png?import=` is the asset's url module, as `?import` is.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_flag_with_an_equals_sign_is_a_module_request() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"import-eq","version":"1.0.0"}"#),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    std::fs::write(app.root.join("src/logo.png"), PNG_1X1).unwrap();
+    let server = app.serve().await;
+    for url in ["/src/logo.png?import", "/src/logo.png?import="] {
+        let res = headerless(&server, url).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(res.headers["content-type"], "text/javascript", "{url}");
+        assert!(
+            res.body.contains("export default \"/src/logo.png\""),
+            "{url}:\n{}",
+            res.body
+        );
+    }
+}
+
+/// Every quoted url in `importer` that starts with `prefix`, in order.
+fn imported_urls(importer: &str, prefix: &str) -> Vec<String> {
+    importer
+        .match_indices(&format!("\"{prefix}"))
+        .map(|(at, _)| {
+            let rest = &importer[at + 1..];
+            rest[..rest.find('"').unwrap()].to_string()
+        })
+        .collect()
+}
+
+// Vite marks an import whatever its query (`injectQuery(url, 'import')`):
+// `import` goes first in the query and the hash stays last, so the url the
+// browser sends is a module request the public twin steps aside for. The
+// root-absolute imports name a file with no twin: Vite refuses one that has.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_with_any_query_or_a_hash_beside_a_public_twin_is_the_root_module_without_fetch_metadata(
+) {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"twin-query","version":"1.0.0"}"#),
+        (
+            "src/main.js",
+            "import a from \"./data.json?raw&inline\";\nimport b from \"./data.json?x=1\";\n\
+             import c from \"./data.json#x\";\nimport d from \"/src/abs.json?x=2\";\n\
+             import e from \"/src/abs.json#y\";\nimport u from \"./util.js?x=1\";\n\
+             window.__D = [a, b, c, d, e, u];\n",
+        ),
+        ("src/util.js", "export default 1;\n"),
+        ("src/abs.json", "{\"v\":\"root\"}\n"),
+        ("src/data.json", "{\"v\":\"root\"}\n"),
+        ("public/src/data.json", "{\"v\":\"public\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    let mut urls = imported_urls(&main, "/src/data.json");
+    urls.extend(imported_urls(&main, "/src/abs.json"));
+    assert_eq!(urls.len(), 5, "{main}");
+    for url in &urls {
+        let sent = url.split('#').next().unwrap();
+        let res = headerless(&server, sent).await;
+        assert_eq!(res.status, 200, "{url}: {}", res.body);
+        assert_eq!(
+            res.headers["content-type"], "text/javascript",
+            "{url}: {}",
+            res.body
+        );
+        assert!(
+            res.body.contains("root") && !res.body.contains("public"),
+            "{url}: the root module, not the public file:\n{}",
+            res.body
+        );
+    }
+    assert_eq!(
+        urls,
+        [
+            "/src/data.json?import&raw&inline",
+            "/src/data.json?import&x=1",
+            "/src/data.json?import#x",
+            "/src/abs.json?import&x=2",
+            "/src/abs.json?import#y",
+        ],
+        "{main}"
+    );
+    assert_eq!(
+        imported_urls(&main, "/src/util.js"),
+        ["/src/util.js?x=1"],
+        "{main}"
+    );
+}
+
+// The mark changes only which file answers, never which loader runs: a
+// marked url gets what its unmarked spelling gets where no public twin is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_marked_query_import_runs_the_loader_its_unmarked_spelling_runs() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"mark-loader","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "window.__MAIN = 1;\n"),
+        ("src/solo.json", "{\"v\":\"solo\"}\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    std::fs::write(app.root.join("src/logo.png"), PNG_1X1).unwrap();
+    let server = app.serve().await;
+    for (file, query) in [
+        ("solo.json", "raw"),
+        ("solo.json", "raw&inline"),
+        ("solo.json", "inline"),
+        ("solo.json", "x=1"),
+        ("logo.png", "inline"),
+        ("logo.png", "x=1&url"),
+    ] {
+        let unmarked = headerless(&server, &format!("/src/{file}?{query}")).await;
+        let marked = headerless(&server, &format!("/src/{file}?import&{query}")).await;
+        assert_eq!(unmarked.status, 200, "{file}?{query}: {}", unmarked.body);
+        assert_eq!(
+            (marked.status, &marked.headers["content-type"], &marked.body),
+            (
+                unmarked.status,
+                &unmarked.headers["content-type"],
+                &unmarked.body
+            ),
+            "{file}?import&{query} against {file}?{query}"
+        );
+    }
 }

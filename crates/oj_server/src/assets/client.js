@@ -14,6 +14,13 @@ const wsToken = __WS_TOKEN__;
 // Vite 8's resolved `server.forwardConsole`: {enabled, unhandledErrors, logLevels}.
 const forwardConsole = __FORWARD_CONSOLE__;
 
+// A worker that imports the client (for `injectQuery`) has no page: as in
+// Vite's client (`hasDocument`), it shows no overlay and reloads nothing.
+const hasDocument = "document" in globalThis;
+function pageReload() {
+  if (hasDocument) location.reload();
+}
+
 const customListeners = new Map();
 function emit(event, data) {
   const set = customListeners.get(event);
@@ -75,7 +82,7 @@ export function createHotContext(ownerId) {
       if (live) {
         live.send(JSON.stringify({ type: "custom", event: "vite:invalidate", data }));
       } else {
-        location.reload();
+        pageReload();
       }
     },
     on(event, cb) {
@@ -93,6 +100,18 @@ export function createHotContext(ownerId) {
 }
 
 const styleTags = new Map();
+
+/** Vite's injectQuery, for a dynamic `import()` url made at runtime. */
+export function injectQuery(url, queryToInject) {
+  // skip urls that won't be handled by vite
+  if (url[0] !== "." && url[0] !== "/") {
+    return url;
+  }
+  // can't use pathname from URL since it may be relative like ../
+  const pathname = url.replace(/[?#].*$/, "");
+  const { search, hash } = new URL(url, "http://vite.dev");
+  return `${pathname}?${queryToInject}${search ? `&` + search.slice(1) : ""}${hash || ""}`;
+}
 
 export function updateStyle(id, css) {
   let tag = styleTags.get(id);
@@ -148,7 +167,7 @@ async function applyUpdate(update) {
   const accepts = mod.acceptCallbacks.filter((cb) => cb.deps.includes(acceptedPath));
   if (accepts.length === 0) {
     console.log(`[oj] ${cleanPath} has no accept handler for ${acceptedPath}, reloading`);
-    location.reload();
+    pageReload();
     return;
   }
   // Dispose callbacks belong to the module being replaced (the accepted one).
@@ -157,10 +176,15 @@ async function applyUpdate(update) {
   emit("vite:beforeUpdate", { type: "update", updates: [update] });
   try {
     for (const dispose of disposes) await dispose(disposed.data);
-    const sep = acceptedUrl.includes("?") ? "&" : "?";
+    // Vite's importUpdatedModule: a module that is neither a script nor a
+    // stylesheet is asked for with `import&`, never as the bare file.
+    const query = acceptedUrl.split("?")[1];
+    const moduleUrl = update.explicitImportRequired
+      ? `${acceptedPath}?import&t=${update.timestamp}${query ? `&${query}` : ""}`
+      : `${acceptedUrl}${query === undefined ? "?" : "&"}t=${update.timestamp}`;
     let next;
     try {
-      next = await import(acceptedUrl + sep + "t=" + update.timestamp);
+      next = await import(moduleUrl);
     } catch (err) {
       if (update.isWithinCircularImport) {
         // Vite: an accepted module inside an import loop cannot recover its
@@ -168,7 +192,7 @@ async function applyUpdate(update) {
         console.info(
           `[oj] ${acceptedPath} failed to apply HMR as it's within a circular import. Reloading page to reset the execution order.`,
         );
-        location.reload();
+        pageReload();
         return;
       }
       throw err;
@@ -208,8 +232,9 @@ let isFirstUpdate = true;
 // file were never registered, so a hot update has nothing to swap into. A full
 // reload is the only way to recover, as in Vite's clearOverlayOrReloadOnFirstUpdate.
 function clearOverlayOrReloadOnFirstUpdate() {
+  if (!hasDocument) return "continue";
   if (isFirstUpdate && overlayEl?.isConnected) {
-    location.reload();
+    pageReload();
     return "reload";
   }
   clearOverlay();
@@ -218,6 +243,7 @@ function clearOverlayOrReloadOnFirstUpdate() {
 }
 
 function showOverlay(err) {
+  if (!hasDocument) return;
   clearOverlay();
   if (!enableOverlay) return;
   overlayEl = new ErrorOverlay(err);
@@ -225,11 +251,13 @@ function showOverlay(err) {
 }
 
 function clearOverlay() {
+  if (!hasDocument) return;
   document.querySelectorAll(overlayId).forEach((n) => n.close());
   overlayEl = null;
 }
 
 function swapCss(update) {
+  if (!hasDocument) return;
   const links = [...document.querySelectorAll("link[rel=stylesheet]")];
   const link = links.find((l) => new URL(l.href).pathname === update.path);
   if (link) {
@@ -251,12 +279,12 @@ function swapCss(update) {
       .catch((err) => {
         console.log(`[oj] css re-import failed for ${update.path}, reloading`, err);
         reportHmrFailure(update.path, err);
-        location.reload();
+        pageReload();
       });
     return;
   }
   console.log(`[oj] no <link> or <style> for ${update.path}, reloading`);
-  location.reload();
+  pageReload();
 }
 
 let socket = null;
@@ -467,7 +495,7 @@ function connect() {
         }
       }
       console.log("[oj] full reload:", msg.reason || msg.path || "");
-      location.reload();
+      pageReload();
     } else if (msg.type === "prune") {
       emit("vite:beforePrune", msg);
       prunePaths(msg.paths || []);
@@ -475,6 +503,7 @@ function connect() {
       // Vite's ErrorPayload carries `err`; older oj frames carried `message`.
       const err = msg.err || { message: msg.message };
       emit("vite:error", { err });
+      if (!hasDocument) return;
       if (enableOverlay) showOverlay(err);
       else console.error(`[oj] Internal Server Error\n${err.message}\n${err.stack || ""}`);
     } else if (msg.type === "custom") {
@@ -498,6 +527,7 @@ function connect() {
 async function lost(ws) {
   emit("vite:ws:disconnect", { webSocket: ws });
   if (hadConnection) {
+    if (!hasDocument) return;
     // The server went away (a config or .env change restarts it): its module
     // graph, defines, caches and socket token are new, so the page's modules
     // are stale. Like Vite's client, poll until it answers again, then reload
@@ -505,7 +535,7 @@ async function lost(ws) {
     console.log("[oj] dev server connection lost, polling for restart...");
     await waitForSuccessfulPing();
     console.log("[oj] dev server restarted, reloading");
-    location.reload();
+    pageReload();
     return;
   }
   console.log("[oj] dev server disconnected, retrying in 1s…");

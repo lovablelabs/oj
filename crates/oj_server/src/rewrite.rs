@@ -69,7 +69,8 @@ pub(crate) fn rewrite_specifier(
     let (dir, importer) = (from.dir, from.file);
     if spec.starts_with('/') {
         return rewrite_absolute(root, fs_allow, dir_cache, spec)
-            .or_else(|| mark_public_asset_import(root, public_dir, dir_cache, spec));
+            .or_else(|| mark_public_asset_import(root, public_dir, dir_cache, spec))
+            .or_else(|| mark_root_import(root, dir_cache, spec, css_import_marker));
     }
     if spec.contains("://") {
         return None;
@@ -92,7 +93,7 @@ pub(crate) fn rewrite_specifier(
                 })
             })?;
             let sep = if resolved.contains('?') { '&' } else { '?' };
-            return Some(format!("{resolved}{sep}{query}"));
+            return Some(mark_explicit_import(format!("{resolved}{sep}{query}")));
         }
     }
 
@@ -101,8 +102,7 @@ pub(crate) fn rewrite_specifier(
     // on-disk fast path is for app source.
     if (spec.starts_with("./") || spec.starts_with("../")) && !in_node_modules(dir) {
         if let Some(p) = find_relative_on_disk(dir, dir_cache, spec) {
-            let url = mark_css_import(root, url_of(root, &p), &p, css_import_marker);
-            return Some(mark_public_twin_import(public_dir, dir_cache, url));
+            return Some(mark_import(root, &p, css_import_marker));
         }
     }
 
@@ -110,8 +110,7 @@ pub(crate) fn rewrite_specifier(
         // An alias (`@/assets/logo.svg`) or root-absolute import of a style
         // or asset gets the same `?import` / `?url` marks a relative one does.
         Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => {
-            let url = mark_css_import(root, url_of(root, &resolved), &resolved, css_import_marker);
-            Some(mark_public_twin_import(public_dir, dir_cache, url))
+            Some(mark_import(root, &resolved, css_import_marker))
         }
         Ok(resolved) => {
             allow_package(fs_allow, &resolved);
@@ -328,39 +327,52 @@ fn mark_css_import(root: &Path, url: String, file: &Path, css_import_marker: boo
     }
 }
 
-/// Vite's `isExplicitImportRequired` mark, for an import whose url a public
-/// file shares: a root file that is neither a script nor a stylesheet
-/// (`/data.json` beside `public/data.json`) is asked for as
-/// `/data.json?import`, so the request is the module, not the public file.
-fn mark_public_twin_import(
-    public_dir: Option<&Path>,
-    dir_cache: &Mutex<DirCache>,
-    url: String,
-) -> String {
-    let Some(public) = public_dir else {
-        return url;
-    };
-    if url.contains('?') || url.starts_with("/@") || is_style_url(&url) {
-        return url;
-    }
-    // Vite's isJSRequest: its knownJsSrcRE, or no extension at all.
-    let ext = Path::new(&url)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    const JS: &[&str] = &[
-        "", "js", "jsx", "ts", "tsx", "mjs", "mts", "vue", "marko", "svelte", "astro", "imba",
-        "mdx",
-    ];
-    if JS.contains(&ext.as_str()) {
-        return url;
-    }
-    let twin = public.join(url.trim_start_matches('/'));
-    if is_file_cached(dir_cache, &twin) {
-        format!("{url}?import")
+/// The url an import of the root file `file` is written with: a style's and an
+/// asset's marks ([`mark_css_import`]), else Vite's `?import` when required.
+fn mark_import(root: &Path, file: &Path, marked: bool) -> String {
+    let url = mark_css_import(root, url_of(root, file), file, marked);
+    if marked {
+        mark_explicit_import(url)
     } else {
         url
+    }
+}
+
+/// A root-absolute import of a root file (`/src/data.json`,
+/// `/src/data.json?raw`, `/src/data.json#x`), marked as a relative import of it is.
+fn mark_root_import(
+    root: &Path,
+    dir_cache: &Mutex<DirCache>,
+    spec: &str,
+    marked: bool,
+) -> Option<String> {
+    if !marked || spec.starts_with("//") {
+        return None;
+    }
+    let (path, postfix) = spec.split_at(spec.find(['?', '#']).unwrap_or(spec.len()));
+    let file = normalize(&root.join(path.trim_start_matches('/')));
+    if !(file.starts_with(root) && is_file_cached(dir_cache, &file)) {
+        return None;
+    }
+    Some(if postfix.is_empty() {
+        mark_import(root, &file, marked)
+    } else {
+        mark_explicit_import(format!("{}{postfix}", url_of(root, &file)))
+    })
+}
+
+/// Vite's `injectQuery(url, 'import')` on a client import that needs it:
+/// `/a.json?raw#x` becomes `/a.json?import&raw#x`; `/@` urls, `?import` and `?url` stay.
+pub(crate) fn mark_explicit_import(url: String) -> String {
+    let query = url.split('#').next().unwrap_or(&url).split_once('?');
+    let marked = query.is_some_and(|(_, q)| {
+        q.split('&')
+            .any(|kv| matches!(kv, "import" | "import=" | "url"))
+    });
+    if marked || url.starts_with("/@") || !oj_compiler::explicit_import_required(&url) {
+        url
+    } else {
+        crate::css_urls::inject_query(&url, "import")
     }
 }
 
@@ -497,5 +509,48 @@ pub(crate) fn resolve_in(
     match importer {
         Some(file) => resolver.resolve_from(file, spec),
         None => resolver.resolve(dir, spec),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mark_explicit_import;
+
+    #[test]
+    fn the_import_mark_goes_first_in_the_query_and_before_the_hash() {
+        for (url, marked) in [
+            ("/src/data.json", "/src/data.json?import"),
+            ("/src/data.json?x=1", "/src/data.json?import&x=1"),
+            (
+                "/src/data.json?raw&inline",
+                "/src/data.json?import&raw&inline",
+            ),
+            ("/src/data.json#x", "/src/data.json?import#x"),
+            ("/src/data.json?raw#x", "/src/data.json?import&raw#x"),
+            (
+                "/node_modules/p/x.json?raw",
+                "/node_modules/p/x.json?import&raw",
+            ),
+        ] {
+            assert_eq!(mark_explicit_import(url.to_string()), marked, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_script_a_stylesheet_or_an_already_marked_url_is_left_as_it_is() {
+        for url in [
+            "/src/a.js?x=1",
+            "/src/a.ts#x",
+            "/src/a.css?x=1",
+            "/src/data.json?import",
+            "/src/data.json?import=&raw",
+            "/src/data.json?raw&import",
+            "/src/logo.png?url",
+            "/src/data.json?url&inline",
+            "/@fs/abs/data.json?raw",
+            "/@id/virtual:x.json",
+        ] {
+            assert_eq!(mark_explicit_import(url.to_string()), url);
+        }
     }
 }

@@ -268,9 +268,8 @@ pub(crate) async fn serve_fallback(
 /// keeps without its version: a pre-bundled entry's current URL from
 /// `entries` (file name to URL), whose version moves with every rerun;
 /// anything else under `/@oj-deps/` bare, as dep files import their chunks.
-/// The sheet and asset rules for a bare path (`?import`; `?url`, an `.svg`
-/// staying bare when `svg_compiled`, for svgr, never the url its `<img src>`
-/// fetches) are what the graph's own urls say, for a list without them.
+/// A bare path gets its importer's mark: `?import` on a sheet, `?url` on an asset,
+/// else `?import` on a file that is neither a script nor a stylesheet.
 pub(crate) fn preload_href(
     root: &Path,
     path: &str,
@@ -287,6 +286,11 @@ pub(crate) fn preload_href(
         && !(svg_compiled && path.ends_with(".svg"))
     {
         format!("{path}?url")
+    } else if !path.starts_with("/@")
+        && !path.contains("/node_modules/")
+        && oj_compiler::explicit_import_required(path)
+    {
+        format!("{path}?import")
     } else if let Some(url) = path
         .strip_prefix("/@oj-deps/")
         .and_then(|file| entries.get(file))

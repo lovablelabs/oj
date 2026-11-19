@@ -267,7 +267,7 @@ async fn request_file(
         ensure_watched_file(state, &real);
         return Ok(real);
     }
-    match locate_request(state, headers, uri, rel).await {
+    match locate_request(state, uri, rel).await {
         Some(file) => Ok(file),
         None => Err(Box::new(serve_missing(state, headers, uri, rel).await)),
     }
@@ -276,15 +276,9 @@ async fn request_file(
 /// The file `rel` names for a request to `uri`. Vite's servePublicMiddleware
 /// runs ahead of its transform and static middlewares: a path naming a
 /// publicDir file is that file, beside a root file of the same name too,
-/// unless the request is a module import (`?import`, `?url`, or one the
-/// browser marks `Sec-Fetch-Dest: script`).
-async fn locate_request(
-    state: &ServerState,
-    headers: &HeaderMap,
-    uri: &Uri,
-    rel: &str,
-) -> Option<PathBuf> {
-    if let Some(file) = public_request_file(state, headers, uri).await {
+/// unless the url asks for a module (`?import`, `?url`), whatever the headers.
+async fn locate_request(state: &ServerState, uri: &Uri, rel: &str) -> Option<PathBuf> {
+    if let Some(file) = public_request_file(state, uri).await {
         return Some(file);
     }
     locate(&state.root, state.public_dir.as_deref(), rel)
@@ -292,15 +286,8 @@ async fn locate_request(
 
 /// The publicDir file a request names, as Start dev's public check has it
 /// ([`crate::public_file_path`]), past the dev `base`.
-async fn public_request_file(
-    state: &ServerState,
-    headers: &HeaderMap,
-    uri: &Uri,
-) -> Option<PathBuf> {
+async fn public_request_file(state: &ServerState, uri: &Uri) -> Option<PathBuf> {
     let public = state.public_dir.as_deref()?;
-    if wants_module_import(headers, uri.query()) {
-        return None;
-    }
     let path = match state.base.as_deref() {
         Some(base) => strip_base(uri.path(), base)?,
         None => uri.path(),
@@ -348,7 +335,7 @@ async fn serve_rewritten(state: &Arc<ServerState>, headers: &HeaderMap, uri: &Ur
     } else {
         decoded.as_str()
     };
-    if let Some(file) = locate_request(state, headers, uri, rel).await {
+    if let Some(file) = locate_request(state, uri, rel).await {
         if path_is_denied(&file, &state.root, &state.fs_deny) {
             return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
         }
@@ -385,10 +372,7 @@ async fn serve_fallback(
     (StatusCode::NOT_FOUND, format!("oj: no such file: /{rel}")).into_response()
 }
 
-/// Dispatches a located file. Where a public file and a root file share the
-/// path, which one answers depends on whether the request is a module import
-/// ([`locate_request`]), so the answer varies on `Sec-Fetch-Dest`; the root
-/// file's `?import` (the rewriter's mark for such an import) is its bare url.
+/// Dispatches a located file by query and extension.
 async fn serve_file(
     state: &Arc<ServerState>,
     headers: &HeaderMap,
@@ -396,46 +380,16 @@ async fn serve_file(
     file: &Path,
     rel: &str,
 ) -> Response {
-    let shared = !rel.split('/').any(|seg| seg == "..")
-        && state
-            .public_dir
-            .as_deref()
-            .is_some_and(|p| p.join(rel).is_file())
-        && state.root.join(rel).is_file();
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let twin_import = shared
-        && file == state.root.join(rel)
-        && !is_style_ext(ext)
-        && has_query_flag(uri.query(), "import");
-    let response = serve_located(state, headers, uri, file, rel, twin_import).await;
-    let varies = response
-        .headers()
-        .get_all(header::VARY)
-        .iter()
-        .any(|v| v.to_str().is_ok_and(|v| v.contains("sec-fetch-dest")));
-    if shared && !varies {
-        vary_on_fetch_dest(response)
-    } else {
-        response
-    }
-}
-
-/// Dispatches a located file by query and extension; `twin_import` is a
-/// module request whose `import` flag is dropped.
-async fn serve_located(
-    state: &Arc<ServerState>,
-    headers: &HeaderMap,
-    uri: &Uri,
-    file: &Path,
-    rel: &str,
-    twin_import: bool,
-) -> Response {
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let stripped = twin_import.then(|| without_import_flag(uri.query()));
+    // `import` is dropped as Vite's removeImportQuery drops it, so a marked and an
+    // unmarked url are one module; a stylesheet keeps it to ask for its JS wrapper.
+    let import_flag = !is_style_ext(ext) && has_import_flag(uri.query());
+    let stripped = import_flag.then(|| without_import_flag(uri.query()));
     let query = match &stripped {
         Some(stripped) => stripped.as_deref(),
         None => uri.query(),
     };
+    let module_request = import_flag || wants_module_import(headers, query);
     // An inline module the dev HTML transform lifted out of this page
     // (`/index.html?html-proxy&index=0.js`): Vite's html-inline-proxy plugin
     // resolves and loads it, then it compiles like any module.
@@ -481,7 +435,7 @@ async fn serve_located(
         // asset under the root (serve_bare_asset). Only an asset answers it;
         // a public script or stylesheet is the file, whatever asks.
         let asset = public_url && is_asset_path(&state.root, file);
-        if asset && wants_module_import(headers, query) {
+        if asset && module_request {
             return vary_on_fetch_dest(
                 serve_asset_query(state, file, ext, "url", query, true).await,
             );
@@ -514,10 +468,7 @@ async fn serve_located(
     // whatever the extension; the same url fetched as a resource (`<img
     // src>`) is still the file, as its static middlewares serve it. A svg
     // has its own route below (svgr, else its url module).
-    if !ext.eq_ignore_ascii_case("svg")
-        && ext != "html"
-        && (twin_import || wants_module_import(headers, query))
-    {
+    if !ext.eq_ignore_ascii_case("svg") && ext != "html" && module_request {
         let url = url_of(&state.root, file);
         // The id the hooks see: the url with its query, minus the HMR stamp
         // and the `import` flag Vite's middleware strips (removeImportQuery).
@@ -534,23 +485,26 @@ async fn serve_located(
     }
     if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&state.root, &file.to_string_lossy())
     {
-        return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
+        return vary_on_fetch_dest(
+            serve_bare_asset(state, headers, file, ext, query, module_request).await,
+        );
     }
     serve_raw_file(state, file, ext).await
 }
 
-/// A bare asset url is the file for an `<img src>` and its URL module for an
-/// import the browser marks `Sec-Fetch-Dest: script`.
+/// A bare asset url is the file for an `<img src>` and its URL module for a
+/// module request (`?import`, or `Sec-Fetch-Dest: script`).
 async fn serve_bare_asset(
     state: &Arc<ServerState>,
     headers: &HeaderMap,
     file: &Path,
     ext: &str,
     query: Option<&str>,
+    module_request: bool,
 ) -> Response {
     // A plain `.svg` import goes through the compile path so a configured svgr can
     // componentize it; unmatched svgs fall back to a URL asset there.
-    if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
+    if ext.eq_ignore_ascii_case("svg") && (module_request || !wants_raw_resource(headers)) {
         let url = url_of(&state.root, file);
         if state.svg_may_be_componentized(file) {
             return serve_compiled(state, file, &url, query, headers).await;
@@ -561,9 +515,7 @@ async fn serve_bare_asset(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
         );
     }
-    if is_importable_asset(&state.root, &file.to_string_lossy())
-        && wants_module_import(headers, query)
-    {
+    if is_importable_asset(&state.root, &file.to_string_lossy()) && module_request {
         let url = url_of(&state.root, file);
         return js_module_response(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
@@ -608,7 +560,7 @@ async fn serve_style(
     let url = url_of(&state.root, file);
     if has_query_flag(query, "direct")
         || accepts_css(headers)
-        || (wants_raw_resource(headers) && !has_query_flag(query, "import"))
+        || (wants_raw_resource(headers) && !has_import_flag(query))
     {
         // `<link href>`, fetch() of a `?url` stylesheet, or `?direct`: compiled
         // CSS text, not the preprocessor source and not the JS wrapper. A
@@ -703,6 +655,25 @@ fn js_response(code: impl IntoResponse) -> Response {
         .into_response()
 }
 
+/// Vite's `__vite__injectQuery`, on one line so a module's map stands.
+const INJECT_QUERY_FN: &str = "function __vite__injectQuery(url, queryToInject) { if (url[0] !== \".\" && url[0] !== \"/\") return url; const pathname = url.replace(/[?#].*$/, \"\"); const { search, hash } = new URL(url, \"http://vite.dev\"); return `${pathname}?${queryToInject}${search ? \"&\" + search.slice(1) : \"\"}${hash || \"\"}`; }";
+
+/// A worker file's body with `__vite__injectQuery` written in for its import of the
+/// dev client, which a classic worker cannot hold (Vite appends the helper there).
+fn worker_inject_query(url: &str, body: String, client: &str) -> String {
+    let worker = url
+        .split_once('?')
+        .is_some_and(|(_, query)| query.split('&').any(|kv| kv == "worker_file"));
+    if !worker {
+        return body;
+    }
+    let import = format!(
+        "import {{ injectQuery as __vite__injectQuery }} from {};",
+        serde_json::Value::String(client.into())
+    );
+    body.replacen(&import, INJECT_QUERY_FN, 1)
+}
+
 fn js_module_response(js: Result<String, String>) -> Response {
     match js {
         Ok(js) => js_response(js),
@@ -724,6 +695,11 @@ fn without_import_flag(query: Option<&str>) -> Option<String> {
 /// Whether the query has the bare `flag` key (`?direct`, `?import`, `?react`).
 fn has_query_flag(query: Option<&str>, flag: &str) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv == flag))
+}
+
+/// Vite's importQueryRE (`(\?|&)import=?(?:&|$)`).
+fn has_import_flag(query: Option<&str>) -> bool {
+    has_query_flag(query, "import") || has_query_flag(query, "import=")
 }
 
 pub(crate) async fn serve_compiled(
@@ -818,6 +794,7 @@ async fn serve_compiled_from(
             None => crate::runtime_env::worker_body(env, url, body),
         };
     }
+    body = worker_inject_query(url, body, &state.oj_paths.client);
     // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
     // map moves down by the prelude's lines.
     let prelude = worker_file_prelude(

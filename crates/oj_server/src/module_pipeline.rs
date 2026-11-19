@@ -1401,6 +1401,7 @@ impl CompileJob {
         if self.is_svelte {
             opts.refresh = false;
         }
+        opts.inject_query_from = Some(self.state.oj_paths.client.clone());
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
@@ -1557,8 +1558,8 @@ impl ImportRewrite<'_> {
             spec,
             true,
         ) {
-            // An `.svg` a load or transform plugin may componentize stays
-            // unmarked (not `?url`), so it routes through the compile path
+            // An `.svg` a load or transform plugin may componentize is
+            // `?import` (not `?url`), so it routes through the compile path
             // where svgr can claim it (Vite parity). Only the mark oj added
             // comes off: an import that asked for the URL itself
             // (`./logo.svg?url`) keeps it, as under Vite, where the plugin's
@@ -1567,7 +1568,7 @@ impl ImportRewrite<'_> {
                 Some(base) if !spec.contains('?') => {
                     let plain = format!("{base}.svg");
                     if state.svg_url_may_be_componentized(&plain) {
-                        plain
+                        format!("{plain}?import")
                     } else {
                         url
                     }
@@ -2101,10 +2102,11 @@ pub(crate) fn path_is_denied(file: &Path, root: &Path, deny: &[(glob::Pattern, b
     false
 }
 
-/// A url requested by a module import (Vite's `?import` marker, or the browser's
-/// `sec-fetch-dest: script`) gets the JS-module form; anything else gets raw bytes.
+/// A url requested by a module import (Vite's `?import` or `?import=` marker,
+/// or the browser's `sec-fetch-dest: script`) gets the JS-module form;
+/// anything else gets raw bytes.
 pub(crate) fn wants_module_import(headers: &HeaderMap, query: Option<&str>) -> bool {
-    query.is_some_and(|q| q.split('&').any(|kv| kv == "import"))
+    query.is_some_and(|q| q.split('&').any(|kv| kv == "import" || kv == "import="))
         || headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) == Some("script")
 }
 

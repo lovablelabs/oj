@@ -1,10 +1,13 @@
 use crate::bundle;
 use crate::compile::ImportRewriter;
 use oxc_allocator::Allocator;
+use oxc_allocator::TakeIn;
 use oxc_ast::ast::{
-    Expression, ImportDeclarationSpecifier, ImportExpression, Program, Statement, StringLiteral,
+    Argument, Expression, ImportDeclarationSpecifier, ImportExpression, Program, Statement,
+    StringLiteral,
 };
 use oxc_ast_visit::{walk_mut, VisitMut};
+use oxc_span::{GetSpan, SPAN};
 use std::collections::HashMap;
 
 pub(crate) fn rewrite_module_specifiers_pub<'a>(
@@ -191,6 +194,90 @@ impl<'a> VisitMut<'a> for DynamicImportRewriter<'a, '_> {
     }
 }
 
+/// Vite's `isExplicitImportRequired`: neither a script (`isJSRequest`: knownJsSrcRE, or
+/// no extension and no trailing `/`) nor a stylesheet (`CSS_LANGS_RE`).
+pub fn explicit_import_required(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let ext = match name.rfind('.') {
+        Some(dot) if dot > 0 => &name[dot + 1..],
+        _ => "",
+    };
+    const JS: &[&str] = &[
+        "js", "jsx", "ts", "tsx", "mjs", "mts", "vue", "marko", "svelte", "astro", "imba", "mdx",
+    ];
+    const CSS: &[&str] = &[
+        "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
+    ];
+    if ext.is_empty() {
+        return path.ends_with('/');
+    }
+    !JS.contains(&ext) && !CSS.contains(&ext)
+}
+
+/// Wraps a computed `import(x)` as `import(__vite__injectQuery(x, 'import'))`, as Vite's
+/// importAnalysis does on the client; returns whether any import was wrapped.
+pub(crate) fn inject_query_into_dynamic_imports<'a>(
+    allocator: &'a Allocator,
+    source_text: &str,
+    program: &mut Program<'a>,
+) -> bool {
+    let mut injector = InjectQuery {
+        allocator,
+        source_text,
+        wrapped: false,
+    };
+    injector.visit_program(program);
+    injector.wrapped
+}
+
+struct InjectQuery<'a, 's> {
+    allocator: &'a Allocator,
+    source_text: &'s str,
+    wrapped: bool,
+}
+
+impl InjectQuery<'_, '_> {
+    /// Wrap unless the text is quoted at both ends with no line break (`urlIsStringRE`)
+    /// and what it quotes names a script or a stylesheet.
+    fn wraps(&self, arg: &Expression) -> bool {
+        let span = arg.span();
+        let Some(raw) = self.source_text.get(span.start as usize..span.end as usize) else {
+            return true;
+        };
+        let quoted = raw.len() >= 2
+            && matches!(raw.as_bytes()[0], b'\'' | b'"' | b'`')
+            && raw.as_bytes()[raw.len() - 1] == raw.as_bytes()[0]
+            && !raw.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
+        !quoted || explicit_import_required(&raw[1..raw.len() - 1])
+    }
+}
+
+impl<'a> VisitMut<'a> for InjectQuery<'a, '_> {
+    fn visit_import_expression(&mut self, it: &mut ImportExpression<'a>) {
+        walk_mut::walk_import_expression(self, it);
+        // A literal is read and rewritten already, marked where it needs it.
+        let wrap = match &it.source {
+            Expression::StringLiteral(_) => false,
+            Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => false,
+            arg => self.wraps(arg),
+        };
+        if !wrap {
+            return;
+        }
+        let builder = oxc_ast::builder::AstBuilder::new(self.allocator);
+        let span = it.source.span();
+        let url = it.source.take_in(&self.allocator);
+        let callee = Expression::new_identifier(SPAN, "__vite__injectQuery", &builder);
+        let query = Expression::new_string_literal(SPAN, "import", None, &builder);
+        let mut args = oxc_allocator::Vec::new_in(&self.allocator);
+        args.push(Argument::from(url));
+        args.push(Argument::from(query));
+        it.source = Expression::new_call_expression(span, callee, None, args, false, &builder);
+        self.wrapped = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -365,6 +452,115 @@ console.log(recipe, later);
             !out.imports.contains(&"/res/chunk".to_string()),
             "dynamic not in static imports"
         );
+    }
+
+    // A computed `import(x)` is wrapped unless its quoted text names a script
+    // or a stylesheet (Vite's `urlIsStringRE` and `isExplicitImportRequired`).
+    #[test]
+    fn a_non_literal_dynamic_import_asks_for_the_module_on_the_dev_client() {
+        let src = "const name = \"./data.json\";\nconst c = true;\nconst ext = \".js\";\n\
+export const a = import(name);\n\
+export const b = import(\"./c.js\");\n\
+export const c2 = import(`./d.js`);\n\
+export const d = import(`./${name}`);\n\
+export const e = import(`/src/p/${name}.js`);\n\
+export const f = import(`./${name}.json`);\n\
+export const g = import('./p/' + name + '.js');\n\
+export const h = import('./l/' + name + '.json');\n\
+export const i = import(c ? './a.js' : './b.js');\n\
+export const j = import('./a' + ext);\n\
+export const k = import(`./m/${\nname}.js`);\n";
+        let mut rewrite = |s: &str| -> Option<String> { Some(s.replace("./", "/src/")) };
+        let opts = CompileOptions {
+            inject_query_from: Some("/@oj/client.js".into()),
+            ..CompileOptions::dev()
+        };
+        let out =
+            compile_module(Path::new("/app/src/m.js"), src, &opts, Some(&mut rewrite)).unwrap();
+        let code = &out.code;
+        assert!(
+            code.contains("import { injectQuery as __vite__injectQuery } from \"/@oj/client.js\";"),
+            "the helper is imported from the client:\n{code}"
+        );
+        assert!(
+            code.contains("import(\"/src/c.js\")") && code.contains("import(\"/src/d.js\")"),
+            "literal imports are rewritten, not wrapped:\n{code}"
+        );
+        for kept in [
+            "import(`./${name}`)",
+            "import(`/src/p/${name}.js`)",
+            "import(\"./p/\" + name + \".js\")",
+        ] {
+            assert!(code.contains(kept), "left as written: {kept}\n{code}");
+        }
+        for wrapped in [
+            "import(__vite__injectQuery(name, \"import\"))",
+            "import(__vite__injectQuery(`./${name}.json`, \"import\"))",
+            "import(__vite__injectQuery(\"./l/\" + name + \".json\", \"import\"))",
+            "import(__vite__injectQuery(c ? \"./a.js\" : \"./b.js\", \"import\"))",
+            "import(__vite__injectQuery(\"./a\" + ext, \"import\"))",
+        ] {
+            assert!(code.contains(wrapped), "wrapped: {wrapped}\n{code}");
+        }
+        assert_eq!(
+            code.matches("__vite__injectQuery(").count(),
+            6,
+            "the multi-line template is wrapped too (`.` matches no line break):\n{code}"
+        );
+        assert!(
+            !out.imports.iter().any(|i| i.contains("client")),
+            "the helper's import is a route, not a graph edge: {:?}",
+            out.imports
+        );
+    }
+
+    // Vite's isExplicitImportRequired, as its isJSRequest and CSS_LANGS_RE
+    // read a url.
+    #[test]
+    fn explicit_import_is_required_for_neither_a_script_nor_a_stylesheet() {
+        use super::explicit_import_required as req;
+        for url in [
+            "/a.json",
+            "/a.svg?react",
+            "/a.md?raw",
+            "./${n}.json",
+            "/dir/",
+            "/a.JS",
+        ] {
+            assert!(req(url), "{url}");
+        }
+        for url in [
+            "/a.js",
+            "/a.tsx?t=1",
+            "/a.vue",
+            "/a",
+            "./${n}",
+            "/a.css",
+            "/a.scss?inline",
+        ] {
+            assert!(!req(url), "{url}");
+        }
+    }
+
+    // A compile without the option leaves `import(x)` as written.
+    #[test]
+    fn a_non_literal_dynamic_import_is_untouched_without_the_client() {
+        let src = "const name = \"./data.json\";\nexport const a = import(name);\n";
+        for opts in [
+            CompileOptions::prod(),
+            CompileOptions::dev(),
+            CompileOptions {
+                ssr: true,
+                ..CompileOptions::dev()
+            },
+        ] {
+            let plain = compile_module(Path::new("/app/src/m.js"), src, &opts, None).unwrap();
+            assert!(
+                plain.code.contains("import(name)") && !plain.code.contains("injectQuery"),
+                "{}",
+                plain.code
+            );
+        }
     }
 
     #[test]

@@ -111,12 +111,12 @@ async fn a_module_request_for_an_extension_a_plugin_claims_runs_the_plugin() {
     let server = app.serve().await;
 
     // The importer names the files by their urls; an unknown query stays on
-    // the image's, as Vite's import analysis keeps it for the plugins.
+    // the image's after Vite's `import` mark (`injectQuery`), for the plugins.
     let main = server.text("/src/main.js").await;
     let mdx_url = import_url_of(&main, "/src/content/blog/a.mdx");
     assert_eq!(mdx_url, "/src/content/blog/a.mdx", "{main}");
-    let hero_url = import_url_of(&main, "/src/hero.jpg?w=");
-    assert_eq!(hero_url, "/src/hero.jpg?w=72&format=webp", "{main}");
+    let hero_url = import_url_of(&main, "/src/hero.jpg?import&w=");
+    assert_eq!(hero_url, "/src/hero.jpg?import&w=72&format=webp", "{main}");
     assert!(
         main.contains("/src/content/blog/b.mdx"),
         "the eager glob names the second post:\n{main}"
@@ -138,20 +138,25 @@ async fn a_module_request_for_an_extension_a_plugin_claims_runs_the_plugin() {
     );
 
     // Imported with the query the plugin claims, the image is the plugin's
-    // module; without it, oj's url module as before.
-    let hero = imported(&server, &hero_url).await;
-    assert_eq!(hero.status, 200, "{}", hero.body);
-    assert!(
-        content_type(&hero).starts_with("text/javascript"),
-        "the queried image import answered {}",
-        content_type(&hero)
-    );
-    assert!(
-        hero.body
-            .contains(r#"export default "/@resized/hero.jpg?w=72&format=webp""#),
-        "the plugin's load did not run:\n{}",
-        hero.body
-    );
+    // module, its load given the id without `import` (Vite's removeImportQuery),
+    // with or without fetch metadata; without the query, oj's url module.
+    for hero in [
+        imported(&server, &hero_url).await,
+        server.get(&hero_url).await,
+    ] {
+        assert_eq!(hero.status, 200, "{}", hero.body);
+        assert!(
+            content_type(&hero).starts_with("text/javascript"),
+            "the queried image import answered {}",
+            content_type(&hero)
+        );
+        assert!(
+            hero.body
+                .contains(r#"export default "/@resized/hero.jpg?w=72&format=webp""#),
+            "the plugin's load did not run on the un-marked id:\n{}",
+            hero.body
+        );
+    }
     let plain = imported(&server, "/src/hero.jpg").await;
     assert!(
         plain.body.contains(r#"export default "/src/hero.jpg""#),
@@ -159,8 +164,8 @@ async fn a_module_request_for_an_extension_a_plugin_claims_runs_the_plugin() {
         plain.body
     );
 
-    // Fetched as a resource, the url is the file.
-    let img = with_dest(&server, &hero_url, "image").await;
+    // Fetched as a resource (`<img src>`, never marked), the url is the file.
+    let img = with_dest(&server, "/src/hero.jpg?w=72&format=webp", "image").await;
     assert_eq!(img.status, 200);
     assert_eq!(img.body, "jpeg-bytes");
     assert!(
