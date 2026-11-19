@@ -1680,3 +1680,69 @@ async fn a_tab_open_across_a_restart_reloads_when_the_server_is_back() {
     );
     page.close().await;
 }
+
+/// Pages keep importing modules (each import makes the bundler rebuild its
+/// output) while an edit that needs a new bundle is made: the dev server's
+/// rebundle must end, not wait for a moment when no page asks.
+#[test]
+fn a_rebundle_ends_while_pages_keep_importing() {
+    let Some(app) = lazy_app(
+        "lazy-import-busy",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let proxy = proxy_of(&dev, "src/routes/about.tsx?tsr-split=component");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let port = dev.port;
+    let asking: Vec<_> = (0..4)
+        .map(|thread| {
+            let (stop, proxy) = (stop.clone(), proxy.clone());
+            std::thread::spawn(move || {
+                let mut n = 0;
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    n += 1;
+                    let _ = std::process::Command::new("curl")
+                        .args(["-s", "-o", "/dev/null", "-m", "5"])
+                        .arg(format!(
+                            "http://127.0.0.1:{port}{}",
+                            lazy_url(&proxy, &format!("page-{thread}-{n}"))
+                        ))
+                        .status();
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // A new route: the client needs a new bundle for it.
+    write(
+        &app.0,
+        "src/routes/extra.tsx",
+        "import { createFileRoute } from \"@tanstack/react-router\";\n\nexport const Route = createFileRoute(\"/extra\")({\n  component: () => <p id=\"extra\">extra</p>,\n});\n",
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let rebuilt = loop {
+        if dev.output().contains("oj start: rebuilt") {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    for thread in asking {
+        let _ = thread.join();
+    }
+    assert!(
+        rebuilt,
+        "the rebundle did not end while pages kept importing\n{}",
+        dev.output()
+            .lines()
+            .filter(|l| l.contains("oj start:") || l.contains("bundl"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
