@@ -257,12 +257,12 @@ impl DevBundler {
     /// them.
     pub(crate) fn input_files(&self) -> std::collections::HashSet<PathBuf> {
         let built = self.built.lock().unwrap();
-        built.iter().map(|(file, _)| file.clone()).collect()
+        built.iter().map(|(file, _, _)| file.clone()).collect()
     }
 
     /// Takes a bundle restored from the store as the one being served, its
     /// files as the restore verified them (see `RestoreStats::inputs`).
-    pub(crate) fn note_restored(&self, inputs: &[(PathBuf, Option<(u64, u64)>)]) {
+    pub(crate) fn note_restored(&self, inputs: &[oj_cache::start_bundle::RestoredInput]) {
         *self.built.lock().unwrap() = super::inputs::restored_inputs(inputs);
     }
 

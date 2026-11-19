@@ -139,9 +139,10 @@ struct StartState {
     /// Edits changed the bundle's inputs while no page loaded it, and no
     /// rebundle ran for them; the next runner document brings it current.
     bundle_deferred: std::sync::atomic::AtomicBool,
-    /// True while the deferred bundle is building: a runner document waits
-    /// for it rather than handing out the empty one.
-    deferred_build: tokio::sync::watch::Sender<bool>,
+    /// How many runs documents wait for (the deferred bundle building, the
+    /// boot's rebuild of what moved under the boot bundle): a runner document
+    /// waits for none to be left rather than handing out a stale bundle.
+    deferred_build: tokio::sync::watch::Sender<usize>,
     /// The coalescing rebundle worker's queue (at most one pending run) and
     /// its wake.
     rebundles: Arc<std::sync::Mutex<Option<PendingRebundle>>>,
@@ -743,7 +744,7 @@ pub async fn start_dev(
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
         bundle_deferred: std::sync::atomic::AtomicBool::new(defer_bundle),
-        deferred_build: tokio::sync::watch::channel(false).0,
+        deferred_build: tokio::sync::watch::channel(0).0,
         rebundles: Arc::new(std::sync::Mutex::new(None)),
         rebundle_wake: Arc::new(tokio::sync::Notify::new()),
         ssr: built.ssr.clone(),
@@ -815,7 +816,29 @@ pub async fn start_dev(
             }
         });
     }
-    spawn_start_watcher(root.clone(), cache.clone(), Arc::clone(&state), watch_rx);
+    // Scanned once the watcher covers the root: a save before is moved, one
+    // after reaches the watcher. Documents wait for the scan's rebuild.
+    built.watcher_ready().await;
+    let boot = {
+        let (state, cache) = (Arc::clone(&state), cache.clone());
+        tokio::task::spawn_blocking(move || boot_changes(&state, &cache)).await?
+    };
+    let boot = (!boot.0.is_empty() || !boot.1.is_empty()).then(|| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        hold_documents(&state, rx);
+        BootBatch {
+            moved: boot.0,
+            added: boot.1,
+            done: tx,
+        }
+    });
+    spawn_start_watcher(
+        root.clone(),
+        cache.clone(),
+        Arc::clone(&state),
+        watch_rx,
+        boot,
+    );
     // Once the serve info says oj's runner renders the documents (no worker
     // environment does, or the host never announced), their pages load the
     // Start bundle: build a deferred one then, as Vite's bundled dev builds
@@ -883,7 +906,7 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
         return;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
-    state.deferred_build.send_replace(true);
+    hold_documents(state, rx);
     state.flush_timing.rebundle_wanted();
     {
         let mut slot = state
@@ -895,10 +918,16 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
         run.done.push(tx);
     }
     state.rebundle_wake.notify_one();
+}
+
+/// Runner documents wait (`ensure_bundle_current`) until `done` fires or is
+/// dropped.
+fn hold_documents(state: &Arc<StartState>, done: tokio::sync::oneshot::Receiver<()>) {
+    state.deferred_build.send_modify(|n| *n += 1);
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        let _ = rx.await;
-        state.deferred_build.send_replace(false);
+        let _ = done.await;
+        state.deferred_build.send_modify(|n| *n -= 1);
     });
 }
 
@@ -913,7 +942,7 @@ async fn ensure_bundle_current(state: &Arc<StartState>) {
     let mut building = state.deferred_build.subscribe();
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        building.wait_for(|b| !*b),
+        building.wait_for(|n| *n == 0),
     )
     .await;
 }
@@ -1199,6 +1228,14 @@ fn tag_end(tag: &[u8]) -> Option<usize> {
     None
 }
 
+/// The Start watcher's first batch: what moved under the boot bundle before
+/// the watcher was up (`boot_changes`), and the sender documents wait on.
+struct BootBatch {
+    moved: std::collections::HashSet<PathBuf>,
+    added: std::collections::HashSet<PathBuf>,
+    done: tokio::sync::oneshot::Sender<()>,
+}
+
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
 /// rebundle worker. Batches landing while a rebundle is in flight merge into
 /// the single pending run (paths union), so at most one run ever queues.
@@ -1324,11 +1361,11 @@ fn added_to_glob(
     closure: &std::collections::HashSet<PathBuf>,
     p: &Path,
 ) -> bool {
-    if scopes.is_empty() || !p.is_file() {
+    if scopes.is_empty() || closure.contains(p) || !p.is_file() {
         return false;
     }
     let real = std::fs::canonicalize(p).ok();
-    if closure.contains(p) || real.as_ref().is_some_and(|r| closure.contains(r)) {
+    if real.as_ref().is_some_and(|r| closure.contains(r)) {
         return false;
     }
     let matched = |p: &Path| {
@@ -1437,10 +1474,10 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What changed under the boot bundle before the Start watcher's feed was
-/// subscribed: its files saved since it read them (or its restore verified
-/// them), and the files its globs match today that it never read, as the
-/// restore's own glob check finds them.
+/// What changed under the boot bundle before the watcher covered the root:
+/// its files saved since it read them (or its restore verified them), and
+/// the files its globs match today that it never read, as the restore's own
+/// glob check finds them.
 fn boot_changes(
     state: &StartState,
     cache: &Path,
@@ -1574,6 +1611,7 @@ fn spawn_start_watcher(
     cache: PathBuf,
     state: Arc<StartState>,
     rx: std::sync::mpsc::Receiver<notify::Event>,
+    mut boot: Option<BootBatch>,
 ) {
     let rt = tokio::runtime::Handle::current();
     let pending = Arc::clone(&state.rebundles);
@@ -1589,7 +1627,6 @@ fn spawn_start_watcher(
     // module changes and never flip this.
     let watch_root = root.clone();
     let boot_entry = crate::start_host::app_start_entry(&watch_root);
-    let cache_dir = cache.clone();
     rt.spawn(refresh_worker(
         root.clone(),
         cache.clone(),
@@ -1627,27 +1664,27 @@ fn spawn_start_watcher(
         // not changes: the client rebundle reads every source file, which
         // otherwise looked like an edit of every source file and rebuilt again.
         let mut changes = oj_server::ContentChanges::new();
-        // The boot bundle's files saved before this feed was subscribed (while
-        // the bundle built or was restored, before the server's watcher was
-        // up) reached no event, nor did a file created then under one of its
-        // globs: they are the first batch, or the client would keep the
-        // bundle from before them while the server renders them. Taken
-        // before the walk below, which can be slow.
-        let (mut moved_at_boot, mut added_at_boot) = boot_changes(&state, &cache_dir);
-        // Scanned on this thread, so boot never waits on it: events queue on
-        // the feed meanwhile. A file created while it runs can read as known,
-        // a race chokidar's own initial scan has too.
-        let mut known = KnownFiles(oj_server::watched_files(&watch_root));
-        state.flush_timing.watcher_armed();
+        // Scanned once the boot batch is queued; events queue on the feed
+        // meanwhile (a file created during it can read as known, as in chokidar).
+        let mut known: Option<KnownFiles> = None;
         loop {
+            if boot.is_none() && known.is_none() {
+                known = Some(KnownFiles(oj_server::watched_files(&watch_root)));
+                state.flush_timing.watcher_armed();
+            }
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            let at_boot = !moved_at_boot.is_empty() || !added_at_boot.is_empty();
-            let mut paths: std::collections::HashSet<PathBuf> = if at_boot {
-                created.extend(added_at_boot.iter().cloned());
-                std::mem::take(&mut moved_at_boot)
-                    .into_iter()
-                    .chain(std::mem::take(&mut added_at_boot))
-                    .collect()
+            // What moved under the boot bundle before the watcher was up
+            // reached no event: it is the first batch, or the client would
+            // keep the bundle from before it while the server renders it.
+            let mut boot_done = None;
+            let first_batch = boot.take().map(|b| {
+                created.extend(b.added.iter().cloned());
+                boot_done = Some(b.done);
+                b.moved.into_iter().chain(b.added).collect()
+            });
+            let at_boot = first_batch.is_some();
+            let mut paths: std::collections::HashSet<PathBuf> = if let Some(paths) = first_batch {
+                paths
             } else {
                 // The boot's revalidation asks whether this thread is caught
                 // up with its feed (`FlushTiming::watcher_caught_up`): idle
@@ -1664,7 +1701,7 @@ fn spawn_start_watcher(
                 state.flush_timing.watcher_idle(false);
                 match first {
                     Ok(ev) => {
-                        created.extend(known.adds(&ev));
+                        created.extend(known.as_mut().map(|k| k.adds(&ev)).unwrap_or_default());
                         changes.changed_paths(&ev).into_iter().collect()
                     }
                     Err(_) => break,
@@ -1682,17 +1719,20 @@ fn spawn_start_watcher(
             // matched, and the dedup means the settled send alone can read
             // as a miss for a change this early send already carried.
             let early_invalidate = spawn_mw_invalidate(&rt, &state, &paths, &created);
-            loop {
-                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(ev) => {
-                        created.extend(known.adds(&ev));
-                        paths.extend(changes.changed_paths(&ev));
+            // The boot batch is queued at once; later events are the next one's.
+            if let Some(known) = known.as_mut() {
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(ev) => {
+                            created.extend(known.adds(&ev));
+                            paths.extend(changes.changed_paths(&ev));
+                        }
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
                     }
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => return,
                 }
+                known.forget_gone(&paths);
             }
-            known.forget_gone(&paths);
             if paths.is_empty() {
                 continue;
             }
@@ -1775,6 +1815,7 @@ fn spawn_start_watcher(
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
                 run.batch = batch;
+                run.done.extend(boot_done.take());
             }
             wake.notify_one();
         }
@@ -4166,6 +4207,8 @@ async fn forward_document(
         return public_response(state, &hit, &Method::GET, headers).await;
     }
     ensure_bundle_current(state).await;
+    // The run waited for may have ended as a hot update.
+    state.client_output_fresh().await;
     ensure_runner_fresh(state).await;
     forward(
         state,

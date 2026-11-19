@@ -19,6 +19,7 @@ mod persist;
 mod prune;
 
 use epoch::epoch;
+pub use memo::MEMO_FRESHNESS_SLACK_NS;
 use memo::{build_memo, read_memo, verified_digests, write_memo};
 
 pub const START_BUNDLE_FORMAT: u32 = 5;
@@ -183,12 +184,13 @@ pub struct RestoreStats {
     pub chunks: usize,
     pub rehashed: usize,
     pub elapsed_ms: u128,
-    /// Each closure file with the size and mtime (ns) it had when the key
-    /// was verified: the sources the restored bundle stands for. `None` for
-    /// a file modified too close to the verification for its stat to vouch
-    /// for its contents.
-    pub inputs: Vec<(PathBuf, Option<(u64, u64)>)>,
+    /// The sources the restored bundle stands for, as the key was verified.
+    pub inputs: Vec<RestoredInput>,
 }
+
+/// A closure file, its size and mtime (ns) when usable, and the blake3 digest
+/// of its bytes when that stat cannot vouch for them (within the slack).
+pub type RestoredInput = (PathBuf, Option<(u64, u64)>, Option<[u8; 32]>);
 
 #[derive(Debug, PartialEq)]
 pub enum Miss {
@@ -439,7 +441,9 @@ fn restore_artifacts(
     manifest: &GenerationManifest,
     key: &str,
 ) -> Result<(), Miss> {
-    for name in ARTIFACTS {
+    // The closure list too: the dev server's rebundle gate reads it, and the
+    // restored bundle's own inputs are the ones that can move under it.
+    for name in ARTIFACTS.into_iter().chain([CLOSURE_FILE]) {
         let Ok(bytes) = fs::read(entry.join(name)) else {
             let _ = fs::remove_dir_all(entry);
             return Err(Miss::EntryCorrupt(key.to_string()));

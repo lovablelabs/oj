@@ -201,8 +201,7 @@ fn persist_then_restore_roundtrips_artifacts() {
 }
 
 // A restore reports each closure file under the stat its key was verified
-// at, except one written within the freshness slack: a same-size save inside
-// the mtime granularity would keep that stat, so it vouches for nothing.
+// at, with the digest of its bytes when the file is within the slack.
 #[test]
 fn a_restore_vouches_only_for_settled_files() {
     let fx = Fixture::new("restoreinputs");
@@ -210,22 +209,70 @@ fn a_restore_vouches_only_for_settled_files() {
     fx.clear_start_dir();
     let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
     assert_eq!(stats.inputs.len(), 2);
-    assert!(
-        stats.inputs.iter().all(|(_, stat)| stat.is_none()),
-        "just written: {:?}",
-        stats.inputs
-    );
+    for (file, stat, digest) in &stats.inputs {
+        let meta = fs::metadata(file).unwrap();
+        assert_eq!(*stat, Some((meta.len(), mtime_ns(&meta).unwrap())));
+        assert_eq!(
+            *digest,
+            Some(*blake3::hash(&fs::read(file).unwrap()).as_bytes()),
+            "just written: {file:?}"
+        );
+    }
 
     fx.settle_modules();
     let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
-    for (file, stat) in &stats.inputs {
+    for (file, stat, digest) in &stats.inputs {
         let meta = fs::metadata(file).unwrap();
-        assert_eq!(
-            *stat,
-            Some((meta.len(), mtime_ns(&meta).unwrap())),
-            "{file:?}"
-        );
+        assert_eq!(*stat, Some((meta.len(), mtime_ns(&meta).unwrap())));
+        assert_eq!(*digest, None, "settled: {file:?}");
     }
+}
+
+// A file the restore hashed but could not stat usefully (an mtime before the
+// epoch here) is still one of the bundle's inputs, with no stat to vouch for
+// it.
+#[test]
+fn a_restore_keeps_an_input_it_has_no_stat_for() {
+    let fx = Fixture::new("restorenostat");
+    fx.settle_modules();
+    fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    set_mtime(
+        &fx.module("b.tsx"),
+        UNIX_EPOCH - Duration::from_secs(86_400),
+    );
+    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    let a = fs::metadata(fx.module("a.tsx")).unwrap();
+    let b = blake3::hash(&fs::read(fx.module("b.tsx")).unwrap());
+    assert_eq!(
+        stats.inputs,
+        vec![
+            (
+                fx.module("a.tsx"),
+                Some((a.len(), mtime_ns(&a).unwrap())),
+                None
+            ),
+            (fx.module("b.tsx"), None, Some(*b.as_bytes())),
+        ]
+    );
+}
+
+// The dev server's rebundle gate reads closure.json: a restore brings back
+// the restored generation's list, over one a later build left that may lack
+// some of the restored bundle's files.
+#[test]
+fn a_restore_brings_back_its_closure_list() {
+    let fx = Fixture::new("restoreclosure");
+    let persisted = fs::read_to_string(fx.start.join(CLOSURE_FILE)).unwrap();
+    fx.store().persist(&fx.start).unwrap();
+    fx.clear_start_dir();
+    let later = serde_json::to_vec(&[fx.module("a.tsx")]).unwrap();
+    fs::write(fx.start.join(CLOSURE_FILE), later).unwrap();
+    fx.store().restore(&fx.start, no_globs).unwrap();
+    assert_eq!(
+        fs::read_to_string(fx.start.join(CLOSURE_FILE)).unwrap(),
+        persisted
+    );
 }
 
 #[test]

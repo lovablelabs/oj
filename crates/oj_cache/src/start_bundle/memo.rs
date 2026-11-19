@@ -16,7 +16,7 @@ use crate::integrity;
 /// Files modified this close to the memo write are not memoized: a later
 /// same-size edit within mtime granularity would otherwise reuse a stale
 /// digest.
-const MEMO_FRESHNESS_SLACK_NS: u64 = 2_000_000_000;
+pub const MEMO_FRESHNESS_SLACK_NS: u64 = 2_000_000_000;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Memo {
@@ -118,20 +118,19 @@ pub(super) fn verified_digests(files: &[PathBuf], memo: Option<&Memo>) -> Digest
 }
 
 impl Digests {
-    /// Each file that had a stat and a digest, with the stat: `None` for one
-    /// modified within the freshness slack of the pass, whose stat a
-    /// same-size save inside the mtime granularity would leave equal.
-    pub(super) fn inputs(&self, files: &[PathBuf]) -> Vec<(PathBuf, Option<(u64, u64)>)> {
+    /// Each file that had a digest, with its stat, and the digest too when
+    /// the stat cannot vouch for it (none, or within the freshness slack).
+    pub(super) fn inputs(&self, files: &[PathBuf]) -> Vec<super::RestoredInput> {
         files
             .iter()
             .zip(&self.stats)
             .zip(&self.hashes)
             .filter_map(|((path, stat), hash)| {
-                let (size, mtime_ns) = (*stat)?;
-                hash.as_ref()?;
-                let settled =
-                    mtime_ns.saturating_add(MEMO_FRESHNESS_SLACK_NS) <= self.statted_at_ns;
-                Some((path.clone(), settled.then_some((size, mtime_ns))))
+                let hash = hash.as_ref()?;
+                let settled = stat.is_some_and(|(_, mtime_ns)| {
+                    mtime_ns.saturating_add(MEMO_FRESHNESS_SLACK_NS) <= self.statted_at_ns
+                });
+                Some((path.clone(), *stat, (!settled).then(|| *hash.as_bytes())))
             })
             .collect()
     }

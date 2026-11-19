@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- TanStack Start dev: a source file saved, or a file created under one of the client bundle's `import.meta.glob`s, while the dev server starts on a client bundle restored from the cache is rebuilt into the client. Such a save could land after the restore had checked the bundle against the sources and before the server watched them, and the pages then ran the restored bundle while the server rendered the saved file (a hydration mismatch, the old component on the client) until the next edit or restart. Vite caches no transformed app module across starts, only optimized deps keyed by `getDepHash` (optimizer/index.ts), so a restart always serves the sources as they are.
+- TanStack Start dev: a source file saved, or a file created under one of the client bundle's `import.meta.glob`s, while the dev server starts on a client bundle restored from the cache reaches the client, from the first page on. Such a save could land after the restore had checked the bundle against the sources and before the server watched them, and the pages then ran the restored bundle while the server rendered the saved file (a hydration mismatch, the old component on the client) until the next edit or restart. The first page now waits for the rebuild of such a save. Vite caches no transformed app module across starts, only optimized deps keyed by `getDepHash` (optimizer/index.ts), and reads sources at request time (`loadAndTransform`, transformRequest.ts), so a restart always serves the sources as they are on the first request.
 
 ## [0.4.17] - 2026-11-18
 
