@@ -3,7 +3,7 @@
 //
 // Editing a JSON file a component imports must reach the page hot: the update
 // names the importing boundary, so the re-fetched boundary has to import the JSON
-// module's NEW version (`?t=<stamp>`, as Vite's importAnalysis stamps it) instead
+// module's NEW version (`?import&t=<stamp>`, as Vite's importAnalysis names it) instead
 // of the browser's cached instance. The fixture lives under playground/ so react
 // resolves from its node_modules.
 
@@ -69,9 +69,9 @@ try {
     assert.match(await btn.textContent(), /Clicks: 2/, "component state lost");
     assert.equal(errors.length, 0, `page errors: ${errors.join("|")}`);
 
-    // The served boundary names the JSON module's new version, not its bare url.
+    // The served boundary names the JSON module's new version (Vite's `?import&t=`), not its bare url.
     const appJs = await (await fetch(`http://localhost:${PORT}/src/App.tsx?t=${Date.now()}`)).text();
-    assert.match(appJs, /"\/src\/data\.json\?t=\d+"/, `App.tsx import of data.json is unstamped:\n${appJs}`);
+    assert.match(appJs, /"\/src\/data\.json\?import&t=\d+"/, `App.tsx import of data.json is unstamped:\n${appJs}`);
     console.log("HMR-JSON-UPDATE E2E PASSED");
   } finally {
     await browser.close();

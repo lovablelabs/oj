@@ -14,12 +14,9 @@ const wsToken = __WS_TOKEN__;
 // Vite 8's resolved `server.forwardConsole`: {enabled, unhandledErrors, logLevels}.
 const forwardConsole = __FORWARD_CONSOLE__;
 
-// A worker that imports the client (for `injectQuery`) has no page: as in
-// Vite's client (`hasDocument`), it shows no overlay and reloads nothing.
+// A worker's module imports the client for `injectQuery`: as in Vite's client
+// (`hasDocument`), a worker clears and shows no overlay.
 const hasDocument = "document" in globalThis;
-function pageReload() {
-  if (hasDocument) location.reload();
-}
 
 const customListeners = new Map();
 function emit(event, data) {
@@ -82,7 +79,7 @@ export function createHotContext(ownerId) {
       if (live) {
         live.send(JSON.stringify({ type: "custom", event: "vite:invalidate", data }));
       } else {
-        pageReload();
+        location.reload();
       }
     },
     on(event, cb) {
@@ -167,7 +164,7 @@ async function applyUpdate(update) {
   const accepts = mod.acceptCallbacks.filter((cb) => cb.deps.includes(acceptedPath));
   if (accepts.length === 0) {
     console.log(`[oj] ${cleanPath} has no accept handler for ${acceptedPath}, reloading`);
-    pageReload();
+    location.reload();
     return;
   }
   // Dispose callbacks belong to the module being replaced (the accepted one).
@@ -192,7 +189,7 @@ async function applyUpdate(update) {
         console.info(
           `[oj] ${acceptedPath} failed to apply HMR as it's within a circular import. Reloading page to reset the execution order.`,
         );
-        pageReload();
+        location.reload();
         return;
       }
       throw err;
@@ -234,7 +231,7 @@ let isFirstUpdate = true;
 function clearOverlayOrReloadOnFirstUpdate() {
   if (!hasDocument) return "continue";
   if (isFirstUpdate && overlayEl?.isConnected) {
-    pageReload();
+    location.reload();
     return "reload";
   }
   clearOverlay();
@@ -243,7 +240,6 @@ function clearOverlayOrReloadOnFirstUpdate() {
 }
 
 function showOverlay(err) {
-  if (!hasDocument) return;
   clearOverlay();
   if (!enableOverlay) return;
   overlayEl = new ErrorOverlay(err);
@@ -257,7 +253,6 @@ function clearOverlay() {
 }
 
 function swapCss(update) {
-  if (!hasDocument) return;
   const links = [...document.querySelectorAll("link[rel=stylesheet]")];
   const link = links.find((l) => new URL(l.href).pathname === update.path);
   if (link) {
@@ -279,12 +274,12 @@ function swapCss(update) {
       .catch((err) => {
         console.log(`[oj] css re-import failed for ${update.path}, reloading`, err);
         reportHmrFailure(update.path, err);
-        pageReload();
+        location.reload();
       });
     return;
   }
   console.log(`[oj] no <link> or <style> for ${update.path}, reloading`);
-  pageReload();
+  location.reload();
 }
 
 let socket = null;
@@ -495,7 +490,7 @@ function connect() {
         }
       }
       console.log("[oj] full reload:", msg.reason || msg.path || "");
-      pageReload();
+      location.reload();
     } else if (msg.type === "prune") {
       emit("vite:beforePrune", msg);
       prunePaths(msg.paths || []);
@@ -527,7 +522,6 @@ function connect() {
 async function lost(ws) {
   emit("vite:ws:disconnect", { webSocket: ws });
   if (hadConnection) {
-    if (!hasDocument) return;
     // The server went away (a config or .env change restarts it): its module
     // graph, defines, caches and socket token are new, so the page's modules
     // are stale. Like Vite's client, poll until it answers again, then reload
@@ -535,7 +529,7 @@ async function lost(ws) {
     console.log("[oj] dev server connection lost, polling for restart...");
     await waitForSuccessfulPing();
     console.log("[oj] dev server restarted, reloading");
-    pageReload();
+    location.reload();
     return;
   }
   console.log("[oj] dev server disconnected, retrying in 1s…");
