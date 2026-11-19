@@ -1424,6 +1424,13 @@ function extractClientDedupe(c) {
   return own.length ? own : null;
 }
 
+// The app's own `environments.ssr.resolve.dedupe`; what plugins add for ssr stays out.
+function extractSsrDedupe(raw) {
+  const list = raw?.environments?.ssr?.resolve?.dedupe;
+  const own = Array.isArray(list) ? list.filter((x) => typeof x === "string") : [];
+  return own.length ? own : null;
+}
+
 // `ssr.noExternal`/`external` entries: strings and globs pass through, RegExps
 // become `{ regex }`, `true` stays `true`.
 function extractSsr(ssr, ssrEnvironment) {
@@ -2122,6 +2129,7 @@ async function extractValues(input) {
         // top-level one: `environments.client.resolve.dedupe` and what plugins'
         // `configEnvironment` hooks add (TanStack Start's React and router).
         clientDedupe: extractClientDedupe(c),
+        ssrDedupe: extractSsrDedupe(raw),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
         oxc: extractOxc(c.oxc),

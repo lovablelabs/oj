@@ -1514,7 +1514,7 @@ async fn bundle_worker_inline_with(
 ) -> anyhow::Result<String> {
     // A worker bundle resolves as Vite's: the aliases first, then
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
-    // `paths` and `resolve.dedupe` where vite:resolve sits.
+    // `paths` and `resolve.dedupe` after the app's plugins.
     let mut plugins: Vec<SharedPluginable> = opts
         .map(|o| resolve_plugins(root, &o.config))
         .unwrap_or_default();
@@ -1574,7 +1574,7 @@ async fn bundle_worker_entry_with(
     };
     // A worker bundle resolves as Vite's: the aliases first, then
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
-    // `paths` and `resolve.dedupe` where vite:resolve sits.
+    // `paths` and `resolve.dedupe` after the app's plugins.
     let mut plugins: Vec<SharedPluginable> = opts
         .map(|o| resolve_plugins(root, &o.config))
         .unwrap_or_default();
@@ -1829,6 +1829,7 @@ impl Plugin for OjCssPlugin {
             }
         });
         let ctx = ctx.clone();
+        let written = args.specifier.to_string();
         async move {
             if is_polyfill {
                 return Ok(Some(HookResolveIdOutput::from_id(
@@ -1842,7 +1843,15 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(HookResolveIdOutput::from_id(id)));
             }
             if let Some((base, query)) = asset_query {
-                if let Ok(Ok(resolved)) = ctx.resolve(&base, importer.as_deref(), None).await {
+                let mut custom = rolldown_plugin::CustomField::new();
+                custom.insert(crate::start_bundle::alias::QueriedImport, written);
+                let options = rolldown_plugin::PluginContextResolveOptions {
+                    custom: Arc::new(custom),
+                    ..Default::default()
+                };
+                if let Ok(Ok(resolved)) =
+                    ctx.resolve(&base, importer.as_deref(), Some(options)).await
+                {
                     let id = format!("{}?{query}", resolved.id.as_str());
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
@@ -2595,9 +2604,9 @@ pub(crate) fn tsconfig_paths_plugin_with(
     ))
 }
 
-/// A bundle's `resolve.dedupe` step, after the app's plugins where
-/// vite:resolve sits: an environment's list, or the top-level one for a
-/// worker bundle (Vite's worker resolve plugin takes the resolved config's).
+/// A bundle's `resolve.dedupe` step, after the app's plugins: an
+/// environment's list, or the top-level one for a worker bundle (Vite's
+/// worker resolve plugin takes the resolved config's).
 pub(crate) fn dedupe_plugin(root: &Path, dedupe: Vec<String>) -> Option<SharedPluginable> {
     crate::start_bundle::alias::DedupePlugin::new(root, dedupe).map(Pluginable::new_shared)
 }

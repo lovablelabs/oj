@@ -130,26 +130,30 @@ fn build_both(config: &str, root_copies: bool) -> Option<[String; 2]> {
         .args(["build", "--outDir", "oj-dist"])
         .arg(&root)
         .current_dir(&root));
-    Some([
-        js_text(&root.join("vite-dist")),
-        js_text(&root.join("oj-dist")),
-    ])
+    Some(dist_files(&root, &["js"]).map(|f| f.concat()))
 }
 
-fn js_text(dir: &Path) -> String {
-    let mut out = String::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for entry in std::fs::read_dir(&d).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "js") {
-                out.push_str(&std::fs::read_to_string(&path).unwrap());
+/// Per tool, the text of each file with one of `exts` under its dist, one
+/// entry per file.
+fn dist_files(root: &Path, exts: &[&str]) -> [Vec<String>; 2] {
+    ["vite-dist", "oj-dist"].map(|dist| {
+        let mut out = Vec::new();
+        let mut stack = vec![root.join(dist)];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|e| exts.iter().any(|x| e == *x))
+                {
+                    out.push(std::fs::read_to_string(&path).unwrap());
+                }
             }
         }
-    }
-    out
+        out
+    })
 }
 
 const DEDUPE: &str = "export default { resolve: { dedupe: [\"shared\", \"@scope/shared\"] } };\n";
@@ -284,24 +288,7 @@ fn built_text(root: &Path, fixture: &Path, args: &[&str], exts: &[&str]) -> [Str
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    ["vite-dist", "oj-dist"].map(|dist| {
-        let mut out = String::new();
-        let mut stack = vec![root.join(dist)];
-        while let Some(d) = stack.pop() {
-            for entry in std::fs::read_dir(&d).unwrap().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path
-                    .extension()
-                    .is_some_and(|e| exts.iter().any(|x| e == *x))
-                {
-                    out.push_str(&std::fs::read_to_string(&path).unwrap());
-                }
-            }
-        }
-        out
-    })
+    dist_files(root, exts).map(|f| f.concat())
 }
 
 /// Vite's CSS resolvers apply the client environment's dedupe.
@@ -515,6 +502,42 @@ fn a_workers_nested_import_takes_the_root_copy() {
     }
 }
 
+/// A deep import with a query names its package (`shared/sub.js?raw`), so a
+/// worker bundle takes the root copy for it too.
+#[test]
+fn a_workers_queried_deep_import_of_a_deduped_package_takes_the_root_copy() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    for main in [
+        "const w = new Worker(new URL(\"./w.js\", import.meta.url), { type: \"module\" });\nw.onmessage = (e) => { document.title = e.data; };\n",
+        "import W from \"./w.js?worker\";\nnew W().onmessage = (e) => { document.title = e.data; };\n",
+    ] {
+        let app = shared_app(
+            &fixture,
+            &[
+                ("src/main.js", main),
+                (
+                    "src/w.js",
+                    "import { v } from \"consumer\";\npostMessage(v);\n",
+                ),
+                (
+                    "node_modules/consumer/index.js",
+                    "import s from \"shared/sub.js?raw\";\nexport const v = s;\n",
+                ),
+            ],
+        );
+        let built = built_text(app.path(), &fixture, &["build"], &["js"]);
+        for (tool, code) in ["vite", "oj"].iter().zip(built) {
+            assert!(code.contains("root-copy-sub"), "{tool} ({main}):\n{code}");
+            assert!(
+                !code.contains("nested-copy"),
+                "{tool} bundled the copy under consumer into the worker ({main}):\n{code}"
+            );
+        }
+    }
+}
+
 /// The ssr environment's list applies to what the server build bundles; an
 /// externalized import stays a bare `shared`.
 #[test]
@@ -593,5 +616,124 @@ fn a_listed_node_builtin_in_a_bundled_server_dependency_stays_external() {
     for (tool, code) in ["vite", "oj"].iter().zip(built) {
         assert!(code.contains("from \"buffer\""), "{tool}:\n{code}");
         assert!(code.contains("root-copy"), "{tool}:\n{code}");
+    }
+}
+
+/// rolldown's resolver reads the package name with the query on, so a bare
+/// `shared?raw` is not a listed name and keeps the importer's copy.
+#[test]
+fn a_bare_import_with_a_query_keeps_the_importers_copy() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "node_modules/consumer/index.js",
+                "import raw from \"shared?raw\";\nexport const v = raw;\n",
+            ),
+            (
+                "src/main.js",
+                "import { v } from \"consumer\";\ndocument.title = v;\n",
+            ),
+        ],
+    );
+    let built = built_text(app.path(), &fixture, &["build"], &["js"]);
+    for (tool, code) in ["vite", "oj"].iter().zip(built) {
+        assert!(code.contains("nested-copy"), "{tool}:\n{code}");
+        assert!(
+            !code.contains("root-copy"),
+            "{tool} deduped the queried import:\n{code}"
+        );
+    }
+}
+
+/// The client environment's list applies to the page's bundle; a worker
+/// bundle resolves with the top-level list only.
+#[test]
+fn a_client_environment_list_dedupes_the_page_but_not_a_worker() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "vite.config.js",
+                "export default { environments: { client: { resolve: { dedupe: [\"shared\"] } } }, build: { minify: false } };\n",
+            ),
+            (
+                "src/main.js",
+                "const w = new Worker(new URL(\"./w.js\", import.meta.url), { type: \"module\" });\nw.onmessage = (e) => { document.title = e.data; };\nimport { v } from \"consumer\";\nconsole.log(v);\n",
+            ),
+            (
+                "src/w.js",
+                "import { v } from \"consumer\";\npostMessage(v);\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import { copy } from \"shared\";\nexport const v = copy;\n",
+            ),
+        ],
+    );
+    let _ = built_text(app.path(), &fixture, &["build"], &["js"]);
+    for (tool, files) in ["vite", "oj"].iter().zip(dist_files(app.path(), &["js"])) {
+        let page: String = files
+            .iter()
+            .filter(|f| f.contains("document.title"))
+            .map(String::as_str)
+            .collect();
+        let worker: String = files
+            .iter()
+            .filter(|f| f.contains("postMessage") && !f.contains("document.title"))
+            .map(String::as_str)
+            .collect();
+        assert!(
+            page.contains("root-copy") && !page.contains("nested-copy"),
+            "{tool} page:\n{page}"
+        );
+        assert!(
+            worker.contains("nested-copy") && !worker.contains("root-copy"),
+            "{tool} worker:\n{worker}"
+        );
+    }
+}
+
+/// A list only in `environments.ssr` applies to the server build.
+#[test]
+fn an_ssr_environment_list_dedupes_the_server_bundle() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "vite.config.js",
+                "export default { environments: { ssr: { resolve: { dedupe: [\"shared\"] } } }, ssr: { noExternal: true }, build: { minify: false } };\n",
+            ),
+            (
+                "src/entry.js",
+                "import { v } from \"consumer\";\nexport const render = () => v;\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import { copy } from \"shared\";\nexport const v = copy;\n",
+            ),
+        ],
+    );
+    let built = built_text(
+        app.path(),
+        &fixture,
+        &["build", "--ssr", "src/entry.js"],
+        &["js", "mjs"],
+    );
+    for (tool, code) in ["vite", "oj"].iter().zip(built) {
+        assert!(code.contains("root-copy"), "{tool}:\n{code}");
+        assert!(
+            !code.contains("nested-copy"),
+            "{tool} bundled the copy under consumer:\n{code}"
+        );
     }
 }

@@ -147,6 +147,23 @@ fn the_client_dedupe_list_takes_the_client_environments_additions() {
     assert_eq!(resolved, root.join("node_modules/router/index.js"));
 }
 
+#[test]
+fn the_ssr_dedupe_list_takes_the_apps_own_ssr_environment_list() {
+    let mut config = oj_config::OjConfig::default();
+    merge_vite_values(
+        &mut config,
+        parse_vite_values(&serde_json::json!({
+            "dedupe": ["react"],
+            "ssrDedupe": ["shared"]
+        })),
+    );
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "ssr"),
+        ["react", "shared"]
+    );
+    assert_eq!(oj_config::environment_dedupe(&config, "client"), ["react"]);
+}
+
 // An oj-side ssr key must not drop the extractor's verdict: per-key merge,
 // `runnerBacked` always adopted.
 #[test]
@@ -1617,6 +1634,7 @@ fn merge_adopts_only_unset_fields() {
         proxy: None,
         dedupe: None,
         client_dedupe: None,
+        ssr_dedupe: None,
         optimize_deps: None,
         build: None,
         oxc: None,
@@ -1677,6 +1695,7 @@ fn merge_never_overrides_config() {
         proxy: None,
         dedupe: None,
         client_dedupe: None,
+        ssr_dedupe: None,
         optimize_deps: None,
         build: None,
         oxc: None,

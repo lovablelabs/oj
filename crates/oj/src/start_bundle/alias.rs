@@ -248,7 +248,15 @@ impl Plugin for TsconfigPathsPlugin {
     }
 }
 
-/// `resolve.dedupe` where vite:resolve sits: a bare import of a listed
+/// The specifier as written, query on, when the asset step resolves it without the query.
+#[derive(Hash, PartialEq, Eq)]
+pub(crate) struct QueriedImport;
+
+impl rolldown_plugin::typedmap::TypedMapKey for QueriedImport {
+    type Value = String;
+}
+
+/// `resolve.dedupe` after the app's plugins: a bare import of a listed
 /// package resolves from the app root for every importer, as Vite's resolve
 /// plugin does with its `dedupe` option, so a copy nested under a
 /// dependency's own node_modules never becomes a second instance. Where the
@@ -295,8 +303,10 @@ impl Plugin for DedupePlugin {
         if !matches!(
             args.kind,
             ImportKind::Import | ImportKind::DynamicImport | ImportKind::Require
-        ) || !oj_resolver::dedupes(&self.dedupe, spec)
-        {
+        ) || !oj_resolver::dedupes(
+            &self.dedupe,
+            args.custom.get(&QueriedImport).map_or(spec, String::as_str),
+        ) {
             return Ok(None);
         }
         let resolver = ctx.resolver();

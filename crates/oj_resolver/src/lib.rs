@@ -24,7 +24,6 @@ pub use defaults::{
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
 pub use spec::package_name;
-use spec::strip_query;
 pub use tsconfig_paths::TsconfigPaths;
 
 pub struct OjResolver {
@@ -437,13 +436,13 @@ impl OjResolver {
 }
 
 /// Whether `specifier` is a bare import of a `resolve.dedupe` package, which
-/// resolves from the root so nested copies collapse to one instance (Vite's
-/// tryNodeResolve: `dedupe.includes(pkgId)`).
+/// resolves from the root so nested copies collapse to one instance (rolldown's
+/// vite resolve plugin, should_dedupe: the package name read with any query on).
 pub fn dedupes<'a>(dedupe: impl IntoIterator<Item = &'a String>, specifier: &str) -> bool {
     if specifier.starts_with('.') || specifier.starts_with('/') {
         return false;
     }
-    let name = package_name(strip_query(specifier));
+    let name = package_name(specifier);
     dedupe.into_iter().any(|d| d == name)
 }
 

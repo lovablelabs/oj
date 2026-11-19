@@ -33,6 +33,8 @@ pub struct ViteValues {
     pub dedupe: Option<Vec<String>>,
     /// The client environment's `resolve.dedupe` entries beyond `dedupe`.
     pub client_dedupe: Option<Vec<String>>,
+    /// The app's own `environments.ssr.resolve.dedupe`.
+    pub ssr_dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
     /// The `build` block as the extractor normalized it; see `extractBuild` in vite-extract.mjs.
     pub build: Option<serde_json::Value>,
@@ -1264,6 +1266,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         proxy: non_null(json, "proxy"),
         dedupe: json.get("dedupe").and_then(string_list),
         client_dedupe: json.get("clientDedupe").and_then(string_list),
+        ssr_dedupe: json.get("ssrDedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
         build: non_null(json, "build"),
         oxc: non_null(json, "oxc"),
@@ -1527,8 +1530,10 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             rc.dedupe.get_or_insert(dedupe);
         }
     }
-    if let Some(dedupe) = v.client_dedupe.filter(|d| !d.is_empty()) {
-        merge_client_dedupe(config, dedupe);
+    for (env, dedupe) in [("client", v.client_dedupe), ("ssr", v.ssr_dedupe)] {
+        if let Some(dedupe) = dedupe.filter(|d| !d.is_empty()) {
+            merge_environment_dedupe(config, env, dedupe);
+        }
     }
     if let Some(od) = v.optimize_deps {
         merge_optimize_deps(config, od);
@@ -1642,19 +1647,19 @@ fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     }
 }
 
-/// Adds `dedupe` to `environments.client.resolve.dedupe`, after what the
+/// Adds `dedupe` to `environments.<env>.resolve.dedupe`, after what the
 /// config file lists there.
-fn merge_client_dedupe(config: &mut oj_config::OjConfig, dedupe: Vec<String>) {
+fn merge_environment_dedupe(config: &mut oj_config::OjConfig, env: &str, dedupe: Vec<String>) {
     use serde_json::{Map, Value};
-    let client = config
+    let environment = config
         .environments
         .get_or_insert_with(Default::default)
-        .entry("client".to_string())
+        .entry(env.to_string())
         .or_insert_with(|| Value::Object(Map::new()));
-    let Some(client) = client.as_object_mut() else {
+    let Some(environment) = environment.as_object_mut() else {
         return;
     };
-    let resolve = client
+    let resolve = environment
         .entry("resolve")
         .or_insert_with(|| Value::Object(Map::new()));
     let Some(resolve) = resolve.as_object_mut() else {
