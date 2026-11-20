@@ -232,8 +232,8 @@
   },
   "options": {},
   "expected": {
-   "className": "x1t5xrs5",
-   "ltr": "::view-transition-group(*.x1t5xrs5){transition-duration:500px;line-height:1.5px;}",
+   "className": "x3nv1pa",
+   "ltr": "::view-transition-group(*.x3nv1pa){transition-duration:.5s;line-height:1.5;}",
    "rtl": null,
    "priority": 1
   }
@@ -685,6 +685,289 @@
   "expected": {
    "className": "x1rxglfj",
    "ltr": "::view-transition-old(*.x1rxglfj){animation-name:x18re5ia-B;animation-duration:1s;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "value transform sees camelCase key: ms suffix and unitless",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "transitionDuration",
+        500
+       ],
+       [
+        "lineHeight",
+        2
+       ],
+       [
+        "zIndex",
+        3
+       ]
+      ]
+     }
+    ],
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "animationDelay",
+        100
+       ],
+       [
+        "opacity",
+        0.5
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x10v8idv",
+   "ltr": "::view-transition-group(*.x10v8idv){transition-duration:.5s;line-height:2;z-index:3;}::view-transition-old(*.x10v8idv){animation-delay:.1s;opacity:.5;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "value transform sees camelCase key: transitionProperty words",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "transitionProperty",
+        "backgroundColor"
+       ],
+       [
+        "willChange",
+        "scrollPosition"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xzmeh1p",
+   "ltr": "::view-transition-group(*.xzmeh1p){transition-property:background-color;will-change:scroll-position;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "value transform sees camelCase key: fontSizeAdjust and content",
+  "styles": {
+   "$obj": [
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "fontSizeAdjust",
+        0.5
+       ],
+       [
+        "content",
+        "x\"y"
+       ],
+       [
+        "hyphenateCharacter",
+        "-"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xcc0obz",
+   "ltr": "::view-transition-old(*.xcc0obz){font-size-adjust:.5;content:\"x\\\"y\";hyphenate-character:\"-\";}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "value transform sees camelCase key: px to rem",
+  "styles": {
+   "$obj": [
+    [
+     "new",
+     {
+      "$obj": [
+       [
+        "fontSize",
+        16
+       ]
+      ]
+     }
+    ],
+    [
+     "imagePair",
+     {
+      "$obj": [
+       [
+        "fontSize",
+        "24px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "enableFontSizePxToRem": true
+  },
+  "expected": {
+   "className": "x8lw6bu",
+   "ltr": "::view-transition-new(*.x8lw6bu){font-size:1rem;}::view-transition-image-pair(*.x8lw6bu){font-size:1.5rem;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "dashed and camelCase spellings collapse after transform",
+  "styles": {
+   "$obj": [
+    [
+     "imagePair",
+     {
+      "$obj": [
+       [
+        "line-height",
+        2
+       ],
+       [
+        "lineHeight",
+        3
+       ]
+      ]
+     }
+    ],
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "lineHeight",
+        3
+       ],
+       [
+        "line-height",
+        2
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x2bg3fs",
+   "ltr": "::view-transition-image-pair(*.x2bg3fs){line-height:3;}::view-transition-group(*.x2bg3fs){line-height:2px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "dashed keys keep the px suffix",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "line-height",
+        2
+       ],
+       [
+        "transition-duration",
+        500
+       ],
+       [
+        "z-index",
+        3
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1yqx4m3",
+   "ltr": "::view-transition-group(*.x1yqx4m3){line-height:2px;transition-duration:500px;z-index:3px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "url contents stay verbatim",
+  "styles": {
+   "$obj": [
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "backgroundImage",
+        "url( 0.5px  0px )"
+       ],
+       [
+        "maskImage",
+        "url(\"a  b\") 0.50px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x12kdrx",
+   "ltr": "::view-transition-old(*.x12kdrx){background-image:url(0.5px  0px);mask-image:url(\"a  b\") .5px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "zero dimensions inside functions",
+  "styles": {
+   "$obj": [
+    [
+     "new",
+     {
+      "$obj": [
+       [
+        "transform",
+        "translate(0px) rotate(0DEG)"
+       ],
+       [
+        "margin",
+        "calc(calc(0px) + 0px) 0px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xk5jg20",
+   "ltr": "::view-transition-new(*.xk5jg20){transform:translate(0px) rotate(0deg);margin:calc(calc(0px) + 0px) 0;}",
    "rtl": null,
    "priority": 1
   }

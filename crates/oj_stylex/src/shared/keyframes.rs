@@ -6,12 +6,8 @@ use crate::eval::value::{EvalValue, JsObjectMap};
 use crate::hash::hash;
 use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
-use crate::shared::dashify::dashify;
-use crate::shared::flatten::StyleScalar;
-use crate::shared::normalize_value::CssValueError;
-use crate::shared::resolution::flat_map_expanded_shorthands;
+use crate::shared::position_try::{dashify_keys, expand_scalars, transform_values};
 use crate::shared::rtl::{RtlContext, generate_ltr, generate_rtl};
-use crate::shared::transform_value::{transform_value_num, transform_value_str};
 
 /// Returns the animation name and its single injectable rule (priority 0).
 pub fn keyframes(
@@ -30,7 +26,10 @@ pub fn keyframes(
             // then crashes in Object.keys.
             return Err(StylexError::upstream_type_crash("a null keyframes frame"));
         };
-        let transformed = expand_dashify_transform(frame, options)?;
+        let transformed = dashify_keys(&transform_values(
+            &expand_scalars(frame, options)?,
+            options,
+        )?);
         let mut ltr = JsObjectMap::new();
         let mut rtl = JsObjectMap::new();
         let mut stable = JsObjectMap::new();
@@ -94,57 +93,6 @@ fn assert_valid_keyframes(frames: &EvalValue) -> Result<&JsObjectMap, StylexErro
     Ok(map)
 }
 
-// parity: stylex-keyframes.js expand+dashify+transformValue pipe; each stage
-// rebuilds the object, so duplicate keys collapse first-position last-value.
-fn expand_dashify_transform(
-    frame: &JsObjectMap,
-    options: &ResolvedOptions,
-) -> Result<JsObjectMap, StylexError> {
-    let mut expanded = JsObjectMap::new();
-    for (key, value) in frame.entries() {
-        let value_is_array = matches!(value, EvalValue::Arr(_));
-        let scalar = match value {
-            EvalValue::Str(s) => Some(StyleScalar::Str(std::borrow::Cow::Borrowed(s.as_str()))),
-            EvalValue::Num(n) => Some(StyleScalar::Num(*n)),
-            _ => None,
-        };
-        // Only string/number values survive; arrays, nulls, and objects drop.
-        for (property, expanded_value) in flat_map_expanded_shorthands(
-            std::borrow::Cow::Borrowed(key),
-            scalar,
-            value_is_array,
-            options,
-        )? {
-            match expanded_value {
-                Some(StyleScalar::Str(s)) => {
-                    expanded.insert(property.to_string(), EvalValue::Str(s.into_owned()));
-                }
-                Some(StyleScalar::Num(n)) => {
-                    expanded.insert(property, EvalValue::Num(n));
-                }
-                Some(StyleScalar::Undefined) | None => {}
-            }
-        }
-    }
-    let mut dashed = JsObjectMap::new();
-    for (key, value) in expanded.entries() {
-        dashed.insert(dashify(key), value.clone());
-    }
-    let mut transformed = JsObjectMap::new();
-    for (key, value) in dashed.entries() {
-        // transformValue sees the already-dashed key: dashed forms miss the
-        // camelCase ms-suffix and unitless tables (e.g. transition-duration: 500px).
-        let out = match value {
-            EvalValue::Str(s) => transform_value_str(key, s, options.enable_font_size_px_to_rem),
-            EvalValue::Num(n) => transform_value_num(key, *n, options.enable_font_size_px_to_rem),
-            _ => unreachable!("expand stage only stores scalars"),
-        }
-        .map_err(css_value_error)?;
-        transformed.insert(key, EvalValue::Str(out));
-    }
-    Ok(transformed)
-}
-
 fn construct_keyframes_string(frames: &[(String, JsObjectMap)]) -> String {
     let mut out = String::new();
     for (name, decls) in frames {
@@ -162,14 +110,6 @@ fn construct_keyframes_string(frames: &[(String, JsObjectMap)]) -> String {
         out.push('}');
     }
     out
-}
-
-fn css_value_error(e: CssValueError) -> StylexError {
-    match e {
-        CssValueError::UnclosedFunction => StylexError::unclosed_function(),
-        CssValueError::UnclosedString => StylexError::unclosed_string(),
-        CssValueError::EmptyValue => StylexError::empty_value(),
-    }
 }
 
 #[cfg(test)]

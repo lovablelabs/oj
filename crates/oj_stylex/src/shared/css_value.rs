@@ -354,6 +354,16 @@ pub fn walk<F: FnMut(&mut Node)>(nodes: &mut [Node], f: &mut F) {
     }
 }
 
+/// `walk` with postcss-value-parser's early exit: a callback returning
+/// `false` keeps the walk out of that function's arguments.
+pub fn walk_pruned<F: FnMut(&mut Node) -> bool>(nodes: &mut [Node], f: &mut F) {
+    for node in nodes.iter_mut() {
+        if f(node) && node.kind == Kind::Func {
+            walk_pruned(&mut node.nodes, f);
+        }
+    }
+}
+
 pub fn stringify(nodes: &[Node]) -> String {
     let mut out = String::new();
     for node in nodes {
