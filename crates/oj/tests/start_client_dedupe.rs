@@ -118,26 +118,13 @@ fn dedupe_app(name: &str) -> Option<start_app::App> {
     Some(app)
 }
 
-/// The dev client bundle: the entry and every chunk reachable from it.
-fn client_bundle(dev: &Server) -> String {
-    let mut text = String::new();
-    let mut seen = vec!["client-entry.js".to_string()];
-    let mut next = 0;
-    while next < seen.len() {
-        let (status, code) = dev.request("GET", &format!("/@oj-start/{}", seen[next]), &[]);
-        assert_eq!(status, 200, "/@oj-start/{}\n{}", seen[next], dev.output());
-        for chunk in code
-            .split(['"', '\''])
-            .filter_map(|s| s.strip_prefix("./"))
-            .filter(|s| s.ends_with(".js") && !s.contains('/'))
-        {
-            if !seen.iter().any(|c| c == chunk) {
-                seen.push(chunk.to_string());
-            }
-        }
-        text.push_str(&code);
-        next += 1;
-    }
+/// The dev client bundle: the entry as served, and every chunk of the bundle
+/// the dev server wrote for it. With hot updates on the entry asks for a lazy
+/// module by id, so the chunks are read where the bundle keeps them.
+fn client_bundle(dev: &Server, root: &Path) -> String {
+    let (status, mut text) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    text.push_str(&js_text(&root.join(".oj-cache/v1/start/client-chunks")));
     text
 }
 
@@ -166,7 +153,7 @@ fn a_dependencys_own_react_is_not_in_the_dev_client_bundle() {
     let dev = Server::oj_dev(&app.0);
     let (status, _) = dev.request("GET", "/", &[]);
     assert_eq!(status, 200, "the page\n{}", dev.output());
-    let bundle = client_bundle(&dev);
+    let bundle = client_bundle(&dev, &app.0);
     assert!(
         bundle.contains("counter-widget "),
         "the dependency is in the client bundle\n{}",

@@ -147,14 +147,16 @@ fn the_client_dedupe_list_takes_the_client_environments_additions() {
     assert_eq!(resolved, root.join("node_modules/router/index.js"));
 }
 
+// The ssr environment's list is Vite's resolved one too: the top-level list,
+// the app's own and what plugins' `configEnvironment` hooks add for ssr.
 #[test]
-fn the_ssr_dedupe_list_takes_the_apps_own_ssr_environment_list() {
+fn the_ssr_dedupe_list_takes_the_ssr_environments_resolved_list() {
     let mut config = oj_config::OjConfig::default();
     merge_vite_values(
         &mut config,
         parse_vite_values(&serde_json::json!({
             "dedupe": ["react"],
-            "ssrDedupe": ["shared"]
+            "ssrDedupe": ["react", "shared"]
         })),
     );
     assert_eq!(
@@ -162,6 +164,32 @@ fn the_ssr_dedupe_list_takes_the_apps_own_ssr_environment_list() {
         ["react", "shared"]
     );
     assert_eq!(oj_config::environment_dedupe(&config, "client"), ["react"]);
+}
+
+// oj's config file keeps its own top-level list over Vite's, so an entry
+// only Vite's top-level list holds still reaches each environment through
+// that environment's resolved list.
+#[test]
+fn an_environment_dedupe_list_survives_a_top_level_list_oj_does_not_adopt() {
+    let mut config: oj_config::OjConfig =
+        serde_json::from_str(r#"{ "resolve": { "dedupe": ["a"] } }"#).unwrap();
+    merge_vite_values(
+        &mut config,
+        parse_vite_values(&serde_json::json!({
+            "dedupe": ["react"],
+            "clientDedupe": ["react", "router"],
+            "ssrDedupe": ["react", "react-dom"]
+        })),
+    );
+    assert_eq!(oj_config::resolve_dedupe(&config), ["a"]);
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "client"),
+        ["a", "react", "router"]
+    );
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "ssr"),
+        ["a", "react", "react-dom"]
+    );
 }
 
 // An oj-side ssr key must not drop the extractor's verdict: per-key merge,

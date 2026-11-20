@@ -737,3 +737,263 @@ fn an_ssr_environment_list_dedupes_the_server_bundle() {
         );
     }
 }
+
+/// A deep import with an asset query in a page bundle: `shared/sub.js?raw`
+/// and `shared/sub.js?url` inside a dependency name the package, so each
+/// takes the root copy's file, the same one the app's own import of it gives.
+#[test]
+fn a_pages_queried_deep_import_of_a_deduped_package_takes_the_root_copy() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    for query in ["raw", "url"] {
+        let app = shared_app(
+            &fixture,
+            &[
+                (
+                    "vite.config.js",
+                    "export default { resolve: { dedupe: [\"shared\"] }, build: { minify: false, assetsInlineLimit: 0 } };\n",
+                ),
+                (
+                    "node_modules/consumer/index.js",
+                    &format!("import s from \"shared/sub.js?{query}\";\nexport const v = s;\n"),
+                ),
+                (
+                    "src/main.js",
+                    &format!("import {{ v }} from \"consumer\";\nimport own from \"shared/sub.js?{query}\";\ndocument.title = v + own;\n"),
+                ),
+            ],
+        );
+        let built = built_text(app.path(), &fixture, &["build"], &["js"]);
+        for (tool, code) in ["vite", "oj"].iter().zip(built) {
+            assert!(code.contains("root-copy-sub"), "{tool} (?{query}):\n{code}");
+            assert!(
+                !code.contains("nested-copy"),
+                "{tool} bundled the copy under consumer (?{query}):\n{code}"
+            );
+            // One module for the file: its text (or its URL) is in the bundle once.
+            let needle = if query == "raw" {
+                "root-copy-sub"
+            } else {
+                "/assets/sub-"
+            };
+            assert_eq!(
+                code.matches(needle).count(),
+                1,
+                "{tool} (?{query}) holds the file twice:\n{code}"
+            );
+        }
+    }
+}
+
+/// A plugin's `configEnvironment` hook adds to the ssr environment's list
+/// (TanStack Start adds React and its router there), and the server build
+/// takes it.
+#[test]
+fn a_plugins_ssr_environment_list_dedupes_the_server_bundle() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "vite.config.js",
+                "export default {\n  plugins: [{ name: \"ssr-dedupe\", configEnvironment(name) { if (name === \"ssr\") return { resolve: { dedupe: [\"shared\"] } }; } }],\n  ssr: { noExternal: true },\n  build: { minify: false },\n};\n",
+            ),
+            (
+                "src/entry.js",
+                "import { v } from \"consumer\";\nexport const render = () => v;\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import { copy } from \"shared\";\nexport const v = copy;\n",
+            ),
+        ],
+    );
+    let built = built_text(
+        app.path(),
+        &fixture,
+        &["build", "--ssr", "src/entry.js"],
+        &["js", "mjs"],
+    );
+    for (tool, code) in ["vite", "oj"].iter().zip(built) {
+        assert!(code.contains("root-copy"), "{tool}:\n{code}");
+        assert!(
+            !code.contains("nested-copy"),
+            "{tool} bundled the copy under consumer:\n{code}"
+        );
+    }
+}
+
+/// oj's own config file sets a top-level list beside the Vite config's: its
+/// list is oj's top-level one, and what Vite's client environment resolves
+/// (the Vite config's list here) still reaches the page.
+#[test]
+fn the_vite_configs_list_reaches_the_page_beside_an_oj_config_list() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "oj.config.json",
+                "{ \"resolve\": { \"dedupe\": [\"consumer\"] } }\n",
+            ),
+            (
+                "src/main.js",
+                "import { v } from \"consumer\";\ndocument.title = v;\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import { copy } from \"shared\";\nexport const v = copy;\n",
+            ),
+        ],
+    );
+    let built = built_text(app.path(), &fixture, &["build"], &["js"]);
+    for (tool, code) in ["vite", "oj"].iter().zip(built) {
+        assert!(code.contains("root-copy"), "{tool}:\n{code}");
+        assert!(
+            !code.contains("nested-copy"),
+            "{tool} bundled the copy under consumer:\n{code}"
+        );
+    }
+}
+
+/// The server-functions bundle of an ssr app build (`src/**/*.server.*`)
+/// resolves with the ssr environment's list, as the server bundle beside it.
+#[test]
+fn a_server_functions_bundle_takes_the_root_copy() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "vite.config.js",
+                "export default { resolve: { dedupe: [\"shared\"] }, ssr: { noExternal: true }, build: { minify: false } };\n",
+            ),
+            (
+                "src/entry-server.js",
+                "export const render = () => \"<p>app</p>\";\n",
+            ),
+            ("src/entry-client.js", "document.title = \"client\";\n"),
+            (
+                "src/fns.server.js",
+                "import { v } from \"consumer\";\nexport const which = () => v;\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import { copy } from \"shared\";\nexport const v = copy;\n",
+            ),
+        ],
+    );
+    let root = app.path();
+    run(Command::new(env!("CARGO_BIN_EXE_oj"))
+        .args([
+            "build",
+            "--ssr",
+            "src/entry-server.js",
+            "--outDir",
+            "oj-dist",
+        ])
+        .arg(root)
+        .current_dir(root));
+    let mut fns = String::new();
+    let mut stack = vec![root.join("oj-dist")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                stack.push(path);
+            } else if name.starts_with("_oj_server_fns") {
+                fns.push_str(&std::fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    assert!(fns.contains("root-copy"), "{fns}");
+    assert!(
+        !fns.contains("nested-copy"),
+        "the server functions bundle holds the copy under consumer:\n{fns}"
+    );
+}
+
+/// A stylesheet the root's copy lacks: Vite's CSS resolver tries the root,
+/// then the lookup from the importer, so both tools inline the file under
+/// the dependency.
+#[test]
+fn a_stylesheet_only_in_the_nested_copy_still_falls_back_to_it() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "src/main.js",
+                "import \"consumer/style.css\";\ndocument.title = \"css\";\n",
+            ),
+            ("node_modules/consumer/index.js", "export {};\n"),
+            (
+                "node_modules/consumer/node_modules/shared/only.css",
+                ".only { content: \"nested-only-css\"; }\n",
+            ),
+            (
+                "node_modules/consumer/style.css",
+                "@import \"shared/only.css\";\n@import \"shared/s.css\";\n.consumer { color: red; }\n",
+            ),
+        ],
+    );
+    let built = built_text(app.path(), &fixture, &["build"], &["css"]);
+    for (tool, css) in ["vite", "oj"].iter().zip(built) {
+        assert!(css.contains("nested-only-css"), "{tool}:\n{css}");
+        assert!(css.contains("root-copy-css"), "{tool}:\n{css}");
+        assert!(!css.contains("nested-copy-css"), "{tool}:\n{css}");
+    }
+}
+
+/// The same queried deep import in a server bundle that bundles its
+/// dependencies.
+#[test]
+fn a_server_bundles_queried_deep_import_of_a_deduped_package_takes_the_root_copy() {
+    let Some(fixture) = node_modules() else {
+        return;
+    };
+    let app = shared_app(
+        &fixture,
+        &[
+            (
+                "vite.config.js",
+                "export default { resolve: { dedupe: [\"shared\"] }, ssr: { noExternal: true }, build: { minify: false } };\n",
+            ),
+            (
+                "src/entry.js",
+                "import { v } from \"consumer\";\nimport own from \"shared/sub.js?raw\";\nexport const render = () => v + own;\n",
+            ),
+            (
+                "node_modules/consumer/index.js",
+                "import s from \"shared/sub.js?raw\";\nexport const v = s;\n",
+            ),
+        ],
+    );
+    let built = built_text(
+        app.path(),
+        &fixture,
+        &["build", "--ssr", "src/entry.js"],
+        &["js", "mjs"],
+    );
+    for (tool, code) in ["vite", "oj"].iter().zip(built) {
+        assert_eq!(
+            code.matches("root-copy-sub").count(),
+            1,
+            "{tool} holds the file twice or not at all:\n{code}"
+        );
+        assert!(
+            !code.contains("nested-copy"),
+            "{tool} bundled the copy under consumer:\n{code}"
+        );
+    }
+}

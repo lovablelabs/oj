@@ -1415,18 +1415,12 @@ function extractEsbuild(es) {
   return Object.keys(out).length ? out : null;
 }
 
-// The client environment's resolved `resolve.dedupe` entries beyond the top-level list.
-function extractClientDedupe(c) {
-  const list = c.environments?.client?.resolve?.dedupe;
-  if (!Array.isArray(list)) return null;
-  const top = Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe : [];
-  const own = list.filter((x) => typeof x === "string" && !top.includes(x));
-  return own.length ? own : null;
-}
-
-// The app's own `environments.ssr.resolve.dedupe`; what plugins add for ssr stays out.
-function extractSsrDedupe(raw) {
-  const list = raw?.environments?.ssr?.resolve?.dedupe;
+// An environment's resolved `resolve.dedupe`, whole: the top-level list, the
+// config file's `environments.<name>.resolve.dedupe` and what plugins'
+// `configEnvironment` hooks add (TanStack Start's React and router, for the
+// client and for ssr). The merge drops what the environment already lists.
+function extractEnvironmentDedupe(c, name) {
+  const list = c.environments?.[name]?.resolve?.dedupe;
   const own = Array.isArray(list) ? list.filter((x) => typeof x === "string") : [];
   return own.length ? own : null;
 }
@@ -1859,6 +1853,7 @@ export {
   extractOptimizeDeps,
   extractProxy,
   extractResolve,
+  extractEnvironmentDedupe,
   extractSsr,
   mergeConfigLite,
   warnUnsupported,
@@ -2125,11 +2120,10 @@ async function extractValues(input) {
           }),
         ),
         dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
-        // The client environment's resolved list, where it holds more than the
-        // top-level one: `environments.client.resolve.dedupe` and what plugins'
-        // `configEnvironment` hooks add (TanStack Start's React and router).
-        clientDedupe: extractClientDedupe(c),
-        ssrDedupe: extractSsrDedupe(raw),
+        // Each environment's own resolved list: oj's top-level list can differ
+        // from Vite's (the config file's wins), so nothing is subtracted here.
+        clientDedupe: extractEnvironmentDedupe(c, "client"),
+        ssrDedupe: extractEnvironmentDedupe(c, "ssr"),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
         oxc: extractOxc(c.oxc),

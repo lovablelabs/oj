@@ -31,9 +31,9 @@ pub struct ViteValues {
     pub assets_inline_limit_envs: Option<serde_json::Map<String, serde_json::Value>>,
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
-    /// The client environment's `resolve.dedupe` entries beyond `dedupe`.
+    /// The client environment's resolved `resolve.dedupe`, whole.
     pub client_dedupe: Option<Vec<String>>,
-    /// The app's own `environments.ssr.resolve.dedupe`.
+    /// The ssr environment's resolved `resolve.dedupe`, whole.
     pub ssr_dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
     /// The `build` block as the extractor normalized it; see `extractBuild` in vite-extract.mjs.

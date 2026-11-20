@@ -5848,28 +5848,34 @@ async fn build_server_fns(
         Box::pin(async move { Ok(ext) })
     })));
     let result = async {
+        // The ssr environment's `resolve.dedupe`, as in the server bundle.
+        let mut plugins: Vec<SharedPluginable> =
+            dedupe_plugin(root, oj_config::environment_dedupe(config, "ssr"))
+                .into_iter()
+                .collect();
+        plugins.push(Pluginable::new_shared(OjCssPlugin {
+            collected: Arc::clone(&collected),
+            root: root.to_path_buf(),
+            has_postcss: oj_server::has_postcss_config(root),
+            inline_limit: 4096,
+            client: false,
+            resolve: css_resolve_of(root, config, "ssr", is_production),
+            base: normalize_base(config.base.as_deref().unwrap_or("/")),
+            css_code_split: false,
+            host: None,
+            css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            css: config.css.clone(),
+            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            worker: None,
+            worker_bundles: Default::default(),
+            worker_chain: Default::default(),
+            pages: Default::default(),
+            chunk_css_hashing: None,
+            url_sheets: None,
+            emit: None,
+        }));
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
-                collected: Arc::clone(&collected),
-                root: root.to_path_buf(),
-                has_postcss: oj_server::has_postcss_config(root),
-                inline_limit: 4096,
-                client: false,
-                resolve: css_resolve_of(root, config, "ssr", is_production),
-                base: normalize_base(config.base.as_deref().unwrap_or("/")),
-                css_code_split: false,
-                host: None,
-                css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
-                css: config.css.clone(),
-                html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                worker: None,
-                worker_bundles: Default::default(),
-                worker_chain: Default::default(),
-                pages: Default::default(),
-                chunk_css_hashing: None,
-                url_sheets: None,
-                emit: None,
-            })])
+            .with_plugins(plugins)
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
                     name: Some("_oj_server_fns".to_string()),
