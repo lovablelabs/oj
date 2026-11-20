@@ -205,6 +205,70 @@ fn define_consts_requires_named_export_and_theme_filename() {
     assert!(out.rules[0].const_key.is_some());
 }
 
+/// 0.19.2 refuses prototype-chain reads in every statically evaluated
+/// argument; where the member is only a runtime subject it is left alone.
+#[test]
+fn blocked_property_reads_fail_static_apis_and_stay_runtime_elsewhere() {
+    let err = compile_err(&format!(
+        "{IMP}const o = {{ a: 'red' }};\n\
+         export const k = stylex.keyframes({{ from: {{ color: o.constructor }} }});\n"
+    ));
+    assert_eq!(
+        err.message.lines().next(),
+        Some("Only static values are allowed inside of a keyframes() call.")
+    );
+
+    let opts = options(serde_json::json!({
+        "unstable_moduleResolution": { "type": "commonJS", "rootDir": "<ROOT>" }
+    }));
+    for (api, key) in [("defineVars", "__proto__"), ("defineConsts", "prototype")] {
+        let err = compile_with(
+            &format!(
+                "{IMP}const o = {{ a: 'red' }};\n\
+                 export const vars = stylex.{api}({{ color: o.{key} }});\n"
+            ),
+            "src/blocked.stylex.ts",
+            &opts,
+        )
+        .expect_err("blocked read must fail");
+        assert_eq!(
+            err.message.lines().next(),
+            Some(format!("Only static values are allowed inside of a {api}() call.").as_str())
+        );
+    }
+
+    let out = compile(&format!(
+        "{IMP}const o = {{ a: 'red' }};\n\
+         export const styles = stylex.create({{ a: (w) => ({{ color: o.constructor, width: w.__proto__ }}) }});\n"
+    ));
+    let code = &out.code;
+    assert!(code.contains("(o.constructor) !== undefined &&"), "{code}");
+    assert!(code.contains("(w.__proto__) !== undefined &&"), "{code}");
+    let rules: Vec<&str> = out.rules.iter().map(|rule| &*rule.ltr).collect();
+    assert_eq!(
+        &rules[..2],
+        [
+            ".x14rh7hd{color:var(--x-color)}",
+            ".x5lhr3w{width:var(--x-width)}"
+        ]
+    );
+
+    let out = compile(&format!(
+        "{IMP}const styles = stylex.create({{ a: {{ color: 'red' }}, b: {{ color: 'blue' }} }});\n\
+         const o = {{ a: 'a' }};\n\
+         export const cond = stylex.props(o.constructor && styles.a);\n\
+         export const call = stylex.props(Math.PI() ? styles.a : styles.b);\n\
+         export const key = stylex.props(styles[o.constructor]);\n"
+    ));
+    let code = &out.code;
+    assert!(code.contains("[!!(o.constructor) << 0]"), "{code}");
+    assert!(code.contains("[!!(Math.PI()) << 0]"), "{code}");
+    assert!(
+        code.contains("stylex.props(styles[o.constructor])"),
+        "{code}"
+    );
+}
+
 #[test]
 fn markers_replace_in_place() {
     let out = compile(&format!(

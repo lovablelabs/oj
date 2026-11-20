@@ -84,8 +84,7 @@ use oxc_span::GetSpan;
 use crate::eval::cross_file::VarGroupProxy;
 use crate::eval::{
     Callable, EvalOutcome, Evaluator, FunctionRegistry, JsObj, JsValue, RegistryEntry,
-    collect_member_chain, from_eval_value, is_invalid_method, is_valid_callee, js_to_string,
-    truthy, unwrap_parens,
+    collect_member_chain, from_eval_value, is_valid_callee, js_to_string, truthy, unwrap_parens,
 };
 use crate::imports::{ImportTable, StylexNamedImport};
 use crate::shared::types::TYPES_MEMBERS;
@@ -366,7 +365,7 @@ impl<'p> DepTracker<'p> {
             }
             let mut current = base_value;
             for (i, key) in parts.iter().enumerate() {
-                current = match ev.member_lookup(&current, key, expr.span()) {
+                current = match ev.checked_member_lookup(&current, key, expr.span()) {
                     Ok(EvalOutcome::Value(v)) => v,
                     _ => return None,
                 };
@@ -506,14 +505,12 @@ impl<'p> DepTracker<'p> {
                     .member_callable(object_name, &property)
                     .is_some();
                 if !is_member_callable
-                    && is_valid_callee(object_name)
-                    && !is_invalid_method(&property)
+                    && let Some(found) =
+                        crate::eval::methods::lookup_global_static(object_name, &property)
                 {
-                    return match crate::eval::methods::lookup_global_static(object_name, &property)
-                    {
+                    return match found {
                         crate::eval::methods::StaticMember::Fn(_) => self.walk_args_only(ev, call),
-                        crate::eval::methods::StaticMember::Unknown => None,
-                        _ => None,
+                        crate::eval::methods::StaticMember::Unsupported => None,
                     };
                 }
                 if is_member_callable {

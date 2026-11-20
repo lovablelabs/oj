@@ -2906,22 +2906,21 @@
     "type": "commonJS",
     "rootDir": "<FIXROOT>/pkg"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "exports": [
    "s"
   ],
   "expectedRules": [
    {
-    "className": "color-x14jsx6",
-    "ltr": ".color-x14jsx6{color:var(--_2fast-x1b5gxzd)}",
+    "className": "x1qyn9aw",
+    "ltr": ".x1qyn9aw{color:var(--x1b5gxzd)}",
     "rtl": null,
     "priority": 3000
    },
    {
-    "className": "backgroundColor-xkf3gr3",
-    "ltr": ".backgroundColor-xkf3gr3{background-color:var(--weird_key_-x1ry63tk)}",
+    "className": "x1h18p83",
+    "ltr": ".x1h18p83{background-color:var(--x1ry63tk)}",
     "rtl": null,
     "priority": 3000
    }
@@ -2939,11 +2938,11 @@
          "$obj": [
           [
            "color-kMwMTN",
-           "color-x14jsx6"
+           "x1qyn9aw"
           ],
           [
            "backgroundColor-kWkggS",
-           "backgroundColor-xkf3gr3"
+           "x1h18p83"
           ],
           [
            "$$css",
@@ -6779,7 +6778,7 @@
    "s"
   ],
   "expectedError": {
-   "message": "func.apply is not a function",
+   "message": "Unsupported expression: CallExpression",
    "code": "NonStaticValue",
    "messageExact": true
   }
