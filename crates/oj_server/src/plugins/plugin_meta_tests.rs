@@ -155,3 +155,48 @@ async fn under_vite_6_and_older_the_meta_has_no_vite_version() {
         assert_eq!(out, expected, "under vite {version}");
     }
 }
+
+// A `vite` that states no `version` (no Vite does that; a stub, or a broken
+// install) is not read for the other keys either: the meta is the one of no
+// `vite` at all, Vite 8's, and not `viteVersion: "8.0.0"` beside that
+// module's `rollupVersion` and no `rolldownVersion`, which no Vite hands out.
+#[tokio::test]
+async fn a_vite_that_states_no_version_gets_the_whole_fallback_meta() {
+    const META_PROBE: &str = r#"let configMeta;
+export default [{
+  name: "meta-probe",
+  config() { configMeta = { ...this.meta }; },
+  load(id) {
+    if (!id.endsWith("logo.svg?react")) return;
+    const { viteVersion, rollupVersion, rolldownVersion } = this.meta;
+    return JSON.stringify({ config: configMeta, load: { viteVersion, rollupVersion, rolldownVersion } });
+  },
+}];
+"#;
+    let root = app_with_vite("noversion", "7.3.1", false);
+    std::fs::write(
+        root.join("node_modules/vite/index.js"),
+        "export const rollupVersion = \"4.9.9\";\n",
+    )
+    .unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(&plugins, META_PROBE).unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    let id = root.join("src/logo.svg?react").display().to_string();
+    let out = host.load(&id).await;
+    host.shutdown();
+    crate::plugins::test_roots::remove_root(&root);
+    let fallback = r#"{"viteVersion":"8.0.0","rollupVersion":"4.0.0","rolldownVersion":"1.0.0"}"#;
+    assert_eq!(
+        out.expect("the load answers")
+            .expect("the plugin loads the svg"),
+        format!(r#"{{"config":{fallback},"load":{fallback}}}"#)
+    );
+}

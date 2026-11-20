@@ -38,13 +38,16 @@ export function appViteEntry(root) {
 }
 
 /** Vite's basePluginContextMeta as the app's `vite` module has it: `viteVersion`
- *  from Vite 7, `rolldownVersion` when exported; without one, Vite 8's. */
+ *  from Vite 7, `rolldownVersion` when exported. Without a `vite`, or with one
+ *  that states no `version` (every Vite exports it), Vite 8's whole meta: a
+ *  module of unknown version is not read for the other keys either. */
 export function pluginContextMeta(vite) {
-  const version = typeof vite?.version === "string" ? vite.version : "8.0.0";
-  const meta = parseInt(version, 10) < 7 ? {} : { viteVersion: version };
-  meta.rollupVersion = typeof vite?.rollupVersion === "string" ? vite.rollupVersion : "4.0.0";
-  const rolldownVersion = vite ? vite.rolldownVersion : "1.0.0";
-  if (typeof rolldownVersion === "string") meta.rolldownVersion = rolldownVersion;
+  if (typeof vite?.version !== "string") {
+    return { viteVersion: "8.0.0", rollupVersion: "4.0.0", rolldownVersion: "1.0.0" };
+  }
+  const meta = parseInt(vite.version, 10) < 7 ? {} : { viteVersion: vite.version };
+  meta.rollupVersion = typeof vite.rollupVersion === "string" ? vite.rollupVersion : "4.0.0";
+  if (typeof vite.rolldownVersion === "string") meta.rolldownVersion = vite.rolldownVersion;
   return meta;
 }
 
