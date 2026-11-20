@@ -645,6 +645,27 @@ mod tests {
         );
     }
 
+    // StyleX 0.19.2 dropped `enableDebugClassNames`: a config that still sets
+    // it compiles as if it did not.
+    #[test]
+    fn removed_debug_class_names_option_is_ignored() {
+        let with = plugin(json!({ "debug": true, "enableDebugClassNames": true }));
+        assert!(with.warnings().is_empty(), "{:?}", with.warnings());
+        let without = plugin(json!({ "debug": true }));
+        let compile = |p: &StylexPlugin| {
+            p.transform_source(Path::new("/app/src/a.ts"), SRC)
+                .unwrap()
+                .unwrap()
+        };
+        let (a, b) = (compile(&with), compile(&without));
+        assert_eq!(a.code, b.code);
+        assert!(
+            a.code.contains("\"x1e2nbdu\"") && !a.code.contains("color-x"),
+            "class names stay hashed: {}",
+            a.code
+        );
+    }
+
     #[test]
     fn runtime_injection_collects_no_rules() {
         let p = plugin(json!({ "runtimeInjection": true }));

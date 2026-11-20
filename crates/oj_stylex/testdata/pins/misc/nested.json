@@ -986,8 +986,7 @@
      "type": "commonJS",
      "rootDir": "/fake/root"
     },
-    "debug": true,
-    "enableDebugClassNames": true
+    "debug": true
    },
    "exportName": "tokens",
    "canonicalFileName": "tokens.stylex.ts",
@@ -1024,16 +1023,16 @@
    },
    "expectedRules": [
     {
-     "className": "grp_my_key-xzkbgm1",
-     "constKey": "grp_my_key-xzkbgm1",
+     "className": "xzkbgm1",
+     "constKey": "xzkbgm1",
      "constVal": "1",
      "ltr": "",
      "rtl": null,
      "priority": 0
     },
     {
-     "className": "grp_2xl-xn1xd47",
-     "constKey": "grp_2xl-xn1xd47",
+     "className": "xn1xd47",
+     "constKey": "xn1xd47",
      "constVal": "b",
      "ltr": "",
      "rtl": null,
@@ -2784,8 +2783,7 @@
      "type": "commonJS",
      "rootDir": "/fake/root"
     },
-    "debug": true,
-    "enableDebugClassNames": true
+    "debug": true
    },
    "exportName": "tokens",
    "canonicalFileName": "tokens.stylex.ts",
@@ -2801,7 +2799,7 @@
     "$obj": [
      [
       "grp.my-key",
-      "var(--grp_my_key-xzkbgm1)"
+      "var(--xzkbgm1)"
      ],
      [
       "__varGroupHash__",
@@ -2817,7 +2815,7 @@
        "$obj": [
         [
          "my-key",
-         "var(--grp_my_key-xzkbgm1)"
+         "var(--xzkbgm1)"
         ]
        ]
       }
@@ -2833,7 +2831,7 @@
      "className": "xoe0upw",
      "constKey": null,
      "constVal": null,
-     "ltr": ":root, .xoe0upw{--grp_my_key-xzkbgm1:red;}",
+     "ltr": ":root, .xoe0upw{--xzkbgm1:red;}",
      "rtl": null,
      "priority": 0.1
     }

@@ -2117,22 +2117,21 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "exports": [
    "vars"
   ],
   "expectedRules": [
    {
-    "className": "_2xl-xmw38sc",
-    "ltr": "@property --_2xl-xmw38sc { syntax: \"<length>\"; inherits: true; initial-value: 32px }",
+    "className": "xmw38sc",
+    "ltr": "@property --xmw38sc { syntax: \"<length>\"; inherits: true; initial-value: 32px }",
     "rtl": null,
     "priority": 0
    },
    {
     "className": "x1bna6k7",
-    "ltr": ":root, .x1bna6k7{--_2xl-xmw38sc:32px;}",
+    "ltr": ":root, .x1bna6k7{--xmw38sc:32px;}",
     "rtl": null,
     "priority": 0.1
    }
@@ -2145,7 +2144,7 @@
       "$obj": [
        [
         "2xl",
-        "var(--_2xl-xmw38sc)"
+        "var(--xmw38sc)"
        ],
        [
         "__varGroupHash__",
@@ -3620,8 +3619,7 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "exports": [
    "vars"
@@ -3629,7 +3627,7 @@
   "expectedRules": [
    {
     "className": "x1bna6k7",
-    "ltr": ":root, .x1bna6k7{--fixed:red;--_2fast-xhs0jyw:blue;--weird_key_-x19denp:x;}",
+    "ltr": ":root, .x1bna6k7{--fixed:red;--xhs0jyw:blue;--x19denp:x;}",
     "rtl": null,
     "priority": 0.1
    }
@@ -3646,11 +3644,11 @@
        ],
        [
         "2fast",
-        "var(--_2fast-xhs0jyw)"
+        "var(--xhs0jyw)"
        ],
        [
         "weird key!",
-        "var(--weird_key_-x19denp)"
+        "var(--x19denp)"
        ],
        [
         "__varGroupHash__",
@@ -3706,7 +3704,7 @@
   }
  },
  {
-  "name": "naming dev plus enableDebugClassNames",
+  "name": "naming dev keeps hashed variable names",
   "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: 'red', '9lives': 'x' });",
   "filename": "/fake/root/vars.stylex.ts",
   "cwd": "<FIXROOT>",
@@ -3715,8 +3713,7 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "dev": true,
-   "enableDebugClassNames": true
+   "dev": true
   },
   "exports": [
    "vars"
@@ -3724,7 +3721,7 @@
   "expectedRules": [
    {
     "className": "x1bna6k7",
-    "ltr": ":root, .x1bna6k7{--a-xjc37cy:red;--_9lives-x1g452wm:x;}",
+    "ltr": ":root, .x1bna6k7{--xjc37cy:red;--x1g452wm:x;}",
     "rtl": null,
     "priority": 0.1
    }
@@ -3737,11 +3734,11 @@
       "$obj": [
        [
         "a",
-        "var(--a-xjc37cy)"
+        "var(--xjc37cy)"
        ],
        [
         "9lives",
-        "var(--_9lives-x1g452wm)"
+        "var(--x1g452wm)"
        ],
        [
         "__varGroupHash__",
@@ -3754,7 +3751,7 @@
   }
  },
  {
-  "name": "naming debug without enableDebugClassNames",
+  "name": "naming debug keeps hashed variable names",
   "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: 'red' });",
   "filename": "/fake/root/vars.stylex.ts",
   "cwd": "<FIXROOT>",
@@ -5382,16 +5379,15 @@
     "type": "commonJS",
     "rootDir": "<FIXROOT>"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "exports": [
    "theme"
   ],
   "expectedRules": [
    {
-    "className": "x1gjruaw",
-    "ltr": ".x1gjruaw, .x1gjruaw:root{--_2fast-xgoz2vj:3s;--accent-x1d1e07n:x;}",
+    "className": "x1g80tco",
+    "ltr": ".x1g80tco, .x1g80tco:root{--xgoz2vj:3s;--x1d1e07n:x;}",
     "rtl": null,
     "priority": 0.5
    }
@@ -5404,7 +5400,7 @@
       "$obj": [
        [
         "x4m1aov",
-        "x1gjruaw x4m1aov"
+        "x1g80tco x4m1aov"
        ],
        [
         "$$css",

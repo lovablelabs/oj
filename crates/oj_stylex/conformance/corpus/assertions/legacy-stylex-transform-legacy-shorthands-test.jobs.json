@@ -232,8 +232,7 @@
         "runtimeInjection": true,
         "styleResolution": "legacy-expand-shorthands",
         "enableLogicalStylesPolyfill": true,
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
@@ -619,7 +618,6 @@
         "styleResolution": "legacy-expand-shorthands",
         "enableLogicalStylesPolyfill": true,
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -646,7 +644,6 @@
         "styleResolution": "legacy-expand-shorthands",
         "enableLogicalStylesPolyfill": true,
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -673,7 +670,6 @@
         "styleResolution": "legacy-expand-shorthands",
         "enableLogicalStylesPolyfill": true,
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",

@@ -297,7 +297,7 @@
       "$obj": [
        [
         "k3aq6I",
-        "x1x2b8gf"
+        "x17syzoa"
        ],
        [
         "$$css",
@@ -310,8 +310,8 @@
   },
   "expectedRules": [
    {
-    "className": "x1x2b8gf",
-    "ltr": ".x1x2b8gf{transform:translateX(0px) translateY(0) translateZ(0px)}",
+    "className": "x17syzoa",
+    "ltr": ".x17syzoa{transform:translateX(0px) translateY(0px) translateZ(0px)}",
     "rtl": null,
     "priority": 3000
    }
@@ -1039,7 +1039,7 @@
       "$obj": [
        [
         "kah6P1",
-        "xg73sis"
+        "x1syln29"
        ],
        [
         "$$css",
@@ -1052,8 +1052,8 @@
   },
   "expectedRules": [
    {
-    "className": "xg73sis",
-    "ltr": ".xg73sis{content:\"\"abc\"}",
+    "className": "x1syln29",
+    "ltr": ".x1syln29{content:\"\\\"abc\"}",
     "rtl": null,
     "priority": 3000
    }
@@ -11254,7 +11254,7 @@
       "$obj": [
        [
         "kzqmXN",
-        "x1exxlbk x1oo1y1u x9sew09"
+        "x1exxlbk xnfxjsl x9sew09"
        ],
        [
         "$$css",
@@ -11273,8 +11273,8 @@
     "priority": 4000
    },
    {
-    "className": "x1oo1y1u",
-    "ltr": "@media (min-width: 600px) and (max-width: 899.99px){.x1oo1y1u.x1oo1y1u{width:200px}}",
+    "className": "xnfxjsl",
+    "ltr": "@media (min-width: 600px) and (max-width: 899.98px){.xnfxjsl.xnfxjsl{width:200px}}",
     "rtl": null,
     "priority": 4200
    },
@@ -11338,7 +11338,7 @@
       "$obj": [
        [
         "kzqmXN",
-        "x1i1rx1s x1vz3t0r xz6my08 x13958kb"
+        "x1i1rx1s x1vz3t0r x1nat5ly x13958kb"
        ],
        [
         "$$css",
@@ -11363,8 +11363,8 @@
     "priority": 4130
    },
    {
-    "className": "xz6my08",
-    "ltr": "@media (min-width: 600px) and (max-width: 899.99px){.xz6my08.xz6my08{width:2px}}",
+    "className": "x1nat5ly",
+    "ltr": "@media (min-width: 600px) and (max-width: 899.98px){.x1nat5ly.x1nat5ly{width:2px}}",
     "rtl": null,
     "priority": 4200
    },
@@ -11424,7 +11424,7 @@
       "$obj": [
        [
         "kMwMTN",
-        "xrrf2x5 x1qq7sgu x1rcuixx"
+        "xrrf2x5 x1sdczo7 x1rcuixx"
        ],
        [
         "$$css",
@@ -11443,8 +11443,8 @@
     "priority": 3000
    },
    {
-    "className": "x1qq7sgu",
-    "ltr": "@media (min-width: 600px) and (max-width: 899.99px), (max-width: 899.99px) and (max-height: 400px){.x1qq7sgu.x1qq7sgu{color:y}}",
+    "className": "x1sdczo7",
+    "ltr": "@media (min-width: 600px) and (max-width: 899.98px), (max-width: 899.98px) and (max-height: 400px){.x1sdczo7.x1sdczo7{color:y}}",
     "rtl": null,
     "priority": 3200
    },
@@ -11882,8 +11882,8 @@
      {
       "$obj": [
        [
-        "ku4PhP",
-        "xsi7hwl"
+        "kkx2bE",
+        "x1cunnz6"
        ],
        [
         "kyWqzK",
@@ -11900,8 +11900,8 @@
   },
   "expectedRules": [
    {
-    "className": "xsi7hwl",
-    "ltr": "@media (min-width: 600px) and (max-width: 899.99px){.xsi7hwl.xsi7hwl:hover{color:red}}",
+    "className": "x1cunnz6",
+    "ltr": "@media (min-width: 600px) and (max-width: 899.98px){.x1cunnz6.x1cunnz6:hover{color:red}}",
     "rtl": null,
     "priority": 3330
    },
@@ -11970,8 +11970,8 @@
      {
       "$obj": [
        [
-        "kf5CG6",
-        "x1oxvvoa"
+        "khbs0Y",
+        "x10owac8"
        ],
        [
         "kzB8eZ",
@@ -11988,8 +11988,8 @@
   },
   "expectedRules": [
    {
-    "className": "x1oxvvoa",
-    "ltr": "@media (min-width: 900px) and (max-width: 1199.99px){@media (min-width: 600px){.x1oxvvoa.x1oxvvoa.x1oxvvoa{color:red}}}",
+    "className": "x10owac8",
+    "ltr": "@media (min-width: 900px) and (max-width: 1199.98px){@media (min-width: 600px){.x10owac8.x10owac8.x10owac8{color:red}}}",
     "rtl": null,
     "priority": 3400
    },
@@ -12115,7 +12115,7 @@
       "$obj": [
        [
         "kMwMTN",
-        "x1j0lgls xqg1lzs"
+        "x1j0lgls xpio18q"
        ],
        [
         "$$css",
@@ -12134,8 +12134,8 @@
     "priority": 3000
    },
    {
-    "className": "xqg1lzs",
-    "ltr": "@media (screen) and (min-width: 600px){.xqg1lzs.xqg1lzs{color:b}}",
+    "className": "xpio18q",
+    "ltr": "@media screen and (min-width: 600px){.xpio18q.xpio18q{color:b}}",
     "rtl": null,
     "priority": 3200
    }
@@ -16463,8 +16463,7 @@
    ]
   },
   "options": {
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "filename": "/fake/root/pins.ts",
   "varName": "styles",
@@ -16482,11 +16481,11 @@
       "$obj": [
        [
         "color-kMwMTN",
-        "color-x1e2nbdu"
+        "x1e2nbdu"
        ],
        [
         ":hover_color-kDPRdz",
-        "color-x17z2mba"
+        "x17z2mba"
        ],
        [
         "$$css",
@@ -16501,7 +16500,7 @@
       "$obj": [
        [
         "--x",
-        "--x-x1kp0skd"
+        "x1kp0skd"
        ],
        [
         "width-kzqmXN",
@@ -16509,7 +16508,7 @@
        ],
        [
         "marginInlineStart-keTefX",
-        "marginInlineStart-xdwrcjd"
+        "xdwrcjd"
        ],
        [
         "$$css",
@@ -16522,26 +16521,26 @@
   },
   "expectedRules": [
    {
-    "className": "color-x1e2nbdu",
-    "ltr": ".color-x1e2nbdu{color:red}",
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
     "rtl": null,
     "priority": 3000
    },
    {
-    "className": "color-x17z2mba",
-    "ltr": ".color-x17z2mba:hover{color:blue}",
+    "className": "x17z2mba",
+    "ltr": ".x17z2mba:hover{color:blue}",
     "rtl": null,
     "priority": 3130
    },
    {
-    "className": "--x-x1kp0skd",
-    "ltr": ".--x-x1kp0skd{--x:y}",
+    "className": "x1kp0skd",
+    "ltr": ".x1kp0skd{--x:y}",
     "rtl": null,
     "priority": 1
    },
    {
-    "className": "marginInlineStart-xdwrcjd",
-    "ltr": ".marginInlineStart-xdwrcjd{margin-inline-start:4px}",
+    "className": "xdwrcjd",
+    "ltr": ".xdwrcjd{margin-inline-start:4px}",
     "rtl": null,
     "priority": 3000
    }
@@ -16595,8 +16594,7 @@
    ]
   },
   "options": {
-   "dev": true,
-   "enableDebugClassNames": true
+   "dev": true
   },
   "filename": "/fake/root/pins.ts",
   "varName": "styles",
@@ -16618,11 +16616,11 @@
        ],
        [
         "color-kMwMTN",
-        "color-x1e2nbdu"
+        "x1e2nbdu"
        ],
        [
         ":hover_color-kDPRdz",
-        "color-x17z2mba"
+        "x17z2mba"
        ],
        [
         "$$css",
@@ -16641,7 +16639,7 @@
        ],
        [
         "--x",
-        "--x-x1kp0skd"
+        "x1kp0skd"
        ],
        [
         "width-kzqmXN",
@@ -16649,7 +16647,7 @@
        ],
        [
         "marginInlineStart-keTefX",
-        "marginInlineStart-xdwrcjd"
+        "xdwrcjd"
        ],
        [
         "$$css",
@@ -16662,26 +16660,26 @@
   },
   "expectedRules": [
    {
-    "className": "color-x1e2nbdu",
-    "ltr": ".color-x1e2nbdu{color:red}",
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
     "rtl": null,
     "priority": 3000
    },
    {
-    "className": "color-x17z2mba",
-    "ltr": ".color-x17z2mba:hover{color:blue}",
+    "className": "x17z2mba",
+    "ltr": ".x17z2mba:hover{color:blue}",
     "rtl": null,
     "priority": 3130
    },
    {
-    "className": "--x-x1kp0skd",
-    "ltr": ".--x-x1kp0skd{--x:y}",
+    "className": "x1kp0skd",
+    "ltr": ".x1kp0skd{--x:y}",
     "rtl": null,
     "priority": 1
    },
    {
-    "className": "marginInlineStart-xdwrcjd",
-    "ltr": ".marginInlineStart-xdwrcjd{margin-inline-start:4px}",
+    "className": "xdwrcjd",
+    "ltr": ".xdwrcjd{margin-inline-start:4px}",
     "rtl": null,
     "priority": 3000
    }
@@ -17130,7 +17128,6 @@
   },
   "options": {
    "debug": true,
-   "enableDebugClassNames": true,
    "classNamePrefix": "pfx"
   },
   "filename": "/fake/root/pins.ts",
@@ -17149,11 +17146,11 @@
       "$obj": [
        [
         "color-kMwMTN",
-        "color-pfx1e2nbdu"
+        "pfx1e2nbdu"
        ],
        [
         ":hover_color-kDPRdz",
-        "color-pfx17z2mba"
+        "pfx17z2mba"
        ],
        [
         "$$css",
@@ -17168,7 +17165,7 @@
       "$obj": [
        [
         "--x",
-        "--x-pfx1kp0skd"
+        "pfx1kp0skd"
        ],
        [
         "width-kzqmXN",
@@ -17176,7 +17173,7 @@
        ],
        [
         "marginInlineStart-keTefX",
-        "marginInlineStart-pfxdwrcjd"
+        "pfxdwrcjd"
        ],
        [
         "$$css",
@@ -17189,26 +17186,26 @@
   },
   "expectedRules": [
    {
-    "className": "color-pfx1e2nbdu",
-    "ltr": ".color-pfx1e2nbdu{color:red}",
+    "className": "pfx1e2nbdu",
+    "ltr": ".pfx1e2nbdu{color:red}",
     "rtl": null,
     "priority": 3000
    },
    {
-    "className": "color-pfx17z2mba",
-    "ltr": ".color-pfx17z2mba:hover{color:blue}",
+    "className": "pfx17z2mba",
+    "ltr": ".pfx17z2mba:hover{color:blue}",
     "rtl": null,
     "priority": 3130
    },
    {
-    "className": "--x-pfx1kp0skd",
-    "ltr": ".--x-pfx1kp0skd{--x:y}",
+    "className": "pfx1kp0skd",
+    "ltr": ".pfx1kp0skd{--x:y}",
     "rtl": null,
     "priority": 1
    },
    {
-    "className": "marginInlineStart-pfxdwrcjd",
-    "ltr": ".marginInlineStart-pfxdwrcjd{margin-inline-start:4px}",
+    "className": "pfxdwrcjd",
+    "ltr": ".pfxdwrcjd{margin-inline-start:4px}",
     "rtl": null,
     "priority": 3000
    }

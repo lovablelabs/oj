@@ -533,26 +533,25 @@
      "rootDir": "<CORPUSROOT>",
      "type": "commonJS"
     },
-    "debug": true,
-    "enableDebugClassNames": true
+    "debug": true
    },
    "mode": "prod",
    "expectedRules": [
     {
      "className": "x1xu5ct6",
-     "ltr": ":root, .x1xu5ct6{--color-x1top4w9:blue;--otherColor-x1mnphin:green;}",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:blue;--x1mnphin:green;}",
      "rtl": null,
      "priority": 0.1
     },
     {
      "className": "x1xu5ct6-1lveb7",
-     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--color-x1top4w9:lightblue;}}",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1top4w9:lightblue;}}",
      "rtl": null,
      "priority": 0.2
     },
     {
      "className": "x1xu5ct6-1e6ryz3",
-     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--color-x1top4w9:oklab(0.7 -0.3 -0.4);}}}",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1top4w9:oklab(0.7 -0.3 -0.4);}}}",
      "rtl": null,
      "priority": 0.3
     }
@@ -567,14 +566,13 @@
      "rootDir": "<CORPUSROOT>",
      "type": "commonJS"
     },
-    "debug": true,
-    "enableDebugClassNames": true
+    "debug": true
    },
    "mode": "prod",
    "expectedRules": [
     {
      "className": "x1xu5ct6",
-     "ltr": ":root, .x1xu5ct6{--_10-x1ca32pf:green;--_1_5_pixels-xc3dw28:blue;--corner_radius-x14o2g28:purple;--__primary-x1xj8xwn:pink;}",
+     "ltr": ":root, .x1xu5ct6{--x1ca32pf:green;--xc3dw28:blue;--x14o2g28:purple;--x1xj8xwn:pink;}",
      "rtl": null,
      "priority": 0.1
     }
@@ -589,14 +587,13 @@
      "rootDir": "<CORPUSROOT>",
      "type": "commonJS"
     },
-    "dev": true,
-    "enableDebugClassNames": true
+    "dev": true
    },
    "mode": "prod",
    "expectedRules": [
     {
      "className": "x1xu5ct6",
-     "ltr": ":root, .x1xu5ct6{--color-x1top4w9:red;--nextColor-x1jvhhir:green;--otherColor-x1mnphin:blue;}",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;--x1jvhhir:green;--x1mnphin:blue;}",
      "rtl": null,
      "priority": 0.1
     }
@@ -612,14 +609,13 @@
      "themeFileExtension": "cssvars",
      "type": "commonJS"
     },
-    "debug": true,
-    "enableDebugClassNames": true
+    "debug": true
    },
    "mode": "prod",
    "expectedRules": [
     {
      "className": "x18p5xcc",
-     "ltr": ":root, .x18p5xcc{--color-x4jy5s:red;}",
+     "ltr": ":root, .x18p5xcc{--x4jy5s:red;}",
      "rtl": null,
      "priority": 0.1
     }

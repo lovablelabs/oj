@@ -123,7 +123,6 @@
           "type": "commonJS"
         },
         "debug": true,
-        "enableDebugClassNames": true,
         "dev": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
@@ -143,7 +142,6 @@
           "type": "commonJS"
         },
         "debug": true,
-        "enableDebugClassNames": true,
         "dev": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
@@ -163,7 +161,6 @@
           "type": "commonJS"
         },
         "debug": true,
-        "enableDebugClassNames": true,
         "dev": true,
         "enableDevClassNames": false,
         "sxPropName": "css",
@@ -330,7 +327,6 @@
           "type": "commonJS"
         },
         "debug": true,
-        "enableDebugClassNames": true,
         "dev": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
@@ -350,7 +346,6 @@
           "type": "commonJS"
         },
         "debug": true,
-        "enableDebugClassNames": true,
         "dev": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
@@ -756,7 +751,6 @@
         "dev": true,
         "debug": true,
         "enableDevClassNames": true,
-        "enableDebugClassNames": true,
         "runtimeInjection": true
       },
       "mode": "prod",
@@ -1194,7 +1188,6 @@
         },
         "dev": true,
         "enableInlinedConditionalMerge": false,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1214,7 +1207,6 @@
         },
         "dev": true,
         "enableInlinedConditionalMerge": false,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1233,7 +1225,6 @@
           "type": "commonJS"
         },
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1252,7 +1243,6 @@
           "type": "commonJS"
         },
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1400,7 +1390,6 @@
           "type": "commonJS"
         },
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1419,7 +1408,6 @@
           "type": "commonJS"
         },
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1439,7 +1427,6 @@
         },
         "dev": true,
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },
@@ -1459,7 +1446,6 @@
         },
         "dev": true,
         "debug": true,
-        "enableDebugClassNames": false,
         "enableDevClassNames": false,
         "runtimeInjection": true
       },

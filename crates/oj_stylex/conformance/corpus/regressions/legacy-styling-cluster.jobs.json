@@ -1217,8 +1217,7 @@
       "options": {
         "enableMinifiedKeys": true,
         "styleResolution": "legacy-expand-shorthands",
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "expect": "ok",
