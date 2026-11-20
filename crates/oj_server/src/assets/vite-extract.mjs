@@ -1416,6 +1416,16 @@ function extractEsbuild(es) {
   return Object.keys(out).length ? out : null;
 }
 
+// An environment's resolved `resolve.dedupe`, whole: the top-level list, the
+// config file's `environments.<name>.resolve.dedupe` and what plugins'
+// `configEnvironment` hooks add (TanStack Start's React and router, for the
+// client and for ssr). The merge drops what the environment already lists.
+function extractEnvironmentDedupe(c, name) {
+  const list = c.environments?.[name]?.resolve?.dedupe;
+  const own = Array.isArray(list) ? list.filter((x) => typeof x === "string") : [];
+  return own.length ? own : null;
+}
+
 // `ssr.noExternal`/`external` entries: strings and globs pass through, RegExps
 // become `{ regex }`, `true` stays `true`.
 function extractSsr(ssr, ssrEnvironment) {
@@ -1845,6 +1855,7 @@ export {
   extractOptimizeDeps,
   extractProxy,
   extractResolve,
+  extractEnvironmentDedupe,
   extractSsr,
   mergeConfigLite,
   warnUnsupported,
@@ -2111,6 +2122,10 @@ async function extractValues(input) {
           }),
         ),
         dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
+        // Each environment's own resolved list: oj's top-level list can differ
+        // from Vite's (the config file's wins), so nothing is subtracted here.
+        clientDedupe: extractEnvironmentDedupe(c, "client"),
+        ssrDedupe: extractEnvironmentDedupe(c, "ssr"),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
         oxc: extractOxc(c.oxc),

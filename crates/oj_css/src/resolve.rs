@@ -13,6 +13,9 @@ pub struct CssResolve<'a> {
     pub public_dir: Option<&'a Path>,
     /// `(find, replacement)`; a replacement starting with `.` is root-relative.
     pub alias: &'a [(String, String)],
+    /// The environment's `resolve.dedupe`: a bare `@import` / `@use` of a
+    /// listed package resolves from the root first.
+    pub dedupe: &'a [String],
     /// `build.cssTarget` as esbuild-style names; empty means Vite's baseline.
     pub targets: &'a [String],
     /// `build.cssMinify` (dev never minifies).
@@ -48,6 +51,7 @@ impl Default for CssResolve<'_> {
             root: None,
             public_dir: None,
             alias: &[],
+            dedupe: &[],
             targets: &[],
             minify: false,
             production: false,
@@ -82,6 +86,7 @@ pub struct CssResolveConfig {
     pub root: PathBuf,
     pub public_dir: PathBuf,
     pub alias: Vec<(String, String)>,
+    pub dedupe: Vec<String>,
     pub targets: Vec<String>,
     pub minify: bool,
     pub production: bool,
@@ -98,6 +103,7 @@ impl CssResolveConfig {
             root: set(&self.root),
             public_dir: set(&self.public_dir),
             alias: &self.alias,
+            dedupe: &self.dedupe,
             targets: &self.targets,
             minify: self.minify,
             production: self.production,
@@ -113,6 +119,7 @@ impl From<CssResolve<'_>> for CssResolveConfig {
             root: r.root.map(Path::to_path_buf).unwrap_or_default(),
             public_dir: r.public_dir.map(Path::to_path_buf).unwrap_or_default(),
             alias: r.alias.to_vec(),
+            dedupe: r.dedupe.to_vec(),
             targets: r.targets.to_vec(),
             minify: r.minify,
             production: r.production,
@@ -139,6 +146,13 @@ impl CssResolve<'_> {
                 _ => aliased,
             })
         })
+    }
+
+    /// The root a bare `spec` resolves from first, when it names a
+    /// `resolve.dedupe` package.
+    pub fn dedupe_root(&self, spec: &str) -> Option<&Path> {
+        self.root
+            .filter(|_| oj_resolver::dedupes(self.dedupe, spec))
     }
 
     /// The absolute path an alias maps `spec` to (None for a package alias).

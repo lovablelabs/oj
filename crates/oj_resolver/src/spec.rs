@@ -18,7 +18,7 @@ pub(crate) fn lexical_join(base: &Path, spec: &str) -> PathBuf {
 
 /// The package of a bare specifier: `react-dom/client` -> `react-dom`,
 /// `@radix-ui/react-slot/x` -> `@radix-ui/react-slot`.
-pub(crate) fn package_name(spec: &str) -> &str {
+pub fn package_name(spec: &str) -> &str {
     let first = spec.find('/').unwrap_or(spec.len());
     if !spec.starts_with('@') || first == spec.len() {
         return &spec[..first];

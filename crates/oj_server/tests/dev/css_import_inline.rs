@@ -167,3 +167,46 @@ async fn tailwind_sheet_inlines_imports_before_postcss() {
     crate::require_fixture!("postcss");
     remote_font_then_relative_imports(true).await;
 }
+
+/// Vite's CSS resolvers apply the client environment's `resolve.dedupe`: a
+/// dependency's `@import` of a listed package inlines the root's copy.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deduped_import_inside_a_dependency_inlines_the_root_copy() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"dedupe-css-app"}"#),
+        (
+            "vite.config.js",
+            "export default { resolve: { dedupe: [\"shared\"] } };\n",
+        ),
+        ("node_modules/shared/package.json", r#"{"name":"shared"}"#),
+        ("node_modules/shared/s.css", ".root-copy { a: b; }\n"),
+        (
+            "node_modules/consumer/package.json",
+            r#"{"name":"consumer"}"#,
+        ),
+        (
+            "node_modules/consumer/style.css",
+            "@import \"shared/s.css\";\n.consumer { color: red; }\n",
+        ),
+        (
+            "node_modules/consumer/node_modules/shared/package.json",
+            r#"{"name":"shared"}"#,
+        ),
+        (
+            "node_modules/consumer/node_modules/shared/s.css",
+            ".nested-copy { a: b; }\n",
+        ),
+        (
+            "src/main.js",
+            "import \"consumer/style.css\";\nwindow.__OK = true;\n",
+        ),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let css = server.text("/node_modules/consumer/style.css?direct").await;
+    assert!(css.contains(".root-copy"), "{css}");
+    assert!(
+        !css.contains(".nested-copy"),
+        "inlined the copy under consumer:\n{css}"
+    );
+}

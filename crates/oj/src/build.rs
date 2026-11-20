@@ -349,8 +349,8 @@ type WorkerBundles = Arc<
 >;
 
 /// What `@import`/`@use`/`url()` specifiers inside stylesheets resolve through,
-/// as Vite's CSS resolvers do: the environment's `resolve.alias`, the root and
-/// the public directory.
+/// as Vite's CSS resolvers do: the environment's `resolve.alias` and
+/// `resolve.dedupe`, the root and the public directory.
 fn css_resolve_of(
     root: &Path,
     config: &oj_config::OjConfig,
@@ -361,6 +361,7 @@ fn css_resolve_of(
         root: root.to_path_buf(),
         public_dir: oj_config::public_dir(config, root).unwrap_or_default(),
         alias: oj_config::resolve_alias(config, env),
+        dedupe: oj_config::environment_dedupe(config, env),
         targets: oj_config::build_css_targets(config),
         minify: oj_config::build_css_minify(config, env == "ssr"),
         production,
@@ -1513,7 +1514,7 @@ async fn bundle_worker_inline_with(
 ) -> anyhow::Result<String> {
     // A worker bundle resolves as Vite's: the aliases first, then
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
-    // `paths` where vite:resolve sits.
+    // `paths` and `resolve.dedupe` after the app's plugins.
     let mut plugins: Vec<SharedPluginable> = opts
         .map(|o| resolve_plugins(root, &o.config))
         .unwrap_or_default();
@@ -1531,6 +1532,7 @@ async fn bundle_worker_inline_with(
     }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
+    plugins.extend(opts.and_then(|o| dedupe_plugin(root, oj_config::resolve_dedupe(&o.config))));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1572,7 +1574,7 @@ async fn bundle_worker_entry_with(
     };
     // A worker bundle resolves as Vite's: the aliases first, then
     // `worker.plugins` (their container), the nested pipeline, then tsconfig
-    // `paths` where vite:resolve sits.
+    // `paths` and `resolve.dedupe` after the app's plugins.
     let mut plugins: Vec<SharedPluginable> = opts
         .map(|o| resolve_plugins(root, &o.config))
         .unwrap_or_default();
@@ -1590,6 +1592,7 @@ async fn bundle_worker_entry_with(
     }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
+    plugins.extend(opts.and_then(|o| dedupe_plugin(root, oj_config::resolve_dedupe(&o.config))));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1826,6 +1829,7 @@ impl Plugin for OjCssPlugin {
             }
         });
         let ctx = ctx.clone();
+        let written = args.specifier.to_string();
         async move {
             if is_polyfill {
                 return Ok(Some(HookResolveIdOutput::from_id(
@@ -1839,7 +1843,15 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(HookResolveIdOutput::from_id(id)));
             }
             if let Some((base, query)) = asset_query {
-                if let Ok(Ok(resolved)) = ctx.resolve(&base, importer.as_deref(), None).await {
+                let mut custom = rolldown_plugin::CustomField::new();
+                custom.insert(crate::start_bundle::alias::QueriedImport, written);
+                let options = rolldown_plugin::PluginContextResolveOptions {
+                    custom: Arc::new(custom),
+                    ..Default::default()
+                };
+                if let Ok(Ok(resolved)) =
+                    ctx.resolve(&base, importer.as_deref(), Some(options)).await
+                {
                     let id = format!("{}?{query}", resolved.id.as_str());
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
@@ -2592,6 +2604,13 @@ pub(crate) fn tsconfig_paths_plugin_with(
     ))
 }
 
+/// A bundle's `resolve.dedupe` step, after the app's plugins: an
+/// environment's list, or the top-level one for a worker bundle (Vite's
+/// worker resolve plugin takes the resolved config's).
+pub(crate) fn dedupe_plugin(root: &Path, dedupe: Vec<String>) -> Option<SharedPluginable> {
+    crate::start_bundle::alias::DedupePlugin::new(root, dedupe).map(Pluginable::new_shared)
+}
+
 /// A resolver with the build's own resolve settings for `env`: its
 /// conditions (production), mainFields, extensions, aliases and tsconfig
 /// `paths` mode.
@@ -2617,7 +2636,7 @@ fn build_resolver_with(
         oj_resolver::ResolveSettings {
             conditions: conditions.unwrap_or_else(|| build_conditions(config, env)),
             alias: oj_config::top_level_alias(config),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, env),
             extensions: resolve.extensions,
             main_fields: resolve.main_fields,
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
@@ -4160,6 +4179,10 @@ pub async fn build(
         "client",
         false,
     ));
+    oj_plugins.extend(dedupe_plugin(
+        root.as_ref(),
+        oj_config::environment_dedupe(&config, "client"),
+    ));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
@@ -5631,6 +5654,10 @@ pub(crate) async fn build_ssr(
         )));
     }
     oj_plugins.extend(tsconfig_paths_plugin(root, config, "ssr", false));
+    oj_plugins.extend(dedupe_plugin(
+        root,
+        oj_config::environment_dedupe(config, "ssr"),
+    ));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5821,28 +5848,34 @@ async fn build_server_fns(
         Box::pin(async move { Ok(ext) })
     })));
     let result = async {
+        // The ssr environment's `resolve.dedupe`, as in the server bundle.
+        let mut plugins: Vec<SharedPluginable> =
+            dedupe_plugin(root, oj_config::environment_dedupe(config, "ssr"))
+                .into_iter()
+                .collect();
+        plugins.push(Pluginable::new_shared(OjCssPlugin {
+            collected: Arc::clone(&collected),
+            root: root.to_path_buf(),
+            has_postcss: oj_server::has_postcss_config(root),
+            inline_limit: 4096,
+            client: false,
+            resolve: css_resolve_of(root, config, "ssr", is_production),
+            base: normalize_base(config.base.as_deref().unwrap_or("/")),
+            css_code_split: false,
+            host: None,
+            css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            css: config.css.clone(),
+            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            worker: None,
+            worker_bundles: Default::default(),
+            worker_chain: Default::default(),
+            pages: Default::default(),
+            chunk_css_hashing: None,
+            url_sheets: None,
+            emit: None,
+        }));
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
-                collected: Arc::clone(&collected),
-                root: root.to_path_buf(),
-                has_postcss: oj_server::has_postcss_config(root),
-                inline_limit: 4096,
-                client: false,
-                resolve: css_resolve_of(root, config, "ssr", is_production),
-                base: normalize_base(config.base.as_deref().unwrap_or("/")),
-                css_code_split: false,
-                host: None,
-                css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
-                css: config.css.clone(),
-                html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                worker: None,
-                worker_bundles: Default::default(),
-                worker_chain: Default::default(),
-                pages: Default::default(),
-                chunk_css_hashing: None,
-                url_sheets: None,
-                emit: None,
-            })])
+            .with_plugins(plugins)
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
                     name: Some("_oj_server_fns".to_string()),
@@ -6242,6 +6275,10 @@ async fn build_client_entry(
         )));
     }
     oj_plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
+    oj_plugins.extend(dedupe_plugin(
+        root,
+        oj_config::environment_dedupe(config, "client"),
+    ));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -6557,6 +6594,10 @@ async fn build_library(
                 plugins.push(Pluginable::new_shared(user.with_build_end()));
             }
             plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
+            plugins.extend(dedupe_plugin(
+                root,
+                oj_config::environment_dedupe(config, "client"),
+            ));
             plugins.push(Pluginable::new_shared(OjCssPlugin {
                 collected: Arc::clone(&collected_css),
                 root: root.to_path_buf(),

@@ -7,6 +7,7 @@ import { asset } from "./harness.mjs";
 import {
   detectSsrRunnerBacked,
   extractAlias,
+  extractEnvironmentDedupe,
   extractOptimizeDeps,
   extractProxy,
   extractResolve,
@@ -32,6 +33,24 @@ test("optimizeDeps carries needsInterop and force alongside the lists", () => {
   });
   assert.equal(extractOptimizeDeps({ force: "yes" }), null, "non-boolean force is ignored");
   assert.equal(extractOptimizeDeps(undefined), null);
+});
+
+// Vite's resolved environments hold the top-level list, the config file's own
+// and what plugins' `configEnvironment` hooks add. oj keeps its config file's
+// top-level list over Vite's, so the environment's list travels whole.
+test("an environment's resolved dedupe list travels whole, for client and ssr", () => {
+  const resolved = {
+    resolve: { dedupe: ["react"] },
+    environments: {
+      client: { resolve: { dedupe: ["react", "router"] } },
+      ssr: { resolve: { dedupe: ["react", "react-dom", 7] } },
+      worker: { resolve: { dedupe: [] } },
+    },
+  };
+  assert.deepEqual(extractEnvironmentDedupe(resolved, "client"), ["react", "router"]);
+  assert.deepEqual(extractEnvironmentDedupe(resolved, "ssr"), ["react", "react-dom"]);
+  assert.equal(extractEnvironmentDedupe(resolved, "worker"), null);
+  assert.equal(extractEnvironmentDedupe({ resolve: { dedupe: ["react"] } }, "ssr"), null);
 });
 
 test("string aliases pass through unchanged", () => {
