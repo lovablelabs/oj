@@ -25,7 +25,7 @@ const ROOT_PLACEHOLDER: &str = "/ROOT/";
 /// `rewriteAliases` passes `root_dir: None` — upstream omits the argument there.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ResolveConfig<'a> {
-    pub aliases: Option<&'a AliasMap>,
+    pub aliases: Option<&'a Arc<AliasMap>>,
     pub root_dir: Option<&'a Path>,
 }
 
@@ -221,11 +221,11 @@ type PathMap<V> = RwLock<FxHashMap<Box<[u8]>, V>>;
 /// as long as the server does and is asked about paths without end: files
 /// come, go and are renamed, and every half-typed import is a specifier of its
 /// own. A map that is full is emptied and fills again with what is still being
-/// asked for. A pass over an app leaves a map an answer or two for each
-/// directory that has modules in it, so only an app of thousands of such
-/// directories fills one by itself; its later passes then work out again what
-/// the map had no room to keep.
-const LIVE_CACHE_CAP: usize = 1 << 14;
+/// asked for. A pass over an app leaves the fullest map an answer for each
+/// module that is imported, so only an app of several tens of thousands of
+/// modules fills one by itself; its later passes then work out again what the
+/// map had no room to keep.
+const LIVE_CACHE_CAP: usize = 1 << 16;
 
 /// How long a live fs waits before it trusts a timestamp: a change made within
 /// the timestamp's granularity of an earlier one leaves it where it was (the
@@ -443,7 +443,8 @@ struct Deps {
     volatile: bool,
     /// When the directories that had just changed will have settled. Until
     /// then the answer rests on each path it probed under them; after, it is
-    /// worked out once more, to rest on those that did settle.
+    /// worked out once more, to rest on those that did settle and to wait
+    /// again for any that changed in the meantime.
     resettle: Option<SystemTime>,
 }
 
@@ -492,18 +493,34 @@ struct Checked<T> {
     deps: Arc<Deps>,
 }
 
+impl<T: Clone> Checked<T> {
+    /// The answer and what it rests on, to be looked into after the lock on
+    /// the map that keeps them is let go.
+    fn copied(&self) -> (T, Arc<Deps>) {
+        (self.value.clone(), Arc::clone(&self.deps))
+    }
+}
+
 /// What every answer of a snapshot rests on.
 static NOTHING: LazyLock<Arc<Deps>> = LazyLock::new(Arc::default);
 
 struct ResolveMemo {
-    aliases: Option<AliasMap>,
+    /// The map the options asked with hold, shared by every directory's memo.
+    aliases: Option<Arc<AliasMap>>,
     root_dir: Option<PathBuf>,
     by_specifier: FxHashMap<String, Checked<Option<PathBuf>>>,
 }
 
 impl ResolveMemo {
     fn matches(&self, config: ResolveConfig<'_>) -> bool {
-        self.aliases.as_ref() == config.aliases
+        let aliases = match (&self.aliases, config.aliases) {
+            (None, None) => true,
+            // One set of options asks with one map: entries are compared
+            // only against a map resolved from other options.
+            (Some(kept), Some(asked)) => Arc::ptr_eq(kept, asked) || kept == asked,
+            _ => false,
+        };
+        aliases
             && self.root_dir.as_deref().map(Path::as_os_str) == config.root_dir.map(Path::as_os_str)
     }
 }
@@ -662,11 +679,7 @@ impl MemoFs {
         self.settle.map(|settle| Look {
             started: SystemTime::now(),
             settle,
-            seen: Mutex::new(Seen {
-                // Room for the directories above a module and its imports.
-                stats: FxHashMap::with_capacity_and_hasher(32, Default::default()),
-                real: FxHashMap::default(),
-            }),
+            seen: Mutex::default(),
         })
     }
 
@@ -715,11 +728,19 @@ struct Look {
     seen: Mutex<Seen>,
 }
 
+/// What a [`Look`] has found so far. Nothing is allocated before the first
+/// find: a compile that asks nothing of the disk pays nothing for its look.
 #[derive(Default)]
 struct Seen {
     stats: FxHashMap<Box<[u8]>, Sight>,
     real: FxHashMap<Box<[u8]>, Option<PathBuf>>,
+    /// What kept answers share of what they rest on, found as it was: by
+    /// address, each held here so that the address stays its own.
+    held: FxHashMap<usize, Arc<Deps>>,
 }
+
+/// Room for the directories above a module and its imports.
+const SEEN_STATS_ROOM: usize = 32;
 
 impl Look {
     /// Whether any later change to the node is sure to move its stamp.
@@ -757,6 +778,9 @@ impl View<'_> {
             return *hit;
         }
         let sight = Sight::of(p);
+        if seen.stats.is_empty() {
+            seen.stats.reserve(SEEN_STATS_ROOM);
+        }
         seen.stats.insert(key.into(), sight);
         sight
     }
@@ -797,11 +821,15 @@ impl View<'_> {
         manifest
     }
 
+    /// How a kept answer resting on `deps` stands. A live fs stats the disk
+    /// to say, so this is asked with no lock on the map the answer is kept
+    /// in: a stat made under one would hold up the map's writers, and behind
+    /// a writer that waits, its other readers.
     fn standing(&self, deps: &Deps) -> Standing {
         let Some(look) = self.look else {
             return Standing::Holds;
         };
-        if !self.holds(deps) {
+        if !self.holds(look, deps) {
             Standing::Moved
         } else if deps.resettle.is_some_and(|at| at <= look.started) {
             Standing::Due
@@ -810,13 +838,27 @@ impl View<'_> {
         }
     }
 
-    /// Whether a live fs finds everything `deps` lists and inherits as it was.
-    fn holds(&self, deps: &Deps) -> bool {
+    /// Whether `look` finds everything `deps` lists and inherits as it was.
+    fn holds(&self, look: &Look, deps: &Deps) -> bool {
         let repeats = |dep: &Dep| match dep {
             Dep::Stat(path, stamp) => self.stat(path) == *stamp,
             Dep::Real(path, real) => self.real(path).as_deref() == real.as_deref(),
         };
-        deps.list.iter().all(repeats) && deps.inherited.iter().all(|deps| self.holds(deps))
+        deps.list.iter().all(repeats) && deps.inherited.iter().all(|deps| self.held(look, deps))
+    }
+
+    /// [`Self::holds`] of what answers inherit, and so share: `look` sees
+    /// each path one way, so what it found to hold once is not walked again.
+    fn held(&self, look: &Look, deps: &Arc<Deps>) -> bool {
+        let address = Arc::as_ptr(deps) as usize;
+        if lock(&look.seen).held.contains_key(&address) {
+            return true;
+        }
+        let held = self.holds(look, deps);
+        if held {
+            lock(&look.seen).held.insert(address, Arc::clone(deps));
+        }
+        held
     }
 
     /// The answer `map` keeps under `key` if it stands, else `work`'s, kept
@@ -828,17 +870,26 @@ impl View<'_> {
         work: impl FnOnce(&Tracker<'_>) -> T,
         rests_on: impl FnOnce(&Arc<Deps>),
     ) -> T {
-        let mut standing = Standing::Moved;
-        if let Some(hit) = read_lock(map).get(key) {
-            standing = self.standing(&hit.deps);
-            if let Standing::Holds = standing {
-                rests_on(&hit.deps);
-                return hit.value.clone();
+        let hit = {
+            let map = read_lock(map);
+            match map.get(key) {
+                // A snapshot's answer stands as it is.
+                Some(hit) if self.look.is_none() => {
+                    rests_on(&hit.deps);
+                    return hit.value.clone();
+                }
+                hit => hit.map(Checked::copied),
             }
+        };
+        if let Some((value, deps)) = hit
+            && let Standing::Holds = self.standing(&deps)
+        {
+            rests_on(&deps);
+            return value;
         }
         let tracker = Tracker::new(*self);
         let value = work(&tracker);
-        let deps = tracker.finish(&standing);
+        let deps = tracker.finish();
         rests_on(&deps);
         let mut map = write_lock(map);
         if deps.volatile {
@@ -911,17 +962,22 @@ impl View<'_> {
             return self.kept(&self.fs.relative, &target, resolve, |_| {});
         }
         let key = path_key(dir);
-        let mut standing = Standing::Moved;
-        if let Some(memo) = read_lock(&self.fs.resolve).get(key, config)
-            && let Some(hit) = memo.by_specifier.get(specifier)
-        {
-            standing = self.standing(&hit.deps);
-            if let Standing::Holds = standing {
-                return hit.value.clone();
+        let hit = {
+            let memos = read_lock(&self.fs.resolve);
+            let memo = memos.get(key, config);
+            match memo.and_then(|memo| memo.by_specifier.get(specifier)) {
+                // A snapshot's answer stands as it is.
+                Some(hit) if self.look.is_none() => return hit.value.clone(),
+                hit => hit.map(Checked::copied),
             }
+        };
+        if let Some((value, deps)) = hit
+            && let Standing::Holds = self.standing(&deps)
+        {
+            return value;
         }
         let resolved = resolve_import_with(&tracker, specifier, importer, config);
-        let deps = tracker.finish(&standing);
+        let deps = tracker.finish();
         let mut memos = write_lock(&self.fs.resolve);
         if deps.volatile {
             memos.forget(key, config, specifier);
@@ -1062,14 +1118,17 @@ impl<'a> Tracker<'a> {
         }
     }
 
-    /// What the answer worked out rests on. One that was [`Standing::Due`]
-    /// its second working out is not due a third.
-    fn finish(self, was: &Standing) -> Arc<Deps> {
-        if self.view.look.is_none() {
+    /// What the answer worked out rests on. A time to resettle by stays only
+    /// while this look has yet to reach it, which is while a directory the
+    /// answer probed under had still not settled: an answer that was
+    /// [`Standing::Due`] and met one waits once more, to rest on the
+    /// directory when it has stood, and no answer is due at every look.
+    fn finish(self) -> Arc<Deps> {
+        let Some(look) = self.view.look else {
             return Arc::clone(&NOTHING);
-        }
+        };
         let mut deps = self.deps.into_inner();
-        if let Standing::Due = was {
+        if deps.resettle.is_some_and(|at| at <= look.started) {
             deps.resettle = None;
         }
         Arc::new(deps)
@@ -1390,7 +1449,7 @@ fn resolve_import_with(
             }
             continue;
         }
-        for possible in possible_aliased_paths(&candidate, config.aliases) {
+        for possible in possible_aliased_paths(&candidate, config.aliases.map(Arc::as_ref)) {
             // Turbopack's placeholder, honored only when a rootDir is set.
             if let Some(rest) = possible.strip_prefix(ROOT_PLACEHOLDER)
                 && let Some(root) = config.root_dir
@@ -3182,6 +3241,50 @@ mod tests {
         std::thread::sleep(TEST_SETTLE * 3);
     }
 
+    /// A session that finds nothing kept due, once `settle` has had another
+    /// work out again the answers that waited on the temp dir above the
+    /// fixture. Others write to that directory, so they may wait on it once
+    /// more: for a time that comes after `settle`'s look began, as this
+    /// session's did not.
+    fn at_rest(live: &MemoFs, settle: impl FnOnce()) -> MemoSession<'_> {
+        let session = live.session();
+        settle();
+        session
+    }
+
+    fn look_from(started: SystemTime) -> Look {
+        Look {
+            started,
+            settle: TEST_SETTLE,
+            seen: Mutex::default(),
+        }
+    }
+
+    fn view_of<'a>(fs: &'a MemoFs, look: &'a Look) -> View<'a> {
+        View {
+            fs,
+            look: Some(look),
+        }
+    }
+
+    /// Every observation `deps` rests on, its own and those it inherits.
+    fn every_dep(deps: &Deps) -> Vec<&Dep> {
+        let inherited = deps.inherited.iter().flat_map(|deps| every_dep(deps));
+        deps.list.iter().chain(inherited).collect()
+    }
+
+    /// Moves `dir`'s stamp, as an entry that comes and goes does, and says
+    /// where to.
+    fn restamp(dir: &Path, entry: &str) -> SystemTime {
+        let entry = dir.join(entry);
+        std::fs::write(&entry, "").unwrap();
+        std::fs::remove_file(entry).unwrap();
+        match Stamp::of(dir) {
+            Stamp::Node(node) => node.stamped_at().unwrap(),
+            stamp => panic!("{}: {stamp:?}", dir.display()),
+        }
+    }
+
     fn put(root: &Path, rel: &str, content: &str) {
         let path = root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -3209,11 +3312,11 @@ mod tests {
         std::fs::canonicalize(&root).unwrap_or(root)
     }
 
-    fn theme_alias(root: &Path) -> AliasMap {
-        vec![(
+    fn theme_alias(root: &Path) -> Arc<AliasMap> {
+        Arc::new(vec![(
             "@theme/*".to_string(),
             vec![format!("{}/src/theme/*", root.display())],
-        )]
+        )])
     }
 
     /// What the fixture's components ask while they compile.
@@ -3339,7 +3442,7 @@ mod tests {
             };
             come_to_rest();
             // Twice: an answer that waited on the temp dir above the fixture
-            // is kept for good the second time.
+            // is worked out again the second time.
             for _ in 0..2 {
                 let disk = answers(&StdFs, &root);
                 assert_eq!(answers(&roomy.session(), &root), disk);
@@ -3529,10 +3632,10 @@ mod tests {
         symlink("../packages/theme", root.join("src/linked")).unwrap();
         symlink("../../store/pkg", root.join("node_modules/@scope/pkg")).unwrap();
 
-        let aliases: AliasMap = vec![(
+        let aliases: Arc<AliasMap> = Arc::new(vec![(
             "@linked/*".to_string(),
             vec![format!("{}/src/linked/src/*", root.display())],
-        )];
+        )]);
         let ask = |fs: &dyn FsProvider| -> Vec<String> {
             let button = root.join("src/ui/button/Button.tsx");
             let aliased = ResolveConfig {
@@ -3572,14 +3675,11 @@ mod tests {
         let mut last = ask(&live.session());
         assert_eq!(last, ask(&StdFs));
         assert!(last[..5].iter().all(|answer| answer.ends_with("None")));
-        // Answers that waited on the temp dir above the fixture are worked
-        // out a second time, and no more.
         come_to_rest();
-        assert_eq!(ask(&live.session()), last);
+        let session = at_rest(&live, || assert_eq!(ask(&live.session()), last));
 
         // At rest the miss is answered from the listing of the directory
         // behind the symlink, the missing file itself left unstatted.
-        let session = live.session();
         assert_eq!(ask(&session), last);
         {
             let seen = lock(&session.look.as_ref().unwrap().seen);
@@ -3792,12 +3892,11 @@ mod tests {
         come_to_rest();
         let first = compile_answers(&live.session(), &root);
         assert_eq!(first, compile_answers(&StdFs, &root));
-        // Answers that waited on the temp dir above the fixture are worked
-        // out a second time, and no more.
         come_to_rest();
-        assert_eq!(compile_answers(&live.session(), &root), first);
+        let session = at_rest(&live, || {
+            assert_eq!(compile_answers(&live.session(), &root), first);
+        });
 
-        let session = live.session();
         assert_eq!(compile_answers(&session, &root), first);
         let seen = lock(&session.look.as_ref().unwrap().seen);
         let below_root = |key: &[u8]| {
@@ -3826,5 +3925,261 @@ mod tests {
         // Symlinks are looked for no deeper than the fixture's own name, in a
         // temp dir that may never come to rest.
         assert!(!seen.real.keys().any(|key| below_root(key).is_some()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memo_live_waits_again_for_a_directory_that_changed_again() {
+        let root = live_fixture("resettles");
+        let button = root.join("src/ui/button/Button.tsx");
+        let asked = ResolveConfig::default();
+        let kept = |live: &MemoFs, specifier: &str| -> Arc<Deps> {
+            let dir = button.parent().unwrap();
+            match relative_target(dir, specifier) {
+                Some(target) => Arc::clone(&read_lock(&live.relative)[target.as_slice()].deps),
+                None => {
+                    let memos = read_lock(&live.resolve);
+                    let memo = memos.get(path_key(dir), asked).unwrap();
+                    Arc::clone(&memo.by_specifier[specifier].deps)
+                }
+            }
+        };
+        // A relative import and a bare one, kept by different maps, and the
+        // directory each finds its file in.
+        for (specifier, probed) in [
+            ("../../theme/tokens.stylex", "src/theme"),
+            ("dep/tokens.stylex", "node_modules/dep/lib"),
+        ] {
+            let live = MemoFs::settling(Some(TEST_SETTLE));
+            let probed = root.join(probed);
+            let ask = |look: &Look| view_of(&live, look).resolve_import(specifier, &button, asked);
+            let standing = |look: &Look| view_of(&live, look).standing(&kept(&live, specifier));
+            let below_probed = |deps: &Deps| {
+                let below = |dep: &&Dep| {
+                    let (Dep::Stat(path, _) | Dep::Real(path, _)) = dep;
+                    path.starts_with(&probed) && **path != *probed
+                };
+                every_dep(deps).into_iter().filter(below).count()
+            };
+            let disk = StdFs.resolve_import(specifier, &button, asked);
+            assert!(disk.is_some(), "{specifier}");
+
+            // The fixture has stood, and then the directory changes. So does
+            // the temp dir, after it: others write there, and no answer of
+            // this look is to rest on a stamp that they move.
+            come_to_rest();
+            let changed = restamp(&probed, "comes-and-goes");
+            let fixture = root.file_name().unwrap().to_string_lossy();
+            restamp(root.parent().unwrap(), &format!("{fixture}-restamp"));
+            let first = look_from(changed + TEST_SETTLE / 2);
+            assert_eq!(ask(&first), disk, "{specifier}");
+            let deps = kept(&live, specifier);
+            let wait = deps.resettle.expect("waits for the directory to settle");
+            assert!(wait > first.started, "{specifier}");
+            assert!(below_probed(&deps) > 0, "{specifier}: rests on entries");
+
+            // It changes again before the wait is over: the answer worked
+            // out when it is waits once more, on the entries still.
+            come_to_rest();
+            restamp(&probed, "comes-and-goes");
+            let second = look_from(wait);
+            assert!(matches!(standing(&second), Standing::Due), "{specifier}");
+            assert_eq!(ask(&second), disk, "{specifier}");
+            let deps = kept(&live, specifier);
+            let wait_again = deps.resettle.expect("waits for the directory again");
+            assert!(wait_again > wait, "{specifier}");
+            assert!(below_probed(&deps) > 0, "{specifier}: rests on entries");
+
+            // Once everything has stood it rests on the directory, and waits
+            // for nothing.
+            let rested = look_from(SystemTime::now() + TEST_SETTLE * 2);
+            assert!(!matches!(standing(&rested), Standing::Holds), "{specifier}");
+            assert_eq!(ask(&rested), disk, "{specifier}");
+            let deps = kept(&live, specifier);
+            assert_eq!(deps.resettle, None, "{specifier}");
+            assert_eq!(
+                below_probed(&deps),
+                0,
+                "{specifier}: rests on the directory"
+            );
+            let on_probed =
+                |dep: &&Dep| matches!(dep, Dep::Stat(path, Stamp::Node(_)) if **path == *probed);
+            assert!(every_dep(&deps).iter().any(on_probed), "{specifier}");
+            assert!(matches!(standing(&rested), Standing::Holds), "{specifier}");
+        }
+    }
+
+    #[test]
+    fn memo_live_keeps_no_wait_that_its_look_has_outlasted() {
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let look = look_from(SystemTime::UNIX_EPOCH + Duration::from_secs(1000));
+        let waits_until = |at: SystemTime| {
+            let tracker = Tracker::new(view_of(&live, &look));
+            tracker.deps.borrow_mut().wait_until(at);
+            tracker.finish().resettle
+        };
+        let tick = Duration::from_millis(1);
+        assert_eq!(waits_until(look.started + tick), Some(look.started + tick));
+        // Kept, either would have the answer due at every look to come.
+        assert_eq!(waits_until(look.started), None);
+        assert_eq!(waits_until(look.started - tick), None);
+    }
+
+    #[test]
+    fn memo_live_checks_a_kept_answer_with_no_lock_on_its_map() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = live_fixture("unlocked");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let button = root.join("src/ui/button/Button.tsx");
+        let resolve = |fs: &dyn FsProvider, specifier: &str| {
+            format!(
+                "{:?}",
+                fs.resolve_import(specifier, &button, ResolveConfig::default())
+            )
+        };
+        // One answer from each way of keeping: a walk, a relative import
+        // and an import kept by its importer's directory.
+        type Ask<'a> = &'a (dyn Fn(&dyn FsProvider) -> String + Sync);
+        let asks: [(&str, Ask<'_>); 3] = [
+            ("nearest", &|fs| {
+                format!("{:?}", fs.nearest_package(&button))
+            }),
+            ("relative", &|fs| resolve(fs, "../../theme/tokens.stylex")),
+            ("resolve", &|fs| resolve(fs, "dep/tokens.stylex")),
+        ];
+        come_to_rest();
+        for (_, ask) in asks {
+            assert_eq!(ask(&live.session()), ask(&StdFs));
+        }
+
+        for (map, ask) in asks {
+            let session = live.session();
+            // Held here, the session's stats: the asker waits at the first
+            // one it makes to check the answer kept.
+            let seen = lock(&session.look.as_ref().unwrap().seen);
+            let asking = AtomicBool::new(false);
+            let (waits, unlocked, answer) = std::thread::scope(|scope| {
+                let asker = scope.spawn(|| {
+                    asking.store(true, Ordering::SeqCst);
+                    ask(&session)
+                });
+                while !asking.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                std::thread::sleep(TEST_SETTLE);
+                let waits = !asker.is_finished();
+                let unlocked = [
+                    live.nearest.try_write().is_ok(),
+                    live.relative.try_write().is_ok(),
+                    live.resolve.try_write().is_ok(),
+                ];
+                drop(seen);
+                (waits, unlocked, asker.join().unwrap())
+            });
+            assert!(waits, "{map}: a kept answer is checked against the disk");
+            assert_eq!(unlocked, [true; 3], "{map}: checked under a lock");
+            assert_eq!(answer, ask(&StdFs), "{map}");
+        }
+    }
+
+    #[test]
+    fn memo_session_walks_what_answers_share_once() {
+        let root = live_fixture("shared");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        come_to_rest();
+        let first = compile_answers(&live.session(), &root);
+        come_to_rest();
+        let session = at_rest(&live, || {
+            assert_eq!(compile_answers(&live.session(), &root), first);
+        });
+        let look = session.look.as_ref().unwrap();
+        let room = |seen: &Seen| {
+            (
+                seen.stats.capacity(),
+                seen.real.capacity(),
+                seen.held.capacity(),
+            )
+        };
+        // A session that has asked nothing of the disk holds nothing.
+        assert_eq!(room(&lock(&look.seen)), (0, 0, 0));
+        assert_eq!(compile_answers(&session, &root), first);
+        {
+            let seen = lock(&look.seen);
+            assert!(seen.stats.capacity() >= SEEN_STATS_ROOM);
+            assert!(!seen.held.is_empty());
+            for (address, deps) in &seen.held {
+                assert_eq!(*address, Arc::as_ptr(deps) as usize);
+            }
+        }
+
+        let view = session.view();
+        let manifest = root.join("package.json");
+        let resting_on = |stamp: Stamp| {
+            Arc::new(Deps {
+                list: vec![Dep::Stat(manifest.as_path().into(), stamp)],
+                ..Deps::default()
+            })
+        };
+        let inheriting = |deps: &Arc<Deps>| Deps {
+            inherited: vec![Arc::clone(deps)],
+            ..Deps::default()
+        };
+        let known = |deps: &Arc<Deps>| {
+            let seen = lock(&look.seen);
+            let held = seen.held.get(&(Arc::as_ptr(deps) as usize));
+            held.is_some_and(|held| Arc::ptr_eq(held, deps))
+        };
+        // What holds is remembered, with the address it is known by.
+        let stands = resting_on(Stamp::of(&manifest));
+        assert!(view.holds(look, &inheriting(&stands)));
+        assert!(known(&stands));
+        // What does not is found out again by whoever inherits it next.
+        let moved = resting_on(Stamp::Missing);
+        assert!(!view.holds(look, &inheriting(&moved)));
+        assert!(!known(&moved));
+        // And what is remembered is not walked: this look would find the
+        // manifest there if it were.
+        lock(&look.seen)
+            .held
+            .insert(Arc::as_ptr(&moved) as usize, Arc::clone(&moved));
+        assert!(view.holds(look, &inheriting(&moved)));
+    }
+
+    #[test]
+    fn memo_resolve_knows_an_alias_map_by_its_address_or_its_entries() {
+        let root = memo_fixture("aliases");
+        let memo = MemoFs::snapshot();
+        let importer = root.join("pkg/src/a/one.ts");
+        let map_to = |dir: &str| -> Arc<AliasMap> {
+            Arc::new(vec![(
+                "@b/*".to_string(),
+                vec![format!("{}/pkg/src/{dir}/*", root.display())],
+            )])
+        };
+        let (shared, equal, other) = (map_to("b"), map_to("b"), map_to("a"));
+        let resolve = |aliases: &Arc<AliasMap>| {
+            let config = ResolveConfig {
+                aliases: Some(aliases),
+                root_dir: None,
+            };
+            memo.resolve_import("@b/tokens.stylex", &importer, config)
+        };
+        let tokens = Some(root.join("pkg/src/b/tokens.stylex.ts"));
+        assert_eq!(resolve(&shared), tokens);
+        assert_eq!(resolve(&shared), tokens);
+        assert_eq!(resolve(&equal), tokens);
+        assert_eq!(resolve(&other), None);
+
+        let memos = read_lock(&memo.resolve);
+        let by_dir = &memos.by_dir[path_key(&root.join("pkg/src/a"))];
+        assert_eq!(by_dir.len(), 2, "one memo per distinct map");
+        assert_eq!(memos.kept, 2);
+        // The map first asked with is held, not copied.
+        let holds = |map: &Arc<AliasMap>| {
+            let held =
+                |memo: &ResolveMemo| memo.aliases.as_ref().is_some_and(|m| Arc::ptr_eq(m, map));
+            by_dir.iter().any(held)
+        };
+        assert!(holds(&shared) && holds(&other) && !holds(&equal));
     }
 }

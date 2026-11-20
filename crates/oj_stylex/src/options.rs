@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -139,7 +140,9 @@ pub struct ResolvedOptions {
     pub property_validation_mode: PropertyValidationMode,
     pub treeshake_compensation: bool,
     pub unstable_module_resolution: Option<ModuleResolution>,
-    pub aliases: Option<AliasMap>,
+    /// Shared: a resolver that keeps answers by the map holds this one, and
+    /// knows it again by its address.
+    pub aliases: Option<Arc<AliasMap>>,
     pub rewrite_aliases: bool,
     /// The pre-parse gate over `sx_prop_name`, `import_sources` and
     /// `rewrite_aliases`, its searchers built once here instead of per file
@@ -420,7 +423,7 @@ impl CompilerOptions {
             Some(value @ Value::Object(_)) => EvalValue::from_json(value),
             Some(other) => return Err(invalid_value("options.env", other, "an object")),
         };
-        let aliases = resolve_aliases(get(&self.aliases));
+        let aliases = resolve_aliases(get(&self.aliases)).map(Arc::new);
         // parity: `typeof options.rewriteAliases === 'boolean' ? … : false` —
         // a non-boolean reads as off with no diagnostic.
         let rewrite_aliases = get(&self.rewrite_aliases) == Some(&Value::Bool(true));

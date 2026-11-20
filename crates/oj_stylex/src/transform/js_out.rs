@@ -176,7 +176,10 @@ pub fn write_span(source: &str, span: Span, edits: &[Edit], out: &mut String) {
     let contained = edits
         .iter()
         .filter(|e| e.start >= span.start && e.end <= span.end);
-    splice_into(slice, span.start, contained, 0, None, out);
+    // Counted first: the splice then orders them in one exact allocation,
+    // or in none when the span holds no edit.
+    let count = contained.clone().count();
+    splice_into(slice, span.start, contained, count, None, out);
 }
 
 // parity: @babel/types isValidIdentifier(name, false) — keywords stay valid
