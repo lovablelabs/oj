@@ -1,6 +1,7 @@
 //! Whole-module transform: call-site discovery in babel visitor order, splice
 //! edits, DCE, treeshake compensation. parity: babel-plugin src/index.js:71-386
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -57,9 +58,9 @@ use crate::transform::ast_backend::{
 use crate::transform::atoms::{AtomStyle, dynamic_style, static_style};
 use crate::transform::dce::{DceAction, compute_vars_to_keep, dce_action};
 use crate::transform::js_out::{
-    Edit, SpliceMap, apply_edits_tracked, estimate_object_len, inject_call_text, is_identifier_key,
-    js_string_literal, print_dynamic_arrow, print_static_chunk, render_span, write_object,
-    write_value,
+    Edit, SpliceMap, apply_edits_tracked, estimate_len, estimate_object_len, inject_call_text,
+    js_string_literal, print_dynamic_arrow, print_static_chunk, render_span, write_key,
+    write_object, write_span, write_u32, write_value,
 };
 use crate::transform::merge::{
     MemberEval, MergeArg, MergeMode, MergePlan, NullableStyle, StyleVarToKeep, StyleVarsCollector,
@@ -658,7 +659,7 @@ fn walk_variable_declaration<'a, H: Hooks<'a>>(
             name: declarator
                 .id
                 .get_binding_identifier()
-                .map(|id| id.name.to_string()),
+                .map(|id| id.name.as_str().to_owned()),
             top_level: top.is_some(),
             exported: top.is_some_and(|(exported, _)| exported),
             removal: top.map(|(_, stmt_span)| DeclRemoval {
@@ -1190,6 +1191,9 @@ pub struct TransformOutput {
 struct CreateSite {
     span: Span,
     edit_idx: usize,
+    /// The splice edit is still an empty placeholder: `apply_dce` prints the
+    /// object once, after pruning, instead of printing it here and again there.
+    print_deferred: bool,
     /// The create replacement's plan entry (program-level sites only); DCE
     /// pruning rewrites it in lockstep with the splice edit.
     plan_idx: Option<usize>,
@@ -1538,11 +1542,7 @@ fn print_create_parens(map: &JsObjectMap, dynamic: &[(String, String)]) -> Strin
         if i > 0 {
             out.push_str(", ");
         }
-        if is_identifier_key(key) {
-            out.push_str(key);
-        } else {
-            crate::transform::js_out::write_js_string_literal(key, &mut out);
-        }
+        write_key(key, &mut out);
         out.push_str(": ");
         match dynamic.iter().find(|(name, _)| name == key) {
             // parity: the fns rewrite only fires on object-shaped values.
@@ -1555,16 +1555,41 @@ fn print_create_parens(map: &JsObjectMap, dynamic: &[(String, String)]) -> Strin
 }
 
 fn jsx_attrs_text(map: &JsObjectMap) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    const OBJECT_TEXT: &str = "[object Object]";
+    let len: usize = map
+        .entries()
+        .map(|(key, value)| {
+            key.len()
+                + 4
+                + match value {
+                    EvalValue::Str(s) => s.len(),
+                    _ => OBJECT_TEXT.len(),
+                }
+        })
+        .sum();
+    let mut out = String::with_capacity(len);
     for (key, value) in map.entries() {
-        // parity: non-string AST values stringify as "[object Object]".
-        let text = match value {
-            EvalValue::Str(s) => s.replace('"', "&quot;"),
-            _ => "[object Object]".to_string(),
-        };
-        parts.push(format!("{key}=\"{text}\""));
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(key);
+        out.push_str("=\"");
+        match value {
+            EvalValue::Str(s) => {
+                let mut rest = s.as_str();
+                while let Some(at) = memchr::memchr(b'"', rest.as_bytes()) {
+                    out.push_str(&rest[..at]);
+                    out.push_str("&quot;");
+                    rest = &rest[at + 1..];
+                }
+                out.push_str(rest);
+            }
+            // parity: non-string AST values stringify as "[object Object]".
+            _ => out.push_str(OBJECT_TEXT),
+        }
+        out.push('"');
     }
-    parts.join(" ")
+    out
 }
 
 impl<'a, 'env> Shared<'a, 'env> {
@@ -1618,15 +1643,13 @@ impl<'a, 'env> Shared<'a, 'env> {
         let anchored = &self.inject_edits;
         let prologue = self.prologue_edit;
         for (idx, slot) in self.edits.iter_mut().enumerate() {
-            if anchored.contains(&idx) || prologue == Some(idx) {
-                continue;
-            }
-            if let Some(edit) = slot
-                && edit.start >= span.start
-                && edit.end <= span.end
+            if slot
+                .as_ref()
+                .is_some_and(|edit| edit.start >= span.start && edit.end <= span.end)
+                && !anchored.contains(&idx)
+                && prologue != Some(idx)
             {
-                taken.push(edit.clone());
-                *slot = None;
+                taken.extend(slot.take());
             }
         }
         taken
@@ -1825,6 +1848,7 @@ impl<'a, 'env> Shared<'a, 'env> {
                 self.record_override(c, EvalValue::Obj(out.compiled.clone()));
             }
         }
+        let mut print_deferred = false;
         // parity: pathReplaceHoisted — non-program-level create results hoist
         // into a collision-free module const so object identity is shared.
         let (edit_idx, plan_idx) = if self.state.is_program_level(call_node) {
@@ -1839,8 +1863,15 @@ impl<'a, 'env> Shared<'a, 'env> {
                 ));
                 plan_idx
             });
-            let text = self.splice_text(|| print_create_parens(&out.compiled, &dynamic));
+            // A style variable's object prints in `apply_dce`, once pruning
+            // has settled what is left of it.
+            let text = if style_var {
+                String::new()
+            } else {
+                self.splice_text(|| print_create_parens(&out.compiled, &dynamic))
+            };
             let edit_idx = self.push_edit(Edit::replace(call.span, text));
+            print_deferred = style_var && !self.build_plan;
             (edit_idx, plan_idx)
         } else {
             let uid = self.generate_uid("styles", call_node);
@@ -1874,6 +1905,7 @@ impl<'a, 'env> Shared<'a, 'env> {
         self.create_sites.push(CreateSite {
             span: call.span,
             edit_idx,
+            print_deferred,
             plan_idx,
             hoist_edit_idxs,
             compiled: out.compiled,
@@ -2881,7 +2913,7 @@ impl<'a, 'env> Shared<'a, 'env> {
                     )));
                 }
                 if let Some((object_name, Some(prop))) = style_map_member(expr)
-                    && let Some(namespaces) = self.style_map.get(&object_name)
+                    && let Some(namespaces) = self.style_map.get(object_name)
                     && let Some(value) = namespaces.get(&prop)
                     && !matches!(value, EvalValue::Null | EvalValue::Undefined)
                 {
@@ -2917,7 +2949,7 @@ impl<'a, 'env> Shared<'a, 'env> {
             Expression::Identifier(id) if id.name == "undefined" => return NullableStyle::Null,
             Expression::StaticMemberExpression(_) | Expression::ComputedMemberExpression(_) => {
                 if let Some((object_name, Some(prop))) = style_map_member(expr)
-                    && let Some(namespaces) = self.style_map.get(&object_name)
+                    && let Some(namespaces) = self.style_map.get(object_name)
                     && let Some(value) = namespaces.get(&prop)
                     && !matches!(value, EvalValue::Null | EvalValue::Undefined)
                 {
@@ -3011,14 +3043,18 @@ impl<'a, 'env> Shared<'a, 'env> {
     }
 
     fn table_text(&self, entries: &[(u32, EvalValue)], tests: &[Span], inner: &[Edit]) -> String {
-        use std::fmt::Write;
         let n = tests.len();
-        let mut out = String::from("({");
+        let leaves: usize = entries.iter().map(|(_, leaf)| estimate_len(leaf) + 6).sum();
+        let guards: usize = tests.iter().map(|span| span.size() as usize + 14).sum();
+        let spliced: usize = inner.iter().map(|edit| edit.text.len()).sum();
+        let mut out = String::with_capacity(leaves + guards + spliced + 8);
+        out.push_str("({");
         for (i, (key, leaf)) in entries.iter().enumerate() {
             if i > 0 {
                 out.push_str(", ");
             }
-            let _ = write!(out, "{key}: ");
+            write_u32(*key, &mut out);
+            out.push_str(": ");
             write_value(leaf, &mut out);
         }
         out.push_str("}[");
@@ -3027,8 +3063,9 @@ impl<'a, 'env> Shared<'a, 'env> {
                 out.push_str(" | ");
             }
             out.push_str("!!(");
-            out.push_str(&render_span(self.source, *span, inner));
-            let _ = write!(out, ") << {}", n - 1 - i);
+            write_span(self.source, *span, inner, &mut out);
+            out.push_str(") << ");
+            write_u32((n - 1 - i) as u32, &mut out);
         }
         out.push_str("])");
         out
@@ -3384,10 +3421,15 @@ impl<'a, 'env> Shared<'a, 'env> {
                 continue;
             }
             let name = site.var_name.as_deref().expect("style vars have names");
+            let live = self.edits.get(site.edit_idx).is_some_and(Option::is_some);
             match dce_action(name, &site.compiled, site.exported, &vars, &self.tuples) {
-                DceAction::KeepAll => {}
+                DceAction::KeepAll => {
+                    if site.print_deferred && live {
+                        let text = print_create_parens(&site.compiled, &site.dynamic);
+                        self.edits[site.edit_idx] = Some(Edit::replace(site.span, text));
+                    }
+                }
                 DceAction::Prune(map) => {
-                    let live = self.edits.get(site.edit_idx).is_some_and(Option::is_some);
                     if live {
                         let text = self.splice_text(|| print_create_parens(&map, &site.dynamic));
                         self.edits[site.edit_idx] = Some(Edit::replace(site.span, text));
@@ -3551,24 +3593,30 @@ fn object_leaves(entries: Vec<(u32, JsObjectMap)>) -> Vec<(u32, EvalValue)> {
         .collect()
 }
 
-fn style_map_member(expr: &Expression<'_>) -> Option<(String, Option<String>)> {
+/// `(object, property)` of a `<ident>.<prop>` / `<ident>[<literal>]` member;
+/// the property is `None` when it is computed and not a literal.
+type StyleMember<'e> = (&'e str, Option<Cow<'e, str>>);
+
+fn computed_member_key<'e>(expr: &'e Expression<'_>) -> Option<Cow<'e, str>> {
+    match unwrap_parens(expr) {
+        Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value)),
+        Expression::NumericLiteral(n) => Some(Cow::Owned(js_number_to_string(n.value))),
+        _ => None,
+    }
+}
+
+fn style_map_member<'e>(expr: &'e Expression<'_>) -> Option<StyleMember<'e>> {
     match expr {
         Expression::StaticMemberExpression(m) => match unwrap_parens(&m.object) {
-            Expression::Identifier(obj) => {
-                Some((obj.name.to_string(), Some(m.property.name.to_string())))
-            }
+            Expression::Identifier(obj) => Some((
+                obj.name.as_str(),
+                Some(Cow::Borrowed(m.property.name.as_str())),
+            )),
             _ => None,
         },
         Expression::ComputedMemberExpression(m) => match unwrap_parens(&m.object) {
             Expression::Identifier(obj) => {
-                let prop = match unwrap_parens(&m.expression) {
-                    Expression::StringLiteral(s) => {
-                        Some(crate::jsrt::lit_text(s.value).into_owned())
-                    }
-                    Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
-                    _ => None,
-                };
-                Some((obj.name.to_string(), prop))
+                Some((obj.name.as_str(), computed_member_key(&m.expression)))
             }
             _ => None,
         },
@@ -3779,7 +3827,7 @@ impl<'a> Shared<'a, '_> {
             return;
         }
         self.tuples.push(StyleVarToKeep {
-            var_name: name.to_string(),
+            var_name: name.to_owned(),
             namespace: None,
             non_null_props: crate::transform::merge::NonNullProps::True,
         });
@@ -3796,15 +3844,11 @@ impl<'a> Shared<'a, '_> {
             return MemberFlow::Walk;
         }
         let namespace = match &info.prop {
-            MemberProp::Static(name) => Some((*name).to_string()),
-            MemberProp::Computed(expr) => match unwrap_parens(expr) {
-                Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
-                Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
-                _ => None,
-            },
+            MemberProp::Static(name) => Some((*name).to_owned()),
+            MemberProp::Computed(expr) => computed_member_key(expr).map(Cow::into_owned),
         };
         self.tuples.push(StyleVarToKeep {
-            var_name: object.name.to_string(),
+            var_name: object.name.as_str().to_owned(),
             namespace,
             non_null_props: crate::transform::merge::NonNullProps::True,
         });
@@ -4051,13 +4095,13 @@ impl<'a> Hooks<'a> for CollectorHooks<'_, '_, 'a, '_> {
         let member = style_map_member_info(info);
         let style_member = member
             .as_ref()
-            .filter(|(object, _)| self.s.style_map.contains_key(object));
+            .filter(|(object, _)| self.s.style_map.contains_key(*object));
         let member_expr = info.expr;
         let mut eval_error: Option<StylexError> = None;
         let s = &mut *self.s;
         let kept = self.collector.record(
             self.index,
-            style_member.map(|(object, prop)| (object.as_str(), prop.as_deref())),
+            style_member.map(|(object, prop)| (*object, prop.as_deref())),
             || match member_expr {
                 None => MemberEval::NonStatic,
                 Some(expr) => match s.eval_member_for_collector(expr) {
@@ -4080,19 +4124,15 @@ impl<'a> Hooks<'a> for CollectorHooks<'_, '_, 'a, '_> {
     }
 }
 
-fn style_map_member_info(info: &MemberInfo<'_>) -> Option<(String, Option<String>)> {
+fn style_map_member_info<'e>(info: &'e MemberInfo<'_>) -> Option<StyleMember<'e>> {
     let Expression::Identifier(object) = unwrap_parens(info.object) else {
         return None;
     };
     let prop = match &info.prop {
-        MemberProp::Static(name) => Some((*name).to_string()),
-        MemberProp::Computed(expr) => match unwrap_parens(expr) {
-            Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
-            Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
-            _ => None,
-        },
+        MemberProp::Static(name) => Some(Cow::Borrowed(*name)),
+        MemberProp::Computed(expr) => computed_member_key(expr),
     };
-    Some((object.name.to_string(), prop))
+    Some((object.name.as_str(), prop))
 }
 
 #[cfg(test)]
