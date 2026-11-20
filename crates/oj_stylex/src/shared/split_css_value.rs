@@ -13,7 +13,7 @@ pub fn split_value<'a>(value: Option<&StyleScalar<'a>>) -> Vec<Option<StyleScala
     };
     let nodes = parse(raw.trim());
     let mut parts: Vec<String> = nodes
-        .iter()
+        .into_iter()
         .filter(|n| n.kind != Kind::Space && n.kind != Kind::Div)
         .map(print_node)
         .collect();
@@ -35,27 +35,35 @@ pub fn split_value<'a>(value: Option<&StyleScalar<'a>>) -> Vec<Option<StyleScala
 
 // parity: split-css-value.js printNode — `before`/`after` padding is dropped
 // and an unclosed function is re-printed closed.
-fn print_node(node: &Node) -> String {
+fn print_node(node: Node) -> String {
+    match node.kind {
+        Kind::Str | Kind::Func => {
+            let mut out =
+                String::with_capacity(node.source_end_index.saturating_sub(node.source_index) + 1);
+            push_node(&node, &mut out);
+            out
+        }
+        _ => node.value,
+    }
+}
+
+fn push_node(node: &Node, out: &mut String) {
     match node.kind {
         Kind::Str => {
             let quote = node.quote as char;
-            let mut out = String::with_capacity(node.value.len() + 2);
             out.push(quote);
             out.push_str(&node.value);
             out.push(quote);
-            out
         }
         Kind::Func => {
-            let mut out = String::with_capacity(node.value.len() + 2);
             out.push_str(&node.value);
             out.push('(');
             for child in &node.nodes {
-                out.push_str(&print_node(child));
+                push_node(child, out);
             }
             out.push(')');
-            out
         }
-        _ => node.value.clone(),
+        _ => out.push_str(&node.value),
     }
 }
 
