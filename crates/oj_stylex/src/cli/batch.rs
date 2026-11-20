@@ -109,7 +109,10 @@ impl<'a> OutBatch<'a> {
 }
 
 // std's `Write::write_all_vectored` is still unstable.
-fn write_all_vectored(out: &mut impl Write, mut bufs: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+pub(super) fn write_all_vectored(
+    out: &mut impl Write,
+    mut bufs: &mut [IoSlice<'_>],
+) -> std::io::Result<()> {
     IoSlice::advance_slices(&mut bufs, 0);
     while !bufs.is_empty() {
         match out.write_vectored(bufs) {

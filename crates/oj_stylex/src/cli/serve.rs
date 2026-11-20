@@ -2,7 +2,7 @@
 //! for the Vite dev plugin; responses correlate by `id`, never by order (docs/serve-protocol.md).
 
 use std::borrow::Cow;
-use std::io::{BufRead, BufWriter, Write};
+use std::io::{BufRead, BufReader, IoSlice, StdoutLock, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError, mpsc};
@@ -19,9 +19,10 @@ use crate::rules::StylexRule;
 use crate::timings::{self, Stage};
 use oxc_allocator::Allocator;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::cli::batch::{ARENA, read_job_source, resolve_options_memoized};
+use crate::cli::batch::{ARENA, read_job_source, resolve_options_memoized, write_all_vectored};
 use crate::cli::compile;
 use crate::cli::queue::{Bounds, JobQueue};
 use crate::cli::wire::{OkLine, compile_error_line, input_error_line, protocol_error_line};
@@ -30,25 +31,44 @@ use crate::cli::wire::{OkLine, compile_error_line, input_error_line, protocol_er
 // dropped so a long dev session does not pin every thread's high-water mark.
 const ARENA_CAP_BYTES: usize = 4 << 20;
 
+// A pipe hands over at most 64 KiB a read; the buffer takes that whole, so a
+// request line is usually copied out of it once, at its final size.
+const STDIN_BUFFER_BYTES: usize = 256 << 10;
+
+// What one rule adds to a reply line, for sizing the line up front.
+const RULE_LINE_BYTES: usize = 96;
+
+/// A request string: borrowed from the line unless it carries escapes.
+#[derive(Deserialize)]
+struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
+
+impl std::ops::Deref for Text<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Request {
-    #[serde(default)]
-    id: Option<Value>,
-    #[serde(default)]
-    op: Option<String>,
-    #[serde(default)]
-    root: Option<String>,
-    #[serde(default)]
-    filename: Option<String>,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    source_path: Option<String>,
-    #[serde(default)]
-    options: Option<Box<serde_json::value::RawValue>>,
-    #[serde(default)]
-    key: Option<String>,
+struct Request<'a> {
+    #[serde(default, borrow)]
+    id: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    op: Option<Text<'a>>,
+    #[serde(default, borrow)]
+    root: Option<Text<'a>>,
+    #[serde(default, borrow)]
+    filename: Option<Text<'a>>,
+    #[serde(default, borrow)]
+    source: Option<Text<'a>>,
+    #[serde(default, borrow)]
+    source_path: Option<Text<'a>>,
+    #[serde(default, borrow)]
+    options: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    key: Option<Text<'a>>,
     #[serde(default)]
     want_code: Option<bool>,
     #[serde(default)]
@@ -66,6 +86,7 @@ struct Shared {
     threads: usize,
 }
 
+/// One reply as written: `line` ends in its newline.
 struct Response {
     line: String,
     shutdown: bool,
@@ -89,7 +110,7 @@ pub fn run(stdio: bool, threads: Option<usize>, timings_flag: bool) {
         registry: Mutex::new(RuleRegistry::new()),
         threads,
     };
-    let queue: JobQueue<String> = JobQueue::new(Bounds::for_threads(threads));
+    let queue: JobQueue<Vec<u8>> = JobQueue::new(Bounds::for_threads(threads));
     let (tx, rx) = mpsc::channel::<(usize, Response)>();
     std::thread::scope(|scope| {
         let (shared, queue) = (&shared, &queue);
@@ -102,6 +123,7 @@ pub fn run(stdio: bool, threads: Option<usize>, timings_flag: bool) {
                     if timings_flag {
                         attach_wall(&mut response.line, started.elapsed().as_nanos() as u64);
                     }
+                    response.line.push('\n');
                     if tx.send((i, response)).is_err() {
                         queue.abort();
                         break;
@@ -111,34 +133,75 @@ pub fn run(stdio: bool, threads: Option<usize>, timings_flag: bool) {
         }
         drop(tx);
         scope.spawn(move || write_responses(&rx));
-        let stdin = std::io::stdin();
-        let mut block = Vec::with_capacity(1);
-        for line in stdin.lock().lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(err) => {
-                    eprintln!("{}", json!({ "error": "IO", "detail": err.to_string() }));
-                    std::process::exit(1);
-                }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            block.push(line);
-            if !queue.publish(&mut block) {
-                break;
-            }
-        }
+        read_requests(queue);
         queue.finish();
     });
     timings::report_to_stderr();
 }
 
-// Finished responses are written and flushed together (an idle daemon flushes at
-// once); a shutdown is answered only after every request read before it, then exits.
+// Lines stay raw bytes: the worker that parses a request is also the one that
+// validates its text. Requests that arrived together are published together,
+// one queue turn for the burst; nothing is held back across a read that could wait.
+fn read_requests(queue: &JobQueue<Vec<u8>>) {
+    let stdin = std::io::stdin();
+    let mut input = BufReader::with_capacity(STDIN_BUFFER_BYTES, stdin.lock());
+    let bounds = queue.bounds();
+    let mut block = Vec::new();
+    let mut block_bytes = 0usize;
+    loop {
+        let another_buffered = memchr::memchr(b'\n', input.buffer()).is_some();
+        let full = block.len() >= bounds.block_lines || block_bytes >= bounds.block_bytes;
+        if !block.is_empty() && (full || !another_buffered) {
+            block_bytes = 0;
+            if !queue.publish(&mut block) {
+                return;
+            }
+        }
+        let mut line = Vec::new();
+        match input.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("{}", json!({ "error": "IO", "detail": err.to_string() }));
+                std::process::exit(1);
+            }
+        }
+        if line.ends_with(b"\n") {
+            line.pop();
+            if line.ends_with(b"\r") {
+                line.pop();
+            }
+        }
+        if !is_blank(&line) {
+            block_bytes += line.len();
+            block.push(line);
+        }
+    }
+    if !block.is_empty() {
+        queue.publish(&mut block);
+    }
+}
+
+/// `str::trim().is_empty()` for a raw line; only a line with no ASCII text in
+/// front pays for decoding.
+fn is_blank(line: &[u8]) -> bool {
+    match line
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'..=b'\r'))
+    {
+        None => true,
+        Some(at) if line[at].is_ascii() => false,
+        Some(_) => std::str::from_utf8(line).is_ok_and(|text| text.trim().is_empty()),
+    }
+}
+
+// Finished responses go out together in one vectored write (an idle daemon
+// writes at once); a shutdown is answered only after every request read
+// before it, then exits.
 fn write_responses(rx: &mpsc::Receiver<(usize, Response)>) {
     let stdout = std::io::stdout();
-    let mut out = BufWriter::new(stdout.lock());
+    let mut out = stdout.lock();
+    let mut ready: Vec<String> = Vec::new();
     let mut done_below = 0usize;
     let mut done_ahead = std::collections::BTreeSet::new();
     let mut shutdown: Option<(usize, String)> = None;
@@ -156,32 +219,38 @@ fn write_responses(rx: &mpsc::Receiver<(usize, Response)>) {
                 shutdown = Some((i, response.line));
                 continue;
             }
-            write_line(&mut out, &response.line);
+            ready.push(response.line);
         }
-        if let Some((at, line)) = &shutdown
-            && done_below > *at
-        {
-            write_line(&mut out, line);
-            if out.flush().is_err() {
-                std::process::exit(1);
-            }
+        let exiting = shutdown.as_ref().is_some_and(|(at, _)| done_below > *at);
+        if exiting && let Some((_, line)) = shutdown.take() {
+            ready.push(line);
+        }
+        write_lines(&mut out, &mut ready);
+        if exiting {
             timings::report_to_stderr();
             std::process::exit(0);
-        }
-        if out.flush().is_err() {
-            std::process::exit(1);
         }
     }
 }
 
-fn write_line(out: &mut BufWriter<std::io::StdoutLock<'_>>, line: &str) {
-    if out
-        .write_all(line.as_bytes())
-        .and_then(|()| out.write_all(b"\n"))
-        .is_err()
-    {
+// Every line ends in its newline, so std's stdout `LineWriter` hands the whole
+// batch to the fd: one syscall, and no copy into a buffer on the way.
+fn write_lines(out: &mut StdoutLock<'_>, lines: &mut Vec<String>) {
+    let written = match lines.as_slice() {
+        [] => return,
+        [line] => out.write_all(line.as_bytes()),
+        lines => {
+            let mut slices: Vec<IoSlice<'_>> = lines
+                .iter()
+                .map(|line| IoSlice::new(line.as_bytes()))
+                .collect();
+            write_all_vectored(out, &mut slices)
+        }
+    };
+    if written.and_then(|()| out.flush()).is_err() {
         std::process::exit(1);
     }
+    lines.clear();
 }
 
 fn attach_wall(line: &mut String, wall_ns: u64) {
@@ -190,11 +259,11 @@ fn attach_wall(line: &mut String, wall_ns: u64) {
     line.push_str(&format!(",\"wall_ns\":{wall_ns}}}"));
 }
 
-fn handle(line: &str, shared: &Shared) -> Response {
+fn handle(line: &[u8], shared: &Shared) -> Response {
     let _t = timings::start(Stage::JobTotal);
     let request = {
         let _t = timings::start(Stage::NdjsonIn);
-        serde_json::from_str::<Request>(line)
+        serde_json::from_slice::<Request<'_>>(line)
     };
     let request = match request {
         Ok(request) => request,
@@ -205,33 +274,51 @@ fn handle(line: &str, shared: &Shared) -> Response {
             };
         }
     };
-    let id = request
-        .id
-        .as_ref()
-        .map_or_else(|| "null".to_string(), Value::to_string);
+    let id = request.id.map_or(Cow::Borrowed("null"), reply_id);
+    let id = &*id;
     let line = match request.op.as_deref().unwrap_or("transform") {
-        "transform" => transform(&request, &id, shared),
-        "setFileRules" => set_file_rules(&request, &id, shared),
-        "removeFile" => remove_file(&request, &id, shared),
-        "sheet" => sheet(&request, &id, shared),
-        "warm" => warm(&request, &id, shared),
-        "hello" => OkLine::new(&id, 0)
+        "transform" => transform(&request, id, shared),
+        "setFileRules" => set_file_rules(&request, id, shared),
+        "removeFile" => remove_file(&request, id, shared),
+        "sheet" => sheet(&request, id, shared),
+        "warm" => warm(&request, id, shared),
+        "hello" => OkLine::new(id, 0)
             .str("fingerprint", crate::cache::compiler_fingerprint())
             .value("threads", &shared.threads)
             .value("pid", &std::process::id())
             .finish(),
         "shutdown" => {
             return Response {
-                line: OkLine::new(&id, 0).finish(),
+                line: OkLine::new(id, 0).finish(),
                 shutdown: true,
             };
         }
-        other => protocol_error_line(&id, "BAD_OP", &format!("unknown op {other}")),
+        other => protocol_error_line(id, "BAD_OP", &format!("unknown op {other}")),
     };
     Response {
         line,
         shutdown: false,
     }
+}
+
+/// The id as serde_json would re-serialize it. Ids already in that form
+/// (small integers, strings without escapes, literals) are echoed from the
+/// request's own bytes; anything else takes the `Value` round trip.
+fn reply_id(raw: &RawValue) -> Cow<'_, str> {
+    let text = raw.get();
+    let bytes = text.as_bytes();
+    let canonical = match bytes {
+        [b'"', ..] => !bytes.contains(&b'\\'),
+        [b'0'] | [b'1'..=b'9', ..] | [b'-', b'1'..=b'9', ..] => {
+            bytes.len() <= 18 && bytes[1..].iter().all(u8::is_ascii_digit)
+        }
+        _ => matches!(text, "null" | "true" | "false"),
+    };
+    if canonical {
+        return Cow::Borrowed(text);
+    }
+    let value: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    Cow::Owned(value.to_string())
 }
 
 fn lock(registry: &Mutex<RuleRegistry>) -> std::sync::MutexGuard<'_, RuleRegistry> {
@@ -248,8 +335,9 @@ fn register(registry: &Mutex<RuleRegistry>, key: &str, rules: Vec<StylexRule>) -
 
 // Same inputs and result bytes as a `batch` job; `key` additionally publishes
 // the rules to the registry, `wantMap` appends a mappings-only sourcemap.
-fn transform(request: &Request, id: &str, shared: &Shared) -> String {
-    let (Some(root), Some(filename)) = (&request.root, &request.filename) else {
+fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+    let (Some(root), Some(filename)) = (request.root.as_deref(), request.filename.as_deref())
+    else {
         return input_error_line(id, "transform needs root and filename");
     };
     let source = match read_job_source(
@@ -262,7 +350,7 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
     };
     let options = {
         let _t = timings::start(Stage::Options);
-        match resolve_options_memoized(request.options.as_deref()) {
+        match resolve_options_memoized(request.options) {
             Ok(options) => options,
             Err(error) => return compile_error_line(id, root, filename, error),
         }
@@ -308,14 +396,12 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
         Err(error) => return compile_error_line(id, root, filename, error),
     };
     let _t = timings::start(Stage::NdjsonOut);
-    let mut line = OkLine::new(
-        id,
-        if want_code {
-            code.len() + code.len() / 4
-        } else {
-            0
-        },
-    );
+    let code_bytes = if want_code {
+        code.len() + code.len() / 8
+    } else {
+        0
+    };
+    let mut line = OkLine::new(id, code_bytes + rules.len() * RULE_LINE_BYTES);
     if want_code {
         line = line.str("code", &code);
     }
@@ -323,7 +409,7 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
     if map_mode != MapMode::Off {
         line = line.raw("map", map.as_deref().unwrap_or("null"));
     }
-    if let Some(key) = &request.key {
+    if let Some(key) = request.key.as_deref() {
         let (generation, changed) = register(&shared.registry, key, rules);
         line = line
             .value("generation", &generation)
@@ -332,8 +418,8 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
     line.finish()
 }
 
-fn set_file_rules(request: &Request, id: &str, shared: &Shared) -> String {
-    let (Some(key), Some(tuples)) = (&request.key, &request.rules) else {
+fn set_file_rules(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+    let (Some(key), Some(tuples)) = (request.key.as_deref(), &request.rules) else {
         return input_error_line(id, "setFileRules needs key and rules");
     };
     let mut rules = Vec::with_capacity(tuples.len());
@@ -352,8 +438,8 @@ fn set_file_rules(request: &Request, id: &str, shared: &Shared) -> String {
         .finish()
 }
 
-fn remove_file(request: &Request, id: &str, shared: &Shared) -> String {
-    let Some(key) = &request.key else {
+fn remove_file(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+    let Some(key) = request.key.as_deref() else {
         return input_error_line(id, "removeFile needs key");
     };
     let mut registry = lock(&shared.registry);
@@ -364,17 +450,26 @@ fn remove_file(request: &Request, id: &str, shared: &Shared) -> String {
         .finish()
 }
 
-fn sheet(request: &Request, id: &str, shared: &Shared) -> String {
+fn sheet(request: &Request<'_>, id: &str, shared: &Shared) -> String {
     let cfg = match AssembleConfig::from_json(request.config.as_ref().unwrap_or(&Value::Null)) {
         Ok(cfg) => cfg,
         Err(err) => return protocol_error_line(id, "BAD_CONFIG", &err.to_string()),
     };
-    let mut registry = lock(&shared.registry);
-    match registry.emit(&cfg) {
-        Ok(css) => OkLine::new(id, css.len())
+    // The lock covers the assembly alone: transforms go on registering while
+    // the sheet is escaped into its reply.
+    let (css, generation, files) = {
+        let mut registry = lock(&shared.registry);
+        (
+            registry.emit(&cfg),
+            registry.generation(),
+            registry.file_count(),
+        )
+    };
+    match css {
+        Ok(css) => OkLine::new(id, css.len() + css.len() / 16)
             .str("css", &css)
-            .value("generation", &registry.generation())
-            .value("files", &registry.file_count())
+            .value("generation", &generation)
+            .value("files", &files)
             .finish(),
         Err(err) => protocol_error_line(id, "ASSEMBLE", &err.to_string()),
     }
@@ -384,11 +479,11 @@ fn sheet(request: &Request, id: &str, shared: &Shared) -> String {
 // StyleX-bearing file once, and register its rules under its absolute path.
 // Each compile is a session of the live fs `transform` compiles through, so
 // the transforms that follow find what the pass resolved already kept.
-fn warm(request: &Request, id: &str, shared: &Shared) -> String {
-    let (Some(root), Some(roots)) = (&request.root, &request.roots) else {
+fn warm(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+    let (Some(root), Some(roots)) = (request.root.as_deref(), &request.roots) else {
         return input_error_line(id, "warm needs root and roots");
     };
-    let raw_options = match &request.options {
+    let raw_options = match request.options {
         Some(raw) => match serde_json::from_str::<Value>(raw.get()) {
             Ok(value) => value,
             Err(err) => return protocol_error_line(id, "BAD_OPTIONS", &err.to_string()),
@@ -505,5 +600,53 @@ mod tests {
         assert!(response.contains(r#""stylexFiles":2"#), "{response}");
         assert!(response.contains(r#""errors":[]"#), "{response}");
         assert!(MemoFs::shared().keeps_relative(&src, "./tokens.stylex"));
+    }
+
+    #[test]
+    fn reply_ids_match_a_value_round_trip() {
+        for id in [
+            "0",
+            "7",
+            "-7",
+            "-0",
+            "007e0",
+            "1.0",
+            "1e2",
+            "123456789012345678",
+            "1234567890123456789",
+            "18446744073709551616",
+            "null",
+            "true",
+            "false",
+            r#""plain""#,
+            r#""ünï""#,
+            r#""esc\u0041\n""#,
+            r#"{"a": [1, "b"]}"#,
+            "[ 1 ,2 ]",
+        ] {
+            let Ok(raw) = serde_json::from_str::<&RawValue>(id) else {
+                continue;
+            };
+            let expected = serde_json::from_str::<Value>(id).unwrap().to_string();
+            assert_eq!(reply_id(raw), expected, "id {id}");
+        }
+    }
+
+    #[test]
+    fn blank_lines_are_what_trim_calls_empty() {
+        for line in [
+            &b""[..],
+            b" ",
+            b"\t \x0b\x0c\r",
+            b"{}",
+            b"  {}",
+            "\u{a0}\u{2003}".as_bytes(),
+            "\u{a0}x".as_bytes(),
+            b" \xff",
+            b"\xff",
+        ] {
+            let expected = std::str::from_utf8(line).is_ok_and(|text| text.trim().is_empty());
+            assert_eq!(is_blank(line), expected, "line {line:?}");
+        }
     }
 }
