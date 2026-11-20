@@ -1,4 +1,4 @@
-// Ported verbatim from @stylexjs/unplugin 0.19.0 (lib/consts.js, VIRTUAL_STYLEX_CSS_ONLY_SCRIPT).
+// Ported verbatim from @stylexjs/unplugin 0.19.2 (lib/consts.js, VIRTUAL_STYLEX_CSS_ONLY_SCRIPT).
 // Copyright (c) Meta Platforms, Inc. and affiliates. MIT License.
 const DEV_CSS_PATH = "/virtual:stylex.css";
 

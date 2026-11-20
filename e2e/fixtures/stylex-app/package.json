@@ -7,12 +7,12 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@stylexjs/stylex": "0.19.1",
+    "@stylexjs/stylex": "0.19.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@stylexjs/unplugin": "0.19.1",
+    "@stylexjs/unplugin": "0.19.2",
     "@vitejs/plugin-react": "^6.0.0",
     "unplugin": "^2.3.11",
     "vite": "^8.2.0"
