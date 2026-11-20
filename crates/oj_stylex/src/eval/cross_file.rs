@@ -27,6 +27,11 @@ pub const PATH_WITHOUT_NODE: &str =
 pub const UNEXPECTED_MEMBER_LOOKUP: &str =
     "Unexpected error:\nCould not determine the property being accessed.\n";
 
+// Upstream pairs this with BLOCKED_FUNCTION_CALL (`Function`/`eval` callees);
+// no value in this evaluator can hold a host function, so only the property
+// half has a reachable trigger here.
+pub const BLOCKED_PROPERTY_ACCESS: &str = "Access to this property is not allowed during compilation.\nAccessing prototype-chain properties such as 'constructor', '__proto__', or 'prototype'\nis blocked to prevent arbitrary code execution.\n";
+
 pub const OBJECT_METHOD: &str = "Unsupported object method.\n\n";
 
 pub fn unsupported_expression(node_type: &str) -> String {

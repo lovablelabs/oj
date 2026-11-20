@@ -9,34 +9,76 @@ use crate::eval::{JsObj, JsValue, is_nullish, js_to_number, js_to_string, truthy
 use crate::jsrt::{js_number_to_string, js_slice_utf16_checked, js_to_fixed, js_trim, utf16_cmp};
 
 pub(crate) const VALID_CALLEES: [&str; 5] = ["String", "Number", "Math", "Object", "Array"];
-pub(crate) const INVALID_METHODS: [&str; 7] = [
-    "random",
-    "assign",
-    "defineProperties",
-    "defineProperty",
-    "freeze",
-    "seal",
-    "splice",
+
+// parity: evaluate-path.js VALID_CALLEE_METHODS — the only static methods of
+// the valid callees that may run at compile time; every other member falls
+// through to the registry and value-callee branches.
+const STRING_METHODS: [&str; 3] = ["fromCharCode", "fromCodePoint", "raw"];
+const NUMBER_METHODS: [&str; 6] = [
+    "isFinite",
+    "isInteger",
+    "isNaN",
+    "isSafeInteger",
+    "parseFloat",
+    "parseInt",
 ];
+const MATH_METHODS: [&str; 35] = [
+    "abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clz32",
+    "cos", "cosh", "exp", "expm1", "f16round", "floor", "fround", "hypot", "imul", "log", "log10",
+    "log1p", "log2", "max", "min", "pow", "round", "sign", "sin", "sinh", "sqrt", "tan", "tanh",
+    "trunc",
+];
+const OBJECT_METHODS: [&str; 12] = [
+    "entries",
+    "fromEntries",
+    "getOwnPropertyNames",
+    "getOwnPropertySymbols",
+    "groupBy",
+    "hasOwn",
+    "is",
+    "isExtensible",
+    "isFrozen",
+    "isSealed",
+    "keys",
+    "values",
+];
+const ARRAY_METHODS: [&str; 3] = ["from", "isArray", "of"];
+
+/// Allowlisted methods that are callable upstream but not modelled here.
+const UNMODELLED_METHODS: [(&str, &str); 3] = [
+    ("String", "raw"),
+    ("Math", "f16round"),
+    ("Object", "groupBy"),
+];
+
+// parity: evaluate-path.js BLOCKED_PROPERTIES
+const BLOCKED_PROPERTIES: [&str; 3] = ["constructor", "__proto__", "prototype"];
 
 pub(crate) fn is_valid_callee(name: &str) -> bool {
     VALID_CALLEES.contains(&name)
 }
 
-pub(crate) fn is_invalid_method(name: &str) -> bool {
-    INVALID_METHODS.contains(&name)
+pub(crate) fn is_blocked_property(name: &str) -> bool {
+    BLOCKED_PROPERTIES.contains(&name)
 }
 
-/// What `global[object][property]` holds upstream.
+fn valid_callee_methods(object: &str) -> &'static [&'static str] {
+    match object {
+        "String" => &STRING_METHODS,
+        "Number" => &NUMBER_METHODS,
+        "Math" => &MATH_METHODS,
+        "Object" => &OBJECT_METHODS,
+        "Array" => &ARRAY_METHODS,
+        _ => &[],
+    }
+}
+
+/// An allowlisted `global[object][property]` static method.
 pub(crate) enum StaticMember {
     /// A function we implement: called with evaluated args.
     Fn(&'static str),
-    /// A data property: upstream throws `func.apply is not a function`.
-    NonCallable,
     /// Callable upstream but not modelled: structured loud error.
     Unsupported,
-    /// Absent upstream: falls through to the value-callee branch.
-    Unknown,
 }
 
 fn func_apply_error() -> StylexError {
@@ -47,117 +89,18 @@ fn unsupported_global(name: &str) -> StylexError {
     StylexError::unsupported_api(&format!("compile-time call to {name}"))
 }
 
-const MATH_FNS: [&str; 34] = [
-    "abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "clz32",
-    "cos", "cosh", "exp", "expm1", "floor", "fround", "hypot", "imul", "log", "log1p", "log2",
-    "log10", "max", "min", "pow", "round", "sign", "sin", "sinh", "sqrt", "tan", "tanh", "trunc",
-];
-const MATH_CONSTS: [&str; 8] = [
-    "E", "LN10", "LN2", "LOG10E", "LOG2E", "PI", "SQRT1_2", "SQRT2",
-];
-
-pub(crate) fn lookup_global_static(object: &str, property: &str) -> StaticMember {
-    match object {
-        "Math" => {
-            if MATH_FNS.contains(&property) {
-                StaticMember::Fn(property_static("Math", property))
-            } else if MATH_CONSTS.contains(&property) {
-                StaticMember::NonCallable
-            } else if property == "f16round" || property == "sumPrecise" {
-                StaticMember::Unsupported
-            } else {
-                StaticMember::Unknown
-            }
-        }
-        "Object" => match property {
-            "keys"
-            | "values"
-            | "entries"
-            | "fromEntries"
-            | "is"
-            | "hasOwn"
-            | "getOwnPropertyNames"
-            | "getOwnPropertySymbols"
-            | "isExtensible"
-            | "isFrozen"
-            | "isSealed" => StaticMember::Fn(property_static("Object", property)),
-            "create"
-            | "getOwnPropertyDescriptor"
-            | "getOwnPropertyDescriptors"
-            | "getPrototypeOf"
-            | "groupBy"
-            | "preventExtensions"
-            | "setPrototypeOf" => StaticMember::Unsupported,
-            "length" | "name" | "prototype" => StaticMember::NonCallable,
-            _ => StaticMember::Unknown,
-        },
-        "Array" => match property {
-            "isArray" | "of" | "from" => StaticMember::Fn(property_static("Array", property)),
-            "fromAsync" => StaticMember::Unsupported,
-            "length" | "name" | "prototype" => StaticMember::NonCallable,
-            _ => StaticMember::Unknown,
-        },
-        "String" => match property {
-            "fromCharCode" | "fromCodePoint" => {
-                StaticMember::Fn(property_static("String", property))
-            }
-            "raw" => StaticMember::Unsupported,
-            "length" | "name" | "prototype" => StaticMember::NonCallable,
-            _ => StaticMember::Unknown,
-        },
-        "Number" => match property {
-            "isFinite" | "isInteger" | "isNaN" | "isSafeInteger" | "parseFloat" | "parseInt" => {
-                StaticMember::Fn(property_static("Number", property))
-            }
-            "EPSILON" | "MAX_SAFE_INTEGER" | "MAX_VALUE" | "MIN_SAFE_INTEGER" | "MIN_VALUE"
-            | "NaN" | "NEGATIVE_INFINITY" | "POSITIVE_INFINITY" | "length" | "name"
-            | "prototype" => StaticMember::NonCallable,
-            _ => StaticMember::Unknown,
-        },
-        _ => StaticMember::Unknown,
-    }
-}
-
-// Canonical "&'static str" for the (object, property) pair so `Fn` can carry it.
-fn property_static(object: &'static str, property: &str) -> &'static str {
-    let joined: &[(&str, &[&str])] = &[
-        ("Math", &MATH_FNS),
-        (
-            "Object",
-            &[
-                "keys",
-                "values",
-                "entries",
-                "fromEntries",
-                "is",
-                "hasOwn",
-                "getOwnPropertyNames",
-                "getOwnPropertySymbols",
-                "isExtensible",
-                "isFrozen",
-                "isSealed",
-            ],
-        ),
-        ("Array", &["isArray", "of", "from"]),
-        ("String", &["fromCharCode", "fromCodePoint"]),
-        (
-            "Number",
-            &[
-                "isFinite",
-                "isInteger",
-                "isNaN",
-                "isSafeInteger",
-                "parseFloat",
-                "parseInt",
-            ],
-        ),
-    ];
-    joined
+/// parity: `isValidCallee(object) && isValidCalleeMethod(object, property)`.
+/// `None` means the call is not a global static call at all.
+pub(crate) fn lookup_global_static(object: &str, property: &str) -> Option<StaticMember> {
+    let name = valid_callee_methods(object)
         .iter()
-        .find(|(o, _)| *o == object)
-        .and_then(|(_, list)| list.iter().find(|p| **p == property))
         .copied()
-        .expect("property listed in the matching table")
+        .find(|method| *method == property)?;
+    Some(if UNMODELLED_METHODS.contains(&(object, name)) {
+        StaticMember::Unsupported
+    } else {
+        StaticMember::Fn(name)
+    })
 }
 
 /// The arrow-closure hook: methods with callbacks call back into the evaluator.
