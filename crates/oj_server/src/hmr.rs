@@ -416,19 +416,22 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     let Some((base, query)) = url.split_once('?') else {
         return url.to_string();
     };
-    // The timestamp is exactly 13 digits (now_millis); match only that, as Vite's
-    // `timestampRE` does, so a user's own `t=` query is never stripped.
     let kept: Vec<&str> = query
         .split('&')
-        .filter(|kv| {
-            !(kv.starts_with("t=") && kv.len() == 15 && kv[2..].bytes().all(|b| b.is_ascii_digit()))
-        })
+        .filter(|kv| !is_hmr_timestamp(kv))
         .collect();
     if kept.is_empty() {
         base.to_string()
     } else {
         format!("{base}?{}", kept.join("&"))
     }
+}
+
+/// Whether a query parameter is oj's HMR timestamp: `t=` and exactly 13
+/// digits (now_millis), as Vite's `timestampRE` matches, so a user's own
+/// `t=` query is never taken for one.
+pub(crate) fn is_hmr_timestamp(kv: &str) -> bool {
+    kv.starts_with("t=") && kv.len() == 15 && kv[2..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The HMR clock: the time in milliseconds, strictly increasing across

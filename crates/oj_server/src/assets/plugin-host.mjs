@@ -3549,15 +3549,15 @@ function runnerStylex(p) {
   // The plugin's shouldHandle, loosely: oj checks the imports exactly. The
   // built-in sources count whatever `importSources` lists.
   const listed = p.__ojStylexOptions.importSources;
-  const sources = ["stylex"];
-  const seen = new Set(sources);
-  for (const entry of Array.isArray(listed) ? listed : []) {
-    const s = typeof entry === "string" ? entry : entry?.from;
-    if (typeof s === "string" && !s.includes("stylex") && !seen.has(s)) {
-      seen.add(s);
-      sources.push(s);
-    }
-  }
+  const named = new Set(
+    ["stylex", "@stylexjs/stylex", ...(Array.isArray(listed) ? listed : [])]
+      .map((s) => (typeof s === "string" ? s : s?.from))
+      .filter((s) => typeof s === "string"),
+  );
+  // Every module of the environment is scanned for each source, so each is
+  // scanned for once, and not at all when it contains another: code that
+  // mentions "@stylexjs/stylex" mentions "stylex".
+  const sources = [...named].filter((s) => ![...named].some((other) => other !== s && s.includes(other)));
   // The modules oj was asked to compile: one that then drops its StyleX
   // imports is handed over once more, for its rules to leave the sheet.
   const compiled = new Set();
