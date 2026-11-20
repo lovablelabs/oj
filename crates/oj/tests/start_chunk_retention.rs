@@ -621,7 +621,7 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 // is served the same way.
 #[test]
 fn with_hot_updates_a_chunk_is_revalidated_not_cached_for_good() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-revalidate") else {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-revalidate", &[]) else {
         return;
     };
     let check = |name: &str, body: &str| {
@@ -696,17 +696,17 @@ fn accepting_note(text: &str) -> String {
     )
 }
 
-// Two tabs. One has the about route open: it loaded the note's chunk and
-// runs it. The other is on the home page and has not asked for the chunk.
-// The note is edited (a hot update; neither tab reloads), and the first
-// name's file goes from the cache. The second tab then opens the about
-// route: its entry imports the first name, the server answers 404 and tells
-// every open page the chunk is gone. The second tab reloads onto the
-// current code. The first tab asked for that name too, but got it: it has
-// nothing broken, and must stay as it is, where it used to reload (and lose
-// its state) for the other tab's request.
+// A page has the note's chunk loaded by its name, answered with the chunk.
+// The note is edited (a hot update; the page does not reload), and the
+// first name's file goes from the cache. A request for the first name is
+// then answered 404, and the server tells every open page the chunk is
+// gone. The page asked for that name too, but got it: it has nothing
+// broken, and must stay as it is, where it used to reload (and lose its
+// state) for a request that was not its own. (With hot updates on, a page's
+// own `import()` asks for the module by id, so the request by name is made
+// here by hand, in the page and then from outside it.)
 #[tokio::test(flavor = "multi_thread")]
-async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone() {
+async fn a_page_running_a_chunk_is_not_reloaded_when_another_request_finds_it_gone() {
     let Some(app) = app("chunk-retention-other-page") else {
         return;
     };
@@ -717,7 +717,7 @@ async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone(
     std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
     std::fs::write(root.join("src/routes/index.tsx"), INDEX).unwrap();
     std::fs::write(root.join(LAZY_NOTE), accepting_note("lazy-note-one")).unwrap();
-    let dev = Server::oj_dev(&root);
+    let dev = boot(&root, HOT);
     let first = wait_for_note_chunk(&dev, None);
     let (status, first_body) = chunk(&dev, &first);
     assert_eq!(status, 200, "{first_body}\n{}", dev.output());
@@ -728,14 +728,13 @@ async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone(
         .wait_for(&format!("{note} === 'lazy-note-one'"), WAIT)
         .await;
     loaded.eval::<bool>("(window.__mark = 'kept', true)").await;
-    let other = Page::open(&dev.url("/")).await;
-    other
-        .wait_for(
-            "document.querySelector('[data-testid=\"client-mounted\"]')?.textContent.trim() === 'client-mounted-ok'",
-            WAIT,
-        )
+    // The chunk by its name, answered: on the page's resource timeline.
+    loaded
+        .eval::<bool>(&format!(
+            "(import('/@oj-start/{first}').then(() => (window.__byName = true)), true)"
+        ))
         .await;
-    other.eval::<bool>("(window.__mark = 'kept', true)").await;
+    loaded.wait_for("window.__byName === true", WAIT).await;
 
     std::fs::write(root.join(LAZY_NOTE), accepting_note("lazy-note-two")).unwrap();
     let second = wait_for_note_chunk(&dev, Some(&first));
@@ -745,40 +744,23 @@ async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone(
     loaded
         .wait_for("globalThis.__note === 'lazy-note-two'", WAIT)
         .await;
-    for page in [&loaded, &other] {
-        assert!(
-            page.eval::<bool>("window.__mark === 'kept'").await,
-            "the hot update reloaded a page\n{}",
-            dev.output()
-        );
-    }
+    assert!(
+        loaded.eval::<bool>("window.__mark === 'kept'").await,
+        "the hot update reloaded the page\n{}",
+        dev.output()
+    );
     let removed = remove_files_with(&root.join(".oj-cache"), first_body.as_bytes());
     assert!(removed > 0, "the first chunk's file was not in the cache");
 
-    // The other tab's first visit to the about route: the first name, gone.
-    other
-        .eval::<bool>("(document.getElementById('to-about').click(), true)")
-        .await;
-    other
-        .wait_for(
-            &format!("window.__mark === undefined && {note} === 'lazy-note-two'"),
-            WAIT,
-        )
-        .await;
-    assert!(
-        other
-            .console()
-            .iter()
-            .any(|line| line.contains(&format!("gone from the dev server ({first})"))),
-        "the page that asked said why it reloaded: {:?}",
-        other.console()
-    );
+    // A request for the first name, gone: every open page is told.
+    let (status, body) = chunk(&dev, &first);
+    assert_eq!(status, 404, "{body}\n{}", dev.output());
 
     // The frame's last look at the page's requests is 1.3 s after it.
     std::thread::sleep(Duration::from_secs(3));
     assert!(
         loaded.eval::<bool>("window.__mark === 'kept'").await,
-        "the page that has the chunk loaded reloaded for another page's request: {:?}\n{}",
+        "the page that has the chunk loaded reloaded for a request that was not its own: {:?}\n{}",
         loaded.console(),
         dev.output()
     );
@@ -791,5 +773,4 @@ async fn a_page_running_a_chunk_is_not_reloaded_when_another_page_finds_it_gone(
         loaded.console()
     );
     loaded.close().await;
-    other.close().await;
 }
