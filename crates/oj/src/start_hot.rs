@@ -12,6 +12,9 @@ use tokio::sync::broadcast;
 
 /// Where a page fetches its patches.
 pub(crate) const PATCH_PREFIX: &str = "/@oj-start/hmr/";
+/// Where a page asks for the module behind an `import()`
+/// (`?id=<proxy id>&clientId=<runtime id>`).
+pub(crate) const LAZY_PATH: &str = "/@oj-start/hmr/lazy";
 /// Patches a page fetches right after its frame; older ones only matter to a
 /// page far behind, which the sequence check reloads anyway.
 const KEPT_PATCHES: usize = 64;
@@ -31,7 +34,24 @@ pub(crate) struct Patch {
 pub(crate) struct Frame {
     pub client: Option<String>,
     pub text: String,
+    /// For a patch, its number in its page's sequence.
+    pub seq: Option<u32>,
 }
+
+/// An answer kept for one page (see [`HotUpdates::keep`]).
+struct Kept {
+    name: String,
+    client: String,
+    code: axum::body::Bytes,
+}
+
+/// What kept answers go by, beside the patches.
+const KEPT_PREFIX: &str = "lazy_held_";
+/// How much the kept answers may hold together.
+const KEPT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Tells the editor's gate of files that changed.
+pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
@@ -56,6 +76,16 @@ pub(crate) struct HotUpdates {
     /// lock a release drains under, so a frame is never stranded by a flush
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
+    /// Answers kept for their pages to take ([`HotUpdates::keep`]), and how
+    /// many so far, for their names.
+    answers: Mutex<VecDeque<Kept>>,
+    kept: std::sync::atomic::AtomicU64,
+    /// Each connected page's last patch sent (see [`HotUpdates::sent_seq`]).
+    sent_seq: Mutex<std::collections::HashMap<String, u32>>,
+    /// Pages a patch was made for while they had no socket open.
+    unheard: Mutex<std::collections::HashSet<String>>,
+    /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
+    holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
 }
 
@@ -68,6 +98,11 @@ impl HotUpdates {
             generation: std::sync::atomic::AtomicU64::new(0),
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
+            answers: Mutex::new(VecDeque::new()),
+            kept: std::sync::atomic::AtomicU64::new(0),
+            sent_seq: Mutex::default(),
+            unheard: Mutex::default(),
+            holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
@@ -94,7 +129,11 @@ impl HotUpdates {
             "clients": covered,
         })
         .to_string();
-        self.send(Frame { client: None, text });
+        self.send(Frame {
+            client: None,
+            text,
+            seq: None,
+        });
     }
 
     /// The changes sent so far.
@@ -114,6 +153,18 @@ impl HotUpdates {
         let _ = self.gate.set(held);
     }
 
+    /// How the bundler's engine tells the gate of the files it saw change.
+    pub(crate) fn set_holder(&self, holder: Holder) {
+        let _ = self.holder.set(holder);
+    }
+
+    /// The engine saw `files` change: the gate, if there is one, holds them.
+    pub(crate) fn hold(&self, files: &[String]) {
+        if let Some(holder) = self.holder.get() {
+            holder(files);
+        }
+    }
+
     /// The gate flushed: send what it held, in order. Sent under the lock, so
     /// a frame made after the flush cannot overtake them (a patch sequence
     /// gap reloads the page).
@@ -123,8 +174,79 @@ impl HotUpdates {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for frame in parked.drain(..) {
+            self.sent(&frame);
             let _ = self.tx.send(frame);
         }
+    }
+
+    /// Notes the patch a frame on its way to the pages carries, for a page
+    /// whose socket is open (a page that left, or never connected, has
+    /// nothing to apply it with).
+    fn sent(&self, frame: &Frame) {
+        if let (Some(client), Some(seq)) = (&frame.client, frame.seq) {
+            if let Some(last) = self
+                .sent_seq
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(client)
+            {
+                *last = (*last).max(seq);
+            }
+        }
+    }
+
+    /// The last patch sent to the page `client`, by its number in the
+    /// page's sequence (0: none, or no socket). A module compiled for the
+    /// page now was compiled against it, so the page must have applied it
+    /// before it runs the module; a patch the gate still holds is not
+    /// counted.
+    pub(crate) fn sent_seq(&self, client: &str) -> u32 {
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(client)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The page `client` opened its socket. Whether a patch was made for it
+    /// before that (the bundler knew it from an `import()` it made first):
+    /// that patch went to no socket, so the page is behind it.
+    pub(crate) fn connected(&self, client: &str) -> bool {
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(client.to_string())
+            .or_insert(0);
+        self.unheard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client)
+    }
+
+    /// The page `client` is gone.
+    pub(crate) fn forget(&self, client: &str) {
+        self.answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|k| k.client != client);
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client);
+        self.unheard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client);
+    }
+
+    /// Whether the gate still holds frames for the pages.
+    pub(crate) fn has_parked(&self) -> bool {
+        !self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
     }
 
     /// The gate flushed with a page reload: the parked frames are moot.
@@ -144,6 +266,7 @@ impl HotUpdates {
         if self.gate.get().is_some_and(|held| held()) {
             parked.push(frame);
         } else {
+            self.sent(&frame);
             let _ = self.tx.send(frame);
         }
     }
@@ -185,7 +308,11 @@ impl HotUpdates {
             "change": change,
         })
         .to_string();
-        self.send(Frame { client: None, text });
+        self.send(Frame {
+            client: None,
+            text,
+            seq: None,
+        });
     }
 
     /// A patch for its page: kept for the page to fetch, announced on its
@@ -194,6 +321,18 @@ impl HotUpdates {
         let filename = patch.filename.as_str();
         if filename.contains('/') {
             return;
+        }
+        // For a page with no socket open: nothing will carry it there.
+        if !self
+            .sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&patch.client)
+        {
+            self.unheard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(patch.client.clone());
         }
         // Vite's payloadDeliveredAck: the page reports the patch once its
         // factories registered, never on the response alone. The trailing
@@ -228,7 +367,59 @@ impl HotUpdates {
         self.send(Frame {
             client: Some(patch.client.clone()),
             text,
+            seq: Some(patch.seq),
         });
+    }
+
+    /// Keeps `code`, compiled for the page `client`, for that page to take
+    /// once; its url.
+    pub(crate) fn keep(&self, client: &str, code: String) -> String {
+        let name = format!(
+            "{KEPT_PREFIX}{}.js",
+            self.kept.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        // A store of its own (an answer must not push out a patch a page
+        // has yet to fetch), bounded by what it holds.
+        let mut answers = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        answers.push_back(Kept {
+            name: name.clone(),
+            client: client.to_string(),
+            code: code.into(),
+        });
+        while answers.len() > 1 && answers.iter().map(|k| k.code.len()).sum::<usize>() > KEPT_BYTES
+        {
+            answers.pop_front();
+        }
+        format!("{}{name}", self.patch_prefix)
+    }
+
+    /// The answer kept as `name` for the page `client`, which is its last
+    /// use; `None` for a name that is no kept answer's.
+    pub(crate) fn take(&self, name: &str, client: Option<&str>) -> Option<Response> {
+        if !name.starts_with(KEPT_PREFIX) {
+            return None;
+        }
+        let mut answers = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = answers
+            .iter()
+            .position(|k| k.name == name && Some(k.client.as_str()) == client);
+        Some(match at.and_then(|at| answers.remove(at)) {
+            Some(kept) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                kept.code,
+            )
+                .into_response(),
+            None => (StatusCode::NOT_FOUND, "oj start: no such answer").into_response(),
+        })
     }
 
     pub(crate) fn serve(&self, name: &str) -> Response {
@@ -305,6 +496,54 @@ mod tests {
             changed_ids: vec!["src/a.tsx".into()],
             code: "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});".into(),
         }
+    }
+
+    // The number a module compiled for a page must wait for is the last
+    // patch that went to the page's socket: not one the gate still holds,
+    // not one made for a page with no socket, never a lower one.
+    #[tokio::test]
+    async fn the_last_patch_sent_counts_what_reached_a_connected_page() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hot = HotUpdates::new("");
+        let held = Arc::new(AtomicBool::new(false));
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        // No socket yet: the patch is made (the bundler knew the page from
+        // an import), reaches nobody, and is not waited for.
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        assert_eq!(hot.sent_seq("c1"), 0);
+        // The socket opens: the page is behind that patch.
+        assert!(
+            hot.connected("c1"),
+            "a patch was made before the socket opened"
+        );
+        assert!(!hot.connected("c1"), "said once");
+        assert!(!hot.connected("c2"));
+
+        hot.accept(&patch("c1", "hmr_patch_1.js", 2));
+        assert_eq!(hot.sent_seq("c1"), 2);
+        // Held by the gate: not sent, not counted, until the flush.
+        held.store(true, Ordering::SeqCst);
+        hot.accept(&patch("c1", "hmr_patch_2.js", 3));
+        assert_eq!(hot.sent_seq("c1"), 2);
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(hot.sent_seq("c1"), 3);
+        // Never a lower number.
+        hot.accept(&patch("c1", "hmr_patch_3.js", 2));
+        assert_eq!(hot.sent_seq("c1"), 3);
+
+        // A page that left: a patch still parked for it is released to
+        // nobody and leaves nothing behind.
+        held.store(true, Ordering::SeqCst);
+        hot.accept(&patch("c1", "hmr_patch_4.js", 4));
+        hot.forget("c1");
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(hot.sent_seq("c1"), 0);
+        assert!(!hot.connected("c1"), "forgotten with its unheard patches");
     }
 
     #[tokio::test]

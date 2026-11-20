@@ -18,6 +18,7 @@ members = [
     "crates/oj_wasm",
     "crates/oj_deno_napi",
     "crates/oj_notify",
+    "crates/oj_rolldown_dev",
     "crates/oj_deno_runtime",
     "crates/oj_deno_snapshots",
     "crates/typecheck/oj_*",
@@ -121,6 +122,10 @@ tower = { version = "0.5.3", features = ["util"] }
 # events across watch changes. See crates/oj_notify/README.md.
 notify = { package = "oj_notify", version = "0.4.17", path = "crates/oj_notify" }
 clap = { version = "4.6.6", features = ["derive"] }
+# oj-maintained fork of rolldown_dev 1.3.2 (published to crates.io under this
+# name): a lazy compile queues no rebuild when rolldown's own lazy compilation
+# is off. See crates/oj_rolldown_dev/README.md.
+rolldown_dev = { package = "oj_rolldown_dev", version = "0.4.17", path = "crates/oj_rolldown_dev" }
 
 # test-only
 proptest = "1.9.0"

@@ -183,6 +183,11 @@ impl Plugin for StartCodePlugin {
         ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
+        // A lazy boundary's proxy is oj's own one-line module: no transform
+        // may read its id as the module it stands for.
+        if rolldown_common::is_lazy_proxy(args.id) {
+            return Ok(None);
+        }
         let id = args.id;
         // A JSON module becomes a JavaScript one here, with named exports and
         // a default, as Vite's json plugin makes it (plugins/json.ts; under
