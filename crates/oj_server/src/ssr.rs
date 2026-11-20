@@ -207,6 +207,13 @@ enum RawResolution {
     Bare,
 }
 
+/// Whether the ssr `pre` resolveId hooks see `spec` ahead of the resolver: a
+/// bare import, or one with a query. A throw from one of them fails the
+/// import; any other specifier resolves without them.
+pub fn reaches_pre_resolve(spec: &str) -> bool {
+    is_bare_specifier(spec) || (spec.contains('?') && !spec.starts_with('\0'))
+}
+
 /// The ssr plugin host's `pre` resolveId hooks for a bare import, then the
 /// ssr resolver, then the host's `resolveId`, then a bare specifier passthrough.
 /// A relative or root specifier with a query reaches the `pre` hooks too: an
@@ -220,7 +227,7 @@ async fn ssr_resolve_raw(
     if crate::stylex::virtual_module(state, spec).is_some() {
         return Ok(RawResolution::PluginId(spec.to_string()));
     }
-    if is_bare_specifier(spec) || (spec.contains('?') && !spec.starts_with('\0')) {
+    if reaches_pre_resolve(spec) {
         if let Some(claimed) = ssr_pre_resolve(state, importer, spec).await? {
             return Ok(claimed);
         }

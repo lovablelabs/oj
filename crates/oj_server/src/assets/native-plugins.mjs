@@ -58,7 +58,8 @@ export function isRouteSplitting(name) {
 // factory) is never one of them.
 export function isReimplemented(name) {
   if (typeof name !== "string") return false;
-  // Start's import protection has no oj counterpart: it runs as Start ships it.
+  // Start's import protection runs as Start ships it, except on a dev server
+  // oj checks the imports of itself (plugin-host.mjs `nativeImportProtection`).
   if (name.startsWith("tanstack-start-core:import-protection")) return false;
   // Nor have Start's route code splitters (one per environment), nor the
   // router generator whose run gives them the routes to split.
