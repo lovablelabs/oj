@@ -220,7 +220,15 @@ pub fn merge_attrs(args: &[EvalValue]) -> Result<JsObjectMap, StylexError> {
     if let Some(EvalValue::Obj(style)) = props.get("style") {
         let serialized: Vec<String> = style
             .entries()
-            .map(|(k, v)| format!("{}:{}", to_kebab_case(k), js_to_string(v)))
+            .map(|(k, v)| {
+                // parity: 0.19.2 attrs() — custom properties are case-sensitive
+                // and keep their spelling.
+                if k.starts_with("--") {
+                    format!("{k}:{}", js_to_string(v))
+                } else {
+                    format!("{}:{}", to_kebab_case(k), js_to_string(v))
+                }
+            })
             .collect();
         result.insert("style", EvalValue::Str(serialized.join(";")));
     }
@@ -629,6 +637,27 @@ mod tests {
         assert_eq!(merged.get("style"), Some(&s("ος:v")));
         let merged = merge_attrs(&[obj(&[("backgroundColor", s("red"))])]).unwrap();
         assert_eq!(merged.get("style"), Some(&s("background-color:red")));
+    }
+
+    #[test]
+    fn attrs_keeps_custom_property_keys_verbatim() {
+        // Oracle probes against the 0.19.2 runtime: only a leading `--`
+        // exempts a key from kebab-casing.
+        let merged = merge_attrs(&[obj(&[
+            ("--myVar", s("1")),
+            ("--Mixed_Case-Name", s("2")),
+            ("--", s("3")),
+            ("-webkitBoxOrient", s("vertical")),
+            ("WebkitLineClamp", s("4")),
+            ("my--Var", s("5")),
+        ])])
+        .unwrap();
+        assert_eq!(
+            merged.get("style"),
+            Some(&s(
+                "--myVar:1;--Mixed_Case-Name:2;--:3;-webkit-box-orient:vertical;-webkit-line-clamp:4;my---var:5"
+            ))
+        );
     }
 
     #[test]

@@ -1548,7 +1548,7 @@
     "$obj": [
      [
       "style",
-      "width:5;opacity:0.5;-webkit-box-orient:vertical;--my-var:1"
+      "width:5;opacity:0.5;-webkit-box-orient:vertical;--myVar:1"
      ]
     ]
    }
