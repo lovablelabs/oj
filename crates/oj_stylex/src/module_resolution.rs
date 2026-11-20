@@ -186,10 +186,14 @@ impl FsProvider for StdFs {
 /// Memo over [`StdFs`]. `snapshot()` freezes the filesystem for the process:
 /// every path is statted, read and resolved once. `live()` keeps its answers
 /// too, each with the stats it rests on, and repeats those stats before it
-/// gives the answer again: once per path and [`MemoFs::session`].
+/// gives the answer again: once per path and [`MemoFs::session`]. It keeps
+/// no more than [`LIVE_CACHE_CAP`] of them in any one map.
 pub struct MemoFs {
     /// Live: how long a timestamp must have stood to vouch for what it stamps.
     settle: Option<Duration>,
+    /// How many answers a map holds before it is emptied to make room; a
+    /// snapshot, whose answers must not be worked out twice, has no such end.
+    cap: usize,
     /// The walks up the tree, by every directory one has started in or
     /// passed: to the nearest package, to the importer's package scope, and
     /// (the key ending in a NUL and the package's name) to a package under
@@ -201,7 +205,7 @@ pub struct MemoFs {
     /// Relative imports, by the path they name: see [`relative_target`].
     relative: PathMap<Checked<Option<PathBuf>>>,
     /// Every other import, by the importer's directory.
-    resolve: PathMap<Vec<ResolveMemo>>,
+    resolve: RwLock<ResolveMemos>,
     /// Snapshot: the one stat a path gets.
     stats: PathMap<Stamp>,
     /// `None`: the path has no realpath.
@@ -212,6 +216,16 @@ pub struct MemoFs {
 // Keyed by the path's raw bytes: `Path` equality folds spellings (`a//b`,
 // `a/b/`) whose walks return differently spelled directories.
 type PathMap<V> = RwLock<FxHashMap<Box<[u8]>, V>>;
+
+/// How many answers each map of a live fs holds. The fs of a dev server lives
+/// as long as the server does and is asked about paths without end: files
+/// come, go and are renamed, and every half-typed import is a specifier of its
+/// own. A map that is full is emptied and fills again with what is still being
+/// asked for. A pass over an app leaves a map an answer or two for each
+/// directory that has modules in it, so only an app of thousands of such
+/// directories fills one by itself; its later passes then work out again what
+/// the map had no room to keep.
+const LIVE_CACHE_CAP: usize = 1 << 14;
 
 /// How long a live fs waits before it trusts a timestamp: a change made within
 /// the timestamp's granularity of an earlier one leaves it where it was (the
@@ -494,6 +508,74 @@ impl ResolveMemo {
     }
 }
 
+#[derive(Default)]
+struct ResolveMemos {
+    by_dir: FxHashMap<Box<[u8]>, Vec<ResolveMemo>>,
+    /// The specifiers kept, over every directory and config: what the cap of
+    /// a live fs counts.
+    kept: usize,
+}
+
+impl ResolveMemos {
+    fn get(&self, dir: &[u8], config: ResolveConfig<'_>) -> Option<&ResolveMemo> {
+        self.by_dir.get(dir)?.iter().find(|m| m.matches(config))
+    }
+
+    fn clear(&mut self) {
+        self.by_dir.clear();
+        self.kept = 0;
+    }
+
+    /// Keeps `answer`, in the place of the one kept before if there is one.
+    fn keep(
+        &mut self,
+        dir: &[u8],
+        config: ResolveConfig<'_>,
+        specifier: &str,
+        answer: Checked<Option<PathBuf>>,
+    ) {
+        let memos = self.by_dir.entry(dir.into()).or_default();
+        let memo = match memos.iter().position(|m| m.matches(config)) {
+            Some(i) => &mut memos[i],
+            None => {
+                memos.push(ResolveMemo {
+                    aliases: config.aliases.cloned(),
+                    root_dir: config.root_dir.map(Path::to_path_buf),
+                    by_specifier: FxHashMap::default(),
+                });
+                memos.last_mut().expect("just pushed")
+            }
+        };
+        if memo
+            .by_specifier
+            .insert(specifier.to_string(), answer)
+            .is_none()
+        {
+            self.kept += 1;
+        }
+    }
+
+    /// Drops the answer kept, and with the last one its config and directory.
+    fn forget(&mut self, dir: &[u8], config: ResolveConfig<'_>, specifier: &str) {
+        let Some(memos) = self.by_dir.get_mut(dir) else {
+            return;
+        };
+        let Some(i) = memos.iter().position(|m| m.matches(config)) else {
+            return;
+        };
+        if memos[i].by_specifier.remove(specifier).is_none() {
+            return;
+        }
+        self.kept -= 1;
+        if memos[i].by_specifier.is_empty() {
+            memos.swap_remove(i);
+            if memos.is_empty() {
+                self.by_dir.remove(dir);
+            }
+        }
+    }
+}
+
 fn path_key(p: &Path) -> &[u8] {
     p.as_os_str().as_encoded_bytes()
 }
@@ -535,6 +617,11 @@ impl MemoFs {
     fn settling(settle: Option<Duration>) -> Self {
         Self {
             settle,
+            cap: if settle.is_some() {
+                LIVE_CACHE_CAP
+            } else {
+                usize::MAX
+            },
             nearest: RwLock::default(),
             scopes: RwLock::default(),
             packages: RwLock::default(),
@@ -591,6 +678,16 @@ impl MemoFs {
         let value = compute();
         write_lock(map).insert(key.into(), value.clone());
         value
+    }
+
+    /// Keeps `value` under `key`; a map with no room for one key more is
+    /// emptied first. What was dropped is worked out again when next asked
+    /// for, as it would have been had it never been kept.
+    fn keep<V>(&self, map: &mut FxHashMap<Box<[u8]>, V>, key: &[u8], value: V) {
+        if map.len() >= self.cap && !map.contains_key(key) {
+            map.clear();
+        }
+        map.insert(key.into(), value);
     }
 
     /// A call on the fs itself: a view over a look of its own.
@@ -693,7 +790,9 @@ impl View<'_> {
         // The stat came before the read, so the stamp is no newer than the
         // bytes; once settled, an edit after either moves it.
         if self.look.is_none_or(|look| look.settled(&node)) {
-            write_lock(&self.fs.manifests).insert(key.into(), (node, Arc::clone(&manifest)));
+            let mut manifests = write_lock(&self.fs.manifests);
+            self.fs
+                .keep(&mut manifests, key, (node, Arc::clone(&manifest)));
         }
         manifest
     }
@@ -749,7 +848,7 @@ impl View<'_> {
                 value: value.clone(),
                 deps,
             };
-            map.insert(key.into(), kept);
+            self.fs.keep(&mut map, key, kept);
         }
         value
     }
@@ -813,8 +912,7 @@ impl View<'_> {
         }
         let key = path_key(dir);
         let mut standing = Standing::Moved;
-        if let Some(memos) = read_lock(&self.fs.resolve).get(key)
-            && let Some(memo) = memos.iter().find(|m| m.matches(config))
+        if let Some(memo) = read_lock(&self.fs.resolve).get(key, config)
             && let Some(hit) = memo.by_specifier.get(specifier)
         {
             standing = self.standing(&hit.deps);
@@ -824,28 +922,22 @@ impl View<'_> {
         }
         let resolved = resolve_import_with(&tracker, specifier, importer, config);
         let deps = tracker.finish(&standing);
-        let mut map = write_lock(&self.fs.resolve);
-        let memos = map.entry(key.into()).or_default();
-        let memo = match memos.iter().position(|m| m.matches(config)) {
-            Some(i) => &mut memos[i],
-            None => {
-                memos.push(ResolveMemo {
-                    aliases: config.aliases.cloned(),
-                    root_dir: config.root_dir.map(Path::to_path_buf),
-                    by_specifier: FxHashMap::default(),
-                });
-                memos.last_mut().expect("just pushed")
-            }
-        };
+        let mut memos = write_lock(&self.fs.resolve);
         if deps.volatile {
-            memo.by_specifier.remove(specifier);
-        } else {
-            let kept = Checked {
-                value: resolved.clone(),
-                deps,
-            };
-            memo.by_specifier.insert(specifier.to_string(), kept);
+            memos.forget(key, config, specifier);
+            return resolved;
         }
+        let held = memos
+            .get(key, config)
+            .is_some_and(|memo| memo.by_specifier.contains_key(specifier));
+        if memos.kept >= self.fs.cap && !held {
+            memos.clear();
+        }
+        let kept = Checked {
+            value: resolved.clone(),
+            deps,
+        };
+        memos.keep(key, config, specifier, kept);
         resolved
     }
 
@@ -874,7 +966,8 @@ impl View<'_> {
         }
         let hash = StdFs.hash_file(p);
         if look.settled(&node) {
-            write_lock(&self.fs.hashes).insert(key.into(), (Some(node), hash.clone()));
+            let mut hashes = write_lock(&self.fs.hashes);
+            self.fs.keep(&mut hashes, key, (Some(node), hash.clone()));
         }
         hash
     }
@@ -2981,10 +3074,11 @@ mod tests {
             None
         );
         let memos = read_lock(&memo.resolve);
-        let by_dir = &memos[path_key(&root.join("pkg/src/b"))];
+        let by_dir = &memos.by_dir[path_key(&root.join("pkg/src/b"))];
         assert_eq!(by_dir.len(), 2, "one memo per distinct config");
         assert!(by_dir.iter().all(|m| m.by_specifier.len() == 1));
-        assert_eq!(memos.len(), 1, "one importer directory");
+        assert_eq!(memos.by_dir.len(), 1, "one importer directory");
+        assert_eq!(memos.kept, 2);
         assert!(read_lock(&memo.relative).is_empty());
     }
 
@@ -3008,7 +3102,7 @@ mod tests {
             assert_eq!(resolve(&StdFs, specifier, importer), tokens, "{specifier}");
         }
         assert_eq!(read_lock(&memo.relative).len(), 1);
-        assert!(read_lock(&memo.resolve).is_empty());
+        assert!(read_lock(&memo.resolve).by_dir.is_empty());
 
         // Each a name of its own: the extension it ends in decides which
         // candidates follow it.
@@ -3030,7 +3124,7 @@ mod tests {
             );
         }
         assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
-        assert!(read_lock(&memo.resolve).is_empty());
+        assert!(read_lock(&memo.resolve).by_dir.is_empty());
 
         // Spellings that are rewritten before they reach the filesystem, or
         // whose last segment is no name, stay with the importer's directory.
@@ -3054,8 +3148,9 @@ mod tests {
         }
         assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
         let memos = read_lock(&memo.resolve);
-        let by_dir = &memos[path_key(&root.join("pkg/src/b"))];
+        let by_dir = &memos.by_dir[path_key(&root.join("pkg/src/b"))];
         assert_eq!(by_dir[0].by_specifier.len(), rewritten.len());
+        assert_eq!(memos.kept, rewritten.len());
 
         // So does every specifier of an importer whose own path wants
         // normalizing first.
@@ -3070,7 +3165,7 @@ mod tests {
             tokens
         );
         assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
-        assert_eq!(read_lock(&memo.resolve).len(), 2);
+        assert_eq!(read_lock(&memo.resolve).by_dir.len(), 2);
     }
 
     /// The live tests' settle window: a fraction of the real one, still
@@ -3188,12 +3283,99 @@ mod tests {
     #[track_caller]
     fn assert_follows_changes(root: &Path, changes: &[(&str, &dyn Fn())]) {
         let live = MemoFs::settling(Some(TEST_SETTLE));
-        let mut last = assert_follows_disk(&live, root, "untouched");
+        assert_fs_follows_changes(&live, root, changes);
+    }
+
+    #[track_caller]
+    fn assert_fs_follows_changes(live: &MemoFs, root: &Path, changes: &[(&str, &dyn Fn())]) {
+        let mut last = assert_follows_disk(live, root, "untouched");
         for (what, change) in changes {
             change();
-            let now = assert_follows_disk(&live, root, what);
+            let now = assert_follows_disk(live, root, what);
             assert_ne!(now, last, "{what}: moves an answer");
             last = now;
+        }
+    }
+
+    /// How many answers each map of `fs` holds.
+    fn kept_counts(fs: &MemoFs) -> [(&'static str, usize); 8] {
+        let resolve = read_lock(&fs.resolve);
+        let specifiers = resolve.by_dir.values().flatten();
+        assert_eq!(
+            resolve.kept,
+            specifiers
+                .map(|memo| memo.by_specifier.len())
+                .sum::<usize>()
+        );
+        [
+            ("nearest", read_lock(&fs.nearest).len()),
+            ("scopes", read_lock(&fs.scopes).len()),
+            ("packages", read_lock(&fs.packages).len()),
+            ("manifests", read_lock(&fs.manifests).len()),
+            ("relative", read_lock(&fs.relative).len()),
+            ("resolve", resolve.kept),
+            ("real", read_lock(&fs.real).len()),
+            ("hashes", read_lock(&fs.hashes).len()),
+        ]
+    }
+
+    #[test]
+    fn memo_live_empties_a_full_map_and_goes_on_answering() {
+        assert_eq!(MemoFs::live().cap, LIVE_CACHE_CAP);
+        assert_eq!(MemoFs::snapshot().cap, usize::MAX);
+
+        for cap in [1, 2] {
+            let root = live_fixture(&format!("capped-{cap}"));
+            let roomy = MemoFs::settling(Some(TEST_SETTLE));
+            let capped = MemoFs {
+                cap,
+                ..MemoFs::settling(Some(TEST_SETTLE))
+            };
+            come_to_rest();
+            // Twice: an answer that waited on the temp dir above the fixture
+            // is kept for good the second time.
+            for _ in 0..2 {
+                let disk = answers(&StdFs, &root);
+                assert_eq!(answers(&roomy.session(), &root), disk);
+                assert_eq!(answers(&capped.session(), &root), disk);
+                come_to_rest();
+            }
+            // The fixture asks every map for more than one answer (all but
+            // `manifests` and `hashes` for more than two), so each has been
+            // emptied on the way.
+            let unbounded = kept_counts(&roomy);
+            for ((map, held), (_, wanted)) in kept_counts(&capped).into_iter().zip(unbounded) {
+                assert!(wanted > 1, "{map}: {wanted} answers to keep");
+                assert!((1..=cap).contains(&held), "{map}: {held} kept under {cap}");
+            }
+
+            let remove = |rel: &str| std::fs::remove_file(root.join(rel)).unwrap();
+            assert_fs_follows_changes(
+                &capped,
+                &root,
+                &[
+                    ("an earlier extension appears", &|| {
+                        put(&root, "src/theme/tokens.stylex.js", "");
+                    }),
+                    ("a nearer manifest appears", &|| {
+                        put(&root, "src/ui/package.json", r#"{"name":"ui"}"#);
+                    }),
+                    ("a package reroutes its exports", &|| {
+                        put(
+                            &root,
+                            "node_modules/dep/package.json",
+                            r#"{"name":"dep","exports":{"./*":"./alt/*.js"}}"#,
+                        );
+                    }),
+                    ("the resolved files go", &|| {
+                        remove("src/theme/tokens.stylex.js");
+                        remove("src/theme/tokens.stylex.ts");
+                    }),
+                ],
+            );
+            for (map, held) in kept_counts(&capped) {
+                assert!(held <= cap, "{map}: {held} kept under {cap}");
+            }
         }
     }
 
