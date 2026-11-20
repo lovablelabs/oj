@@ -1,8 +1,9 @@
 // Drives testdata/pins/media-query.json, generated from the live
-// @stylexjs/babel-plugin 0.19.0 oracle by conformance/src/gen-pins-mq.mjs.
+// @stylexjs/babel-plugin 0.19.2 oracle by conformance/src/gen-pins-mq.mjs.
 
 use oj_stylex::shared::media_query::{
-    MediaQuery, MediaQueryError, is_media_key, last_media_query_wins_transform,
+    MediaQuery, MediaQueryError, WidthBoundKind, is_media_key, last_media_query_wins_transform,
+    width_sort_bound,
 };
 use serde::Deserialize;
 
@@ -13,6 +14,20 @@ struct Pins {
     #[serde(rename = "topLevel")]
     top_level: Vec<SinglePin>,
     nested: Vec<NestedPin>,
+    #[serde(rename = "widthBounds")]
+    width_bounds: Vec<WidthBoundPin>,
+}
+
+#[derive(Deserialize)]
+struct WidthBoundPin {
+    prelude: String,
+    bound: Option<BoundPin>,
+}
+
+#[derive(Deserialize)]
+struct BoundPin {
+    kind: String,
+    value: f64,
 }
 
 #[derive(Deserialize)]
@@ -138,6 +153,25 @@ fn sibling_pins_match_oracle() {
             _ => panic!("malformed sibling pin {:?}", pin.inputs),
         }
     }
+}
+
+#[test]
+fn width_sort_bounds_match_oracle() {
+    let pins = load_pins();
+    let mut bounded = 0usize;
+    for pin in &pins.width_bounds {
+        let got = width_sort_bound(&pin.prelude).map(|b| {
+            let kind = match b.kind {
+                WidthBoundKind::Min => "min",
+                WidthBoundKind::Max => "max",
+            };
+            (kind, b.value)
+        });
+        let want = pin.bound.as_ref().map(|b| (b.kind.as_str(), b.value));
+        assert_eq!(got, want, "prelude {:?}", pin.prelude);
+        bounded += usize::from(want.is_some());
+    }
+    assert!(bounded > 100, "expected bound coverage, got {bounded}");
 }
 
 #[test]
