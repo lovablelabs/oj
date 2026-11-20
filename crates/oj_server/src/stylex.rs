@@ -209,7 +209,7 @@ fn module_id(root: &Path, url: &str) -> String {
     if let Some(path) = url.strip_prefix("/@fs/") {
         return format!("/{path}");
     }
-    if url.starts_with("/@") {
+    if crate::is_dev_server_path(url.split('?').next().unwrap_or(&url)) {
         return url;
     }
     format!("{}{url}", root.display())
@@ -343,5 +343,9 @@ mod tests {
         assert_eq!(module_id(root, "/src/a.tsx?v=2"), "/app/src/a.tsx?v=2");
         assert_eq!(module_id(root, "/@fs/opt/lib/x.ts"), "/opt/lib/x.ts");
         assert_eq!(module_id(root, "/@id/virtual:x"), "/@id/virtual:x");
+        assert_eq!(
+            module_id(root, "/@x/a.tsx?t=1700000000000"),
+            "/app/@x/a.tsx"
+        );
     }
 }

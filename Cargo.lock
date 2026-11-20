@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "fru"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "clap",
  "mimalloc",
@@ -6286,7 +6286,7 @@ dependencies = [
 
 [[package]]
 name = "oj"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "anyhow",
  "arcstr",
@@ -6360,7 +6360,7 @@ dependencies = [
 
 [[package]]
 name = "oj_cache"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "blake3",
  "oj_env",
@@ -6371,7 +6371,7 @@ dependencies = [
 
 [[package]]
 name = "oj_compiler"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "base64 0.22.1",
  "glob",
@@ -6405,7 +6405,7 @@ dependencies = [
 
 [[package]]
 name = "oj_config"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_env",
  "oxc_allocator",
@@ -6425,7 +6425,7 @@ dependencies = [
 
 [[package]]
 name = "oj_css"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "base64 0.22.1",
  "browserslist-rs",
@@ -6447,7 +6447,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_napi"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6466,7 +6466,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_process"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "deno_core",
  "deno_error",
@@ -6493,7 +6493,7 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_runtime"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6568,14 +6568,14 @@ dependencies = [
 
 [[package]]
 name = "oj_deno_snapshots"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "deno_runtime",
 ]
 
 [[package]]
 name = "oj_diag"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "serde",
  "serde_json",
@@ -6583,7 +6583,7 @@ dependencies = [
 
 [[package]]
 name = "oj_env"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "proptest",
  "serde_json",
@@ -6593,14 +6593,14 @@ dependencies = [
 
 [[package]]
 name = "oj_graph"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "oj_js"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "deno_config",
  "deno_core",
@@ -6623,7 +6623,7 @@ dependencies = [
 
 [[package]]
 name = "oj_notify"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "crossbeam-channel",
@@ -6650,7 +6650,7 @@ dependencies = [
 
 [[package]]
 name = "oj_resolver"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oxc_resolver",
  "regress",
@@ -6661,7 +6661,7 @@ dependencies = [
 
 [[package]]
 name = "oj_rolldown_dev"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "anyhow",
  "arcstr",
@@ -6680,7 +6680,7 @@ dependencies = [
 
 [[package]]
 name = "oj_server"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "anyhow",
  "arcstr",
@@ -6741,7 +6741,7 @@ dependencies = [
 
 [[package]]
 name = "oj_stylex"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "blake3",
  "clap",
@@ -6765,7 +6765,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_api"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_api_codec",
  "oj_tsrs_api_transport",
@@ -6791,7 +6791,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_api_codec"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -6801,7 +6801,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_api_transport"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "base64 0.23.1",
  "oj_tsrs_core",
@@ -6814,7 +6814,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_ast"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "hashbrown 0.17.1",
@@ -6827,7 +6827,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_astnav"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -6836,7 +6836,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_binder"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_ast",
@@ -6848,7 +6848,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_checker"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "hashbrown 0.17.1",
@@ -6872,7 +6872,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_compiler"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_binder",
@@ -6897,7 +6897,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_contentmapper"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -6912,7 +6912,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_core"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "dragonbox_ecma",
  "hashbrown 0.17.1",
@@ -6929,7 +6929,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_declarations"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_checker",
@@ -6945,14 +6945,14 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_diagnostics"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "rustc-hash 2.1.3",
 ]
 
 [[package]]
 name = "oj_tsrs_execute"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "libc",
  "oj_tsrs_ast",
@@ -6970,7 +6970,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_fswatch"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "libc",
  "oj_tsrs_core",
@@ -6979,7 +6979,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_incremental"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_ast",
@@ -6999,7 +6999,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_ipc"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_core",
  "rustc-hash 2.1.3",
@@ -7007,7 +7007,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_lint"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_api_transport",
  "oj_tsrs_ast",
@@ -7028,7 +7028,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_ls"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "indexmap",
@@ -7056,7 +7056,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_lsproto"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_core",
  "oj_tsrs_vfs",
@@ -7065,7 +7065,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_module"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "hashbrown 0.17.1",
@@ -7078,7 +7078,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_modulespecifiers"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -7090,7 +7090,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_parser"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_ast",
@@ -7102,7 +7102,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_printer"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_ast",
@@ -7114,7 +7114,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_project"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_binder",
@@ -7136,7 +7136,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_projectutil"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_core",
  "rustc-hash 2.1.3",
@@ -7144,7 +7144,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_pseudochecker"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -7152,7 +7152,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_scanner"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -7164,7 +7164,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_sourcemap"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -7174,7 +7174,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_spanmap"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_core",
@@ -7182,7 +7182,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_transformers"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_ast",
@@ -7197,7 +7197,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_tsoptions"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
@@ -7212,7 +7212,7 @@ dependencies = [
 
 [[package]]
 name = "oj_tsrs_vfs"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "bitflags 2.13.2",
  "oj_tsrs_core",
@@ -7223,7 +7223,7 @@ dependencies = [
 
 [[package]]
 name = "oj_typecheck"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "oj_tsrs_api",
  "oj_tsrs_execute",
@@ -7235,7 +7235,7 @@ dependencies = [
 
 [[package]]
 name = "oj_wasm"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",

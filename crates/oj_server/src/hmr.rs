@@ -452,12 +452,12 @@ pub(crate) fn hmr_now() -> u64 {
 }
 
 /// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
-/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
+/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj's own urls.
 pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String {
-    if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
+    let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    if timestamp == 0 || crate::is_dev_server_path(path) || !url.starts_with('/') {
         return url.to_string();
     }
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

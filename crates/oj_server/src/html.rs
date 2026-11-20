@@ -210,8 +210,13 @@ pub(crate) fn accepts_html_fallback(headers: &HeaderMap) -> bool {
     }
 }
 
+/// A request the browser makes for a script (`Sec-Fetch-Dest: script`).
+pub(crate) fn fetches_script(headers: &HeaderMap) -> bool {
+    headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) == Some("script")
+}
+
 pub(crate) fn is_spa_navigation(rel: &str, headers: &HeaderMap) -> bool {
-    if rel.starts_with('@') || rel.starts_with("src/") || rel.starts_with("node_modules/") {
+    if rel.starts_with("src/") || rel.starts_with("node_modules/") {
         return false;
     }
     let last = rel.rsplit('/').next().unwrap_or("");
@@ -281,7 +286,7 @@ pub(crate) fn preload_href(
         path.to_string()
     } else if is_style_url(path) {
         format!("{path}?import")
-    } else if !path.starts_with("/@")
+    } else if !crate::is_dev_server_path(path)
         && !path.contains("/node_modules/")
         && is_asset_path(root, Path::new(path))
         && !(svg_compiled && path.ends_with(".svg"))

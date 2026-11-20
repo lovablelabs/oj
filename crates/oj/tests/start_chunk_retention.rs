@@ -601,6 +601,18 @@ fn swept_chunk_is_not_found(env: &[(&str, &str)]) {
     assert!(page.told_gone(&first), "{:?}", page.frames.lock().unwrap());
     // The current bundle's chunk is untouched.
     assert_eq!(chunk(&dev, &second).0, 200);
+    // A page request for a name that was never a chunk is the app's, and no
+    // page hears of it; a module request for one still is told.
+    let page_req = [("accept", "text/html".to_string())];
+    dev.request("GET", "/@oj-start/never-a-chunk-page", &page_req);
+    let (status, _) = chunk(&dev, "never-a-chunk.js");
+    assert_eq!(status, 404);
+    assert!(page.told_gone("never-a-chunk.js"));
+    let frames = page.frames.lock().unwrap().clone();
+    assert!(
+        !frames.iter().any(|f| f.contains("never-a-chunk-page")),
+        "a page request told the pages a chunk is gone: {frames:?}"
+    );
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
