@@ -1,9 +1,14 @@
 //! commonJS canonical file names, theme-file suffix checks, import resolution.
 // parity: babel-plugin src/utils/state-manager.js:566-707 + file-based-identifier.js
 
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::SystemTime;
+use std::sync::{
+    Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
+use std::time::{Duration, SystemTime};
 
 use crate::fxhash::FxHashMap;
 use crate::options::{AliasMap, ModuleResolutionType, ResolvedOptions};
@@ -75,6 +80,86 @@ pub trait FsProvider: Sync {
     }
 }
 
+/// What import resolution asks of the filesystem.
+trait Probe {
+    /// `moduleResolve`'s file check: a directory is no file.
+    fn is_file(&self, p: &Path) -> bool;
+    /// `fs.existsSync`: a directory counts.
+    fn exists_any(&self, p: &Path) -> bool;
+    fn is_dir(&self, p: &Path) -> bool;
+    /// The path with its symlinks resolved; one that cannot be passes through.
+    fn realpath(&self, p: PathBuf) -> PathBuf;
+    /// The package.json in `dir`.
+    fn package_json(&self, dir: &Path) -> PackageRead;
+
+    // parity: getPackageScopeConfig — nearest package.json above `from`, never
+    // crossing a node_modules boundary; a malformed read throws mid-walk.
+    fn package_scope(&self, from: &Path) -> ScopeConfig {
+        let mut dir = from.parent();
+        while let Some(d) = dir {
+            if let Some(scope) = scope_at(self, d) {
+                return scope;
+            }
+            dir = d.parent();
+        }
+        ScopeConfig::NotFound
+    }
+
+    /// packageResolve's walk: the first `node_modules/<name>` directory in
+    /// `dir` or above it.
+    fn package_dir(&self, name: &str, mut dir: Option<&Path>) -> Option<PathBuf> {
+        while let Some(d) = dir {
+            if let Some(found) = package_at(self, name, d) {
+                return Some(found);
+            }
+            dir = d.parent();
+        }
+        None
+    }
+}
+
+/// Where [`Probe::package_scope`]'s walk ends in `dir`, if it does.
+fn scope_at<P: Probe + ?Sized>(fs: &P, dir: &Path) -> Option<ScopeConfig> {
+    if dir.file_name().is_some_and(|f| f == "node_modules") {
+        return Some(ScopeConfig::NotFound);
+    }
+    match fs.package_json(dir) {
+        PackageRead::Parsed(pkg) => Some(ScopeConfig::Found(dir.to_path_buf(), pkg)),
+        PackageRead::Malformed => Some(ScopeConfig::Malformed),
+        PackageRead::Missing => None,
+    }
+}
+
+fn package_at<P: Probe + ?Sized>(fs: &P, name: &str, dir: &Path) -> Option<PathBuf> {
+    let pkg_dir = dir.join("node_modules").join(name);
+    fs.is_dir(&pkg_dir).then_some(pkg_dir)
+}
+
+/// [`Probe`] straight off the disk, behind a provider's own existence checks.
+struct Direct<'a>(&'a dyn FsProvider);
+
+impl Probe for Direct<'_> {
+    fn is_file(&self, p: &Path) -> bool {
+        self.0.exists(p)
+    }
+
+    fn exists_any(&self, p: &Path) -> bool {
+        self.0.exists_any(p)
+    }
+
+    fn is_dir(&self, p: &Path) -> bool {
+        p.is_dir()
+    }
+
+    fn realpath(&self, p: PathBuf) -> PathBuf {
+        std::fs::canonicalize(&p).unwrap_or(p)
+    }
+
+    fn package_json(&self, dir: &Path) -> PackageRead {
+        Manifest::read(&dir.join("package.json")).for_resolution()
+    }
+}
+
 pub struct StdFs;
 
 impl FsProvider for StdFs {
@@ -90,7 +175,7 @@ impl FsProvider for StdFs {
         config: ResolveConfig<'_>,
     ) -> Option<PathBuf> {
         let _t = timings::start(Stage::Fs);
-        resolve_import_with(self, specifier, importer, config)
+        resolve_import_with(&Direct(self), specifier, importer, config)
     }
 
     fn exists(&self, p: &Path) -> bool {
@@ -98,54 +183,308 @@ impl FsProvider for StdFs {
     }
 }
 
-/// Directory-keyed memo over [`StdFs`]: `snapshot()` freezes the fs for the process;
-/// `live()` re-stats package.json per level and re-parses only on an (mtime, size) change.
+/// Memo over [`StdFs`]. `snapshot()` freezes the filesystem for the process:
+/// every path is statted, read and resolved once. `live()` keeps its answers
+/// too, each with the stats it rests on, and repeats those stats before it
+/// gives the answer again: once per path and [`MemoFs::session`].
 pub struct MemoFs {
-    live: bool,
-    nearest: PathMap<Option<(String, PathBuf)>>,
-    manifests: PathMap<Option<Manifest>>,
+    /// Live: how long a timestamp must have stood to vouch for what it stamps.
+    settle: Option<Duration>,
+    /// The walks up the tree, by every directory one has started in or
+    /// passed: to the nearest package, to the importer's package scope, and
+    /// (the key ending in a NUL and the package's name) to a package under
+    /// `node_modules`.
+    nearest: PathMap<Checked<Option<(String, PathBuf)>>>,
+    scopes: PathMap<Checked<ScopeConfig>>,
+    packages: PathMap<Checked<Option<PathBuf>>>,
+    manifests: PathMap<(Node, Arc<Manifest>)>,
+    /// Relative imports, by the path they name: see [`relative_target`].
+    relative: PathMap<Checked<Option<PathBuf>>>,
+    /// Every other import, by the importer's directory.
     resolve: PathMap<Vec<ResolveMemo>>,
-    exists: PathMap<bool>,
-    exists_any: PathMap<bool>,
-    hashes: PathMap<(Option<Stamp>, Option<String>)>,
-    canon: PathMap<PathBuf>,
+    /// Snapshot: the one stat a path gets.
+    stats: PathMap<Stamp>,
+    /// `None`: the path has no realpath.
+    real: PathMap<Checked<Option<PathBuf>>>,
+    hashes: PathMap<(Option<Node>, Option<String>)>,
 }
 
 // Keyed by the path's raw bytes: `Path` equality folds spellings (`a//b`,
 // `a/b/`) whose walks return differently spelled directories.
 type PathMap<V> = RwLock<FxHashMap<Box<[u8]>, V>>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    modified: Option<SystemTime>,
+/// How long a live fs waits before it trusts a timestamp: a change made within
+/// the timestamp's granularity of an earlier one leaves it where it was (the
+/// window oj_cache's digest memo keeps, for the same reason).
+const SETTLE: Duration = Duration::from_secs(2);
+
+/// Whether a directory's stamp speaks for its entries. POSIX has every create,
+/// unlink and rename mark the directory's mtime and ctime; elsewhere each
+/// entry is statted for itself.
+const DIRS_PIN_ENTRIES: bool = cfg!(unix);
+
+/// What one `stat` (symlinks followed) saw at a path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stamp {
+    /// Nothing there, or nothing above it (`ENOENT`, `ENOTDIR`).
+    Missing,
+    /// Any other failure: no permission, a symlink loop.
+    Unreadable,
+    Node(Node),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    File,
+    Dir,
+    Other,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Node {
+    kind: Kind,
     len: u64,
+    modified: Option<SystemTime>,
+    /// The status-change time (the modification time where there is none):
+    /// it moves when a rewrite or a swapped file keeps size and mtime.
+    changed: Option<SystemTime>,
+    device: u64,
+    inode: u64,
 }
 
 impl Stamp {
-    fn of(meta: &std::fs::Metadata) -> Self {
-        Self {
-            modified: meta.modified().ok(),
-            len: meta.len(),
+    fn of(p: &Path) -> Self {
+        match std::fs::metadata(p) {
+            Ok(meta) => Stamp::Node(Node::of(&meta)),
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+                Stamp::Missing
+            }
+            Err(_) => Stamp::Unreadable,
+        }
+    }
+
+    fn kind(self) -> Option<Kind> {
+        match self {
+            Stamp::Node(node) => Some(node.kind),
+            Stamp::Missing | Stamp::Unreadable => None,
         }
     }
 }
 
-#[derive(Clone)]
-enum PackageProbe {
-    Name(String),
-    Broken,
+/// A [`Stamp`], and whether the directory holding the path decides it.
+#[derive(Clone, Copy)]
+struct Sight {
+    stamp: Stamp,
+    /// The path's last name is no symlink: it is the entry its directory
+    /// lists, or the directory lists none by that name.
+    plain: bool,
 }
 
-#[derive(Clone)]
-struct Manifest {
-    stamp: Stamp,
-    probe: PackageProbe,
+impl Sight {
+    /// One `lstat`, with a `stat` behind it only for a symlink.
+    fn of(p: &Path) -> Self {
+        // `lstat` follows a last name spelled `link/` or `link/.`.
+        let names_entry = p
+            .file_name()
+            .is_some_and(|name| path_key(p).ends_with(name.as_encoded_bytes()));
+        match std::fs::symlink_metadata(p) {
+            Ok(meta) if meta.file_type().is_symlink() => Self {
+                stamp: Stamp::of(p),
+                plain: false,
+            },
+            Ok(meta) => Self {
+                stamp: Stamp::Node(Node::of(&meta)),
+                plain: names_entry,
+            },
+            Err(e) => match e.kind() {
+                ErrorKind::NotFound => Self {
+                    stamp: Stamp::Missing,
+                    plain: names_entry,
+                },
+                ErrorKind::NotADirectory => Self {
+                    stamp: Stamp::Missing,
+                    plain: false,
+                },
+                _ => Self {
+                    stamp: Stamp::Unreadable,
+                    plain: false,
+                },
+            },
+        }
+    }
 }
+
+impl Node {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let modified = meta.modified().ok();
+        #[cfg(unix)]
+        let (changed, device, inode) = {
+            use std::os::unix::fs::MetadataExt;
+            let changed = u64::try_from(meta.ctime())
+                .ok()
+                .zip(u32::try_from(meta.ctime_nsec()).ok())
+                .and_then(|(secs, nanos)| {
+                    SystemTime::UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
+                });
+            (changed, meta.dev(), meta.ino())
+        };
+        #[cfg(not(unix))]
+        let (changed, device, inode) = (modified, 0, 0);
+        Self {
+            kind: if meta.is_file() {
+                Kind::File
+            } else if meta.is_dir() {
+                Kind::Dir
+            } else {
+                Kind::Other
+            },
+            len: meta.len(),
+            modified,
+            changed,
+            device,
+            inode,
+        }
+    }
+
+    /// When the node last took a timestamp; `None` when it reports none.
+    fn stamped_at(&self) -> Option<SystemTime> {
+        Some(self.modified?.max(self.changed?))
+    }
+}
+
+/// A package.json read once for both of its readers: the walk to the nearest
+/// package wants the name it hashes, Node's resolution the fields it routes by.
+enum Manifest {
+    Unreadable,
+    /// Not JSON.
+    Invalid,
+    Parsed {
+        hash_name: String,
+        /// `None` for JSON `null`, which resolution takes as malformed.
+        package: Option<Arc<PackageJson>>,
+    },
+}
+
+impl Manifest {
+    fn read(path: &Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Manifest::Unreadable;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Manifest::Invalid;
+        };
+        Manifest::Parsed {
+            hash_name: js_name_string(json.get("name")),
+            package: (!json.is_null()).then(|| Arc::new(PackageJson::of(&json))),
+        }
+    }
+
+    /// `None` when the walk to the nearest package stops with no answer.
+    fn hash_name(&self) -> Option<&str> {
+        match self {
+            Manifest::Parsed { hash_name, .. } => Some(hash_name),
+            Manifest::Unreadable | Manifest::Invalid => None,
+        }
+    }
+
+    fn for_resolution(&self) -> PackageRead {
+        match self {
+            Manifest::Unreadable => PackageRead::Missing,
+            Manifest::Parsed {
+                package: Some(package),
+                ..
+            } => PackageRead::Parsed(Arc::clone(package)),
+            Manifest::Invalid | Manifest::Parsed { package: None, .. } => PackageRead::Malformed,
+        }
+    }
+}
+
+/// One observation a kept answer rests on, as a live fs repeats it.
+enum Dep {
+    /// `stat` of the path still reports the stamp.
+    Stat(Box<Path>, Stamp),
+    /// The path's realpath (`None`: it has none) is still this one.
+    Real(Box<Path>, Option<Box<Path>>),
+}
+
+impl Dep {
+    /// Whether both observe the same thing of the same spelling of a path.
+    fn repeats(&self, other: &Dep) -> bool {
+        match (self, other) {
+            (Dep::Stat(a, _), Dep::Stat(b, _)) | (Dep::Real(a, _), Dep::Real(b, _)) => {
+                path_key(a) == path_key(b)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Deps {
+    list: Vec<Dep>,
+    /// What the kept answers this one was worked out from rest on.
+    inherited: Vec<Arc<Deps>>,
+    /// Read from a file whose stamp had not settled: no stat can vouch for
+    /// the answer, so it is not kept.
+    volatile: bool,
+    /// When the directories that had just changed will have settled. Until
+    /// then the answer rests on each path it probed under them; after, it is
+    /// worked out once more, to rest on those that did settle.
+    resettle: Option<SystemTime>,
+}
+
+/// How a kept answer stands with a look at the disk.
+enum Standing {
+    Holds,
+    /// Something it rests on is no longer so.
+    Moved,
+    /// It holds, and is due the one more working out of [`Deps::resettle`].
+    Due,
+}
+
+impl Deps {
+    fn push(&mut self, dep: Dep) {
+        if !self.list.iter().any(|known| known.repeats(&dep)) {
+            self.list.push(dep);
+        }
+    }
+
+    fn wait_for(&mut self, dir: &Node, look: &Look) {
+        if let Some(at) = dir.stamped_at().and_then(|at| at.checked_add(look.settle)) {
+            self.wait_until(at);
+        }
+    }
+
+    fn wait_until(&mut self, at: SystemTime) {
+        self.resettle = Some(self.resettle.map_or(at, |known| known.max(at)));
+    }
+
+    /// Takes on what an answer this one was worked out from rests on.
+    fn absorb(&mut self, other: &Arc<Deps>) {
+        let rests = !(other.list.is_empty() && other.inherited.is_empty());
+        if rests && !self.inherited.iter().any(|known| Arc::ptr_eq(known, other)) {
+            self.inherited.push(Arc::clone(other));
+        }
+        self.volatile |= other.volatile;
+        if let Some(at) = other.resettle {
+            self.wait_until(at);
+        }
+    }
+}
+
+/// An answer and what it rests on (nothing, in a snapshot).
+struct Checked<T> {
+    value: T,
+    deps: Arc<Deps>,
+}
+
+/// What every answer of a snapshot rests on.
+static NOTHING: LazyLock<Arc<Deps>> = LazyLock::new(Arc::default);
 
 struct ResolveMemo {
     aliases: Option<AliasMap>,
     root_dir: Option<PathBuf>,
-    by_specifier: FxHashMap<String, Option<PathBuf>>,
+    by_specifier: FxHashMap<String, Checked<Option<PathBuf>>>,
 }
 
 impl ResolveMemo {
@@ -159,6 +498,11 @@ fn path_key(p: &Path) -> &[u8] {
     p.as_os_str().as_encoded_bytes()
 }
 
+/// The directory holding `p`; none for a root or a bare name.
+fn parent_dir(p: &Path) -> Option<&Path> {
+    p.parent().filter(|dir| !dir.as_os_str().is_empty())
+}
+
 fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
@@ -167,15 +511,19 @@ fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 static SHARED: LazyLock<MemoFs> = LazyLock::new(MemoFs::live);
 
 impl MemoFs {
     pub fn snapshot() -> Self {
-        Self::with_mode(false)
+        Self::settling(None)
     }
 
     pub fn live() -> Self {
-        Self::with_mode(true)
+        Self::settling(Some(SETTLE))
     }
 
     /// Process-wide live instance: an embedder swaps `&StdFs` for
@@ -184,61 +532,55 @@ impl MemoFs {
         &SHARED
     }
 
-    fn with_mode(live: bool) -> Self {
+    fn settling(settle: Option<Duration>) -> Self {
         Self {
-            live,
+            settle,
             nearest: RwLock::default(),
+            scopes: RwLock::default(),
+            packages: RwLock::default(),
             manifests: RwLock::default(),
+            relative: RwLock::default(),
             resolve: RwLock::default(),
-            exists: RwLock::default(),
-            exists_any: RwLock::default(),
+            stats: RwLock::default(),
+            real: RwLock::default(),
             hashes: RwLock::default(),
-            canon: RwLock::default(),
+        }
+    }
+
+    /// One compile's view of the filesystem. On a live fs every path is
+    /// statted at most once through it, so the compile reads one state of the
+    /// disk and the answers it shares with other compiles are checked once;
+    /// a call made on the `MemoFs` itself is a session of its own. A snapshot
+    /// is the same through any session.
+    pub fn session(&self) -> MemoSession<'_> {
+        MemoSession {
+            fs: self,
+            look: self.look(),
         }
     }
 
     pub fn invalidate_all(&self) {
         write_lock(&self.nearest).clear();
+        write_lock(&self.scopes).clear();
+        write_lock(&self.packages).clear();
         write_lock(&self.manifests).clear();
+        write_lock(&self.relative).clear();
         write_lock(&self.resolve).clear();
-        write_lock(&self.exists).clear();
-        write_lock(&self.exists_any).clear();
+        write_lock(&self.stats).clear();
+        write_lock(&self.real).clear();
         write_lock(&self.hashes).clear();
-        write_lock(&self.canon).clear();
     }
 
-    /// `None` mirrors `!candidate.is_file()`; the walk keeps climbing.
-    fn probe_manifest(&self, candidate: &Path) -> Option<PackageProbe> {
-        let key = path_key(candidate);
-        if !self.live
-            && let Some(hit) = read_lock(&self.manifests).get(key)
-        {
-            return hit.as_ref().map(|m| m.probe.clone());
-        }
-        let stamp = match std::fs::metadata(candidate) {
-            Ok(meta) if meta.is_file() => Stamp::of(&meta),
-            _ => {
-                if !self.live {
-                    write_lock(&self.manifests).insert(key.into(), None);
-                }
-                return None;
-            }
-        };
-        if self.live
-            && let Some(Some(hit)) = read_lock(&self.manifests).get(key)
-            && hit.stamp == stamp
-        {
-            return Some(hit.probe.clone());
-        }
-        let probe = read_manifest(candidate);
-        write_lock(&self.manifests).insert(
-            key.into(),
-            Some(Manifest {
-                stamp,
-                probe: probe.clone(),
+    fn look(&self) -> Option<Look> {
+        self.settle.map(|settle| Look {
+            started: SystemTime::now(),
+            settle,
+            seen: Mutex::new(Seen {
+                // Room for the directories above a module and its imports.
+                stats: FxHashMap::with_capacity_and_hasher(32, Default::default()),
+                real: FxHashMap::default(),
             }),
-        );
-        Some(probe)
+        })
     }
 
     fn memo_path<T: Clone>(&self, map: &PathMap<T>, p: &Path, compute: impl FnOnce() -> T) -> T {
@@ -250,40 +592,207 @@ impl MemoFs {
         write_lock(map).insert(key.into(), value.clone());
         value
     }
+
+    /// A call on the fs itself: a view over a look of its own.
+    fn alone<T>(&self, call: impl FnOnce(View<'_>) -> T) -> T {
+        let look = self.look();
+        call(View {
+            fs: self,
+            look: look.as_ref(),
+        })
+    }
 }
 
-impl FsProvider for MemoFs {
-    fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
-        let _t = timings::start(Stage::Fs);
-        let mut folder = from.parent()?;
-        let mut visited: Vec<&Path> = Vec::new();
-        let answer = loop {
-            if !self.live {
-                if let Some(hit) = read_lock(&self.nearest).get(path_key(folder)) {
-                    break hit.clone();
-                }
-                visited.push(folder);
-            }
-            match self.probe_manifest(&folder.join("package.json")) {
-                Some(PackageProbe::Name(name)) => break Some((name, folder.to_path_buf())),
-                Some(PackageProbe::Broken) => break None,
-                None => {}
-            }
-            if folder == Path::new("/") || folder.as_os_str().is_empty() {
-                break None;
-            }
-            match folder.parent() {
-                Some(parent) => folder = parent,
-                None => break None,
-            }
+/// See [`MemoFs::session`].
+pub struct MemoSession<'a> {
+    fs: &'a MemoFs,
+    look: Option<Look>,
+}
+
+/// One pass over a live filesystem: what it has statted stays as it saw it.
+struct Look {
+    /// Taken before the first stat: a stamp is settled against this moment,
+    /// which no change the look could have missed comes before.
+    started: SystemTime,
+    settle: Duration,
+    seen: Mutex<Seen>,
+}
+
+#[derive(Default)]
+struct Seen {
+    stats: FxHashMap<Box<[u8]>, Sight>,
+    real: FxHashMap<Box<[u8]>, Option<PathBuf>>,
+}
+
+impl Look {
+    /// Whether any later change to the node is sure to move its stamp.
+    fn settled(&self, node: &Node) -> bool {
+        node.stamped_at()
+            .and_then(|at| at.checked_add(self.settle))
+            .is_some_and(|at| at <= self.started)
+    }
+}
+
+/// The filesystem as one reader has it: frozen for the process in a snapshot,
+/// for one [`Look`] when live.
+#[derive(Clone, Copy)]
+struct View<'a> {
+    fs: &'a MemoFs,
+    look: Option<&'a Look>,
+}
+
+impl View<'_> {
+    fn stat(&self, p: &Path) -> Stamp {
+        self.sight(p).stamp
+    }
+
+    fn sight(&self, p: &Path) -> Sight {
+        let Some(look) = self.look else {
+            // A snapshot rests on nothing: the stamp is all it wants.
+            return Sight {
+                stamp: self.fs.memo_path(&self.fs.stats, p, || Stamp::of(p)),
+                plain: false,
+            };
         };
-        if !visited.is_empty() {
-            let mut nearest = write_lock(&self.nearest);
-            for dir in visited {
-                nearest.insert(path_key(dir).into(), answer.clone());
+        let key = path_key(p);
+        let mut seen = lock(&look.seen);
+        if let Some(hit) = seen.stats.get(key) {
+            return *hit;
+        }
+        let sight = Sight::of(p);
+        seen.stats.insert(key.into(), sight);
+        sight
+    }
+
+    /// `realpath(p)` as this look finds it; a snapshot keeps it in
+    /// [`MemoFs::real`] alone.
+    fn real(&self, p: &Path) -> Option<PathBuf> {
+        let canonicalize = || std::fs::canonicalize(p).ok();
+        let Some(look) = self.look else {
+            return canonicalize();
+        };
+        let key = path_key(p);
+        let mut seen = lock(&look.seen);
+        if let Some(hit) = seen.real.get(key) {
+            return hit.clone();
+        }
+        let real = canonicalize();
+        seen.real.insert(key.into(), real.clone());
+        real
+    }
+
+    /// The parse of the package.json at `path`, a file stamped `node`.
+    fn manifest(&self, path: &Path, node: Node) -> Arc<Manifest> {
+        let key = path_key(path);
+        if let Some((seen, manifest)) = read_lock(&self.fs.manifests).get(key)
+            && (self.look.is_none() || *seen == node)
+        {
+            return Arc::clone(manifest);
+        }
+        let manifest = Arc::new(Manifest::read(path));
+        // The stat came before the read, so the stamp is no newer than the
+        // bytes; once settled, an edit after either moves it.
+        if self.look.is_none_or(|look| look.settled(&node)) {
+            write_lock(&self.fs.manifests).insert(key.into(), (node, Arc::clone(&manifest)));
+        }
+        manifest
+    }
+
+    fn standing(&self, deps: &Deps) -> Standing {
+        let Some(look) = self.look else {
+            return Standing::Holds;
+        };
+        if !self.holds(deps) {
+            Standing::Moved
+        } else if deps.resettle.is_some_and(|at| at <= look.started) {
+            Standing::Due
+        } else {
+            Standing::Holds
+        }
+    }
+
+    /// Whether a live fs finds everything `deps` lists and inherits as it was.
+    fn holds(&self, deps: &Deps) -> bool {
+        let repeats = |dep: &Dep| match dep {
+            Dep::Stat(path, stamp) => self.stat(path) == *stamp,
+            Dep::Real(path, real) => self.real(path).as_deref() == real.as_deref(),
+        };
+        deps.list.iter().all(repeats) && deps.inherited.iter().all(|deps| self.holds(deps))
+    }
+
+    /// The answer `map` keeps under `key` if it stands, else `work`'s, kept
+    /// in its place; `rests_on` is shown what the answer returned rests on.
+    fn kept<T: Clone>(
+        &self,
+        map: &PathMap<Checked<T>>,
+        key: &[u8],
+        work: impl FnOnce(&Tracker<'_>) -> T,
+        rests_on: impl FnOnce(&Arc<Deps>),
+    ) -> T {
+        let mut standing = Standing::Moved;
+        if let Some(hit) = read_lock(map).get(key) {
+            standing = self.standing(&hit.deps);
+            if let Standing::Holds = standing {
+                rests_on(&hit.deps);
+                return hit.value.clone();
             }
         }
-        answer
+        let tracker = Tracker::new(*self);
+        let value = work(&tracker);
+        let deps = tracker.finish(&standing);
+        rests_on(&deps);
+        let mut map = write_lock(map);
+        if deps.volatile {
+            map.remove(key);
+        } else {
+            let kept = Checked {
+                value: value.clone(),
+                deps,
+            };
+            map.insert(key.into(), kept);
+        }
+        value
+    }
+
+    /// A walk up from `dir` to the first directory `at` has an answer in
+    /// (`top`, past the last one), kept for every directory on the way: the
+    /// next walk to come through any of them ends there. `salt` tells apart
+    /// the walks that share a map.
+    fn climb<T: Clone>(
+        &self,
+        map: &PathMap<Checked<T>>,
+        dir: &Path,
+        salt: &[u8],
+        at: &dyn Fn(&Tracker<'_>, &Path) -> Option<T>,
+        top: &T,
+        rests_on: &dyn Fn(&Arc<Deps>),
+    ) -> T {
+        let from_here = |tracker: &Tracker<'_>| match (at(tracker, dir), dir.parent()) {
+            (Some(answer), _) => answer,
+            (None, Some(parent)) => {
+                let rests_on = |deps: &Arc<Deps>| tracker.deps.borrow_mut().absorb(deps);
+                self.climb(map, parent, salt, at, top, &rests_on)
+            }
+            (None, None) => top.clone(),
+        };
+        if salt.is_empty() {
+            return self.kept(map, path_key(dir), from_here, rests_on);
+        }
+        let key = [path_key(dir), b"\0", salt].concat();
+        self.kept(map, &key, from_here, rests_on)
+    }
+
+    // parity: state-manager.js getPackageNameAndPath, from the directory the
+    // recursion first looks in.
+    fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
+        let _t = timings::start(Stage::Fs);
+        let at = |tracker: &Tracker<'_>, folder: &Path| {
+            let manifest = tracker.manifest_at(&folder.join("package.json"))?;
+            // A manifest that cannot be read ends the walk with no package.
+            let name = manifest.hash_name().map(str::to_string);
+            Some(name.map(|name| (name, folder.to_path_buf())))
+        };
+        self.climb(&self.fs.nearest, from.parent()?, b"", &at, &None, &|_| {})
     }
 
     fn resolve_import(
@@ -293,19 +802,29 @@ impl FsProvider for MemoFs {
         config: ResolveConfig<'_>,
     ) -> Option<PathBuf> {
         let _t = timings::start(Stage::Fs);
-        let dir = match importer.parent() {
-            Some(dir) if !self.live => dir,
-            _ => return resolve_import_with(self, specifier, importer, config),
+        let tracker = Tracker::new(*self);
+        let Some(dir) = importer.parent() else {
+            return resolve_import_with(&tracker, specifier, importer, config);
         };
+        if let Some(target) = relative_target(dir, specifier) {
+            let resolve =
+                |tracker: &Tracker<'_>| resolve_import_with(tracker, specifier, importer, config);
+            return self.kept(&self.fs.relative, &target, resolve, |_| {});
+        }
         let key = path_key(dir);
-        if let Some(memos) = read_lock(&self.resolve).get(key)
+        let mut standing = Standing::Moved;
+        if let Some(memos) = read_lock(&self.fs.resolve).get(key)
             && let Some(memo) = memos.iter().find(|m| m.matches(config))
             && let Some(hit) = memo.by_specifier.get(specifier)
         {
-            return hit.clone();
+            standing = self.standing(&hit.deps);
+            if let Standing::Holds = standing {
+                return hit.value.clone();
+            }
         }
-        let resolved = resolve_import_with(self, specifier, importer, config);
-        let mut map = write_lock(&self.resolve);
+        let resolved = resolve_import_with(&tracker, specifier, importer, config);
+        let deps = tracker.finish(&standing);
+        let mut map = write_lock(&self.fs.resolve);
         let memos = map.entry(key.into()).or_default();
         let memo = match memos.iter().position(|m| m.matches(config)) {
             Some(i) => &mut memos[i],
@@ -318,51 +837,337 @@ impl FsProvider for MemoFs {
                 memos.last_mut().expect("just pushed")
             }
         };
-        memo.by_specifier
-            .insert(specifier.to_string(), resolved.clone());
+        if deps.volatile {
+            memo.by_specifier.remove(specifier);
+        } else {
+            let kept = Checked {
+                value: resolved.clone(),
+                deps,
+            };
+            memo.by_specifier.insert(specifier.to_string(), kept);
+        }
         resolved
     }
 
     fn exists(&self, p: &Path) -> bool {
-        if self.live {
-            return p.is_file();
-        }
-        self.memo_path(&self.exists, p, || p.is_file())
+        self.stat(p).kind() == Some(Kind::File)
     }
 
     fn exists_any(&self, p: &Path) -> bool {
-        if self.live {
-            return p.exists();
-        }
-        self.memo_path(&self.exists_any, p, || p.exists())
+        self.stat(p).kind().is_some()
     }
 
     fn hash_file(&self, p: &Path) -> Option<String> {
-        let stamp = if self.live {
-            match std::fs::metadata(p) {
-                Ok(meta) if meta.is_file() => Some(Stamp::of(&meta)),
-                _ => return StdFs.hash_file(p),
-            }
-        } else {
-            None
+        let Some(look) = self.look else {
+            let hash = || (None, StdFs.hash_file(p));
+            return self.fs.memo_path(&self.fs.hashes, p, hash).1;
+        };
+        let node = match self.stat(p) {
+            Stamp::Node(node) if node.kind == Kind::File => node,
+            _ => return StdFs.hash_file(p),
         };
         let key = path_key(p);
-        if let Some((seen, hash)) = read_lock(&self.hashes).get(key)
-            && (stamp.is_none() || *seen == stamp)
+        if let Some((seen, hash)) = read_lock(&self.fs.hashes).get(key)
+            && *seen == Some(node)
         {
             return hash.clone();
         }
         let hash = StdFs.hash_file(p);
-        write_lock(&self.hashes).insert(key.into(), (stamp, hash.clone()));
+        if look.settled(&node) {
+            write_lock(&self.fs.hashes).insert(key.into(), (Some(node), hash.clone()));
+        }
         hash
     }
 
     fn canonicalize_root(&self, root: &Path) -> PathBuf {
-        if self.live {
-            return StdFs.canonicalize_root(root);
-        }
-        self.memo_path(&self.canon, root, || StdFs.canonicalize_root(root))
+        Tracker::new(*self).realpath(root.to_path_buf())
     }
+}
+
+impl FsProvider for MemoFs {
+    fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
+        self.alone(|view| view.nearest_package(from))
+    }
+
+    fn resolve_import(
+        &self,
+        specifier: &str,
+        importer: &Path,
+        config: ResolveConfig<'_>,
+    ) -> Option<PathBuf> {
+        self.alone(|view| view.resolve_import(specifier, importer, config))
+    }
+
+    fn exists(&self, p: &Path) -> bool {
+        self.alone(|view| view.exists(p))
+    }
+
+    fn exists_any(&self, p: &Path) -> bool {
+        self.alone(|view| view.exists_any(p))
+    }
+
+    fn hash_file(&self, p: &Path) -> Option<String> {
+        self.alone(|view| view.hash_file(p))
+    }
+
+    fn canonicalize_root(&self, root: &Path) -> PathBuf {
+        self.alone(|view| view.canonicalize_root(root))
+    }
+}
+
+impl MemoSession<'_> {
+    fn view(&self) -> View<'_> {
+        View {
+            fs: self.fs,
+            look: self.look.as_ref(),
+        }
+    }
+}
+
+impl FsProvider for MemoSession<'_> {
+    fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
+        self.view().nearest_package(from)
+    }
+
+    fn resolve_import(
+        &self,
+        specifier: &str,
+        importer: &Path,
+        config: ResolveConfig<'_>,
+    ) -> Option<PathBuf> {
+        self.view().resolve_import(specifier, importer, config)
+    }
+
+    fn exists(&self, p: &Path) -> bool {
+        self.view().exists(p)
+    }
+
+    fn exists_any(&self, p: &Path) -> bool {
+        self.view().exists_any(p)
+    }
+
+    fn hash_file(&self, p: &Path) -> Option<String> {
+        self.view().hash_file(p)
+    }
+
+    fn canonicalize_root(&self, root: &Path) -> PathBuf {
+        self.view().canonicalize_root(root)
+    }
+}
+
+/// A [`View`] that notes, on a live fs, what each thing it is asked rests on.
+struct Tracker<'a> {
+    view: View<'a>,
+    deps: RefCell<Deps>,
+}
+
+impl<'a> Tracker<'a> {
+    fn new(view: View<'a>) -> Self {
+        Self {
+            view,
+            deps: RefCell::default(),
+        }
+    }
+
+    /// What the answer worked out rests on. One that was [`Standing::Due`]
+    /// its second working out is not due a third.
+    fn finish(self, was: &Standing) -> Arc<Deps> {
+        if self.view.look.is_none() {
+            return Arc::clone(&NOTHING);
+        }
+        let mut deps = self.deps.into_inner();
+        if let Standing::Due = was {
+            deps.resettle = None;
+        }
+        Arc::new(deps)
+    }
+
+    /// `stat(p)`, noting what keeps the path's kind (or its absence) so.
+    fn entry(&self, p: &Path) -> Stamp {
+        let stamp = self.view.stat(p);
+        self.note_entry(p, stamp);
+        stamp
+    }
+
+    /// The parse of the package.json at `path`; `None` when no file is there.
+    fn manifest_at(&self, path: &Path) -> Option<Arc<Manifest>> {
+        match self.view.stat(path) {
+            Stamp::Node(node) if node.kind == Kind::File => {
+                if let Some(look) = self.view.look {
+                    let mut deps = self.deps.borrow_mut();
+                    deps.push(Dep::Stat(path.into(), Stamp::Node(node)));
+                    deps.volatile |= !look.settled(&node);
+                }
+                Some(self.view.manifest(path, node))
+            }
+            stamp => {
+                self.note_entry(path, stamp);
+                None
+            }
+        }
+    }
+
+    /// Notes what keeps `stat(p)` at `stamp` as far as the kind of thing at
+    /// `p` goes: the listing of the directory it is (or is not) an entry of,
+    /// when that directory's stamp can be trusted, else the path's own stat.
+    fn note_entry(&self, p: &Path, stamp: Stamp) {
+        let Some(look) = self.view.look else {
+            return;
+        };
+        // Missing along with the directories above it: the topmost missing
+        // one stands for them all.
+        let mut path = p;
+        if stamp == Stamp::Missing {
+            while let Some(parent) = parent_dir(path)
+                && self.view.stat(parent) == Stamp::Missing
+            {
+                path = parent;
+            }
+        }
+        let mut deps = self.deps.borrow_mut();
+        if DIRS_PIN_ENTRIES
+            && stamp != Stamp::Unreadable
+            && let Some(parent) = parent_dir(path)
+            && let Stamp::Node(dir) = self.view.stat(parent)
+            && dir.kind == Kind::Dir
+        {
+            if !look.settled(&dir) {
+                deps.wait_for(&dir, look);
+            } else if self.view.sight(path).plain {
+                deps.push(Dep::Stat(parent.into(), Stamp::Node(dir)));
+                return;
+            }
+        }
+        deps.push(Dep::Stat(path.into(), stamp));
+    }
+
+    /// Notes what keeps `p`'s realpath at `real`.
+    fn note_real(&self, p: &Path, real: Option<&Path>) {
+        let Some(look) = self.view.look else {
+            return;
+        };
+        let mut deps = self.deps.borrow_mut();
+        let own = real.is_some_and(|real| real.as_os_str() == p.as_os_str());
+        if !(DIRS_PIN_ENTRIES && own) {
+            deps.push(Dep::Real(p.into(), real.map(Into::into)));
+            return;
+        }
+        // A path that is its own realpath crosses no symlink: each directory
+        // above lists the next name as the real entry it is, and goes on
+        // doing so until its stamp moves. Under a directory that cannot say,
+        // what is left of the path is realpathed again.
+        let mut path = p;
+        while let Some(dir) = parent_dir(path) {
+            match self.view.stat(dir) {
+                Stamp::Node(node) if node.kind == Kind::Dir && look.settled(&node) => {
+                    deps.push(Dep::Stat(dir.into(), Stamp::Node(node)));
+                }
+                stamp => {
+                    if let Stamp::Node(node) = stamp {
+                        deps.wait_for(&node, look);
+                    }
+                    deps.push(Dep::Real(path.into(), Some(path.into())));
+                    return;
+                }
+            }
+            path = dir;
+        }
+    }
+}
+
+impl Probe for Tracker<'_> {
+    fn is_file(&self, p: &Path) -> bool {
+        self.entry(p).kind() == Some(Kind::File)
+    }
+
+    fn exists_any(&self, p: &Path) -> bool {
+        self.entry(p).kind().is_some()
+    }
+
+    fn is_dir(&self, p: &Path) -> bool {
+        self.entry(p).kind() == Some(Kind::Dir)
+    }
+
+    fn realpath(&self, p: PathBuf) -> PathBuf {
+        let view = self.view;
+        let work = |tracker: &Tracker<'_>| {
+            let real = view.real(&p);
+            tracker.note_real(&p, real.as_deref());
+            real
+        };
+        let rests_on = |deps: &Arc<Deps>| self.deps.borrow_mut().absorb(deps);
+        let real = view.kept(&view.fs.real, path_key(&p), work, rests_on);
+        real.unwrap_or(p)
+    }
+
+    fn package_json(&self, dir: &Path) -> PackageRead {
+        let path = dir.join("package.json");
+        if self.view.stat(&path).kind() == Some(Kind::Other) {
+            // A pipe or a device reads as whatever it yields this time.
+            self.deps.borrow_mut().volatile = true;
+            return Manifest::read(&path).for_resolution();
+        }
+        match self.manifest_at(&path) {
+            Some(manifest) => manifest.for_resolution(),
+            None => PackageRead::Missing,
+        }
+    }
+
+    fn package_scope(&self, from: &Path) -> ScopeConfig {
+        let Some(dir) = from.parent() else {
+            return ScopeConfig::NotFound;
+        };
+        let scopes = &self.view.fs.scopes;
+        let rests_on = |deps: &Arc<Deps>| self.deps.borrow_mut().absorb(deps);
+        let at = |level: &Tracker<'_>, dir: &Path| scope_at(level, dir);
+        self.view
+            .climb(scopes, dir, b"", &at, &ScopeConfig::NotFound, &rests_on)
+    }
+
+    fn package_dir(&self, name: &str, dir: Option<&Path>) -> Option<PathBuf> {
+        let packages = &self.view.fs.packages;
+        let rests_on = |deps: &Arc<Deps>| self.deps.borrow_mut().absorb(deps);
+        let at = |level: &Tracker<'_>, dir: &Path| package_at(level, name, dir).map(Some);
+        self.view
+            .climb(packages, dir?, name.as_bytes(), &at, &None, &rests_on)
+    }
+}
+
+/// The path a relative specifier names, when that path is all its resolution
+/// turns on: every candidate `possible_file_paths` makes of the specifier then
+/// joins to this path with its last name's extension swapped, wherever the
+/// importer is and whatever the aliases are (a dot-leading specifier never
+/// reaches them). `None` leaves the specifier to be kept by importer directory.
+fn relative_target(dir: &Path, specifier: &str) -> Option<Vec<u8>> {
+    let last = specifier.rsplit('/').next()?;
+    // Escapes, backslashes, queries and fragments are rewritten on the way to
+    // the filesystem, and a last segment that is no name moves the join.
+    let plain = is_relative_specifier(specifier)
+        && !specifier.contains(['%', '\\', '?', '#'])
+        && !matches!(last, "" | "." | "..");
+    // `normalize_path(dir)` must be `dir` itself.
+    if !(plain && dir.is_absolute() && is_lexically_normal(dir)) {
+        return None;
+    }
+    // `join_url_segments` over such a pair, without a `PathBuf` to re-parse
+    // at every segment.
+    let mut target = path_key(dir).to_vec();
+    for segment in specifier.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                let parent = target.iter().rposition(|&b| b == b'/').unwrap_or(0);
+                target.truncate(parent.max(1));
+            }
+            name => {
+                if target.last() != Some(&b'/') {
+                    target.push(b'/');
+                }
+                target.extend_from_slice(name.as_bytes());
+            }
+        }
+    }
+    Some(target)
 }
 
 /// `StdFs` whose package.json walk stops at `root`; pin fixtures use it so the
@@ -382,7 +1187,7 @@ impl FsProvider for BoundedFs {
         importer: &Path,
         config: ResolveConfig<'_>,
     ) -> Option<PathBuf> {
-        resolve_import_with(self, specifier, importer, config)
+        resolve_import_with(&Direct(self), specifier, importer, config)
     }
 
     fn exists(&self, p: &Path) -> bool {
@@ -399,25 +1204,14 @@ fn nearest_package_walk(from: &Path, stop_at: Option<&Path>) -> Option<(String, 
         }
         let candidate = folder.join("package.json");
         if candidate.is_file() {
-            return match read_manifest(&candidate) {
-                PackageProbe::Name(name) => Some((name, folder.to_path_buf())),
-                PackageProbe::Broken => None,
-            };
+            return Manifest::read(&candidate)
+                .hash_name()
+                .map(|name| (name.to_string(), folder.to_path_buf()));
         }
         if folder == Path::new("/") || folder.as_os_str().is_empty() {
             return None;
         }
         folder = folder.parent()?;
-    }
-}
-
-fn read_manifest(candidate: &Path) -> PackageProbe {
-    let Ok(raw) = std::fs::read_to_string(candidate) else {
-        return PackageProbe::Broken;
-    };
-    match serde_json::from_str::<serde_json::Value>(&raw) {
-        Ok(json) => PackageProbe::Name(js_name_string(json.get("name"))),
-        Err(_) => PackageProbe::Broken,
     }
 }
 
@@ -438,13 +1232,22 @@ fn js_name_string(name: Option<&serde_json::Value>) -> String {
 // parity: state-manager.js getPossibleFilePaths — raw path first, then each
 // extension appended to the path with any known code extension stripped.
 pub fn possible_file_paths(file_path: &str) -> Vec<String> {
+    file_path_candidates(file_path)
+        .map(Cow::into_owned)
+        .collect()
+}
+
+/// [`possible_file_paths`], each made as it is asked for: most resolutions
+/// end within the first few.
+fn file_path_candidates(file_path: &str) -> impl Iterator<Item = Cow<'_, str>> {
     let stripped = EXTENSIONS
         .iter()
         .find(|ext| file_path.ends_with(**ext))
         .map_or(file_path, |ext| &file_path[..file_path.len() - ext.len()]);
-    let mut out = vec![file_path.to_string()];
-    out.extend(EXTENSIONS.iter().map(|ext| format!("{stripped}{ext}")));
-    out
+    let extended = EXTENSIONS
+        .iter()
+        .map(move |ext| Cow::Owned([stripped, ext].concat()));
+    std::iter::once(Cow::Borrowed(file_path)).chain(extended)
 }
 
 // parity: state-manager.js possibleAliasedPaths — the raw specifier first, then
@@ -475,12 +1278,12 @@ fn possible_aliased_paths(import_path: &str, aliases: Option<&AliasMap>) -> Vec<
 }
 
 fn resolve_import_with(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     specifier: &str,
     importer: &Path,
     config: ResolveConfig<'_>,
 ) -> Option<PathBuf> {
-    for candidate in possible_file_paths(specifier) {
+    for candidate in file_path_candidates(specifier) {
         // A dot-leading specifier short-circuits before aliases are consulted.
         if candidate.starts_with('.') {
             if let Some(p) = module_resolve(fs, &candidate, importer) {
@@ -515,8 +1318,8 @@ fn resolve_import_with(
 
 /// One `moduleResolve` attempt. It realpaths its answer, which the existsSync
 /// branches never do, so two spellings of one file can hash differently.
-fn module_resolve(fs: &dyn FsProvider, specifier: &str, importer: &Path) -> Option<PathBuf> {
-    let realpath = |p: PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
+fn module_resolve(fs: &dyn Probe, specifier: &str, importer: &Path) -> Option<PathBuf> {
+    let realpath = |p: PathBuf| fs.realpath(p);
     if is_relative_specifier(specifier) {
         let dir = importer.parent()?;
         let joined = join_url_segments(
@@ -547,10 +1350,9 @@ fn node_path_join(base: &Path, rest: &str) -> String {
 
 /// The `fs.existsSync` sweep both non-moduleResolve branches share: the literal
 /// path first, then each extension; a directory is a valid hit.
-fn first_existing(fs: &dyn FsProvider, path: &str) -> Option<PathBuf> {
-    possible_file_paths(path)
-        .into_iter()
-        .map(PathBuf::from)
+fn first_existing(fs: &dyn Probe, path: &str) -> Option<PathBuf> {
+    file_path_candidates(path)
+        .map(|candidate| PathBuf::from(candidate.into_owned()))
         .find(|p| fs.exists_any(p))
 }
 
@@ -626,12 +1428,12 @@ fn percent_decode_path(p: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8(bytes).ok()?))
 }
 
-fn finalize_file(fs: &dyn FsProvider, p: PathBuf) -> Option<PathBuf> {
+fn finalize_file(fs: &dyn Probe, p: PathBuf) -> Option<PathBuf> {
     if has_encoded_separator(&p) {
         return None;
     }
     let decoded = percent_decode_path(&p)?;
-    fs.exists(&decoded).then_some(decoded)
+    fs.is_file(&decoded).then_some(decoded)
 }
 
 /// One expected char matches its literal (ASCII case-insensitive) or `%XX`
@@ -694,27 +1496,20 @@ struct PackageJson {
 enum PackageRead {
     Missing,
     Malformed,
-    Parsed(PackageJson),
+    Parsed(Arc<PackageJson>),
 }
 
-fn read_package_json(dir: &Path) -> PackageRead {
-    let Ok(raw) = std::fs::read_to_string(dir.join("package.json")) else {
-        return PackageRead::Missing;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return PackageRead::Malformed;
-    };
-    if json.is_null() {
-        return PackageRead::Malformed;
+impl PackageJson {
+    fn of(json: &serde_json::Value) -> Self {
+        let string_field = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        let value_field = |key: &str| json.get(key).filter(|v| !v.is_null()).cloned();
+        Self {
+            name: string_field("name"),
+            main: string_field("main"),
+            exports: value_field("exports"),
+            imports: value_field("imports"),
+        }
     }
-    let string_field = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
-    let value_field = |key: &str| json.get(key).filter(|v| !v.is_null()).cloned();
-    PackageRead::Parsed(PackageJson {
-        name: string_field("name"),
-        main: string_field("main"),
-        exports: value_field("exports"),
-        imports: value_field("imports"),
-    })
 }
 
 fn parse_package_name(specifier: &str) -> Option<(&str, String)> {
@@ -733,34 +1528,11 @@ fn parse_package_name(specifier: &str) -> Option<(&str, String)> {
     Some((name, subpath))
 }
 
+#[derive(Clone)]
 enum ScopeConfig {
-    Found(PathBuf, Box<PackageJson>),
+    Found(PathBuf, Arc<PackageJson>),
     NotFound,
     Malformed,
-}
-
-// parity: getPackageScopeConfig — nearest package.json above `from`, never
-// crossing a node_modules boundary; a malformed read throws mid-walk.
-fn package_scope_config(from: &Path) -> ScopeConfig {
-    let Some(mut dir) = from.parent() else {
-        return ScopeConfig::NotFound;
-    };
-    loop {
-        if dir.file_name().is_some_and(|f| f == "node_modules") {
-            return ScopeConfig::NotFound;
-        }
-        match read_package_json(dir) {
-            PackageRead::Parsed(pkg) => {
-                return ScopeConfig::Found(dir.to_path_buf(), Box::new(pkg));
-            }
-            PackageRead::Malformed => return ScopeConfig::Malformed,
-            PackageRead::Missing => {}
-        }
-        let Some(parent) = dir.parent() else {
-            return ScopeConfig::NotFound;
-        };
-        dir = parent;
-    }
 }
 
 /// `Invalid` mirrors thrown ERR_INVALID_PACKAGE_TARGET (target arrays skip
@@ -772,13 +1544,13 @@ enum ResolveErrKind {
 }
 
 fn package_resolve(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     specifier: &str,
     importer: &Path,
 ) -> Result<PathBuf, ResolveErrKind> {
     let (name, subpath) = parse_package_name(specifier).ok_or(ResolveErrKind::Fatal)?;
     // ResolveSelf: the importer's own scope wins when named + exporting.
-    match package_scope_config(importer) {
+    match fs.package_scope(importer) {
         ScopeConfig::Malformed => return Err(ResolveErrKind::Fatal),
         ScopeConfig::Found(scope_dir, pkg) => {
             if pkg.name.as_deref() == Some(name)
@@ -789,36 +1561,27 @@ fn package_resolve(
         }
         ScopeConfig::NotFound => {}
     }
-    let mut dir = importer.parent();
-    while let Some(d) = dir {
-        let pkg_dir = d.join("node_modules").join(name);
-        if pkg_dir.is_dir() {
-            let pkg = match read_package_json(&pkg_dir) {
-                PackageRead::Malformed => return Err(ResolveErrKind::Fatal),
-                PackageRead::Parsed(pkg) => Some(pkg),
-                PackageRead::Missing => None,
-            };
-            if let Some(exports) = pkg.as_ref().and_then(|p| p.exports.as_ref()) {
-                return package_exports_resolve(fs, &pkg_dir, &subpath, exports);
-            }
-            if subpath == "." {
-                return legacy_main_resolve(fs, &pkg_dir, pkg.and_then(|p| p.main))
-                    .ok_or(ResolveErrKind::Fatal);
-            }
-            let file = join_url_segments(&pkg_dir, &url_path(strip_query_fragment(&subpath[2..])));
-            return finalize_file(fs, file).ok_or(ResolveErrKind::Fatal);
-        }
-        dir = d.parent();
+    let Some(pkg_dir) = fs.package_dir(name, importer.parent()) else {
+        return Err(ResolveErrKind::Fatal);
+    };
+    let pkg = match fs.package_json(&pkg_dir) {
+        PackageRead::Malformed => return Err(ResolveErrKind::Fatal),
+        PackageRead::Parsed(pkg) => Some(pkg),
+        PackageRead::Missing => None,
+    };
+    if let Some(exports) = pkg.as_ref().and_then(|p| p.exports.as_ref()) {
+        return package_exports_resolve(fs, &pkg_dir, &subpath, exports);
     }
-    Err(ResolveErrKind::Fatal)
+    if subpath == "." {
+        return legacy_main_resolve(fs, &pkg_dir, pkg.and_then(|p| p.main.clone()))
+            .ok_or(ResolveErrKind::Fatal);
+    }
+    let file = join_url_segments(&pkg_dir, &url_path(strip_query_fragment(&subpath[2..])));
+    finalize_file(fs, file).ok_or(ResolveErrKind::Fatal)
 }
 
 // parity: legacyMainResolve — main, main+ext, main/index.*, then index.*.
-fn legacy_main_resolve(
-    fs: &dyn FsProvider,
-    pkg_dir: &Path,
-    main: Option<String>,
-) -> Option<PathBuf> {
+fn legacy_main_resolve(fs: &dyn Probe, pkg_dir: &Path, main: Option<String>) -> Option<PathBuf> {
     let mut guesses: Vec<String> = Vec::new();
     if let Some(main) = &main {
         guesses.push(main.clone());
@@ -848,7 +1611,7 @@ enum TargetOutcome {
 }
 
 fn finish_exports_target(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     outcome: TargetOutcome,
 ) -> Result<PathBuf, ResolveErrKind> {
     match outcome {
@@ -860,7 +1623,7 @@ fn finish_exports_target(
 }
 
 fn package_exports_resolve(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     pkg_dir: &Path,
     subpath: &str,
     exports: &serde_json::Value,
@@ -954,7 +1717,7 @@ fn pattern_key_compare(a: &str, b: &str) -> i32 {
 }
 
 fn resolve_package_target(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     pkg_dir: &Path,
     target: &serde_json::Value,
     matched: &str,
@@ -1000,7 +1763,7 @@ fn resolve_package_target(
 }
 
 fn resolve_target_string(
-    fs: &dyn FsProvider,
+    fs: &dyn Probe,
     pkg_dir: &Path,
     target: &str,
     matched: &str,
@@ -1057,18 +1820,14 @@ fn resolve_target_string(
 }
 
 // parity: PACKAGE_IMPORTS_RESOLVE over the importer scope's "imports" map.
-fn package_imports_resolve(
-    fs: &dyn FsProvider,
-    specifier: &str,
-    importer: &Path,
-) -> Option<PathBuf> {
+fn package_imports_resolve(fs: &dyn Probe, specifier: &str, importer: &Path) -> Option<PathBuf> {
     if specifier == "#" || specifier.starts_with("#/") || specifier.ends_with('/') {
         return None;
     }
-    let ScopeConfig::Found(scope_dir, pkg) = package_scope_config(importer) else {
+    let ScopeConfig::Found(scope_dir, pkg) = fs.package_scope(importer) else {
         return None;
     };
-    let Some(serde_json::Value::Object(map)) = pkg.imports else {
+    let Some(serde_json::Value::Object(map)) = &pkg.imports else {
         return None;
     };
     if let Some(target) = map.get(specifier)
@@ -1116,9 +1875,11 @@ pub fn matches_file_suffix(suffix: &str, filename: &str) -> bool {
     if filename.ends_with(suffix) {
         return true;
     }
-    EXTENSIONS
-        .iter()
-        .any(|ext| filename.ends_with(&format!("{suffix}{ext}")))
+    EXTENSIONS.iter().any(|ext| {
+        filename
+            .strip_suffix(ext)
+            .is_some_and(|stem| stem.ends_with(suffix))
+    })
 }
 
 // `.transformed` is a literal upstream, never derived from the option.
@@ -1271,8 +2032,17 @@ pub fn gen_file_based_identifier(file_name: &str, export_name: &str, key: Option
 
 /// Node `path.relative` over absolute POSIX-style paths.
 pub fn path_relative(from: &Path, to: &Path) -> String {
-    let from = normalize_path(from);
-    let to = normalize_path(to);
+    let from = normalized(from);
+    let to = normalized(to);
+    // A file under the directory, neither path wanting normalizing: the
+    // common case, and its answer is what is left of the file's path.
+    if let Some(below) = path_key(&to).strip_prefix(path_key(&from))
+        && let Some(below) = below.strip_prefix(b"/")
+        && !below.is_empty()
+        && matches!((&from, &to), (Cow::Borrowed(_), Cow::Borrowed(_)))
+    {
+        return String::from_utf8_lossy(below).into_owned();
+    }
     let from_parts: Vec<&std::ffi::OsStr> = from
         .components()
         .filter_map(|c| match c {
@@ -1303,6 +2073,13 @@ pub fn path_relative(from: &Path, to: &Path) -> String {
 
 /// Lexical `.`/`..` folding (no symlink resolution, matching Node URL joins).
 pub fn normalize_path(path: &Path) -> PathBuf {
+    normalized(path).into_owned()
+}
+
+fn normalized(path: &Path) -> Cow<'_, Path> {
+    if is_lexically_normal(path) {
+        return Cow::Borrowed(path);
+    }
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1315,7 +2092,22 @@ pub fn normalize_path(path: &Path) -> PathBuf {
             other => out.push(other),
         }
     }
-    out
+    Cow::Owned(out)
+}
+
+/// Whether [`normalized`] would rebuild the path byte for byte: `/`-separated
+/// names with no empty, `.` or `..` segment among them and no slash after the
+/// last. Never so where a path can carry a prefix or another separator.
+fn is_lexically_normal(path: &Path) -> bool {
+    if !cfg!(unix) {
+        return false;
+    }
+    let bytes = path_key(path);
+    let names = bytes.strip_prefix(b"/").unwrap_or(bytes);
+    bytes == b"/"
+        || names
+            .split(|&b| b == b'/')
+            .all(|name| !matches!(name, b"" | b"." | b".."))
 }
 
 #[cfg(test)]
@@ -2013,6 +2805,28 @@ mod tests {
             normalize_path(Path::new("/a/b/../c/./d.ts")),
             PathBuf::from("/a/c/d.ts")
         );
+        // A name that only starts like the directory's is no file under it.
+        assert_eq!(rel("/a/b", "/a/bc/d.ts"), "../bc/d.ts");
+        assert_eq!(rel("/a/b", "/a/b"), "");
+        assert_eq!(rel("/", "/a/d.ts"), "a/d.ts");
+        // Spellings that normalize to a directory above the file.
+        assert_eq!(rel("/a/b/", "/a/b/c/d.ts"), "c/d.ts");
+        assert_eq!(rel("/a/./b", "/a/b/c/d.ts"), "c/d.ts");
+        assert_eq!(rel("/a/b", "/a/b//c/../d.ts"), "d.ts");
+        assert_eq!(rel("a/b", "a/b/c/d.ts"), "c/d.ts");
+        for path in ["/", "/a", "/a/b.c/d", "a/b", "a", "..a/.b/c.."] {
+            assert_eq!(normalize_path(Path::new(path)), PathBuf::from(path));
+        }
+        for (path, normal) in [
+            ("/a/", "/a"),
+            ("/a//b", "/a/b"),
+            ("./a", "a"),
+            ("a/..", ""),
+            ("../a", "../a"),
+            ("", ""),
+        ] {
+            assert_eq!(normalize_path(Path::new(path)), PathBuf::from(normal));
+        }
     }
 
     /// Fresh per test (tests mutate it): root manifest, a nested `pkg`
@@ -2067,17 +2881,18 @@ mod tests {
             );
         }
         // Seven directories were visited (pkg/src/a, pkg/src/b, pkg/src, pkg,
-        // other/deep, other, root), each probed exactly once.
+        // other/deep, other, root), each probed exactly once; the two
+        // manifests among them were read.
+        let under_root = |keys: Vec<&Box<[u8]>>| {
+            keys.iter()
+                .filter(|k| k.starts_with(path_key(&root)))
+                .count()
+        };
+        assert_eq!(under_root(read_lock(&memo.stats).keys().collect()), 7);
         let manifests = read_lock(&memo.manifests);
         assert!(manifests.contains_key(path_key(&root.join("pkg/package.json"))));
         assert!(manifests.contains_key(path_key(&root.join("package.json"))));
-        assert_eq!(
-            manifests
-                .keys()
-                .filter(|k| k.starts_with(path_key(&root)))
-                .count(),
-            7
-        );
+        assert_eq!(under_root(manifests.keys().collect()), 2);
     }
 
     #[test]
@@ -2155,24 +2970,546 @@ mod tests {
             aliases: None,
             root_dir: Some(&root),
         };
-        let expected = StdFs.resolve_import("./tokens.stylex", &a, with_root);
-        assert!(expected.is_some());
+        let specifier = "/ROOT/pkg/src/b/tokens.stylex";
+        let expected = StdFs.resolve_import(specifier, &a, with_root);
+        assert_eq!(expected, Some(root.join("pkg/src/b/tokens.stylex.ts")));
+        assert_eq!(memo.resolve_import(specifier, &a, with_root), expected);
+        assert_eq!(memo.resolve_import(specifier, &b, with_root), expected);
+        // No rootDir: the placeholder is a path like any other.
         assert_eq!(
-            memo.resolve_import("./tokens.stylex", &a, with_root),
-            expected
-        );
-        assert_eq!(
-            memo.resolve_import("./tokens.stylex", &b, with_root),
-            expected
-        );
-        assert_eq!(
-            memo.resolve_import("./tokens.stylex", &b, ResolveConfig::default()),
-            expected
+            memo.resolve_import(specifier, &b, ResolveConfig::default()),
+            None
         );
         let memos = read_lock(&memo.resolve);
         let by_dir = &memos[path_key(&root.join("pkg/src/b"))];
         assert_eq!(by_dir.len(), 2, "one memo per distinct config");
         assert!(by_dir.iter().all(|m| m.by_specifier.len() == 1));
         assert_eq!(memos.len(), 1, "one importer directory");
+        assert!(read_lock(&memo.relative).is_empty());
+    }
+
+    #[test]
+    fn memo_keeps_a_relative_import_by_the_path_it_names() {
+        let root = memo_fixture("relative");
+        let memo = MemoFs::snapshot();
+        let tokens = Some(root.join("pkg/src/b/tokens.stylex.ts"));
+        let resolve = |fs: &dyn FsProvider, specifier: &str, importer: &str| {
+            fs.resolve_import(specifier, &root.join(importer), ResolveConfig::default())
+        };
+        // One file from four directories, under one name.
+        for (specifier, importer) in [
+            ("./tokens.stylex", "pkg/src/b/two.ts"),
+            ("../b/tokens.stylex", "pkg/src/a/one.ts"),
+            ("../../pkg/src/b/tokens.stylex", "other/deep/three.ts"),
+            ("./src/b/tokens.stylex", "pkg/index.ts"),
+            ("./src/a/.././b//tokens.stylex", "pkg/index.ts"),
+        ] {
+            assert_eq!(resolve(&memo, specifier, importer), tokens, "{specifier}");
+            assert_eq!(resolve(&StdFs, specifier, importer), tokens, "{specifier}");
+        }
+        assert_eq!(read_lock(&memo.relative).len(), 1);
+        assert!(read_lock(&memo.resolve).is_empty());
+
+        // Each a name of its own: the extension it ends in decides which
+        // candidates follow it.
+        let named = [
+            "./tokens.stylex.ts",
+            "./tokens.stylex.js",
+            "./tokens",
+            "./two",
+            "./two.ts",
+            "./.ts",
+            "../b",
+            "./missing/tokens.stylex",
+        ];
+        for specifier in named {
+            assert_eq!(
+                resolve(&memo, specifier, "pkg/src/b/two.ts"),
+                resolve(&StdFs, specifier, "pkg/src/b/two.ts"),
+                "{specifier}"
+            );
+        }
+        assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
+        assert!(read_lock(&memo.resolve).is_empty());
+
+        // Spellings that are rewritten before they reach the filesystem, or
+        // whose last segment is no name, stay with the importer's directory.
+        let rewritten = [
+            "./tokens.stylex?raw",
+            "./tokens.stylex#top",
+            "./tokens%2Estylex",
+            ".\\tokens.stylex",
+            "./%2e/tokens.stylex",
+            "./tokens.stylex/",
+            "./tokens.stylex/..",
+            "..",
+            ".",
+        ];
+        for specifier in rewritten {
+            assert_eq!(
+                resolve(&memo, specifier, "pkg/src/b/two.ts"),
+                resolve(&StdFs, specifier, "pkg/src/b/two.ts"),
+                "{specifier}"
+            );
+        }
+        assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
+        let memos = read_lock(&memo.resolve);
+        let by_dir = &memos[path_key(&root.join("pkg/src/b"))];
+        assert_eq!(by_dir[0].by_specifier.len(), rewritten.len());
+
+        // So does every specifier of an importer whose own path wants
+        // normalizing first.
+        drop(memos);
+        let dotted = format!("{}/pkg/src/a/../b/two.ts", root.display());
+        assert_eq!(
+            memo.resolve_import(
+                "./tokens.stylex",
+                Path::new(&dotted),
+                ResolveConfig::default()
+            ),
+            tokens
+        );
+        assert_eq!(read_lock(&memo.relative).len(), 1 + named.len());
+        assert_eq!(read_lock(&memo.resolve).len(), 2);
+    }
+
+    /// The live tests' settle window: a fraction of the real one, still
+    /// several timestamp ticks wide on any filesystem they run on.
+    const TEST_SETTLE: Duration = Duration::from_millis(40);
+
+    fn come_to_rest() {
+        std::thread::sleep(TEST_SETTLE * 3);
+    }
+
+    fn put(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Fresh per test: an app with a theme directory, two components three
+    /// levels down, and a dependency that routes through an exports map.
+    fn live_fixture(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("stylex-rs-livefs-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        put(&root, "package.json", r#"{"name":"app"}"#);
+        put(&root, "src/theme/tokens.stylex.ts", "");
+        put(&root, "src/theme/alt/tokens.stylex.ts", "");
+        put(&root, "src/ui/button/Button.tsx", "");
+        put(&root, "src/ui/card/Card.tsx", "");
+        put(
+            &root,
+            "node_modules/dep/package.json",
+            r#"{"name":"dep","exports":{"./*":"./lib/*.js"}}"#,
+        );
+        put(&root, "node_modules/dep/lib/tokens.stylex.js", "");
+        put(&root, "node_modules/dep/alt/tokens.stylex.js", "");
+        std::fs::canonicalize(&root).unwrap_or(root)
+    }
+
+    fn theme_alias(root: &Path) -> AliasMap {
+        vec![(
+            "@theme/*".to_string(),
+            vec![format!("{}/src/theme/*", root.display())],
+        )]
+    }
+
+    /// What the fixture's components ask while they compile.
+    fn compile_answers(fs: &dyn FsProvider, root: &Path) -> Vec<String> {
+        let aliases = theme_alias(root);
+        let aliased = ResolveConfig {
+            aliases: Some(&aliases),
+            root_dir: Some(root),
+        };
+        let mut answers = Vec::new();
+        for rel in ["src/ui/button/Button.tsx", "src/ui/card/Card.tsx"] {
+            let file = root.join(rel);
+            answers.push(format!("{:?}", fs.nearest_package(&file)));
+            for specifier in [
+                "../../theme/tokens.stylex",
+                "./missing/deep/thing",
+                "dep/tokens.stylex",
+            ] {
+                let resolved = fs.resolve_import(specifier, &file, ResolveConfig::default());
+                answers.push(format!("{specifier} -> {resolved:?}"));
+            }
+            for specifier in ["@theme/tokens.stylex", "@theme/alt", "/ROOT/src/theme/alt"] {
+                let resolved = fs.resolve_import(specifier, &file, aliased);
+                answers.push(format!("{specifier} -> {resolved:?}"));
+            }
+        }
+        answers
+    }
+
+    /// Those, and what a provider is asked beside a compile.
+    fn answers(fs: &dyn FsProvider, root: &Path) -> Vec<String> {
+        let mut answers = compile_answers(fs, root);
+        let manifest = root.join("package.json");
+        let tokens = root.join("src/theme/tokens.stylex.ts");
+        answers.push(format!("{:?}", fs.hash_file(&manifest)));
+        answers.push(format!("{:?}", fs.hash_file(&tokens)));
+        answers.push(format!("{:?}", fs.exists(&tokens)));
+        answers.push(format!("{:?}", fs.exists_any(&root.join("src/theme"))));
+        answers.push(format!(
+            "{:?}",
+            fs.canonicalize_root(&root.join("src/theme"))
+        ));
+        // The theme directory, spelled with the slash that has a stat follow
+        // a symlink by that name.
+        let aliases = theme_alias(root);
+        let aliased = ResolveConfig {
+            aliases: Some(&aliases),
+            root_dir: None,
+        };
+        let button = root.join("src/ui/button/Button.tsx");
+        answers.push(format!(
+            "{:?}",
+            fs.resolve_import("@theme/", &button, aliased)
+        ));
+        answers
+    }
+
+    /// The live fs says what the disk says right after a change, once the
+    /// change has settled, and again from what it then kept.
+    #[track_caller]
+    fn assert_follows_disk(live: &MemoFs, root: &Path, what: &str) -> Vec<String> {
+        let disk = answers(&StdFs, root);
+        assert_eq!(answers(&live.session(), root), disk, "{what}: just changed");
+        assert_eq!(answers(live, root), disk, "{what}: call by call");
+        come_to_rest();
+        assert_eq!(answers(&live.session(), root), disk, "{what}: settled");
+        assert_eq!(answers(&live.session(), root), disk, "{what}: kept");
+        disk
+    }
+
+    /// Runs each change in turn against a live fs that has answers kept from
+    /// before it; every change must move an answer.
+    #[track_caller]
+    fn assert_follows_changes(root: &Path, changes: &[(&str, &dyn Fn())]) {
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let mut last = assert_follows_disk(&live, root, "untouched");
+        for (what, change) in changes {
+            change();
+            let now = assert_follows_disk(&live, root, what);
+            assert_ne!(now, last, "{what}: moves an answer");
+            last = now;
+        }
+    }
+
+    #[test]
+    fn memo_live_follows_files_directories_and_manifests() {
+        let root = live_fixture("follows");
+        let remove = |rel: &str| std::fs::remove_file(root.join(rel)).unwrap();
+        let remove_dir = |rel: &str| std::fs::remove_dir_all(root.join(rel)).unwrap();
+        assert_follows_changes(
+            &root,
+            &[
+                ("an earlier extension appears", &|| {
+                    put(&root, "src/theme/tokens.stylex.js", "");
+                }),
+                ("and goes", &|| remove("src/theme/tokens.stylex.js")),
+                ("the resolved file goes", &|| {
+                    remove("src/theme/tokens.stylex.ts");
+                }),
+                ("and is back with other bytes", &|| {
+                    put(&root, "src/theme/tokens.stylex.ts", "export {};");
+                }),
+                ("a file becomes a directory", &|| {
+                    remove("src/theme/tokens.stylex.ts");
+                    put(&root, "src/theme/tokens.stylex.ts/index.ts", "");
+                }),
+                ("and a file again", &|| {
+                    remove_dir("src/theme/tokens.stylex.ts");
+                    put(&root, "src/theme/tokens.stylex.ts", "");
+                }),
+                ("missing directories fill in", &|| {
+                    put(&root, "src/ui/button/missing/deep/thing.ts", "");
+                }),
+                ("an aliased directory goes", &|| remove_dir("src/theme/alt")),
+                ("a manifest is renamed at the same length", &|| {
+                    put(&root, "package.json", r#"{"name":"apq"}"#);
+                }),
+                ("a nearer manifest appears", &|| {
+                    put(&root, "src/ui/package.json", r#"{"name":"ui"}"#);
+                }),
+                ("breaks", &|| put(&root, "src/ui/package.json", "{")),
+                ("and goes", &|| remove("src/ui/package.json")),
+                ("a package reroutes its exports", &|| {
+                    put(
+                        &root,
+                        "node_modules/dep/package.json",
+                        r#"{"name":"dep","exports":{"./*":"./alt/*.js"}}"#,
+                    );
+                }),
+                ("a nearer copy of the package appears", &|| {
+                    put(
+                        &root,
+                        "src/ui/node_modules/dep/package.json",
+                        r#"{"name":"dep","exports":{"./*":"./*.js"}}"#,
+                    );
+                    put(&root, "src/ui/node_modules/dep/tokens.stylex.js", "");
+                }),
+                ("loses the file it routes to", &|| {
+                    remove("src/ui/node_modules/dep/tokens.stylex.js");
+                }),
+                ("and goes", &|| remove_dir("src/ui/node_modules")),
+                ("the tree above the components goes", &|| remove_dir("src")),
+            ],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memo_live_follows_symlinks_and_what_they_point_at() {
+        use std::os::unix::fs::symlink;
+        let root = live_fixture("symlinks");
+        put(&root, "src/theme/other/tokens.stylex.ts", "");
+        put(&root, "themes/two/tokens.stylex.ts", "");
+        let dep = |exports: &str| {
+            put(
+                &root,
+                "store/dep/package.json",
+                &format!(r#"{{"name":"dep","exports":{{"./*":"{exports}"}}}}"#),
+            );
+        };
+        dep("./*.js");
+        put(&root, "store/dep/tokens.stylex.js", "");
+        put(&root, "store/dep/alt/tokens.stylex.js", "");
+        let remove = |rel: &str| std::fs::remove_file(root.join(rel)).unwrap();
+        let link = |target: &str, rel: &str| symlink(target, root.join(rel)).unwrap();
+        // Where a step leaves the symlink be, the directory holding it does
+        // not change either.
+        assert_follows_changes(
+            &root,
+            &[
+                ("a file is swapped for a symlink", &|| {
+                    remove("src/theme/tokens.stylex.ts");
+                    link("alt/tokens.stylex.ts", "src/theme/tokens.stylex.ts");
+                }),
+                ("its target goes", &|| {
+                    remove("src/theme/alt/tokens.stylex.ts");
+                }),
+                ("it is retargeted", &|| {
+                    remove("src/theme/tokens.stylex.ts");
+                    link("other/tokens.stylex.ts", "src/theme/tokens.stylex.ts");
+                }),
+                ("a directory is swapped for a symlink", &|| {
+                    std::fs::rename(root.join("src/theme"), root.join("themes/one")).unwrap();
+                    link("../themes/one", "src/theme");
+                }),
+                ("it is retargeted", &|| {
+                    remove("src/theme");
+                    link("../themes/two", "src/theme");
+                }),
+                ("its target goes", &|| {
+                    std::fs::remove_dir_all(root.join("themes/two")).unwrap();
+                }),
+                ("and is back", &|| {
+                    put(&root, "themes/two/tokens.stylex.ts", "");
+                }),
+                ("a package is swapped for a symlink", &|| {
+                    std::fs::remove_dir_all(root.join("node_modules/dep")).unwrap();
+                    link("../store/dep", "node_modules/dep");
+                }),
+                ("the manifest behind it reroutes", &|| dep("./alt/*.js")),
+                ("the package behind it goes", &|| {
+                    std::fs::rename(root.join("store/dep"), root.join("store/gone")).unwrap();
+                }),
+            ],
+        );
+    }
+
+    /// Bare and `#` specifiers from importers at every depth: the walks a
+    /// memo keeps by directory end where the walks made afresh do, whichever
+    /// importer comes through first.
+    #[test]
+    fn memo_walks_end_where_std_walks_end() {
+        let root = live_fixture("walks");
+        put(
+            &root,
+            "package.json",
+            r##"{"name":"app","exports":{"./*":"./src/*.ts"},"imports":{"#theme/*":"./src/theme/*.ts"}}"##,
+        );
+        put(
+            &root,
+            "src/ui/package.json",
+            r#"{"name":"ui","exports":{"./*":"./*.tsx"}}"#,
+        );
+        put(
+            &root,
+            "src/ui/node_modules/dep/package.json",
+            r#"{"name":"dep","exports":{"./*":"./near/*.js"}}"#,
+        );
+        put(&root, "src/ui/node_modules/dep/near/tokens.stylex.js", "");
+        put(&root, "src/ui/card/node_modules/only-card/index.js", "");
+        let importers = [
+            "src/ui/button/Button.tsx",
+            "src/ui/card/Card.tsx",
+            "src/ui/index.ts",
+            "src/main.ts",
+            "main.ts",
+            "node_modules/dep/lib/inner.js",
+            "src/ui/node_modules/dep/near/inner.js",
+        ];
+        let specifiers = [
+            "dep/tokens.stylex",
+            "app/theme/tokens.stylex",
+            "#theme/tokens.stylex",
+            "ui/button/Button",
+            "only-card",
+            "nowhere/tokens.stylex",
+            "@scope/nowhere",
+        ];
+        let mut questions = Vec::new();
+        for importer in importers {
+            for specifier in specifiers {
+                questions.push((root.join(importer), specifier));
+            }
+        }
+        let ask = |fs: &dyn FsProvider, questions: &[(PathBuf, &str)]| -> Vec<Option<PathBuf>> {
+            questions
+                .iter()
+                .map(|(importer, specifier)| {
+                    fs.resolve_import(specifier, importer, ResolveConfig::default())
+                })
+                .collect()
+        };
+        let expected = ask(&StdFs, &questions);
+        let mut found: Vec<&PathBuf> = expected.iter().flatten().collect();
+        found.sort();
+        found.dedup();
+        assert_eq!(
+            found,
+            [
+                &root.join("node_modules/dep/lib/tokens.stylex.js"),
+                &root.join("src/theme/tokens.stylex.ts"),
+                &root.join("src/ui/button/Button.tsx"),
+                &root.join("src/ui/card/node_modules/only-card/index.js"),
+                &root.join("src/ui/node_modules/dep/near/tokens.stylex.js"),
+            ]
+        );
+
+        assert_eq!(ask(&MemoFs::snapshot(), &questions), expected);
+        let backwards: Vec<_> = questions.iter().rev().cloned().collect();
+        let mut answers = ask(&MemoFs::snapshot(), &backwards);
+        answers.reverse();
+        assert_eq!(answers, expected);
+
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        assert_eq!(ask(&live.session(), &questions), expected);
+        come_to_rest();
+        let mut answers = ask(&live.session(), &backwards);
+        answers.reverse();
+        assert_eq!(answers, expected);
+        assert_eq!(ask(&live.session(), &questions), expected);
+    }
+
+    #[test]
+    fn memo_session_reads_one_state_of_the_disk() {
+        let root = live_fixture("session");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let button = root.join("src/ui/button/Button.tsx");
+        let card = root.join("src/ui/card/Card.tsx");
+        let resolve = |fs: &dyn FsProvider, importer: &Path| {
+            fs.resolve_import(
+                "../../theme/tokens.stylex",
+                importer,
+                ResolveConfig::default(),
+            )
+        };
+        let ts = Some(root.join("src/theme/tokens.stylex.ts"));
+        let js = Some(root.join("src/theme/tokens.stylex.js"));
+
+        let session = live.session();
+        assert_eq!(resolve(&session, &button), ts);
+        put(&root, "src/theme/tokens.stylex.js", "");
+        // Kept, and worked out anew from another directory: the session has
+        // looked, and saw no `.js`.
+        assert_eq!(resolve(&session, &button), ts);
+        assert_eq!(resolve(&session, &card), ts);
+        assert_eq!(resolve(&live.session(), &card), js);
+        assert_eq!(resolve(&live, &button), js);
+
+        // A snapshot's sessions are the snapshot.
+        let frozen = MemoFs::snapshot();
+        assert_eq!(resolve(&frozen.session(), &button), js);
+        std::fs::remove_file(root.join("src/theme/tokens.stylex.js")).unwrap();
+        assert_eq!(resolve(&frozen.session(), &card), js);
+        assert_eq!(resolve(&frozen, &card), js);
+    }
+
+    #[test]
+    fn memo_live_trusts_a_stamp_only_once_it_has_stood_the_settle_window() {
+        let at = |millis: u64| SystemTime::UNIX_EPOCH + Duration::from_millis(millis);
+        let look = |started: u64| Look {
+            started: at(started),
+            settle: Duration::from_millis(100),
+            seen: Mutex::default(),
+        };
+        let node = |modified: u64, changed: u64| Node {
+            kind: Kind::Dir,
+            len: 0,
+            modified: Some(at(modified)),
+            changed: Some(at(changed)),
+            device: 0,
+            inode: 0,
+        };
+        assert!(look(1100).settled(&node(1000, 1000)));
+        assert!(!look(1099).settled(&node(1000, 1000)));
+        // The later of the two times counts: a restored mtime hides nothing.
+        assert!(!look(1100).settled(&node(500, 1001)));
+        assert!(!look(1100).settled(&node(1001, 500)));
+        // A stamp from the look's future, as a skewed clock hands out.
+        assert!(!look(1100).settled(&node(5000, 5000)));
+        let unstamped = Node {
+            modified: None,
+            ..node(0, 0)
+        };
+        assert!(!look(1100).settled(&unstamped));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memo_live_at_rest_checks_directories_and_the_manifests_it_read() {
+        let root = live_fixture("rest");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        come_to_rest();
+        let first = compile_answers(&live.session(), &root);
+        assert_eq!(first, compile_answers(&StdFs, &root));
+        // Answers that waited on the temp dir above the fixture are worked
+        // out a second time, and no more.
+        come_to_rest();
+        assert_eq!(compile_answers(&live.session(), &root), first);
+
+        let session = live.session();
+        assert_eq!(compile_answers(&session, &root), first);
+        let seen = lock(&session.look.as_ref().unwrap().seen);
+        let below_root = |key: &[u8]| {
+            let path = Path::new(std::str::from_utf8(key).unwrap()).to_path_buf();
+            (path != root && path.starts_with(&root)).then_some(path)
+        };
+        let mut manifests = Vec::new();
+        for (key, sight) in &seen.stats {
+            let Some(path) = below_root(key) else {
+                continue;
+            };
+            match sight.stamp.kind() {
+                Some(Kind::Dir) => {}
+                Some(Kind::File) => manifests.push(path),
+                _ => panic!("{} was statted: {:?}", path.display(), sight.stamp),
+            }
+        }
+        manifests.sort();
+        assert_eq!(
+            manifests,
+            [
+                root.join("node_modules/dep/package.json"),
+                root.join("package.json")
+            ]
+        );
+        // Symlinks are looked for no deeper than the fixture's own name, in a
+        // temp dir that may never come to rest.
+        assert!(!seen.real.keys().any(|key| below_root(key).is_some()));
     }
 }

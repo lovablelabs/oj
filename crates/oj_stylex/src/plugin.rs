@@ -104,8 +104,8 @@ pub struct SourceOutput {
 impl StylexPlugin {
     /// `user`: the object given to `stylex.vite(...)`. `node_env_dev`: whether
     /// `NODE_ENV` was `development` when the config loaded, the plugin's `dev`
-    /// default. `live_fs`: re-stat package manifests (dev) instead of freezing
-    /// them for the process (build).
+    /// default. `live_fs`: check what each compile reads of the filesystem
+    /// against the disk (dev) instead of freezing it for the process (build).
     pub fn new(
         user: &Value,
         root: &Path,
@@ -285,7 +285,7 @@ impl StylexPlugin {
         source: &str,
     ) -> Result<Vec<StylexRule>, String> {
         let ctx = self.context(file, source);
-        transform_program(allocator, program, &ctx, &self.options, &self.fs)
+        transform_program(allocator, program, &ctx, &self.options, &self.fs.session())
             .map(|out| out.rules)
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
     }
@@ -302,7 +302,7 @@ impl StylexPlugin {
             &allocator,
             &ctx,
             &self.options,
-            &self.fs,
+            &self.fs.session(),
             MapMode::WithContent,
         )
         .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;

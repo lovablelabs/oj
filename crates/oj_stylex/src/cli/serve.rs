@@ -284,14 +284,14 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
     let compiled = ARENA.with(|cell| {
         let mut allocator = cell.borrow_mut();
         allocator.reset();
-        let fs = MemoFs::shared();
+        let fs = MemoFs::shared().session();
         let result = if rules_only {
-            transform_source_rules_in(&allocator, &ctx, &options, fs).map(|result| {
+            transform_source_rules_in(&allocator, &ctx, &options, &fs).map(|result| {
                 let rules = result.map_or_else(Vec::new, |result| result.rules);
                 (Cow::Borrowed(&*source), rules, None)
             })
         } else {
-            transform_source_in_with_map(&allocator, &ctx, &options, fs, map_mode).map(|result| {
+            transform_source_in_with_map(&allocator, &ctx, &options, &fs, map_mode).map(|result| {
                 match result {
                     Some(result) => (Cow::Owned(result.code), result.rules, result.map),
                     None => (Cow::Borrowed(&*source), Vec::new(), None),
