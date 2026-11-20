@@ -1103,6 +1103,12 @@ impl<'a> Tracker<'a> {
     /// Notes what keeps `stat(p)` at `stamp` as far as the kind of thing at
     /// `p` goes: the listing of the directory it is (or is not) an entry of,
     /// when that directory's stamp can be trusted, else the path's own stat.
+    ///
+    /// The directory is statted through every symlink its path crosses, so
+    /// the stamp noted is that of the directory the name is really listed
+    /// in: it moves when an entry comes or goes there, though the symlink and
+    /// the directory holding it stay as they were, and a symlink pointed
+    /// elsewhere leads to another inode.
     fn note_entry(&self, p: &Path, stamp: Stamp) {
         let Some(look) = self.view.look else {
             return;
@@ -3500,6 +3506,133 @@ mod tests {
                 }),
             ],
         );
+    }
+
+    /// A miss beyond a symlinked directory rests on the directory the symlink
+    /// leads to, not on the one that holds the symlink: what appears or
+    /// changes kind there is seen by the next look, with every stamp long
+    /// settled and neither the symlink nor its holder touched.
+    #[cfg(unix)]
+    #[test]
+    fn memo_live_sees_into_a_symlinked_directory_at_once() {
+        use std::os::unix::fs::symlink;
+        let root = live_fixture("symlinked-dirs");
+        // A workspace package and a scoped dependency, each behind a symlink.
+        put(&root, "packages/theme/src/colors.stylex.ts", "");
+        put(
+            &root,
+            "store/pkg/package.json",
+            r#"{"name":"@scope/pkg","exports":{"./*":"./lib/*.js"}}"#,
+        );
+        put(&root, "store/pkg/lib/colors.stylex.js", "");
+        std::fs::create_dir_all(root.join("node_modules/@scope")).unwrap();
+        symlink("../packages/theme", root.join("src/linked")).unwrap();
+        symlink("../../store/pkg", root.join("node_modules/@scope/pkg")).unwrap();
+
+        let aliases: AliasMap = vec![(
+            "@linked/*".to_string(),
+            vec![format!("{}/src/linked/src/*", root.display())],
+        )];
+        let ask = |fs: &dyn FsProvider| -> Vec<String> {
+            let button = root.join("src/ui/button/Button.tsx");
+            let aliased = ResolveConfig {
+                aliases: Some(&aliases),
+                root_dir: Some(&root),
+            };
+            let mut answers = Vec::new();
+            for specifier in [
+                "../../linked/src/tokens.stylex",
+                "../../linked/deep/tokens.stylex",
+                "@scope/pkg/tokens.stylex",
+            ] {
+                let resolved = fs.resolve_import(specifier, &button, ResolveConfig::default());
+                answers.push(format!("{specifier} -> {resolved:?}"));
+            }
+            for specifier in ["@linked/tokens.stylex", "/ROOT/src/linked/deep"] {
+                let resolved = fs.resolve_import(specifier, &button, aliased);
+                answers.push(format!("{specifier} -> {resolved:?}"));
+            }
+            let inside = root.join("src/linked/src/colors.stylex.ts");
+            answers.push(format!("{:?}", fs.nearest_package(&inside)));
+            answers
+        };
+        // What moves when a symlink is retargeted or its holder relisted.
+        let links = || {
+            ["src", "node_modules/@scope"]
+                .map(|holder| Stamp::of(&root.join(holder)))
+                .into_iter()
+                .chain(["src/linked", "node_modules/@scope/pkg"].map(|link| {
+                    Stamp::Node(Node::of(&root.join(link).symlink_metadata().unwrap()))
+                }))
+                .collect::<Vec<_>>()
+        };
+
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        come_to_rest();
+        let mut last = ask(&live.session());
+        assert_eq!(last, ask(&StdFs));
+        assert!(last[..5].iter().all(|answer| answer.ends_with("None")));
+        // Answers that waited on the temp dir above the fixture are worked
+        // out a second time, and no more.
+        come_to_rest();
+        assert_eq!(ask(&live.session()), last);
+
+        // At rest the miss is answered from the listing of the directory
+        // behind the symlink, the missing file itself left unstatted.
+        let session = live.session();
+        assert_eq!(ask(&session), last);
+        {
+            let seen = lock(&session.look.as_ref().unwrap().seen);
+            let through_link = seen.stats[path_key(&root.join("src/linked/src"))];
+            assert_eq!(
+                through_link.stamp,
+                Stamp::of(&root.join("packages/theme/src"))
+            );
+            assert!(
+                !seen
+                    .stats
+                    .contains_key(path_key(&root.join("src/linked/src/tokens.stylex.ts")))
+            );
+        }
+
+        let untouched = links();
+        let remove = |rel: &str| std::fs::remove_file(root.join(rel)).unwrap();
+        let changes: [(&str, &dyn Fn()); 7] = [
+            ("a file appears behind the symlink", &|| {
+                put(&root, "packages/theme/src/tokens.stylex.ts", "");
+            }),
+            ("a directory fills in behind it", &|| {
+                put(&root, "packages/theme/deep/tokens.stylex.ts", "");
+            }),
+            ("a file appears in the linked package", &|| {
+                put(&root, "store/pkg/lib/tokens.stylex.js", "");
+            }),
+            ("a manifest appears behind the symlink", &|| {
+                put(&root, "packages/theme/package.json", r#"{"name":"theme"}"#);
+            }),
+            ("the file becomes a directory", &|| {
+                remove("packages/theme/src/tokens.stylex.ts");
+                put(&root, "packages/theme/src/tokens.stylex.ts/index.ts", "");
+            }),
+            ("the linked package loses its file", &|| {
+                remove("store/pkg/lib/tokens.stylex.js");
+            }),
+            ("the directory behind the symlink goes", &|| {
+                std::fs::remove_dir_all(root.join("packages/theme/deep")).unwrap();
+            }),
+        ];
+        for (what, change) in changes {
+            change();
+            let disk = ask(&StdFs);
+            assert_ne!(disk, last, "{what}: moves an answer");
+            assert_eq!(ask(&live.session()), disk, "{what}: just changed");
+            assert_eq!(ask(&live), disk, "{what}: call by call");
+            come_to_rest();
+            assert_eq!(ask(&live.session()), disk, "{what}: settled");
+            assert_eq!(ask(&live.session()), disk, "{what}: kept");
+            assert_eq!(links(), untouched, "{what}: leaves the symlinks be");
+            last = disk;
+        }
     }
 
     /// Bare and `#` specifiers from importers at every depth: the walks a
