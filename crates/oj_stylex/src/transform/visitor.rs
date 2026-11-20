@@ -4142,7 +4142,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn corpus_sources() -> Vec<(String, String)> {
-        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../conformance"));
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/conformance"));
         let mut out = Vec::new();
         // Vendored copies of this crate ship without the conformance corpus.
         let Ok(dirs) = std::fs::read_dir(root.join("corpus")) else {
