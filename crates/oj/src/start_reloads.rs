@@ -101,14 +101,32 @@ impl Epochs {
     }
 
     /// The pages' reloads, for a page whose socket asks with `query`. Its
-    /// stamp is what the page has; a page with none (or one from another
-    /// server run) counts as current when it connects.
+    /// stamp is what the page has; a page with none counts as current when
+    /// it connects. One whose stamp is another run's is behind: it runs a
+    /// bundle this run never made (a tab left open across a restart), and
+    /// reloads as it reconnects, as Vite's client does once the server it
+    /// lost answers again.
     pub(crate) fn page(&self, query: Option<&str>) -> PageEpoch {
         let rx = self.published.subscribe();
         let has = stamp_in(query)
             .and_then(|s| self.count_of(&s))
             .unwrap_or_else(|| *rx.borrow());
-        PageEpoch { rx, has }
+        PageEpoch {
+            rx,
+            has,
+            another_run: self.another_run(query),
+        }
+    }
+
+    /// Whether `query` carries the stamp of a document another run of the
+    /// dev server rendered.
+    pub(crate) fn another_run(&self, query: Option<&str>) -> bool {
+        stamp_in(query).is_some_and(|stamp| {
+            stamp
+                .split_once('-')
+                .and_then(|(boot, _)| u64::from_str_radix(boot, 16).ok())
+                .is_some_and(|boot| boot != self.boot)
+        })
     }
 
     #[cfg(test)]
@@ -137,12 +155,14 @@ pub(crate) fn stamp_in(query: Option<&str>) -> Option<String> {
 pub(crate) struct PageEpoch {
     rx: watch::Receiver<u64>,
     has: u64,
+    /// The page's document was rendered by another run of the dev server.
+    another_run: bool,
 }
 
 impl PageEpoch {
     /// Whether the page is behind now (checked once, on connect).
     pub(crate) fn behind(&mut self) -> bool {
-        *self.rx.borrow_and_update() > self.has
+        *self.rx.borrow_and_update() > self.has || self.another_run
     }
 
     /// Waits until the page falls behind. None once the server is gone.
@@ -264,6 +284,29 @@ impl FlushTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamp_of_another_run_is_told_from_this_ones() {
+        let epochs = Epochs::new(None);
+        let own = epochs.stamp();
+        assert!(!epochs.another_run(Some(&format!("g={own}&h=0"))));
+        assert!(epochs.another_run(Some("g=1-0&h=0")));
+        // No stamp, or none that parses: nothing says it is another run's.
+        assert!(!epochs.another_run(Some("h=0")));
+        assert!(!epochs.another_run(None));
+    }
+
+    // A tab left open across a restart of the dev server runs a bundle this
+    // run never made: it reloads as its socket reconnects (Vite's client
+    // reloads once the server it lost answers again).
+    #[test]
+    fn a_page_of_another_run_is_behind_when_it_connects() {
+        let epochs = Epochs::new(None);
+        assert!(epochs.page(Some("g=1-0&h=0")).behind());
+        let own = epochs.stamp();
+        assert!(!epochs.page(Some(&format!("g={own}"))).behind());
+        assert!(!epochs.page(None).behind());
+    }
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
     fn gated() -> (Epochs, Arc<AtomicBool>) {
@@ -346,13 +389,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_page_with_no_stamp_or_another_runs_counts_as_current() {
+    async fn a_page_with_no_stamp_counts_as_current() {
         let epochs = Epochs::new(None);
         epochs.bump();
         epochs.bump();
         assert!(!epochs.page(None).behind());
         assert!(!epochs.page(Some("g=x")).behind());
-        assert!(!epochs.page(Some(&query("1-0"))).behind());
+        // Another run's page is behind whatever this run's count is (see
+        // `a_page_of_another_run_is_behind_when_it_connects`).
+        assert!(epochs.page(Some(&query("1-0"))).behind());
         let mut page = epochs.page(None);
         epochs.bump();
         assert!(

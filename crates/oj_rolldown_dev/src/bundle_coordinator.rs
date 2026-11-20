@@ -1,0 +1,498 @@
+use std::{
+  collections::VecDeque,
+  path::PathBuf,
+  sync::{Arc, Mutex as StdMutex, atomic::AtomicU32},
+};
+
+use anyhow::Context;
+use arcstr::ArcStr;
+use futures::FutureExt;
+use rolldown_common::WatcherChangeKind;
+use rolldown_error::BuildResult;
+use rolldown_fs_watcher::{FsEvent, FsWatcher};
+use rolldown_utils::{dashmap::FxDashSet, indexmap::FxIndexMap, pattern_filter};
+use tokio::sync::Mutex;
+
+use rolldown::Bundler;
+
+use crate::{
+  bundling_task::BundlingTask,
+  dev_context::{BundlingFuture, PinBoxSendStaticFuture, SharedDevContext},
+  type_aliases::{CoordinatorReceiver, CoordinatorSender},
+  types::{
+    coordinator_msg::CoordinatorMsg, coordinator_state::CoordinatorState,
+    coordinator_state_snapshot::CoordinatorStateSnapshot,
+    ensure_latest_bundle_output_return::EnsureLatestBundleOutputReturn, error_stage::ErrorStage,
+    schedule_build_return::ScheduleBuildReturn, task_input::TaskInput,
+  },
+  watcher_event_handler::WatcherEventHandler,
+};
+
+/// BundleCoordinator - coordinates build tasks and manages initial build state
+pub struct BundleCoordinator {
+  bundler: Arc<Mutex<Bundler>>,
+  ctx: SharedDevContext,
+  /// The engine-wide patch-id counter (shared with lazy compiles) — see the
+  /// field doc on `DevEngine::next_hmr_patch_id`.
+  next_hmr_patch_id: Arc<AtomicU32>,
+  rx: CoordinatorReceiver,
+  watcher: StdMutex<FsWatcher>,
+  /// The bundler's `cwd`, which the `watch.include` / `watch.exclude` patterns are
+  /// relative to.
+  cwd: PathBuf,
+  /// Tracks the state of the initial build
+  state: CoordinatorState,
+  /// File changes that arrived during initial build
+  queued_file_changes_waited_for_full_build: FxIndexMap<PathBuf, WatcherChangeKind>,
+  /// Build state - managed directly by coordinator
+  queued_tasks: VecDeque<TaskInput>,
+  has_stale_bundle_output: bool,
+  current_bundling_future: Option<BundlingFuture>,
+}
+
+impl BundleCoordinator {
+  pub fn new(
+    bundler: Arc<Mutex<Bundler>>,
+    ctx: SharedDevContext,
+    rx: CoordinatorReceiver,
+    watcher: FsWatcher,
+    cwd: PathBuf,
+    next_hmr_patch_id: Arc<AtomicU32>,
+  ) -> Self {
+    Self {
+      bundler,
+      ctx,
+      next_hmr_patch_id,
+      rx,
+      watcher: StdMutex::new(watcher),
+      cwd,
+      state: CoordinatorState::Initialized,
+      queued_file_changes_waited_for_full_build: FxIndexMap::default(),
+      // Initialize build state with initial build task
+      queued_tasks: VecDeque::from([]),
+      has_stale_bundle_output: true,
+      current_bundling_future: None,
+    }
+  }
+
+  /// Create a watcher event handler that sends file change events to this coordinator
+  pub fn create_watcher_event_handler(coordinator_tx: CoordinatorSender) -> WatcherEventHandler {
+    WatcherEventHandler { coordinator_tx }
+  }
+
+  /// Run the coordinator message loop
+  pub async fn run(mut self) {
+    match self.state {
+      CoordinatorState::Initialized => {
+        // Start with initial build
+        self.queued_tasks.push_back(TaskInput::FullBuild);
+        // FIXME: hyf0: doesn't feel right to set state here before scheduling build
+        self.set_initial_build_state(CoordinatorState::Idle);
+        self.schedule_build_if_stale().await;
+      }
+      _ => {
+        tracing::error!(
+          "[BundleCoordinator] started in unexpected state and was terminated\n - state: {:?}",
+          self.state
+        );
+        return;
+      }
+    }
+    tracing::trace!("[BundleCoordinator] starts running\n - state: {:?}", self.state);
+    while let Some(msg) = self.rx.recv().await {
+      tracing::trace!("[BundleCoordinator] received message\n - message: {msg:#?}");
+      match msg {
+        CoordinatorMsg::WatchEvent(watch_event) => {
+          self.handle_watch_event(watch_event).await;
+        }
+        CoordinatorMsg::BundleCompleted {
+          error_stage,
+          has_generated_bundle_output,
+          hmr_stage_watch_files,
+        } => {
+          self
+            .handle_bundle_completed(
+              error_stage,
+              has_generated_bundle_output,
+              hmr_stage_watch_files.as_deref(),
+            )
+            .await;
+        }
+        #[cfg(feature = "testing")]
+        CoordinatorMsg::ScheduleBuildIfStale { reply } => {
+          let result = self.schedule_build_if_stale().await;
+          let _ = reply.send(result);
+        }
+        CoordinatorMsg::GetState { reply } => {
+          let status = self.create_state_snapshot();
+          let _ = reply.send(status);
+        }
+        CoordinatorMsg::EnsureLatestBundleOutput { reply } => {
+          let result = self.ensure_latest_bundle_output().await;
+          let _ = reply.send(result);
+        }
+        CoordinatorMsg::TriggerFullBuild => {
+          self.trigger_full_build().await;
+        }
+        #[cfg(feature = "testing")]
+        CoordinatorMsg::GetWatchedFiles { reply } => {
+          let result = self
+            .watcher
+            .lock()
+            .map(|watcher| {
+              watcher.watched_paths().map(|path| path.to_string_lossy().into_owned()).collect()
+            })
+            .unwrap_or_default();
+          let _ = reply.send(result);
+        }
+        CoordinatorMsg::ModuleChanged { module_id, watch_files } => {
+          // Handle programmatic module change (e.g., lazy compilation executed)
+
+          // Watch the files the lazy compile loaded, so later edits to them trigger
+          // updates. Take them from the list the message carries, not from the latest
+          // build: a build that started after the compile has a new list without them,
+          // and no later build loads these cached modules again.
+          let _ = self.register_watch_files([&*watch_files]);
+
+          let mut changed_files = FxIndexMap::default();
+          changed_files.insert(PathBuf::from(&module_id), WatcherChangeKind::Update);
+
+          // Queue a rebuild task and mark output as stale
+          self.queued_tasks.push_back(TaskInput::Rebuild { changed_files });
+          self.has_stale_bundle_output = true;
+
+          let _ = self.schedule_build_if_stale().await;
+        }
+        CoordinatorMsg::Close => {
+          // Wait for any running bundling task to complete before exiting
+          // to avoid the task panicking when it tries to send BundleCompleted
+          if let Some(bundling_future) = self.current_bundling_future.take() {
+            bundling_future.await;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /// Handle file change events from watcher.
+  ///
+  /// See `internal-docs/dev-engine/implementation.md` ("From fs event to queued task").
+  async fn handle_watch_event(&mut self, events: Vec<FsEvent>) {
+    let changed_files = events.into_iter().map(|event| (event.path, event.kind)).collect();
+    self.handle_file_changes(changed_files).await;
+  }
+
+  /// Handle file changes based on initial build state
+  async fn handle_file_changes(&mut self, changed_files: FxIndexMap<PathBuf, WatcherChangeKind>) {
+    if changed_files.is_empty() {
+      return;
+    }
+
+    match self.state {
+      // If initial build in progress, queue the file changes
+      CoordinatorState::FullBuildInProgress => {
+        self.queued_file_changes_waited_for_full_build.extend(changed_files);
+      }
+      CoordinatorState::Idle | CoordinatorState::InProgress => {
+        let task_input = if self.ctx.options.rebuild_strategy.is_always() {
+          TaskInput::HmrRebuild { changed_files }
+        } else {
+          TaskInput::Hmr { changed_files }
+        };
+
+        self.queued_tasks.push_back(task_input);
+
+        let _ = self.schedule_build_if_stale().await;
+      }
+      CoordinatorState::Failed { last_error_stage } => {
+        // Mental model: if the file is edited twice and the first edit was invalid,
+        // we treat the second edit as the only edit and follow the usual flow.
+        //
+        // Recovery choice (per Design principles §3 corollary): a Rebuild-stage
+        // failure left the bundle output stale w.r.t. source, so the recovery
+        // task must include a rebuild. An Hmr-stage failure (incl. watch_change
+        // hook) is recoverable by re-running the Hmr task alone, which becomes a
+        // full build when the failed update already merged its edit (`run_inner`).
+        let force_rebuild = matches!(last_error_stage, ErrorStage::Rebuild);
+        let task_input = if force_rebuild || self.ctx.options.rebuild_strategy.is_always() {
+          TaskInput::HmrRebuild { changed_files }
+        } else {
+          TaskInput::Hmr { changed_files }
+        };
+
+        self.queued_tasks.push_back(task_input);
+
+        let _ = self.schedule_build_if_stale().await;
+      }
+      CoordinatorState::FullBuildFailed => {
+        tracing::warn!(
+          "[BundleCoordinator] received file changes while in FullBuildFailed state - scheduling full build"
+        );
+        // Clear the queued file changes - they'll be picked up by the full build
+        self.queued_file_changes_waited_for_full_build.clear();
+        self.queued_tasks.push_back(TaskInput::FullBuild);
+        let _ = self.schedule_build_if_stale().await;
+      }
+      CoordinatorState::Initialized => {
+        // Should not receive file changes in Initialized state
+        tracing::error!(
+          "[BundleCoordinator] received file changes in Initialized state - ignoring"
+        );
+      }
+    }
+  }
+
+  /// Handle build completion notification
+  async fn handle_bundle_completed(
+    &mut self,
+    error_stage: Option<ErrorStage>,
+    has_generated_bundle_output: bool,
+    hmr_stage_watch_files: Option<&FxDashSet<ArcStr>>,
+  ) {
+    match self.state {
+      CoordinatorState::Initialized
+      | CoordinatorState::Failed { .. }
+      | CoordinatorState::FullBuildFailed
+      | CoordinatorState::Idle => {
+        tracing::error!(
+          "[BundleCoordinator] received bundle completed in unexpected state and was ignored\n - state: {:?}",
+          self.state
+        );
+      }
+      CoordinatorState::FullBuildInProgress => {
+        self.current_bundling_future = None;
+
+        // Even if the build failed, update the watch paths
+        // so that a new full build is triggered by the change for those files
+        let _ = self.update_watch_paths(hmr_stage_watch_files).await;
+
+        if error_stage.is_some() {
+          // FullBuildFailed always recovers via FullBuild on next file change,
+          // so the originating stage is not tracked.
+          self.set_initial_build_state(CoordinatorState::FullBuildFailed);
+          self.has_stale_bundle_output = true;
+        } else {
+          self.has_stale_bundle_output = false;
+
+          self.set_initial_build_state(CoordinatorState::Idle);
+          if !self.queued_file_changes_waited_for_full_build.is_empty() {
+            let queued_changes =
+              std::mem::take(&mut self.queued_file_changes_waited_for_full_build);
+            self.handle_file_changes(queued_changes).await;
+          }
+        }
+        // We wouldn't try to schedule next build for FullBuildInProgress
+        // - If it failed, we wait for external trigger
+        // - If it succeeded, we already handled queued file changes above
+      }
+      CoordinatorState::InProgress => {
+        // Clear current build
+        self.current_bundling_future = None;
+
+        // Register any new files this task pulled into `watch_files`
+        // (e.g. an edit that introduced a new transitive import).
+        let _ = self.update_watch_paths(hmr_stage_watch_files).await;
+
+        if let Some(stage) = error_stage {
+          self.set_initial_build_state(CoordinatorState::Failed { last_error_stage: stage });
+          self.has_stale_bundle_output = true;
+        } else {
+          self.has_stale_bundle_output = !has_generated_bundle_output;
+
+          self.set_initial_build_state(CoordinatorState::Idle);
+        }
+        // Succeed or fail, always try to schedule next build as it might fix the error
+        let _ = self.schedule_build_if_stale().await;
+      }
+    }
+  }
+
+  /// Schedule a build to consume pending changed files
+  #[expect(clippy::unused_async)]
+  async fn schedule_build_if_stale(&mut self) -> Option<ScheduleBuildReturn> {
+    tracing::trace!("[BundleCoordinator] scheduling build if stale\n - state: {:?}", self.state);
+    match self.state {
+      CoordinatorState::Initialized => {
+        tracing::error!(
+          "[BundleCoordinator] cannot schedule build when in Initialized state - coordinator misused\n - state: {:?}",
+          self.state
+        );
+        None
+      }
+
+      CoordinatorState::FullBuildInProgress | CoordinatorState::InProgress => {
+        tracing::trace!(
+          "[BundleCoordinator] found running build - skipping scheduling\n - state: {:?}",
+          self.state
+        );
+        // If there's build running, it will be responsible to handle new changed files.
+        // So, we only need to wait for the latest build to finish.
+        Some(ScheduleBuildReturn { future: self.current_bundling_future.clone().unwrap() })
+      }
+      CoordinatorState::Idle
+      | CoordinatorState::FullBuildFailed
+      | CoordinatorState::Failed { .. } => {
+        if let Some(mut task_input) = self.queued_tasks.pop_front() {
+          tracing::trace!(
+            "[BundleCoordinator] scheduling new build task\n - state: {:?}\n - task_input: {task_input:#?}",
+            self.state
+          );
+          let mut merged_task_count = 0;
+          // Merge mergeable task inputs into one.
+          while let Some(peeked) = self.queued_tasks.pop_front() {
+            if task_input.is_mergeable_with(&peeked) {
+              task_input.merge_with(peeked);
+              merged_task_count += 1;
+            } else {
+              self.queued_tasks.push_front(peeked);
+              break;
+            }
+          }
+          if merged_task_count > 0 {
+            tracing::trace!(
+              "[BundleCoordinator] merged {merged_task_count} extra tasks into one\n - merged_task_input: {task_input:#?}"
+            );
+          }
+
+          let bundling_task = BundlingTask::new(
+            task_input,
+            Arc::clone(&self.bundler),
+            Arc::clone(&self.ctx),
+            Arc::clone(&self.next_hmr_patch_id),
+          );
+          if bundling_task.input.requires_full_rebuild() {
+            self.set_initial_build_state(CoordinatorState::FullBuildInProgress);
+          } else {
+            self.set_initial_build_state(CoordinatorState::InProgress);
+          }
+          let bundling_future = (Box::pin(bundling_task.run()) as PinBoxSendStaticFuture).shared();
+          tokio::spawn(bundling_future.clone());
+
+          self.current_bundling_future = Some(bundling_future.clone());
+
+          Some(ScheduleBuildReturn { future: bundling_future })
+        } else {
+          tracing::trace!(
+            "[BundleCoordinator] doesn't have any build to schedule\n - state: {:?}",
+            self.state
+          );
+          None
+        }
+      }
+    }
+  }
+
+  /// Ensure latest bundle output is available
+  /// Returns Some(EnsureLatestBundleOutputReturn) if there's a build to wait for, None if output is already fresh
+  async fn ensure_latest_bundle_output(&mut self) -> Option<EnsureLatestBundleOutputReturn> {
+    tracing::trace!("[BundleCoordinator] is ensuring latest bundle output");
+    match self.state {
+      CoordinatorState::Initialized => {
+        tracing::warn!(
+          "[BundleCoordinator] cannot ensure latest bundle output when in Initialized state - coordinator misused\n - state: {:?}",
+          self.state
+        );
+        None
+      }
+      CoordinatorState::Idle => {
+        if self.queued_tasks.is_empty() {
+          if self.has_stale_bundle_output {
+            tracing::trace!(
+              "[BundleCoordinator] output is stale, scheduling build to ensure latest output"
+            );
+            self
+              .queued_tasks
+              .push_back(TaskInput::Rebuild { changed_files: FxIndexMap::default() });
+            let schedule_result = self.schedule_build_if_stale().await;
+            schedule_result.map(|ret| EnsureLatestBundleOutputReturn {
+              future: ret.future,
+              is_ensure_latest_bundle_output_future: true,
+            })
+          } else {
+            tracing::trace!(
+              "[BundleCoordinator] output is fresh, no build needed to ensure latest output"
+            );
+            None
+          }
+        } else {
+          let schedule_result = self.schedule_build_if_stale().await;
+          schedule_result.map(|ret| EnsureLatestBundleOutputReturn {
+            future: ret.future,
+            is_ensure_latest_bundle_output_future: false,
+          })
+        }
+      }
+      CoordinatorState::FullBuildInProgress | CoordinatorState::InProgress => {
+        tracing::trace!("[BundleCoordinator] found running build and end ensuring");
+        // If there's a build running, return its future
+        Some(EnsureLatestBundleOutputReturn {
+          future: self.current_bundling_future.clone().unwrap(),
+          is_ensure_latest_bundle_output_future: false,
+        })
+      }
+      CoordinatorState::FullBuildFailed | CoordinatorState::Failed { .. } => {
+        // Don't auto-retry — without file changes the same error would recur.
+        // Recovery is driven by file change events from the watcher (see handle_file_changes).
+        None
+      }
+    }
+  }
+
+  /// Unconditionally schedule a full build, regardless of current state.
+  /// Used for explicit manual retry (e.g., dev server `r` signal).
+  async fn trigger_full_build(&mut self) {
+    self.queued_tasks.clear();
+    self.queued_tasks.push_back(TaskInput::FullBuild);
+    self.schedule_build_if_stale().await;
+  }
+
+  /// Get current build status - atomic operation that doesn't block
+  fn create_state_snapshot(&self) -> CoordinatorStateSnapshot {
+    let last_build_errored =
+      matches!(self.state, CoordinatorState::Failed { .. } | CoordinatorState::FullBuildFailed);
+    let last_error_stage = match self.state {
+      CoordinatorState::Failed { last_error_stage } => Some(last_error_stage),
+      _ => None,
+    };
+    CoordinatorStateSnapshot {
+      running_future: self.current_bundling_future.clone(),
+      last_build_errored,
+      last_error_stage,
+      has_stale_output: self.has_stale_bundle_output,
+    }
+  }
+
+  fn set_initial_build_state(&mut self, new_state: CoordinatorState) {
+    self.state = new_state;
+  }
+
+  /// Watch the files a finished task loaded: the latest build's list, and the list its HMR
+  /// stage wrote to when its rebuild replaced that list. The rebuild does not load again the
+  /// modules the HMR stage cached, so the latest list can miss them.
+  async fn update_watch_paths(
+    &self,
+    hmr_stage_watch_files: Option<&FxDashSet<ArcStr>>,
+  ) -> BuildResult<()> {
+    let bundler = self.bundler.lock().await;
+    self.register_watch_files(hmr_stage_watch_files.into_iter().chain([&**bundler.watch_files()]))
+  }
+
+  /// Add the files of `watch_files` lists to the watcher in one batch, filtered by
+  /// `watch.include` / `watch.exclude`.
+  fn register_watch_files<'a>(
+    &self,
+    watch_files: impl IntoIterator<Item = &'a FxDashSet<ArcStr>>,
+  ) -> BuildResult<()> {
+    let cwd = self.cwd.to_string_lossy();
+
+    let include = self.ctx.options.watch_include.as_deref();
+    let exclude = self.ctx.options.watch_exclude.as_deref();
+
+    let mut watcher = self.watcher.lock().ok().context("Failed to acquire watcher lock")?;
+    watcher.watch_paths(
+      watch_files.into_iter().flat_map(|list| list.iter().map(|file| PathBuf::from(file.as_str()))),
+      |path| pattern_filter::filter(exclude, include, &path.to_string_lossy(), &cwd).inner(),
+    )
+  }
+}

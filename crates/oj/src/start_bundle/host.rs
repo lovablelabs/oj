@@ -615,11 +615,14 @@ impl Plugin for StartHostPlugin {
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
         let id: &str = args.id;
         let code: &str = args.code;
+        // A lazy boundary's proxy is oj's own one-line module: no transform
+        // may read its id as the module it stands for.
+        let proxy = rolldown_common::is_lazy_proxy(id);
         // oj's own modules take no plugin transform. A `.svg` takes them
         // all, as in Vite: its load (svgr's, or the asset URL) only produced
         // the module's code, which the transforms then see.
-        let eligible = !id.starts_with("\0oj-");
-        if let Some(file) = file_behind_query(id) {
+        let eligible = !id.starts_with("\0oj-") && !proxy;
+        if let Some(file) = file_behind_query(id).filter(|_| !proxy) {
             ctx.add_watch_file(file);
         }
         let pass = eligible && self.host.hook_wants_transform(id, code);
@@ -637,7 +640,7 @@ impl Plugin for StartHostPlugin {
         let compile = self
             .compile
             .clone()
-            .filter(|c| phase.is_none() && c.may_compile(id, code));
+            .filter(|c| !proxy && phase.is_none() && c.may_compile(id, code));
         async move {
             let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
             let t = match (phase, compile) {

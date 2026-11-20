@@ -111,13 +111,32 @@ class OjHmrClient {
     // Patches announced and not yet applied.
     this.pending = [];
     this.lastSeq = 0;
+    // The last update applied (`lastSeq` counts one as soon as it is taken
+    // in), and how many `notify` calls are waiting for their listeners.
+    this.applied = 0;
+    this.listening = 0;
     this.reloadPending = false;
     this.firstInvalidatedBy = undefined;
+    // Waiting for an update to be taken in (`OjDevRuntime.ojPatched`).
+    this.heard = [];
+  }
+
+  wake() {
+    for (const resolve of this.heard.splice(0)) resolve();
   }
 
   async notify(event, data) {
     const cbs = this.listeners.get(event);
-    if (cbs) await Promise.allSettled(cbs.map((cb) => cb(data)));
+    if (!cbs) return;
+    // An `import()` a listener awaits must not wait for the update this
+    // call is part of, or for one queued behind it (`ojPatched`).
+    this.listening++;
+    this.wake();
+    try {
+      await Promise.allSettled(cbs.map((cb) => cb(data)));
+    } finally {
+      this.listening--;
+    }
   }
 
   selfAccepted(id) {
@@ -195,6 +214,8 @@ class OjHmrClient {
 
   // Vite's warnFailedUpdate: the page keeps running, the next edit retries.
   failed(err, path) {
+    this.applied = this.lastSeq;
+    this.wake();
     if (!(err instanceof Error) || !err.message.includes("fetch")) console.error("[oj]", err);
     console.error(
       `[oj] Failed to reload ${path}. This could be due to syntax errors or importing non-existent modules. (see errors above)`,
@@ -251,27 +272,47 @@ class OjHmrClient {
         this.lastSeq = seq;
         for (const id of ids) changedIds.add(id);
       }
+      this.wake();
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
       const next = this.compute([...changedIds]);
-      if (!next) continue;
-      if (next.reload) return this.requestReload(next.reload);
-      update = next;
-      const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
-      for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
-      if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
-      if (this.beforeApply() === "reload") return;
-      for (const { url } of frames) {
+      if (next?.reload) return this.requestReload(next.reload);
+      if (next) {
+        update = next;
+        const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
+        for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
+        if (fresh.length) {
+          await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+          // A module a listener imported meanwhile runs here now.
+          const again = this.compute([...changedIds]);
+          if (again?.reload) return this.requestReload(again.reload);
+          update = again ?? update;
+        }
+        if (this.beforeApply() === "reload") return;
+      }
+      // A patch nothing here runs yet is imported all the same: it holds
+      // the changed modules as they are now, and an earlier patch may have
+      // left this page their code from before (the bundler sends a changed
+      // module's importers along, loaded or not). Left with that, a later
+      // `import()` of one would run it without asking the server. Under
+      // Vite the change stops at a module no page loaded (hmr.ts
+      // propagateUpdate) and its `import()` is a request, answered with
+      // the module as it is then.
+      for (const { url, changedIds: ids } of frames) {
         try {
           await import(/* @vite-ignore */ url);
         } catch {
-          return this.requestReload(`failed to import hmr patch ${url}`);
+          if (next) return this.requestReload(`failed to import hmr patch ${url}`);
+          // Nothing to re-run, so nothing to reload for: without the
+          // patch, the changed modules are asked for when first imported.
+          for (const id of ids) if (!this.runtime.isExecuted(id)) this.runtime.factories?.delete(id);
         }
       }
     }
-    if (!update) return;
-    await this.apply(update);
-    await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
+    if (update) await this.apply(update);
+    this.applied = this.lastSeq;
+    this.wake();
+    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
   }
 
   async applyInvalidate(id) {
@@ -328,6 +369,7 @@ class OjHmrClient {
   requestReload(reason) {
     if (this.reloadPending) return;
     this.reloadPending = true;
+    this.wake();
     console.debug(`[oj] full reload needed: ${reason}`);
     if (!__ojBus.send || !__ojBus.send({ type: "oj:reload-needed", reason })) location.reload();
   }
@@ -341,6 +383,157 @@ class OjDevRuntime extends DevRuntime {
       createModuleHotContext: (id) => new OjHotContext(hmr, id),
       onModuleCacheRemoval: (id) => hmr.disposeModule(id),
     };
+  }
+  // The module behind an `import()`, as the dev server has it now
+  // (rolldown's lazy boundary; the URL is the server's to choose). A URL of
+  // its own for each request: the browser keeps a module by URL, a failed
+  // one too.
+  loadLazyChunk(proxyModuleId) {
+    return import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
+  }
+  lazyChunkUrl(proxyModuleId) {
+    this.lazyAsked = (this.lazyAsked ?? 0) + 1;
+    // With the document's stamp: a page another run of the dev server
+    // rendered is told to reload, not answered as one of this run's.
+    const run = __ojBus.stamp == null ? "" : `&g=${encodeURIComponent(__ojBus.stamp)}`;
+    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}${run}`;
+  }
+  // A module with top-level `await` is an async factory, which rolldown's
+  // runtime starts and does not wait for: its promise is kept, so an
+  // `import()` of the module settles when it has finished evaluating, and
+  // rejects if it threw, as the module's own `import()` does in a browser.
+  registerFactory(id, factory, stamp) {
+    if (this.heldSkip?.has(id)) return;
+    const runtime = this;
+    return super.registerFactory(
+      id,
+      function (moduleId) {
+        const result = factory(moduleId);
+        if (result && typeof result.then === "function") {
+          const evaluating = (runtime.evaluating ??= new Map());
+          evaluating.set(moduleId, result);
+          result.then(
+            () => evaluating.get(moduleId) === result && evaluating.delete(moduleId),
+            () => {},
+          );
+        }
+        return result;
+      },
+      stamp,
+    );
+  }
+  removeModuleCache(id) {
+    this.evaluating?.delete(id);
+    super.removeModuleCache(id);
+  }
+  // rolldown's runtime keeps a failed request for good, as `import()` keeps
+  // a module that threw. A module whose chunk never arrived (the server
+  // could not answer) has run nothing, so the next `import()` asks again:
+  // the request is dropped, if it is still the one that failed.
+  requestLazy(id, proxyModuleId, isNodeMode) {
+    const pending = super.requestLazy(id, proxyModuleId, isNodeMode);
+    const asked = this.lazyRequests.get(id);
+    pending.catch(() => {
+      if (!this.moduleCache.has(id) && this.lazyRequests.get(id) === asked) this.lazyRequests.delete(id);
+    });
+    return pending.then(async (exports) => {
+      // The module, and the modules it imports statically, as far as they
+      // are still evaluating (not everything that is: a module that awaits
+      // this very import is).
+      const seen = new Set([id]);
+      for (const current of seen) {
+        await this.evaluating?.get(current);
+        for (const dep of this.staticImports?.get(current)?.edges ?? []) seen.add(dep);
+      }
+      return exports;
+    });
+  }
+  // The dev server compiled a module for an `import()` after it sent this
+  // page hot update number `seq`: the module must not run before the page
+  // has applied that update (it was compiled against it, and a frame can
+  // be slower than this answer). Bounded: a page whose socket is down gets
+  // no update at all, and reloads when it is back.
+  async ojPatched(seq) {
+    const hmr = this.hmr;
+    // Not while a listener is being waited for (`vite:beforeUpdate`, a
+    // custom event): the update cannot go on until the listener returns,
+    // so an `import()` the listener awaits would wait for itself. Under
+    // Vite that import is an ordinary request.
+    const ready = () => hmr.applied >= seq || hmr.reloadPending || hmr.listening > 0;
+    if (ready()) return;
+    // Woken as the page takes updates in (not by a timer of its own: a
+    // hidden tab's timers are slowed), up to a bound.
+    let timer;
+    const late = new Promise((resolve) => (timer = setTimeout(resolve, 10000, "late")));
+    for (;;) {
+      const heard = new Promise((resolve) => hmr.heard.push(resolve));
+      if (ready()) break;
+      if ((await Promise.race([heard, late])) === "late") {
+        console.warn(`[oj] hot update ${seq} did not reach this page in time; running the imported module without it`);
+        break;
+      }
+    }
+    clearTimeout(timer);
+  }
+  // The dev server compiled a module for an `import()` while the editor's
+  // gate holds a change, and the chunk at `url` carries the modules `held`
+  // of that change. If this page already runs them all, it takes the chunk,
+  // which leaves them alone (`ojSkipHeld`): a module that ran is not run
+  // again, so the chunk runs nothing of the held change. Otherwise it asks
+  // for the module again, to be answered after the flush, as it does for a
+  // kept chunk the server no longer has.
+  async ojLazyWhileHeld(held, url, proxyModuleId) {
+    if (!held.every((id) => this.moduleCache.has(id))) {
+      return this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
+    }
+    try {
+      await this.ojImport(url);
+    } catch {
+      // Not asked anew for another chunk to take (that answer would be
+      // one of these again, and so on): the import waits for the flush.
+      await this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
+    }
+  }
+  ojImport(url) {
+    return import(/* @vite-ignore */ url);
+  }
+  // Called by a chunk the page takes during a hold, right before its
+  // registrations: for the rest of the chunk's evaluation (it is
+  // synchronous from here) the factories and graph rows of `held` are not
+  // taken. They are the held change's; the page keeps its own until the
+  // patch the flush releases brings them, or already has that patch's if
+  // the flush came while the chunk was on its way.
+  ojSkipHeld(held) {
+    // Ended by the chunk's last statement (`ojSkipHeld(null)`); the
+    // microtask is for a chunk that throws before it gets there.
+    this.heldSkip = held ? new Set(held) : null;
+    if (held) queueMicrotask(() => (this.heldSkip = null));
+  }
+  registerGraph(delta) {
+    const skip = this.heldSkip;
+    if (!skip || !delta.ids.slice(0, delta.localCount).some((id) => skip.has(id))) return super.registerGraph(delta);
+    // The same rows without the held modules': those move behind the
+    // local ones, where they are only referred to.
+    const local = [];
+    const held = [];
+    for (let i = 0; i < delta.localCount; i++) (skip.has(delta.ids[i]) ? held : local).push(i);
+    const order = [...local, ...held];
+    for (let i = delta.localCount; i < delta.ids.length; i++) order.push(i);
+    const moved = new Map(order.map((from, to) => [from, to]));
+    const rows = (of) => of && local.map((i) => of[i]);
+    const refs = (of) => of && local.map((i) => (of[i] ?? []).map((j) => moved.get(j)));
+    return super.registerGraph({
+      ...delta,
+      ids: order.map((i) => delta.ids[i]),
+      localCount: local.length,
+      edges: refs(delta.edges),
+      dynamicEdges: refs(delta.dynamicEdges),
+      bindings: rows(delta.bindings),
+      stamps:
+        delta.stamps &&
+        Object.fromEntries(local.flatMap((i, to) => (i in delta.stamps ? [[to, delta.stamps[i]]] : []))),
+      entries: delta.entries?.flatMap((i) => (local.includes(i) ? [local.indexOf(i)] : [])),
+    });
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });

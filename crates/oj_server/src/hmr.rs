@@ -1003,6 +1003,13 @@ impl HmrGateHandle {
         })
     }
 
+    /// The files whose changes the gate holds.
+    pub fn pending_paths(&self) -> Vec<PathBuf> {
+        self.state.hmr_gate.as_ref().map_or_else(Vec::new, |gate| {
+            gate.inner.lock().unwrap().pending.keys().cloned().collect()
+        })
+    }
+
     /// Whether a release reloads the pages rather than applying the held
     /// changes in place (the full-reload knob).
     pub fn full_reload(&self) -> bool {

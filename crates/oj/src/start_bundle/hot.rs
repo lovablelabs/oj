@@ -57,6 +57,8 @@ struct Events {
     /// was produced (the engine loads again after it, for the next patch).
     output: Mutex<Option<NotedOutput>>,
     outputs: AtomicU64,
+    /// The engine's tasks that ended: its builds and its updates.
+    tasks: AtomicU64,
     changed: tokio::sync::Notify,
 }
 
@@ -133,6 +135,12 @@ impl HotSession {
             inline_const: Some(rolldown_common::InlineConstOption::Bool(false)),
             ..Default::default()
         });
+        // First: an `import()` resolves to its proxy before any other plugin
+        // names the target.
+        parts.plugins.insert(
+            0,
+            rolldown_plugin::__inner::Pluginable::new_shared(super::lazy::LazyImports::default()),
+        );
         let events = Arc::new(Events::default());
         let on_updates = {
             let events = Arc::clone(&events);
@@ -164,6 +172,7 @@ impl HotSession {
                     };
                     // Inside the engine's build task, before a queued update
                     // can load a module the build read.
+                    events.tasks.fetch_add(1, Ordering::SeqCst);
                     record_output(&events, recorded, loaded.snapshot());
                 },
             )
@@ -229,9 +238,11 @@ impl HotSession {
             .map(|p| p.to_string_lossy().into_owned())
             .filter(|p| self.engine.get_module_info(p).is_some() || under_a_glob(p))
             .collect();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
-        let watched = loop {
-            let ready = self.events.error.lock().unwrap().is_some() || {
+        // The engine's watcher reports an edit within milliseconds, unless it
+        // is at work: an edit that lands during a build waits for it, and
+        // giving up on it then would turn a hot update into a reload.
+        let ready = || {
+            self.events.error.lock().unwrap().is_some() || {
                 let seen = self.events.seen.lock().unwrap();
                 // A file noted as gone that is back is a new file, which the
                 // engine has yet to report.
@@ -240,15 +251,20 @@ impl HotSession {
                     Some(_) => true,
                     None => false,
                 })
-            };
-            if ready {
-                break true;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break false;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
         };
+        let busy = || async {
+            let done = self.events.tasks.load(Ordering::SeqCst);
+            let _ = self.engine.wait_for_ongoing_bundle().await;
+            self.events.tasks.load(Ordering::SeqCst) != done
+        };
+        let watched = reported(
+            ready,
+            busy,
+            Duration::from_millis(1000),
+            Duration::from_secs(60),
+        )
+        .await;
         // A failed hot update over a deleted file is no verdict on the app:
         // the engine re-fetches every module that depends on a changed file,
         // a deleted file's own `?raw` module among them, which no longer
@@ -312,8 +328,21 @@ impl HotSession {
     /// failed update, forces the full build that recovers it (Vite does when
     /// a page needs the output).
     pub async fn latest_output(&self) -> Result<(Vec<Output>, Notes), BundleError> {
+        // Every build the engine owes, not only the one running: a change
+        // that arrived during a build waits for it and starts as it ends,
+        // and the build it waited for says the output is current.
+        for _ in 0..8 {
+            let done = self.events.tasks.load(Ordering::SeqCst);
+            let _ = self.engine.wait_for_ongoing_bundle().await;
+            if self.events.tasks.load(Ordering::SeqCst) == done {
+                break;
+            }
+        }
+        // Counted from here: an output of a build waited for above is not
+        // the one the build forced below reports, and taking it for that
+        // one would read the engine's output before the forced build's
+        // lands.
         let before = self.events.outputs.load(Ordering::SeqCst);
-        let _ = self.engine.wait_for_ongoing_bundle().await;
         let state = self
             .engine
             .get_bundle_state()
@@ -347,6 +376,29 @@ impl HotSession {
             None => Err(BundleError::from_message(
                 "the client bundle produced no output",
             )),
+        }
+    }
+}
+
+/// Waits for `ready`, a `window` at a time: when one ends, `busy` waits out
+/// what the engine is doing and says whether it was doing anything, which
+/// earns another window, up to `cap`.
+async fn reported<B, F>(ready: impl Fn() -> bool, busy: B, window: Duration, cap: Duration) -> bool
+where
+    B: Fn() -> F,
+    F: std::future::Future<Output = bool>,
+{
+    let end = tokio::time::Instant::now() + cap;
+    loop {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            if ready() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if tokio::time::Instant::now() >= end || !busy().await {
+            return ready();
         }
     }
 }
@@ -386,6 +438,7 @@ fn on_hmr_updates(
     declared: &Declared,
     result: rolldown_error::BuildResult<(Vec<rolldown_common::ClientHmrUpdate>, Vec<String>)>,
 ) {
+    events.tasks.fetch_add(1, Ordering::SeqCst);
     let (updates, changed) = match result {
         Ok(ok) => ok,
         Err(errs) => {
@@ -395,6 +448,12 @@ fn on_hmr_updates(
         }
     };
     *events.error.lock().unwrap() = None;
+    // The editor's gate holds these files from here, before any patch for
+    // them is handed to the pages and, as the engine's build task still has
+    // the bundler, before a page's `import()` can be compiled against them.
+    // The dev server's own watcher reports the same files later (it waits
+    // for a quiet moment), which left a patch made meanwhile unheld.
+    hot.hold(&changed);
     let kind = if updates
         .iter()
         .any(|u| matches!(u.update, HmrUpdate::FullReload { .. }))
@@ -973,6 +1032,81 @@ mod tests {
         assert!(unresolved_in_patch(text_only, "/app/src/a.tsx", &declared).is_none());
         let ext: Declared = Arc::new(|s| s == "cdn-only-dep");
         assert!(unresolved_in_patch("import \"cdn-only-dep\";", "/app/a.ts", &ext).is_none());
+    }
+
+    // The engine's watcher reports an edit before the dev server's own does
+    // (which waits for a quiet moment before it tells the gate): the gate
+    // holds the files from the engine's report, so the patch made with it
+    // waits for the flush instead of reaching the pages unheld.
+    #[test]
+    fn a_patch_is_held_from_the_engines_report_of_its_files() {
+        use std::sync::atomic::AtomicBool;
+        let hot = Arc::new(HotUpdates::new(""));
+        let held = Arc::new(AtomicBool::new(false));
+        let told: Arc<Mutex<Vec<String>>> = Arc::default();
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        hot.set_holder({
+            let (held, told) = (Arc::clone(&held), Arc::clone(&told));
+            Arc::new(move |files| {
+                told.lock().unwrap().extend(files.iter().cloned());
+                held.store(true, Ordering::SeqCst);
+            })
+        });
+        let mut pages = hot.subscribe();
+        let update = rolldown_common::ClientHmrUpdate {
+            client_id: "c1".into(),
+            update: HmrUpdate::Patch(rolldown_common::HmrPatch {
+                code: "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});".into(),
+                filename: "hmr_patch_0.js".into(),
+                sourcemap: None,
+                sourcemap_filename: None,
+                changed_ids: vec!["src/a.tsx".into()],
+                seq: 1,
+                carried: Vec::new(),
+            }),
+        };
+        on_hmr_updates(
+            &Events::default(),
+            Path::new("/app"),
+            &hot,
+            &none_declared(),
+            Ok((vec![update], vec!["/app/src/a.tsx".into()])),
+        );
+        assert_eq!(*told.lock().unwrap(), ["/app/src/a.tsx"]);
+        assert!(
+            pages.try_recv().is_err(),
+            "the patch reached the pages while the gate holds its file"
+        );
+        assert!(hot.has_parked());
+        hot.release();
+        let frame = pages.try_recv().expect("the flush sends the patch");
+        assert_eq!(frame.client.as_deref(), Some("c1"));
+    }
+
+    // An edit made while the engine is rebuilding is reported after that
+    // build: waiting one window for it would give it up (and reload the
+    // pages) on a machine where the build outlasts the window.
+    #[tokio::test(start_paused = true)]
+    async fn an_edit_reported_after_a_running_build_is_waited_for() {
+        let started = tokio::time::Instant::now();
+        let ready = || started.elapsed() >= Duration::from_millis(2500);
+        let window = Duration::from_millis(1000);
+        let cap = Duration::from_secs(60);
+        // The engine at work until the report: the wait goes on.
+        let busy = || async { started.elapsed() < Duration::from_millis(2500) };
+        assert!(reported(ready, busy, window, cap).await);
+        // The engine idle: one window, as before.
+        let started = tokio::time::Instant::now();
+        let ready = || started.elapsed() >= Duration::from_millis(2500);
+        assert!(!reported(ready, || async { false }, window, cap).await);
+        assert!(started.elapsed() < Duration::from_millis(1100));
+        // Never reported: bounded.
+        let started = tokio::time::Instant::now();
+        assert!(!reported(|| false, || async { true }, window, Duration::from_secs(5)).await);
+        assert!(started.elapsed() <= Duration::from_secs(6));
     }
 
     #[test]
