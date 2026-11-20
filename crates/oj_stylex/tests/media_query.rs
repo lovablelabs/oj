@@ -271,3 +271,57 @@ fn transform_repeats_are_stable_and_errors_are_not_memoized() {
         ));
     }
 }
+
+#[test]
+fn many_sibling_screen_media_queries_prune_conflicting_branches() {
+    let keys: Vec<String> = (1..=18)
+        .map(|i| format!("@media screen and (min-width: {}px)", i * 100))
+        .collect();
+    let started = std::time::Instant::now();
+    let rewritten = last_media_query_wins_transform(&keys).expect("18 screen siblings");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "18 sibling screen queries should complete in milliseconds, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(rewritten.len(), 18);
+    for (i, got) in rewritten.iter().enumerate() {
+        let mut expected = format!("@media screen and (min-width: {}px)", (i + 1) * 100);
+        for j in (i + 1)..18 {
+            expected.push_str(&format!(" and (not (min-width: {}px))", (j + 1) * 100));
+        }
+        assert_eq!(got, &expected, "sibling {i}");
+    }
+
+    // Negated media-type contradictions must not be pruned inside `not (...)`.
+    assert_eq!(
+        MediaQuery::parse("@media not (screen and print)")
+            .unwrap()
+            .to_string(),
+        "@media not screen, not print"
+    );
+    assert_eq!(
+        MediaQuery::parse("@media (not (screen and (not (screen and (min-width: 200px)))))")
+            .unwrap()
+            .to_string(),
+        "@media print, print and (min-width: 200px), screen and (min-width: 200px)"
+    );
+
+    // Direct `resolve_media_types` And/Or distribution pruning with 18 `Or` terms.
+    let mut query = String::from("@media screen");
+    for i in 1..=18 {
+        query.push_str(&format!(" and (print or (min-width: {}px))", i * 100));
+    }
+    let started = std::time::Instant::now();
+    let parsed = MediaQuery::parse(&query).expect("18 Or terms");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "18 And/Or terms should complete in milliseconds, took {:?}",
+        started.elapsed()
+    );
+    let mut expected = String::from("@media screen");
+    for i in (1..=18).rev() {
+        expected.push_str(&format!(" and (min-width: {}px)", i * 100));
+    }
+    assert_eq!(parsed.to_string(), expected);
+}

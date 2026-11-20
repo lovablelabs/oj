@@ -3,8 +3,9 @@
 //! dev endpoints. oj claims the plugin by name and runs this in its place.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
+use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use serde_json::{Map, Value, json};
@@ -12,6 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
 use crate::assemble::{AssembleConfig, RuleRegistry};
 use crate::errors::ErrorCode;
+use crate::fxhash::FxHashSet;
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
 use crate::rules::StylexRule;
@@ -66,10 +68,14 @@ pub struct StylexPlugin {
     assemble: AssembleConfig,
     dev_mode: DevMode,
     lightningcss_options: Value,
-    gate_sources: Vec<String>,
+    gate_needles: Vec<Finder<'static>>,
     root: PathBuf,
     fs: MemoFs,
     registry: Mutex<RuleRegistry>,
+    /// Module ids currently holding rules in `registry`. Never locked by
+    /// `stylesheet()`/`emit()`, so non-StyleX misses avoid contending on
+    /// `registry`. Strict lock order when both are held: `registry` -> `recorded`.
+    recorded: RwLock<FxHashSet<Box<str>>>,
     fingerprint: String,
     on_change: Mutex<Option<ChangeListener>>,
     warnings: Vec<String>,
@@ -135,6 +141,14 @@ impl StylexPlugin {
                 gate_sources.push(source);
             }
         }
+        let gate_needles = gate_sources
+            .iter()
+            .flat_map(|source| {
+                ['\'', '"']
+                    .into_iter()
+                    .map(move |quote| Finder::new(&format!("{quote}{source}{quote}")).into_owned())
+            })
+            .collect();
         let mut compiler: Map<String, Value> = user
             .iter()
             .filter(|(k, _)| !PLUGIN_KEYS.contains(&k.as_str()))
@@ -207,7 +221,7 @@ impl StylexPlugin {
                 .get("lightningcssOptions")
                 .cloned()
                 .unwrap_or(Value::Null),
-            gate_sources,
+            gate_needles,
             options,
             assemble,
             dev_mode,
@@ -218,6 +232,7 @@ impl StylexPlugin {
                 MemoFs::snapshot()
             },
             registry: Mutex::new(RuleRegistry::new()),
+            recorded: RwLock::new(FxHashSet::default()),
             fingerprint,
             on_change: Mutex::new(None),
             warnings,
@@ -257,7 +272,11 @@ impl StylexPlugin {
     /// The plugin's `transformInclude` and `shouldHandle`: a JS-like id whose
     /// code imports one of the import sources (the built-in ones included).
     pub fn handles(&self, id: &str, code: &str) -> bool {
-        is_js_like(id) && self.gate_sources.iter().any(|s| imports_source(code, s))
+        is_js_like(id)
+            && self
+                .gate_needles
+                .iter()
+                .any(|finder| imports_needle(code, finder))
     }
 
     /// The transform's answer for a module [`Self::handles`] passes over:
@@ -313,13 +332,21 @@ impl StylexPlugin {
         if self.options.runtime_injection.is_some() {
             return false;
         }
+        if rules.is_empty() && !self.recorded.read().unwrap().contains(id) {
+            return false;
+        }
         let changed = {
             let mut registry = self.registry.lock().unwrap();
+            let mut recorded = self.recorded.write().unwrap();
             let before = registry.generation();
             if rules.is_empty() {
                 registry.remove_file(id);
+                recorded.remove(id);
             } else {
                 registry.set_file_rules(id, rules);
+                if !recorded.contains(id) {
+                    recorded.insert(id.into());
+                }
             }
             registry.generation() != before
         };
@@ -592,28 +619,27 @@ fn is_js_like(id: &str) -> bool {
 
 /// The plugin's `containsStylexImport`: `from 's'`, `import('s')`,
 /// `require('s')`, or a line-leading `import 's'`, either quote.
-fn imports_source(code: &str, source: &str) -> bool {
-    for quote in ['\'', '"'] {
-        let needle = format!("{quote}{source}{quote}");
-        let mut at = 0;
-        while let Some(found) = code[at..].find(&needle) {
-            let start = at + found;
-            at = start + needle.len();
-            let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
-            if before.ends_with("from") {
+fn imports_needle(code: &str, finder: &Finder<'_>) -> bool {
+    let bytes = code.as_bytes();
+    let needle_len = finder.needle().len();
+    let mut at = 0;
+    while let Some(found) = finder.find(&bytes[at..]) {
+        let start = at + found;
+        at = start + needle_len;
+        let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
+        if before.ends_with("from") {
+            return true;
+        }
+        if let Some(call) = before.strip_suffix('(') {
+            let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
+            if call.ends_with("import") || call.ends_with("require") {
                 return true;
             }
-            if let Some(call) = before.strip_suffix('(') {
-                let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
-                if call.ends_with("import") || call.ends_with("require") {
-                    return true;
-                }
-            }
-            if let Some(stmt) = before.strip_suffix("import") {
-                let line = stmt.rsplit('\n').next().unwrap_or(stmt);
-                if line.trim().is_empty() {
-                    return true;
-                }
+        }
+        if let Some(stmt) = before.strip_suffix("import") {
+            let line = stmt.rsplit('\n').next().unwrap_or(stmt);
+            if line.trim().is_empty() {
+                return true;
             }
         }
     }

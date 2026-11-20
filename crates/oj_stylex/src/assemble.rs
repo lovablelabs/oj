@@ -344,6 +344,7 @@ fn push_chunk(out: &mut String, ltr: &str, rtl: Option<&str>, index: usize, cfg:
 
 // One non-constant rule as upstream sorts and prints it: constants substituted
 // and the priority of a constant at-rule wrapper re-priced, both before the sort.
+#[derive(Clone)]
 struct Prepped<'a> {
     rule: &'a StylexRule,
     ltr: Option<String>,
@@ -353,12 +354,12 @@ struct Prepped<'a> {
 }
 
 impl<'a> Prepped<'a> {
-    fn new(rule: &'a StylexRule, legacy: bool, consts: &[PreparedConst]) -> Self {
-        let ltr = substitute_consts(&rule.ltr, consts);
+    fn new(rule: &'a StylexRule, legacy: bool, consts: &PreparedConsts) -> Self {
+        let ltr = substitute_consts(&rule.ltr, &consts.list);
         let rtl = rule
             .rtl
             .as_deref()
-            .and_then(|text| substitute_consts(text, consts));
+            .and_then(|text| substitute_consts(text, &consts.list));
         // The legacy class-name sort never reads the width key.
         let width = if legacy {
             None
@@ -616,6 +617,9 @@ fn width_sort_key(rule: &str) -> Option<Arc<WidthSortKey>> {
         return None;
     }
     let prefix = &rule[..prefix_len];
+    if !prefix.contains("@media ") {
+        return None;
+    }
     if let Some(hit) = WIDTH_KEY_MEMO.with(|memo| memo.borrow().get(prefix).cloned()) {
         return hit;
     }
@@ -684,8 +688,8 @@ fn compare_width_sort_keys(
 // parity: adjustConstAtRulePriority. A rule wrapped in a constant placeholder
 // (`var(--hash){…}`) was priced as an unknown key; once the constant is known
 // to be an at-rule, that share is swapped for the at-rule's own.
-fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &[PreparedConst]) -> f64 {
-    if consts.is_empty() {
+fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedConsts) -> f64 {
+    if consts.at_rule_shares.is_empty() {
         return priority;
     }
     let mut adjusted = priority;
@@ -696,11 +700,7 @@ fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &[PreparedCon
             continue;
         }
         let placeholder = &ltr[start..end];
-        let shares = consts
-            .iter()
-            .find(|c| c.var_ref == placeholder)
-            .and_then(|c| c.at_rule_shares);
-        if let Some((placeholder_share, at_rule_share)) = shares
+        if let Some(&(placeholder_share, at_rule_share)) = consts.at_rule_shares.get(placeholder)
             && adjusted >= placeholder_share
         {
             adjusted += at_rule_share - placeholder_share;
@@ -900,14 +900,13 @@ impl RuleKey {
                 _ => utf16_cmp(&a.rule.class_name, &b.rule.class_name),
             };
         }
-        let (rule_a, rule_b) = (a.ltr(), b.ltr());
         // A name can be verified where its declaration is not, so a missing
         // key defers to the comparator instead of assuming UTF-16 order.
         let name = match (self.name_segments(), other.name_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
             _ => default_locale_cmp(
-                declared_property_name(rule_a),
-                declared_property_name(rule_b),
+                declared_property_name(a.ltr()),
+                declared_property_name(b.ltr()),
             ),
         };
         if name != Ordering::Equal {
@@ -920,16 +919,25 @@ impl RuleKey {
         }
         let decl = match (self.decl_segments(), other.decl_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(decl_slice(rule_a), decl_slice(rule_b)),
+            _ => utf16_cmp(decl_slice(a.ltr()), decl_slice(b.ltr())),
         };
         if decl != Ordering::Equal {
             return decl;
         }
         match (self.full_segments(), other.full_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(rule_a, rule_b),
+            _ => utf16_cmp(a.ltr(), b.ltr()),
         }
     }
+}
+
+fn rule_identity(r: &StylexRule) -> (&str, &str, Option<&str>, u64) {
+    (
+        &r.class_name,
+        &r.ltr,
+        r.rtl.as_deref(),
+        r.priority.to_bits(),
+    )
 }
 
 // Keys derived once per rule; the stable index sort and the per-pair fallback
@@ -937,44 +945,57 @@ impl RuleKey {
 fn keyed_order<'a>(
     non_const: Vec<&'a StylexRule>,
     legacy: bool,
-    consts: &[PreparedConst],
+    consts: &PreparedConsts,
 ) -> Vec<Prepped<'a>> {
     let dedupe_timer = timings::start(Stage::AssembleDedupe);
     let unique = dedupe_keep_first(&non_const);
     drop(dedupe_timer);
-    let prepare = |rules: &[&'a StylexRule]| -> (Vec<Prepped<'a>>, Vec<RuleKey>) {
-        let subst_timer = timings::start(Stage::AssembleSubst);
-        let items: Vec<Prepped<'a>> = rules
-            .iter()
-            .map(|rule| Prepped::new(rule, legacy, consts))
-            .collect();
-        drop(subst_timer);
-        let _keys_timer = timings::start(Stage::AssembleKeys);
-        let keys = items
-            .iter()
-            .map(|item| RuleKey::for_text(&item.rule.class_name, item.ltr(), legacy))
-            .collect();
-        (items, keys)
-    };
-    let (mut items, mut keys) = prepare(&unique);
+    let subst_timer = timings::start(Stage::AssembleSubst);
+    let items: Vec<Prepped<'a>> = unique
+        .iter()
+        .map(|rule| Prepped::new(rule, legacy, consts))
+        .collect();
+    drop(subst_timer);
+    let keys_timer = timings::start(Stage::AssembleKeys);
+    let keys: Vec<RuleKey> = items
+        .iter()
+        .map(|item| RuleKey::for_text(&item.rule.class_name, item.ltr(), legacy))
+        .collect();
+    drop(keys_timer);
+
     // Dropping duplicates is order-neutral only under a consistent total order
-    // (verified keys, finite priorities); otherwise sort the full input as before.
-    if unique.len() != non_const.len()
+    // (verified keys, finite priorities); otherwise sort the full input as before,
+    // mapping each rule to its already-prepared representative in `unique`.
+    let fallback = unique.len() != non_const.len()
         && keys
             .iter()
             .zip(&items)
-            .any(|(key, item)| !key.verified() || !item.priority.is_finite())
-    {
-        (items, keys) = prepare(&non_const);
-    }
+            .any(|(key, item)| !key.verified() || !item.priority.is_finite());
     let _sort_timer = timings::start(Stage::AssembleSort);
-    let mut order: Vec<u32> = (0..items.len() as u32).collect();
-    order.sort_by(|&ia, &ib| {
+    let cmp_rep = |ia: u32, ib: u32| {
         let (a, b) = (&items[ia as usize], &items[ib as usize]);
         compare_priorities(a.priority, b.priority).unwrap_or_else(|| {
             keys[ia as usize].cmp_with_fallback(&keys[ib as usize], a, b, legacy)
         })
-    });
+    };
+    if fallback {
+        let mut rep_of: FxHashMap<(&str, &str, Option<&str>, u64), u32> =
+            FxHashMap::with_capacity_and_hasher(unique.len(), Default::default());
+        for (i, r) in unique.iter().enumerate() {
+            rep_of.entry(rule_identity(r)).or_insert(i as u32);
+        }
+        let mut order: Vec<u32> = non_const
+            .iter()
+            .map(|r| rep_of[&rule_identity(r)])
+            .collect();
+        order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
+        return order
+            .into_iter()
+            .map(|i| items[i as usize].clone())
+            .collect();
+    }
+    let mut order: Vec<u32> = (0..items.len() as u32).collect();
+    order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
     let mut items: Vec<Option<Prepped<'a>>> = items.into_iter().map(Some).collect();
     order
         .into_iter()
@@ -988,14 +1009,7 @@ fn dedupe_keep_first<'a>(rules: &[&'a StylexRule]) -> Vec<&'a StylexRule> {
     let mut seen: FxHashSet<(&str, &str, Option<&str>, u64)> = FxHashSet::default();
     let first: Vec<bool> = rules
         .iter()
-        .map(|r| {
-            seen.insert((
-                &r.class_name,
-                &r.ltr,
-                r.rtl.as_deref(),
-                r.priority.to_bits(),
-            ))
-        })
+        .map(|r| seen.insert(rule_identity(r)))
         .collect();
     if seen.len() == rules.len() {
         return rules.to_vec();
@@ -1087,42 +1101,50 @@ struct PreparedConst {
     var_ref: String,
     replacement: String,
     key_rewrite: Option<(String, String)>,
-    // For a string constant that is an at-rule: the priority share its
-    // placeholder was given as a key, and the share the at-rule itself earns.
-    at_rule_shares: Option<(f64, f64)>,
 }
 
-fn prepare_consts(consts: &[(String, ConstVal)]) -> Vec<PreparedConst> {
-    consts
-        .iter()
-        .map(|(var_ref, const_val)| {
-            let replacement = const_val.to_js_string();
-            // A const resolving to var(...) also rewrites `--constName:` declaration
-            // keys so the target variable stays overridable. Trims are ES TrimString.
-            let key_rewrite =
-                (replacement.starts_with("var(") && replacement.ends_with(')')).then(|| {
-                    let inside = crate::jsrt::js_trim(&replacement[4..replacement.len() - 1]);
-                    let target_name = match inside.find(',') {
-                        Some(ci) => crate::jsrt::js_trim(&inside[..ci]),
-                        None => inside,
-                    };
-                    let const_name = &var_ref[4..var_ref.len() - 1];
-                    (format!("{const_name}:"), format!("{target_name}:"))
-                });
-            let at_rule_shares = match const_val {
-                ConstVal::Str(value) if value.starts_with('@') => {
-                    Some((get_priority(var_ref), get_priority(value)))
-                }
-                _ => None,
-            };
-            PreparedConst {
-                var_ref: var_ref.clone(),
-                replacement,
-                key_rewrite,
-                at_rule_shares,
-            }
-        })
-        .collect()
+struct PreparedConsts {
+    list: Vec<PreparedConst>,
+    // For string constants that are at-rules: placeholder -> (placeholder share,
+    // at-rule share) for O(1) priority re-pricing.
+    at_rule_shares: FxHashMap<Box<str>, (f64, f64)>,
+}
+
+fn prepare_consts(consts: &[(String, ConstVal)]) -> PreparedConsts {
+    let mut list = Vec::with_capacity(consts.len());
+    let mut at_rule_shares: FxHashMap<Box<str>, (f64, f64)> = FxHashMap::default();
+    for (var_ref, const_val) in consts {
+        let replacement = const_val.to_js_string();
+        // A const resolving to var(...) also rewrites `--constName:` declaration
+        // keys so the target variable stays overridable. Trims are ES TrimString.
+        let key_rewrite =
+            (replacement.starts_with("var(") && replacement.ends_with(')')).then(|| {
+                let inside = crate::jsrt::js_trim(&replacement[4..replacement.len() - 1]);
+                let target_name = match inside.find(',') {
+                    Some(ci) => crate::jsrt::js_trim(&inside[..ci]),
+                    None => inside,
+                };
+                let const_name = &var_ref[4..var_ref.len() - 1];
+                (format!("{const_name}:"), format!("{target_name}:"))
+            });
+        if let ConstVal::Str(value) = const_val
+            && value.starts_with('@')
+        {
+            at_rule_shares.insert(
+                var_ref.as_str().into(),
+                (get_priority(var_ref), get_priority(value)),
+            );
+        }
+        list.push(PreparedConst {
+            var_ref: var_ref.clone(),
+            replacement,
+            key_rewrite,
+        });
+    }
+    PreparedConsts {
+        list,
+        at_rule_shares,
+    }
 }
 
 // The contains gates only skip replacements that would be identity copies; a
@@ -1432,12 +1454,12 @@ fn prefer_shared_preparation(files: &BTreeMap<String, Vec<StylexRule>>) -> bool 
     total >= 256 && seen.len() * 2 <= total
 }
 
-fn prepare_rule(r: &StylexRule, legacy: bool, consts: &[PreparedConst]) -> PreparedRule {
-    let ltr = substitute_consts(&r.ltr, consts)
+fn prepare_rule(r: &StylexRule, legacy: bool, consts: &PreparedConsts) -> PreparedRule {
+    let ltr = substitute_consts(&r.ltr, &consts.list)
         .map(Arc::from)
         .unwrap_or_else(|| r.ltr.clone());
     let rtl = r.rtl.as_ref().map(|t| {
-        substitute_consts(t, consts)
+        substitute_consts(t, &consts.list)
             .map(Arc::from)
             .unwrap_or_else(|| t.clone())
     });
@@ -1456,7 +1478,7 @@ fn prepare_rule(r: &StylexRule, legacy: bool, consts: &[PreparedConst]) -> Prepa
 fn prepare_file(
     rules: &[StylexRule],
     legacy: bool,
-    consts: &[PreparedConst],
+    consts: &PreparedConsts,
     pool: &mut Option<PreparedPool>,
 ) -> FilePrep {
     let mut prep = FilePrep {
@@ -1521,7 +1543,7 @@ struct IncrState {
     dirty: BTreeSet<String>,
     structural: bool,
     consts: Vec<(String, ConstVal)>,
-    prepared_consts: Vec<PreparedConst>,
+    prepared_consts: PreparedConsts,
     paths: Vec<String>,
     files: Vec<FilePrep>,
     pool: Option<PreparedPool>,
@@ -2084,5 +2106,38 @@ mod preparation_tests {
             assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
         }
         assert!(registry.incr[0].pool.is_none());
+    }
+
+    #[test]
+    fn keyed_order_fallback_matches_direct_comparator_with_duplicates() {
+        let mk = |class_name: &str, ltr: &str, priority: f64| StylexRule {
+            class_name: class_name.into(),
+            ltr: ltr.into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority,
+        };
+        // Non-ASCII triggers unverified keys and NaN triggers non-finite priority,
+        // both alongside duplicate rules so `unique.len() != non_const.len()`.
+        let rules = vec![
+            mk("xa", ".xa{content:\"café\"}", 3000.0),
+            mk("xb", ".xb{color:red}", 3000.0),
+            mk("xa", ".xa{content:\"café\"}", 3000.0),
+            mk("xc", ".xc{content:\"naïve\"}", f64::NAN),
+            mk("xb", ".xb{color:red}", 3000.0),
+            mk("xd", ".xd{color:blue}", 3000.0),
+        ];
+        for legacy in [false, true] {
+            let cfg = AssembleConfig {
+                use_legacy_classnames_sort: legacy,
+                ..AssembleConfig::default()
+            };
+            assert_eq!(
+                assemble(&rules, &cfg),
+                assemble_with_comparator(&rules, &cfg, default_locale_cmp),
+                "legacy={legacy}"
+            );
+        }
     }
 }

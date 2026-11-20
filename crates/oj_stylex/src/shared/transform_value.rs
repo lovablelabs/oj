@@ -74,6 +74,9 @@ fn is_content_keyword(val: &str) -> bool {
 // A value that already is a content list: at least one closed string, and
 // nothing besides closed strings, closed functions and content keywords.
 fn is_quoted_content_list(val: &str) -> bool {
+    if !val.bytes().any(|b| matches!(b, b'"' | b'\'')) {
+        return false;
+    }
     let nodes = parse(val);
     let mut content = nodes
         .iter()
