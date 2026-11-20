@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
@@ -545,7 +545,7 @@ impl StylexPlugin {
 
     /// `processStylexRules` over every recorded module, or `None` with none.
     pub fn stylesheet(&self) -> Result<Option<String>, String> {
-        let mut assembly = self.assembly.lock().unwrap();
+        let mut assembly = self.assembly();
         self.sync(&mut assembly);
         let registry = &mut assembly.registry;
         if registry.file_count() == 0 {
@@ -555,6 +555,42 @@ impl StylexPlugin {
             .emit(&self.assemble)
             .map(Some)
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
+    /// The assembly, locked. One a panic left mid-way (a sync that took the
+    /// store's changes and applied some, a registry part-way through a
+    /// sheet) is started over from the store, which holds every module's
+    /// rules whatever became of the registry: the panic costs the sheet
+    /// that was being assembled, and no later one.
+    fn assembly(&self) -> MutexGuard<'_, Assembly> {
+        self.assembly.lock().unwrap_or_else(|poisoned| {
+            let mut assembly = poisoned.into_inner();
+            self.reassemble(&mut assembly);
+            // Past the reload: a panic in it leaves the next call to start
+            // over again.
+            self.assembly.clear_poison();
+            assembly
+        })
+    }
+
+    /// Replaces `assembly` with a new one holding every module in the store.
+    /// [`Self::sync`] hands over only what changed since the last one, which
+    /// is not enough for a registry that may have lost what came before.
+    fn reassemble(&self, assembly: &mut Assembly) {
+        *assembly = Assembly::default();
+        let modules: Vec<_> = {
+            let mut store = self.store.write().unwrap();
+            assembly.synced = self.generation();
+            store.unsynced.clear();
+            store
+                .modules
+                .iter()
+                .map(|(id, rules)| (id.clone(), Arc::clone(rules)))
+                .collect()
+        };
+        for (id, rules) in modules {
+            assembly.registry.set_file_rules(&id, rules.to_vec());
+        }
     }
 
     /// Hands the registry the modules recorded since it last caught up. The
@@ -1298,6 +1334,77 @@ mod tests {
         }
         assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
         assert_eq!(p.module_rules(), expected.module_rules());
+    }
+
+    // A panic while a sheet is assembled leaves the registry however far it
+    // got. The store still holds every module, and the next sheet is made
+    // from it.
+    #[test]
+    fn a_panic_while_assembling_costs_no_later_sheet() {
+        let p = plugin(json!({}));
+        let rules = |color: &str| {
+            p.transform_source(Path::new("/app/src/a.ts"), &SRC.replace("red", color))
+                .unwrap()
+                .unwrap()
+                .rules
+        };
+        let expected = plugin(json!({}));
+        let record = |id: &str, color: &str| {
+            assert!(p.record_module_rules(id, &rules(color)));
+            expected.set_module_rules(id, rules(color));
+        };
+        record("/app/src/a.ts", "red");
+        record("/app/src/b.ts", "blue");
+        assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
+        record("/app/src/b.ts", "green");
+        record("/app/src/c.ts", "blue");
+
+        // Panics holding the assembly, without the hook's report.
+        let panic_assembling = |spoil: &(dyn Fn(&mut Assembly) + Sync)| {
+            std::thread::scope(|scope| {
+                let assembling = scope.spawn(|| {
+                    let mut assembly = p.assembly.lock().unwrap();
+                    spoil(&mut assembly);
+                    std::panic::resume_unwind(Box::new("assembling"));
+                });
+                assert!(assembling.join().is_err());
+            });
+            assert!(p.assembly.is_poisoned());
+        };
+
+        // As a sync that panics once it took the store's changes: nothing
+        // is left to tell the registry of `b.ts` and `c.ts`. And a registry
+        // that holds what the store does not, and lacks what it does.
+        panic_assembling(&|assembly| {
+            assembly.synced = p.generation();
+            p.store.write().unwrap().unsynced.clear();
+            assembly.registry.remove_file("/app/src/a.ts");
+            assembly
+                .registry
+                .set_file_rules("/app/src/gone.ts", rules("black"));
+        });
+        let sheet = p.stylesheet().unwrap().unwrap();
+        assert_eq!(Some(&sheet), expected.stylesheet().unwrap().as_ref());
+        for color in ["red", "green", "blue"] {
+            assert!(sheet.contains(&format!("{{color:{color}}}")), "{sheet}");
+        }
+        assert!(!sheet.contains("black"), "{sheet}");
+        assert!(!p.assembly.is_poisoned());
+
+        // The assembly goes on from there as any other.
+        record("/app/src/a.ts", "pink");
+        assert!(p.clear_module_rules("/app/src/c.ts"));
+        expected.clear_module_rules("/app/src/c.ts");
+        assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
+        assert_eq!(p.module_rules(), expected.module_rules());
+
+        // With every module dropped since, there is no sheet.
+        panic_assembling(&|_| {});
+        for id in ["/app/src/a.ts", "/app/src/b.ts"] {
+            assert!(p.clear_module_rules(id));
+        }
+        assert_eq!(p.stylesheet().unwrap(), None);
+        assert!(!p.assembly.is_poisoned());
     }
 
     // StyleX 0.19.2 (#1817): the sheet joins `index.css` or `style.css` under
