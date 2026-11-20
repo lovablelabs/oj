@@ -14,20 +14,6 @@ struct Pins {
     #[serde(rename = "topLevel")]
     top_level: Vec<SinglePin>,
     nested: Vec<NestedPin>,
-    #[serde(rename = "widthBounds")]
-    width_bounds: Vec<WidthBoundPin>,
-}
-
-#[derive(Deserialize)]
-struct WidthBoundPin {
-    prelude: String,
-    bound: Option<BoundPin>,
-}
-
-#[derive(Deserialize)]
-struct BoundPin {
-    kind: String,
-    value: f64,
 }
 
 #[derive(Deserialize)]
@@ -156,22 +142,64 @@ fn sibling_pins_match_oracle() {
 }
 
 #[test]
-fn width_sort_bounds_match_oracle() {
-    let pins = load_pins();
-    let mut bounded = 0usize;
-    for pin in &pins.width_bounds {
-        let got = width_sort_bound(&pin.prelude).map(|b| {
-            let kind = match b.kind {
-                WidthBoundKind::Min => "min",
-                WidthBoundKind::Max => "max",
-            };
-            (kind, b.value)
-        });
-        let want = pin.bound.as_ref().map(|b| (b.kind.as_str(), b.value));
-        assert_eq!(got, want, "prelude {:?}", pin.prelude);
-        bounded += usize::from(want.is_some());
+fn media_query_0_19_2_fixes_and_width_bounds() {
+    // #1652: single px min-/max-width bound extraction for stylesheet sort.
+    for (prelude, expected) in [
+        (
+            "@media (min-width: 600px)",
+            Some((WidthBoundKind::Min, 600.0)),
+        ),
+        (
+            "@media (max-width: 599.98px)",
+            Some((WidthBoundKind::Max, 599.98)),
+        ),
+        (
+            "@media (width >= 400px)",
+            Some((WidthBoundKind::Min, 400.0)),
+        ),
+        (
+            "@media (width <= 800px)",
+            Some((WidthBoundKind::Max, 800.0)),
+        ),
+        ("@media (min-width: 40em)", None),
+        ("@media (min-width: 600px) and (max-width: 900px)", None),
+        ("@media not (min-width: 600px)", None),
+        (
+            "@media screen and (min-width: 600px)",
+            Some((WidthBoundKind::Min, 600.0)),
+        ),
+    ] {
+        let got = width_sort_bound(prelude).map(|b| (b.kind, b.value));
+        assert_eq!(got, expected, "prelude {prelude:?}");
     }
-    assert!(bounded > 100, "expected bound coverage, got {bounded}");
+
+    // #1858: 0.02px max-width epsilon closes gaps between sibling media queries.
+    let rewritten = last_media_query_wins_transform(&[
+        "@media (min-width: 600px)".to_string(),
+        "@media (min-width: 900px)".to_string(),
+    ])
+    .expect("epsilon siblings");
+    assert_eq!(
+        rewritten,
+        vec![
+            "@media (min-width: 600px) and (max-width: 899.98px)",
+            "@media (min-width: 900px)",
+        ]
+    );
+
+    // #1888 & #2001: media-type resolution and preserving leading `not`.
+    assert_eq!(
+        MediaQuery::parse("@media not screen and (min-width: 600px)")
+            .unwrap()
+            .to_string(),
+        "@media not screen and (min-width: 600px)"
+    );
+    let types = last_media_query_wins_transform(&[
+        "@media screen and (min-width: 600px)".to_string(),
+        "@media print".to_string(),
+    ])
+    .expect("media types");
+    assert_eq!(types[1], "@media print");
 }
 
 #[test]

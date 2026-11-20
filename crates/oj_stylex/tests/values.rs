@@ -147,3 +147,55 @@ fn describe(input: &Input) -> String {
         Input::Array { values } => format!("array of {}", values.len()),
     }
 }
+
+#[test]
+fn value_fixes_0_19_2() {
+    // #1828: content / hyphenateCharacter escape bare quotes, trailing backslashes and line breaks.
+    assert_eq!(
+        transform_value_str("content", "a\"b", false).unwrap(),
+        r#""a\"b""#
+    );
+    assert_eq!(
+        transform_value_str("content", "line1\nline2", false).unwrap(),
+        r#""line1\A line2""#
+    );
+    assert_eq!(
+        transform_value_str("content", "\"a\" \"b\"", false).unwrap(),
+        "\"a\" \"b\""
+    );
+    assert_eq!(
+        transform_value_str("hyphenateCharacter", "-", false).unwrap(),
+        "\"-\""
+    );
+
+    // #1983: url(...) contents skip whitespace, leading-zero, timing and zero-dimension normalizers.
+    assert_eq!(
+        transform_value_str("backgroundImage", "url( 0.5px  0px )", false).unwrap(),
+        "url(0.5px  0px)"
+    );
+    assert_eq!(
+        transform_value_str("backgroundImage", "url(0px) 0px", false).unwrap(),
+        "url(0px) 0"
+    );
+
+    // #1750 / #2000: zero dimensions strip units after nested functions and case-insensitively.
+    assert_eq!(
+        transform_value_str("margin", "calc(calc(0px) + 0px) 0px", false).unwrap(),
+        "calc(calc(0px) + 0px) 0"
+    );
+    assert_eq!(transform_value_str("width", "0PX", false).unwrap(), "0");
+    assert_eq!(
+        transform_value_str("rotate", "0DEG", false).unwrap(),
+        "0deg"
+    );
+    assert_eq!(
+        transform_value_str("transitionDuration", "0MS", false).unwrap(),
+        "0s"
+    );
+
+    // #1903: fontSizeAdjust is unitless.
+    assert_eq!(
+        transform_value_num("fontSizeAdjust", 0.5, false).unwrap(),
+        ".5"
+    );
+}
