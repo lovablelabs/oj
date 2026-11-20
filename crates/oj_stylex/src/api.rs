@@ -3,7 +3,6 @@
 
 use std::path::Path;
 
-use memchr::memmem;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_parser::Parser;
@@ -11,9 +10,9 @@ use oxc_span::SourceType;
 
 use crate::errors::StylexError;
 use crate::eval::value::JsObjectMap;
-use crate::imports::{ATOMS_SOURCE, ImportTable, scan_imports};
-use crate::module_resolution::{FsProvider, THEME_FILE_EXTENSION};
-use crate::options::{ImportSource, ResolvedOptions};
+use crate::imports::{ImportTable, scan_imports};
+use crate::module_resolution::FsProvider;
+use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::state::CompileState;
 use crate::transform::ast_backend::apply_plan;
@@ -47,44 +46,7 @@ pub enum MapMode {
 }
 
 pub fn might_contain_stylex(source: &str, options: &ResolvedOptions) -> bool {
-    pre_gate(source, options).is_some()
-}
-
-/// `None` = the file cannot reference any stylex import source; `Some(sx)`
-/// carries whether the sx-prop needle hit, sparing the dormancy check a rescan.
-fn pre_gate(source: &str, options: &ResolvedOptions) -> Option<bool> {
-    let bytes = source.as_bytes();
-    // The sx prop compiles with no stylex import in the file at all.
-    if options
-        .sx_prop_name
-        .as_deref()
-        .is_some_and(|sx| memmem::find(bytes, sx.as_bytes()).is_some())
-    {
-        return Some(true);
-    }
-    // Atoms compile off a hardcoded source no importSources setting covers; a
-    // rewritable import source must carry the hardcoded `.stylex` suffix.
-    let needles = || {
-        options
-            .import_sources
-            .iter()
-            .map(ImportSource::from_specifier)
-            .chain(std::iter::once(ATOMS_SOURCE))
-            .chain(options.rewrite_aliases.then_some(THEME_FILE_EXTENSION))
-    };
-    // A needle containing another (or repeating an earlier one) can only hit
-    // where that one hits: the default set collapses to "stylex" alone.
-    let hit = needles().enumerate().any(|(i, needle)| {
-        let redundant = needles().enumerate().any(|(j, other)| {
-            (other.len() < needle.len() && needle.contains(other)) || (j < i && other == needle)
-        });
-        !redundant && memmem::find(bytes, needle.as_bytes()).is_some()
-    });
-    // A `\u`/`\x` escape can cook into an import-source match the raw needles
-    // miss (`"@stylexjs/stylex"`); parse and decide post-parse.
-    let escapes =
-        || memchr::memchr_iter(b'\\', bytes).any(|i| matches!(bytes.get(i + 1), Some(b'u' | b'x')));
-    (hit || escapes()).then_some(false)
+    options.gate.scan(source).is_some()
 }
 
 /// `None` = pre-gate skip (the file cannot reference any stylex import source).
@@ -134,7 +96,7 @@ pub fn transform_source_in_with_map(
     map_mode: MapMode,
 ) -> Result<Option<SourceCompileResult>, StylexError> {
     let want_map = map_mode != MapMode::Off;
-    let Some(sx_hit) = pre_gate(ctx.source_text, options) else {
+    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
         return Ok(None);
     };
     let filename = ctx.filename.to_string_lossy().replace('\\', "/");
@@ -221,7 +183,7 @@ pub fn transform_program<'a>(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<CompileResult, StylexError> {
-    let Some(sx_hit) = pre_gate(ctx.source_text, options) else {
+    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
         return Ok(CompileResult {
             modified: false,
             rules: Vec::new(),
@@ -330,54 +292,4 @@ pub fn parse_program<'a>(
         .map(|d| d.message.to_string())
         .unwrap_or_else(|| "unknown parse error".to_string());
     Err(StylexError::parse_error(&detail))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn options(json: serde_json::Value) -> ResolvedOptions {
-        crate::options::CompilerOptions::from_json(&json)
-            .unwrap()
-            .resolve()
-            .unwrap()
-    }
-
-    #[test]
-    fn pre_gate_admits_every_needle_and_reports_sx() {
-        let opts = ResolvedOptions::default();
-        assert_eq!(pre_gate("export const x = 1;\n", &opts), None);
-        for (source, sx) in [
-            ("import * as s from '@stylexjs/stylex';", false),
-            ("import s from 'stylex';", false),
-            ("import { color } from '@stylexjs/atoms';", false),
-            ("const t = './tokens.stylex';", false),
-            ("<div sx={x} />", true),
-            ("const tsx = 1;", true),
-            ("const s = '\\u0040stylexjs/stylex';", false),
-            ("const s = '\\x40';", false),
-        ] {
-            assert_eq!(pre_gate(source, &opts), Some(sx), "{source}");
-        }
-    }
-
-    #[test]
-    fn pre_gate_keeps_non_default_needles_and_honours_sx_off() {
-        let opts = options(serde_json::json!({
-            "importSources": ["foo-bar", { "from": "my-stylex-lib", "as": "css" }],
-            "sxPropName": false,
-        }));
-        assert_eq!(
-            pre_gate("import { css } from 'foo-bar';", &opts),
-            Some(false)
-        );
-        assert_eq!(
-            pre_gate("import { css } from 'my-stylex-lib';", &opts),
-            Some(false)
-        );
-        assert_eq!(pre_gate("<div sx={x} />", &opts), None);
-        let custom_sx = options(serde_json::json!({ "sxPropName": "css" }));
-        assert_eq!(pre_gate("<div css={x} />", &custom_sx), Some(true));
-        assert_eq!(pre_gate("<div sx={x} />", &custom_sx), None);
-    }
 }

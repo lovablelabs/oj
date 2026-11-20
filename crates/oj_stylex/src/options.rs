@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::errors::{ErrorCode, StylexError};
 use crate::eval::value::{EvalValue, JsObjectMap};
+use crate::gate::PreGate;
 use crate::module_resolution::THEME_FILE_EXTENSION;
 
 /// Raw `@stylexjs/babel-plugin` options as they appear in conformance jobs.
@@ -137,6 +138,9 @@ pub struct ResolvedOptions {
     pub unstable_module_resolution: Option<ModuleResolution>,
     pub aliases: Option<AliasMap>,
     pub rewrite_aliases: bool,
+    /// The pre-parse gate over `sx_prop_name`, `import_sources` and
+    /// `rewrite_aliases`, its searchers built once here instead of per file.
+    pub(crate) gate: PreGate,
     /// Canonical `{:?}` capture of every other field, computed once at
     /// resolve: cache/memo keys read it instead of reformatting per call.
     pub cache_repr: String,
@@ -426,6 +430,7 @@ impl CompilerOptions {
             return Err(StylexError::unsupported_option("exclude"));
         }
 
+        let gate = PreGate::new(sx_prop_name.as_deref(), &import_sources, rewrite_aliases);
         let mut resolved = ResolvedOptions {
             class_name_prefix,
             dev,
@@ -450,6 +455,7 @@ impl CompilerOptions {
             unstable_module_resolution,
             aliases,
             rewrite_aliases,
+            gate,
             cache_repr: String::new(),
         };
         // The empty-field capture keeps the repr a pure function of the inputs.

@@ -68,7 +68,7 @@ pub struct StylexPlugin {
     assemble: AssembleConfig,
     dev_mode: DevMode,
     lightningcss_options: Value,
-    gate_needles: Vec<Finder<'static>>,
+    gate: ImportGate,
     root: PathBuf,
     fs: MemoFs,
     registry: Mutex<RuleRegistry>,
@@ -141,14 +141,6 @@ impl StylexPlugin {
                 gate_sources.push(source);
             }
         }
-        let gate_needles = gate_sources
-            .iter()
-            .flat_map(|source| {
-                ['\'', '"']
-                    .into_iter()
-                    .map(move |quote| Finder::new(&format!("{quote}{source}{quote}")).into_owned())
-            })
-            .collect();
         let mut compiler: Map<String, Value> = user
             .iter()
             .filter(|(k, _)| !PLUGIN_KEYS.contains(&k.as_str()))
@@ -221,7 +213,7 @@ impl StylexPlugin {
                 .get("lightningcssOptions")
                 .cloned()
                 .unwrap_or(Value::Null),
-            gate_needles,
+            gate: ImportGate::new(&gate_sources),
             options,
             assemble,
             dev_mode,
@@ -272,11 +264,7 @@ impl StylexPlugin {
     /// The plugin's `transformInclude` and `shouldHandle`: a JS-like id whose
     /// code imports one of the import sources (the built-in ones included).
     pub fn handles(&self, id: &str, code: &str) -> bool {
-        is_js_like(id)
-            && self
-                .gate_needles
-                .iter()
-                .any(|finder| imports_needle(code, finder))
+        is_js_like(id) && self.gate.imported_by(code)
     }
 
     /// The transform's answer for a module [`Self::handles`] passes over:
@@ -617,15 +605,53 @@ fn is_js_like(id: &str) -> bool {
     })
 }
 
-/// The plugin's `containsStylexImport`: `from 's'`, `import('s')`,
-/// `require('s')`, or a line-leading `import 's'`, either quote.
-fn imports_needle(code: &str, finder: &Finder<'_>) -> bool {
-    let bytes = code.as_bytes();
-    let needle_len = finder.needle().len();
+/// The transform gate's import sources as searchers, built once per plugin.
+struct ImportGate {
+    /// The sources none of which contains another: code that mentions none
+    /// of them imports no source at all, whatever the quotes around it.
+    mentions: Vec<Finder<'static>>,
+    /// Every source in either quote.
+    quoted: Vec<Finder<'static>>,
+}
+
+impl ImportGate {
+    fn new(sources: &[String]) -> Self {
+        let searcher = |needle: &str| Finder::new(needle.as_bytes()).into_owned();
+        let mentions = sources
+            .iter()
+            .filter(|source| {
+                !sources
+                    .iter()
+                    .any(|other| other.len() < source.len() && source.contains(other.as_str()))
+            })
+            .map(|source| searcher(source))
+            .collect();
+        let quoted = sources
+            .iter()
+            .flat_map(|source| ['\'', '"'].map(|quote| format!("{quote}{source}{quote}")))
+            .map(|needle| searcher(&needle))
+            .collect();
+        Self { mentions, quoted }
+    }
+
+    fn imported_by(&self, code: &str) -> bool {
+        self.mentions
+            .iter()
+            .any(|source| source.find(code.as_bytes()).is_some())
+            && self
+                .quoted
+                .iter()
+                .any(|needle| imports_quoted(code, needle))
+    }
+}
+
+/// The plugin's `containsStylexImport` for one quoted source: `from 's'`,
+/// `import('s')`, `require('s')`, or a line-leading `import 's'`.
+fn imports_quoted(code: &str, needle: &Finder<'_>) -> bool {
     let mut at = 0;
-    while let Some(found) = finder.find(&bytes[at..]) {
+    while let Some(found) = needle.find(&code.as_bytes()[at..]) {
         let start = at + found;
-        at = start + needle_len;
+        at = start + needle.needle().len();
         let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
         if before.ends_with("from") {
             return true;
@@ -674,6 +700,111 @@ mod tests {
         let custom = plugin(json!({ "importSources": [{ "from": "my-sx", "as": "css" }] }));
         assert!(custom.handles("/a.ts", "import { css } from 'my-sx';"));
         assert!(!custom.handles("/a.ts", "import { css } from 'other-sx';"));
+    }
+
+    /// `containsStylexImport` as upstream writes it: one substring scan per
+    /// quoted source, nothing prebuilt.
+    fn imports_source(code: &str, source: &str) -> bool {
+        for quote in ['\'', '"'] {
+            let needle = format!("{quote}{source}{quote}");
+            let mut at = 0;
+            while let Some(found) = code[at..].find(&needle) {
+                let start = at + found;
+                at = start + needle.len();
+                let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
+                if before.ends_with("from") {
+                    return true;
+                }
+                if let Some(call) = before.strip_suffix('(') {
+                    let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
+                    if call.ends_with("import") || call.ends_with("require") {
+                        return true;
+                    }
+                }
+                if let Some(stmt) = before.strip_suffix("import") {
+                    let line = stmt.rsplit('\n').next().unwrap_or(stmt);
+                    if line.trim().is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn prebuilt_import_gate_matches_the_per_source_scan() {
+        let source_sets: [&[&str]; 4] = [
+            &["stylex", "@stylexjs/stylex"],
+            &["stylex", "@stylexjs/stylex", "my-sx", "@acme/my-sx"],
+            &["stylex", "@stylexjs/stylex", "x", "'"],
+            &["stylex", "@stylexjs/stylex", "sty", "lex'x"],
+        ];
+        // Fragments that assemble into every quoted source and each import
+        // shape around it, glued by a fixed-seed generator.
+        let fragments = [
+            "stylex",
+            "@stylexjs/",
+            "my-sx",
+            "@acme/",
+            "sty",
+            "lex",
+            "x",
+            "'",
+            "\"",
+            "from",
+            "import",
+            "require",
+            "(",
+            " ",
+            "\t",
+            "\n",
+            "a",
+            ";",
+            "é",
+            "'stylex'",
+            "\"my-sx\"",
+            "from '",
+            "import(\"",
+            "require ('",
+            "\nimport '",
+        ];
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let gates: Vec<(Vec<String>, ImportGate)> = source_sets
+            .iter()
+            .map(|set| {
+                let sources: Vec<String> = set.iter().map(|s| s.to_string()).collect();
+                let gate = ImportGate::new(&sources);
+                (sources, gate)
+            })
+            .collect();
+        let (mut hits, mut misses) = (0, 0);
+        for _ in 0..20_000 {
+            let len = 1 + next() % 8;
+            let code: String = (0..len)
+                .map(|_| fragments[(next() % fragments.len() as u64) as usize])
+                .collect();
+            for (sources, gate) in &gates {
+                let expected = sources.iter().any(|s| imports_source(&code, s));
+                assert_eq!(
+                    gate.imported_by(&code),
+                    expected,
+                    "{code:?} for {sources:?}"
+                );
+                if expected {
+                    hits += 1;
+                } else {
+                    misses += 1;
+                }
+            }
+        }
+        assert!(hits > 100 && misses > 100, "{hits} {misses}");
     }
 
     // StyleX 0.19.2 (#1849): `importSources` adds to the built-in sources at

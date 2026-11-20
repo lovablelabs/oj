@@ -8,7 +8,6 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use memchr::memmem;
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, BindingPattern, CallExpression, ChainElement, ClassElement,
     Declaration, ExportDefaultDeclarationKind, Expression, ForStatementInit, ForStatementLeft,
@@ -416,8 +415,8 @@ fn pass_a_index(state: &CompileState<'_>, source: &str) -> SiteIndex {
         }
     });
     // A JSX attribute name is no reference; its source text stands in.
-    if let Some(sx) = state.options.sx_prop_name.as_deref() {
-        starts.extend(memmem::find_iter(source.as_bytes(), sx.as_bytes()).map(|i| i as u32));
+    if state.options.sx_prop_name.is_some() {
+        starts.extend(state.options.gate.sx_offsets(source).map(|i| i as u32));
         starts.sort_unstable();
     }
     SiteIndex { starts }

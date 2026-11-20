@@ -5,6 +5,7 @@ pub mod cli;
 pub mod errors;
 pub mod eval;
 pub mod fxhash;
+mod gate;
 pub mod hash;
 pub mod imports;
 pub mod jsrt;
