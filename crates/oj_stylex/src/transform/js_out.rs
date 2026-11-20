@@ -40,20 +40,38 @@ pub fn apply_edits(source: &str, edits: &[Edit]) -> String {
 
 /// [`apply_edits`] that also records generated-to-original positions when
 /// `map` is supplied; the returned text is byte-identical either way.
-pub fn apply_edits_tracked(
-    source: &str,
-    edits: &[Edit],
-    mut map: Option<&mut SpliceMap>,
-) -> String {
-    let mut ordered: Vec<(usize, &Edit)> = edits.iter().enumerate().collect();
-    ordered.sort_by_key(|(i, e)| (e.start, e.end, *i));
+pub fn apply_edits_tracked(source: &str, edits: &[Edit], map: Option<&mut SpliceMap>) -> String {
     let inserted: usize = edits.iter().map(|e| e.text.len()).sum();
     let replaced: usize = edits.iter().map(|e| (e.end - e.start) as usize).sum();
     let mut out = String::with_capacity(source.len().saturating_sub(replaced) + inserted);
+    splice_into(source, 0, edits.iter(), edits.len(), map, &mut out);
+    out
+}
+
+/// Appends `source` with `edits` applied; edit offsets are relative to
+/// `base`, the offset `source` starts at in the text the edits address.
+fn splice_into<'e>(
+    source: &str,
+    base: u32,
+    edits: impl Iterator<Item = &'e Edit>,
+    count_hint: usize,
+    mut map: Option<&mut SpliceMap>,
+    out: &mut String,
+) {
+    let mut ordered: Vec<&Edit> = Vec::with_capacity(count_hint);
+    ordered.extend(edits);
+    // Stable, so same-position edits keep their submission order; most edit
+    // lists arrive already ordered and skip the sort.
+    if !ordered
+        .windows(2)
+        .all(|pair| (pair[0].start, pair[0].end) <= (pair[1].start, pair[1].end))
+    {
+        ordered.sort_by_key(|e| (e.start, e.end));
+    }
     let mut cursor = 0usize;
-    for (_, edit) in ordered {
-        let start = edit.start as usize;
-        let end = edit.end as usize;
+    for edit in ordered {
+        let start = (edit.start - base) as usize;
+        let end = (edit.end - base) as usize;
         assert!(start >= cursor, "overlapping stylex output edits");
         if let Some(map) = map.as_mut() {
             map.copy(&source[cursor..start]);
@@ -68,7 +86,6 @@ pub fn apply_edits_tracked(
         map.copy(&source[cursor..]);
     }
     out.push_str(&source[cursor..]);
-    out
 }
 
 /// Generated-to-original positions for a splice compile, built by walking the
@@ -148,30 +165,91 @@ impl SpliceMap {
 
 /// Renders `span`'s source text with the given (contained) edits applied.
 pub fn render_span(source: &str, span: Span, edits: &[Edit]) -> String {
-    let base = span.start as usize;
-    let slice = &source[base..span.end as usize];
-    let contained: Vec<Edit> = edits
+    let mut out = String::with_capacity(span.size() as usize);
+    write_span(source, span, edits, &mut out);
+    out
+}
+
+/// [`render_span`] appending to `out`.
+pub fn write_span(source: &str, span: Span, edits: &[Edit], out: &mut String) {
+    let slice = &source[span.start as usize..span.end as usize];
+    let contained = edits
         .iter()
-        .filter(|e| e.start >= span.start && e.end <= span.end)
-        .map(|e| Edit {
-            start: e.start - span.start,
-            end: e.end - span.start,
-            text: e.text.clone(),
-        })
-        .collect();
-    apply_edits(slice, &contained)
+        .filter(|e| e.start >= span.start && e.end <= span.end);
+    splice_into(slice, span.start, contained, 0, None, out);
 }
 
 // parity: @babel/types isValidIdentifier(name, false) — keywords stay valid
 // as object keys; non-ASCII identifiers conservatively print quoted instead.
 pub fn is_identifier_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
-        _ => return false,
+    match key.as_bytes() {
+        [first, rest @ ..] => {
+            IDENT_CLASS[*first as usize] == IDENT_START
+                && rest.iter().all(|b| IDENT_CLASS[*b as usize] != 0)
+        }
+        [] => false,
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
+
+const IDENT_START: u8 = 1;
+const IDENT_CONTINUE: u8 = 2;
+
+// Every byte of a non-ASCII character is >= 0x80 and classifies as 0.
+static IDENT_CLASS: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut b = 0usize;
+    while b < 128 {
+        let c = b as u8;
+        table[b] = if c.is_ascii_alphabetic() || c == b'_' || c == b'$' {
+            IDENT_START
+        } else if c.is_ascii_digit() {
+            IDENT_CONTINUE
+        } else {
+            0
+        };
+        b += 1;
+    }
+    table
+};
+
+/// An object key as upstream prints it: bare when it is an identifier,
+/// a string literal otherwise.
+pub fn write_key(key: &str, out: &mut String) {
+    if is_identifier_key(key) {
+        out.push_str(key);
+    } else {
+        write_js_string_literal(key, out);
+    }
+}
+
+// Printable ASCII with nothing to escape. Branch-free per 16-byte block so
+// the scan vectorizes; class lists are long and almost always qualify.
+fn is_verbatim_ascii(bytes: &[u8]) -> bool {
+    #[inline(always)]
+    fn escapes(b: u8) -> u8 {
+        u8::from(b < 0x20) | u8::from(b > 0x7E) | u8::from(b == b'"') | u8::from(b == b'\\')
+    }
+    let (blocks, remainder) = bytes.as_chunks::<16>();
+    for block in blocks {
+        if block.iter().fold(0u8, |bad, &b| bad | escapes(b)) != 0 {
+            return false;
+        }
+    }
+    remainder
+        .iter()
+        .fold(0u8, |bad, &b| bad | NEEDS_ESCAPE[b as usize])
+        == 0
+}
+
+static NEEDS_ESCAPE: [u8; 256] = {
+    let mut table = [1u8; 256];
+    let mut b = 0x20usize;
+    while b <= 0x7E {
+        table[b] = (b == b'"' as usize || b == b'\\' as usize) as u8;
+        b += 1;
+    }
+    table
+};
 
 // parity: @babel/generator via jsesc {quotes: 'double', wrap: true,
 // minimal: false} — ASCII-safe output, \xXX below U+0100, \uXXXX above.
@@ -183,15 +261,14 @@ pub fn js_string_literal(value: &str) -> String {
 
 pub fn write_js_string_literal(value: &str, out: &mut String) {
     use std::fmt::Write;
-    out.push('"');
-    if value
-        .bytes()
-        .all(|b| matches!(b, 0x20..=0x7E) && b != b'"' && b != b'\\')
-    {
+    if is_verbatim_ascii(value.as_bytes()) {
+        out.reserve(value.len() + 2);
+        out.push('"');
         out.push_str(value);
         out.push('"');
         return;
     }
+    out.push('"');
     let mut units = value.encode_utf16().peekable();
     while let Some(unit) = units.next() {
         match unit {
@@ -224,7 +301,7 @@ fn json_string_literal(value: &str) -> String {
 }
 
 /// Printed-size estimate for pre-sizing buffers: exact for keywords and
-/// ASCII strings, a typical width for numbers.
+/// ASCII strings, a typical width for numbers, quoted width for every key.
 pub fn estimate_len(value: &EvalValue) -> usize {
     match value {
         EvalValue::Null => 4,
@@ -245,9 +322,7 @@ pub fn estimate_len(value: &EvalValue) -> usize {
 pub fn estimate_object_len(map: &JsObjectMap) -> usize {
     2 + map
         .entries()
-        .map(|(key, value)| {
-            key.len() + if is_identifier_key(key) { 4 } else { 6 } + estimate_len(value)
-        })
+        .map(|(key, value)| key.len() + 6 + estimate_len(value))
         .sum::<usize>()
 }
 
@@ -268,14 +343,14 @@ pub fn write_value(value: &EvalValue, out: &mut String) {
         // parity: convertObjectToAST recurses into arrays via Object.entries,
         // printing them as index-keyed objects ({"0": …, "1": …}).
         EvalValue::Arr(items) => {
-            use std::fmt::Write;
             out.push('{');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                let _ = write!(out, "\"{i}\"");
-                out.push_str(": ");
+                out.push('"');
+                write_u32(i as u32, out);
+                out.push_str("\": ");
                 write_value(item, out);
             }
             out.push('}');
@@ -290,15 +365,29 @@ pub fn write_object(map: &JsObjectMap, out: &mut String) {
         if i > 0 {
             out.push_str(", ");
         }
-        if is_identifier_key(key) {
-            out.push_str(key);
-        } else {
-            write_js_string_literal(key, out);
-        }
+        write_key(key, out);
         out.push_str(": ");
         write_value(value, out);
     }
     out.push('}');
+}
+
+/// Decimal digits of `n`, without the formatting machinery.
+pub fn write_u32(n: u32, out: &mut String) {
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut rest = n;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    for &digit in &digits[at..] {
+        out.push(digit as char);
+    }
 }
 
 /// One runtime-injection statement, `callee({ltr, rtl?, priority, constKey?,
@@ -322,7 +411,10 @@ pub fn inject_call_text(callee: &str, rule: &crate::rules::StylexRule) -> String
     }
     if let Some(const_val) = &rule.const_val {
         out.push_str(", constVal: ");
-        out.push_str(&print_const_val(const_val));
+        match const_val_number(const_val) {
+            Some(n) => write_js_number(n, &mut out),
+            None => write_js_string_literal(&const_val_string(const_val), &mut out),
+        }
     }
     out.push_str("});\n");
     out
@@ -383,21 +475,22 @@ fn write_class_segments(segments: &[String], out: &mut String) {
 /// Static chunk printer (the object upstream hoists via hoistExpression);
 /// its `$$css` key is a string literal, the conditional chunk's an identifier.
 pub fn print_static_chunk(compiled: &crate::shared::dynamic::DynamicCompiled) -> String {
-    let mut obj = String::from("{");
-    for (key, segments) in &compiled.static_props {
-        if is_identifier_key(key) {
-            obj.push_str(key);
-        } else {
-            write_js_string_literal(key, &mut obj);
-        }
-        obj.push_str(": ");
-        write_class_segments(segments, &mut obj);
-        obj.push_str(", ");
-    }
-    obj.push_str("\"$$css\": ");
-    write_value(&compiled.css_tag, &mut obj);
-    obj.push('}');
+    let mut obj = String::new();
+    write_static_chunk(compiled, &mut obj);
     obj
+}
+
+fn write_static_chunk(compiled: &crate::shared::dynamic::DynamicCompiled, out: &mut String) {
+    out.push('{');
+    for (key, segments) in &compiled.static_props {
+        write_key(key, out);
+        out.push_str(": ");
+        write_class_segments(segments, out);
+        out.push_str(", ");
+    }
+    out.push_str("\"$$css\": ");
+    write_value(&compiled.css_tag, out);
+    out.push('}');
 }
 
 /// Dynamic-namespace arrow printer: spans splice verbatim (parenthesized),
@@ -409,84 +502,97 @@ pub fn print_dynamic_arrow(
 ) -> String {
     use crate::shared::dynamic::ClassPart;
     let expr_text = |span: Span| -> &str { &source[span.start as usize..span.end as usize] };
+    let guarded_class = |out: &mut String, lit: &str, expr: Span| {
+        out.push_str("((");
+        out.push_str(expr_text(expr));
+        out.push_str(") != null ? ");
+        write_js_string_literal(lit, out);
+        out.push_str(" : \"\")");
+    };
 
-    let mut vars = String::from("{");
+    let container = compiled.has_container();
+    let mut out = String::with_capacity(128);
+    out.push('(');
+    for (i, param) in compiled.params.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(param);
+    }
+    out.push_str(if container { ") => [" } else { ") => (" });
+
+    // The inline-vars object closes the list, so every chunk before it is
+    // followed by a separator.
+    if container {
+        if !compiled.static_props.is_empty() {
+            match static_ident {
+                Some(ident) => out.push_str(ident),
+                None => write_static_chunk(compiled, &mut out),
+            }
+            out.push_str(", ");
+        }
+        for guarded in &compiled.guarded_props {
+            out.push('(');
+            out.push_str(expr_text(guarded.expr));
+            out.push_str(") !== undefined && {");
+            write_key(&guarded.key, &mut out);
+            out.push_str(": ");
+            guarded_class(&mut out, &guarded.lit, guarded.expr);
+            out.push_str(", $$css: ");
+            write_value(&compiled.css_tag, &mut out);
+            out.push_str("}, ");
+        }
+        if !compiled.conditional_props.is_empty() {
+            out.push('{');
+            for (key, parts) in &compiled.conditional_props {
+                write_key(key, &mut out);
+                out.push_str(": ");
+                if parts.is_empty() {
+                    out.push_str("\"\"");
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(" + ");
+                    }
+                    match part {
+                        ClassPart::Lit(lit) => write_js_string_literal(lit, &mut out),
+                        ClassPart::Guarded { lit, expr } => guarded_class(&mut out, lit, *expr),
+                    }
+                }
+                out.push_str(", ");
+            }
+            // parity: the conditional chunk's $$css key is an identifier upstream.
+            out.push_str("$$css: ");
+            write_value(&compiled.css_tag, &mut out);
+            out.push_str("}, ");
+        }
+    }
+
+    out.push('{');
     for (i, var) in compiled.inline_vars.iter().enumerate() {
         if i > 0 {
-            vars.push_str(", ");
+            out.push_str(", ");
         }
-        vars.push_str(&js_string_literal(&var.var_name));
-        vars.push_str(": ");
+        write_js_string_literal(&var.var_name, &mut out);
+        out.push_str(": ");
         let src = expr_text(var.expr);
         if var.unit.is_empty() {
-            vars.push_str(&format!("({src}) != null ? ({src}) : undefined"));
+            out.push('(');
+            out.push_str(src);
+            out.push_str(") != null ? (");
+            out.push_str(src);
+            out.push_str(") : undefined");
         } else {
-            vars.push_str(&format!(
-                "((val) => typeof val === \"number\" ? val + {unit} : val != null ? val : undefined)(({src}))",
-                unit = js_string_literal(&var.unit)
-            ));
+            out.push_str("((val) => typeof val === \"number\" ? val + ");
+            write_js_string_literal(&var.unit, &mut out);
+            out.push_str(" : val != null ? val : undefined)((");
+            out.push_str(src);
+            out.push_str("))");
         }
     }
-    vars.push('}');
-
-    let params = compiled.params.join(", ");
-    if !compiled.has_container() {
-        return format!("({params}) => ({vars})");
-    }
-
-    let css_tag = print_value(&compiled.css_tag);
-    let write_key = |out: &mut String, key: &str| {
-        if is_identifier_key(key) {
-            out.push_str(key);
-        } else {
-            out.push_str(&js_string_literal(key));
-        }
-    };
-    let mut items: Vec<String> = Vec::new();
-    if !compiled.static_props.is_empty() {
-        items.push(match static_ident {
-            Some(ident) => ident.to_string(),
-            None => print_static_chunk(compiled),
-        });
-    }
-    let guarded_class = |lit: &str, expr: Span| -> String {
-        let src = expr_text(expr);
-        format!("(({src}) != null ? {} : \"\")", js_string_literal(lit))
-    };
-    for guarded in &compiled.guarded_props {
-        let src = expr_text(guarded.expr);
-        let mut item = format!("({src}) !== undefined && {{");
-        write_key(&mut item, &guarded.key);
-        item.push_str(": ");
-        item.push_str(&guarded_class(&guarded.lit, guarded.expr));
-        item.push_str(&format!(", $$css: {css_tag}}}"));
-        items.push(item);
-    }
-    if !compiled.conditional_props.is_empty() {
-        let mut obj = String::from("{");
-        for (key, parts) in &compiled.conditional_props {
-            write_key(&mut obj, key);
-            obj.push_str(": ");
-            let rendered: Vec<String> = parts
-                .iter()
-                .map(|part| match part {
-                    ClassPart::Lit(lit) => js_string_literal(lit),
-                    ClassPart::Guarded { lit, expr } => guarded_class(lit, *expr),
-                })
-                .collect();
-            if rendered.is_empty() {
-                obj.push_str("\"\"");
-            } else {
-                obj.push_str(&rendered.join(" + "));
-            }
-            obj.push_str(", ");
-        }
-        // parity: the conditional chunk's $$css key is an identifier upstream.
-        obj.push_str(&format!("$$css: {css_tag}}}"));
-        items.push(obj);
-    }
-    items.push(vars);
-    format!("({params}) => [{}]", items.join(", "))
+    out.push('}');
+    out.push(if container { ']' } else { ')' });
+    out
 }
 
 /// Canonical JSON (keys in JS ownKeys order) for the extract-objects surface.
