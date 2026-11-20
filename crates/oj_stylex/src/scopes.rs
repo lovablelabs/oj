@@ -52,6 +52,10 @@ const PENDING: Idx = u32::MAX;
 /// [`Reference::symbol`] once a lookup found no binding.
 const UNRESOLVED: Idx = u32::MAX - 1;
 
+const CONSTNESS_KNOWN: u8 = 1;
+const VIOLATED: u8 = 2;
+const MUTATED: u8 = 4;
+
 enum DeclSite<'a> {
     Declarator(&'a VariableDeclarator<'a>),
     NamedImport,
@@ -73,6 +77,8 @@ struct Symbol<'a> {
     decl: DeclSite<'a>,
     redeclared: bool,
     var_for_head: bool,
+    /// [`CONSTNESS_KNOWN`] once computed, with [`VIOLATED`] and [`MUTATED`].
+    constness: Cell<u8>,
 }
 
 struct Reference<'a> {
@@ -288,6 +294,10 @@ impl<'a> ScopeModel<'a> {
     // parity: state.rs non_constant_flags.
     pub fn constness(&self, symbol: SymbolId) -> (bool, bool) {
         let s = &self.symbols[symbol.index()];
+        let known = s.constness.get();
+        if known != 0 {
+            return (known & VIOLATED != 0, known & MUTATED != 0);
+        }
         let target = symbol.index() as Idx;
         let mut violated = s.redeclared || s.var_for_head;
         let mut mutated = false;
@@ -305,6 +315,11 @@ impl<'a> ScopeModel<'a> {
                 break;
             }
         }
+        s.constness.set(
+            CONSTNESS_KNOWN
+                | if violated { VIOLATED } else { 0 }
+                | if mutated { MUTATED } else { 0 },
+        );
         (violated, mutated)
     }
 
@@ -350,11 +365,12 @@ impl<'a> ScopeModel<'a> {
         names: &[&str],
         keep: impl Fn(&str, RefSite<'_, 'a>) -> bool,
     ) -> Vec<u32> {
-        let names: Vec<Ident<'_>> = names.iter().map(|name| Ident::from(*name)).collect();
         let mut starts: Vec<u32> = self
             .refs
             .iter()
-            .filter(|r| names.contains(&r.name) && keep(r.name.as_str(), RefSite::native(r.parent)))
+            .filter(|r| {
+                names.contains(&r.name.as_str()) && keep(r.name.as_str(), RefSite::native(r.parent))
+            })
             .map(|r| r.start)
             .collect();
         starts.sort_unstable();
@@ -615,6 +631,7 @@ impl<'a> Builder<'a> {
             decl,
             redeclared: false,
             var_for_head,
+            constness: Cell::new(0),
         });
         self.add_binding(scope, name, symbol);
         symbol

@@ -275,13 +275,14 @@ impl<'a> CompileState<'a> {
     }
 
     fn constness(&self, symbol: SymbolId) -> (bool, bool) {
+        let semantic = match &self.scoping {
+            Scoping::Oxc(semantic) => semantic,
+            Scoping::Native(model) => return model.constness(symbol),
+        };
         if let Some(&flags) = self.constness.borrow().get(&symbol) {
             return flags;
         }
-        let flags = match &self.scoping {
-            Scoping::Oxc(semantic) => non_constant_flags(semantic, symbol),
-            Scoping::Native(model) => model.constness(symbol),
-        };
+        let flags = non_constant_flags(semantic, symbol);
         self.constness.borrow_mut().insert(symbol, flags);
         flags
     }
