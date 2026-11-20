@@ -174,7 +174,32 @@ impl Server {
 
     /// `oj dev <root> [args]` with extra environment variables.
     pub fn oj_dev_with_args(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Server {
-        let mut server = Server::spawn(
+        let mut server = Server::spawn_oj_dev(root, args, env);
+        server.wait_listening(Instant::now() + WAIT);
+        server
+    }
+
+    /// [`Server::oj_dev_with`], running `on` as soon as the output shows
+    /// `line`, before the server listens: a step that has to land mid-boot.
+    pub fn oj_dev_at(root: &Path, env: &[(&str, &str)], line: &str, on: impl FnOnce()) -> Server {
+        let mut server = Server::spawn_oj_dev(root, &[], env);
+        let deadline = Instant::now() + WAIT;
+        while !server.output().contains(line) {
+            server.assert_alive("oj dev", deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            listening_port(&server.output()).is_none(),
+            "the server listened before {line:?}\n{}",
+            server.output()
+        );
+        on();
+        server.wait_listening(deadline);
+        server
+    }
+
+    fn spawn_oj_dev(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Server {
+        Server::spawn(
             Command::new(env!("CARGO_BIN_EXE_oj"))
                 .arg("dev")
                 .arg(root)
@@ -182,16 +207,18 @@ impl Server {
                 .args(args)
                 .envs(env.iter().copied())
                 .current_dir(root),
-        );
-        let deadline = Instant::now() + WAIT;
-        server.port = loop {
-            if let Some(port) = listening_port(&server.output()) {
+        )
+    }
+
+    /// Waits for the port `oj dev` reports it listens on.
+    fn wait_listening(&mut self, deadline: Instant) {
+        self.port = loop {
+            if let Some(port) = listening_port(&self.output()) {
                 break port;
             }
-            server.assert_alive("oj dev", deadline);
+            self.assert_alive("oj dev", deadline);
             std::thread::sleep(Duration::from_millis(50));
         };
-        server
     }
 
     /// `oj dev [args]` started in `cwd`, on the port it reports: for a root

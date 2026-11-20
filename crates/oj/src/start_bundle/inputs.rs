@@ -21,11 +21,20 @@ use rolldown_plugin::{HookLoadArgs, HookLoadReturn, Plugin, SharedLoadPluginCont
 /// A file's size and modification time.
 type Stat = (u64, SystemTime);
 
-/// By module id, its file and the stat taken ahead of the read.
-pub(crate) type Notes = HashMap<String, (PathBuf, Stat)>;
+/// A file as it was loaded: its stat, the digest of its bytes when one was
+/// taken, and whether the stat vouches for them (not within the freshness
+/// slack). A loaded file is hashed only inside the slack; a restored one
+/// comes with the digest its restore verified.
+type Note = (PathBuf, Stat, Option<[u8; 32]>, bool);
+
+/// By module id, its file as noted ahead of the read.
+pub(crate) type Notes = HashMap<String, Note>;
 
 /// The files one written bundle holds, each as it was when loaded.
-pub(crate) type BuiltInputs = Vec<(PathBuf, Stat)>;
+pub(crate) type BuiltInputs = Vec<Note>;
+
+/// The stat of no file: a file noted under it always counts as moved.
+const UNVOUCHED: Stat = (u64::MAX, SystemTime::UNIX_EPOCH);
 
 /// The notes of a running bundler. A hot engine keeps loading after an
 /// output (it reloads a saved module for the next patch, through the same
@@ -53,10 +62,7 @@ impl LoadedInputs {
     /// Notes the file of `id` as it is now, before the bundler reads it. An
     /// id that names no file (a virtual module) is not noted.
     pub(crate) fn record(&self, id: &str) {
-        let noted = super::dev::module_file(&self.root, id).and_then(|file| {
-            let stat = stat(&file)?;
-            Some((file, stat))
-        });
+        let noted = super::dev::module_file(&self.root, id).and_then(note);
         match noted {
             Some(noted) => self.lock().insert(id.to_string(), noted),
             None => self.lock().remove(id),
@@ -88,7 +94,7 @@ pub(crate) fn built_inputs<'a>(
 ) -> BuiltInputs {
     let mut built: BuiltInputs = modules
         .filter_map(|id| notes.get(id))
-        .filter(|(file, _)| !left_out(file))
+        .filter(|(file, ..)| !left_out(file))
         .cloned()
         .collect();
     built.sort();
@@ -96,11 +102,75 @@ pub(crate) fn built_inputs<'a>(
     built
 }
 
-/// Whether every file is still as it was when the bundler loaded it.
-pub(crate) fn unchanged(built: &[(PathBuf, Stat)]) -> bool {
+/// Whether every file still has the stat it had when the bundler loaded it.
+pub(crate) fn unchanged(built: &[Note]) -> bool {
     built
         .iter()
-        .all(|(file, loaded)| stat(file).as_ref() == Some(loaded))
+        .all(|(file, loaded, ..)| stat(file).as_ref() == Some(loaded))
+}
+
+/// The files that are no longer as they were when the bundler loaded them.
+/// A stat that vouches for the contents and has not moved settles it without
+/// a read; otherwise the contents decide, where their digest is known: a
+/// file written again with the same bytes (a generator that rewrites its
+/// output on every start) has not moved.
+pub(crate) fn moved(built: &[Note]) -> Vec<PathBuf> {
+    built
+        .iter()
+        .filter(|(file, loaded, digest, settled)| {
+            let Some(now) = stat(file) else {
+                return true;
+            };
+            if *settled && now == *loaded {
+                return false;
+            }
+            digest.is_none_or(|d| digest_of(file) != Some(d))
+        })
+        .map(|(file, ..)| file.clone())
+        .collect()
+}
+
+/// A restored bundle's files as its restore verified them.
+pub(crate) fn restored_inputs(inputs: &[oj_cache::start_bundle::RestoredInput]) -> BuiltInputs {
+    let mut built: BuiltInputs = inputs
+        .iter()
+        .map(|input| {
+            let stat = input.stat.map_or(UNVOUCHED, |(size, mtime_ns)| {
+                (
+                    size,
+                    SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(mtime_ns),
+                )
+            });
+            (input.file.clone(), stat, Some(input.digest), input.settled)
+        })
+        .collect();
+    built.sort();
+    built.dedup();
+    built
+}
+
+/// `file` as it is now: one modified within the freshness slack with its
+/// digest, or unvouched when it cannot be read.
+fn note(file: PathBuf) -> Option<Note> {
+    let stat = stat(&file)?;
+    let slack = std::time::Duration::from_nanos(oj_cache::start_bundle::MEMO_FRESHNESS_SLACK_NS);
+    let settled = stat
+        .1
+        .checked_add(slack)
+        .is_some_and(|t| t <= SystemTime::now());
+    if settled {
+        return Some((file, stat, None, true));
+    }
+    Some(match digest_of(&file) {
+        Some(digest) => (file, stat, Some(digest), false),
+        None => (file, UNVOUCHED, None, false),
+    })
+}
+
+fn digest_of(file: &Path) -> Option<[u8; 32]> {
+    std::fs::read(file)
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
 }
 
 fn stat(file: &Path) -> Option<Stat> {
@@ -182,6 +252,161 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// `file` as a restore that verified it now would report it.
+    fn verified(file: &Path, settled: bool) -> oj_cache::start_bundle::RestoredInput {
+        let meta = std::fs::metadata(file).unwrap();
+        let ns = meta
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        oj_cache::start_bundle::RestoredInput {
+            file: file.to_path_buf(),
+            stat: Some((meta.len(), u64::try_from(ns).unwrap())),
+            digest: *blake3::hash(&std::fs::read(file).unwrap()).as_bytes(),
+            settled,
+        }
+    }
+
+    // A restored file saved or deleted later is moved; one inside the slack
+    // is judged by the restore's digest.
+    #[test]
+    fn a_file_saved_or_deleted_after_the_restore_is_moved() {
+        let root = dir("restored");
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| root.join(format!("src/{n}.ts")));
+        for file in [&a, &b, &c, &d] {
+            std::fs::write(file, "export const x = 1;\n").unwrap();
+        }
+        let built = restored_inputs(&[
+            verified(&a, true),
+            verified(&b, true),
+            verified(&c, true),
+            verified(&d, false),
+        ]);
+        assert!(moved(&built).is_empty(), "nothing saved yet: {built:?}");
+
+        std::fs::write(&b, "export const x = 'saved after the restore';\n").unwrap();
+        std::fs::remove_file(&c).unwrap();
+        let mtime = std::fs::metadata(&d).unwrap().modified().unwrap();
+        std::fs::write(&d, "export const x = 2;\n").unwrap();
+        set_mtime(&d, mtime);
+        assert_eq!(moved(&built), vec![b.clone(), c.clone(), d.clone()]);
+        assert!(!unchanged(&built));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // A restored file written again with the bytes the restore verified (a
+    // generator that rewrites its output on every start) has not moved,
+    // whatever its new mtime; nor has one the restore had no stat for.
+    #[test]
+    fn a_restored_file_rewritten_with_the_same_bytes_is_not_moved() {
+        let root = dir("rewritten");
+        let [a, b, c] = ["a", "b", "c"].map(|n| root.join(format!("src/{n}.ts")));
+        for file in [&a, &b, &c] {
+            std::fs::write(file, "export const x = 1;\n").unwrap();
+            set_mtime(
+                file,
+                SystemTime::now() - std::time::Duration::from_secs(3600),
+            );
+        }
+        let unstatted = oj_cache::start_bundle::RestoredInput {
+            stat: None,
+            settled: false,
+            ..verified(&c, true)
+        };
+        let built = restored_inputs(&[verified(&a, true), verified(&b, true), unstatted]);
+
+        std::fs::write(&a, "export const x = 1;\n").unwrap();
+        assert!(
+            moved(&built).is_empty(),
+            "a.ts was rewritten with the same bytes, c.ts has no stat: {built:?}"
+        );
+
+        std::fs::write(&b, "export const x = 2;\n").unwrap();
+        std::fs::write(&c, "export const x = 3;\n").unwrap();
+        assert_eq!(moved(&built), vec![b.clone(), c.clone()]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // A same-size save in the load's mtime tick is caught by the digest.
+    #[test]
+    fn a_same_size_save_within_the_mtime_tick_of_the_load_is_moved() {
+        let root = dir("tick");
+        let a = root.join("src/a.ts");
+        let b = root.join("src/b.ts");
+        std::fs::write(&a, "export const a = 1;\n").unwrap();
+        std::fs::write(&b, "export const b = 1;\n").unwrap();
+        for file in [&a, &b] {
+            set_mtime(file, soon());
+        }
+        let ids = [
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        ];
+        let loaded = LoadedInputs::new(&root);
+        for id in &ids {
+            loaded.record(id);
+        }
+        let built = built_inputs(
+            &loaded.snapshot(),
+            ids.iter().map(String::as_str),
+            nothing_left_out,
+        );
+        assert!(moved(&built).is_empty(), "nothing saved yet: {built:?}");
+
+        let mtime = std::fs::metadata(&b).unwrap().modified().unwrap();
+        std::fs::write(&b, "export const b = 2;\n").unwrap();
+        set_mtime(&b, mtime);
+        assert_eq!(moved(&built), vec![b.clone()]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // A stylesheet or asset noted inside the slack and left alone is not moved.
+    #[test]
+    fn a_stylesheet_or_asset_noted_inside_the_slack_and_left_alone_is_not_moved() {
+        let root = dir("assets");
+        let css = root.join("src/app.css");
+        let png = root.join("src/logo.png");
+        std::fs::write(&css, "a { color: red }\n").unwrap();
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0xff, 0x00]).unwrap();
+        for file in [&css, &png] {
+            set_mtime(file, soon());
+        }
+        let ids = [
+            css.to_string_lossy().into_owned(),
+            format!("{}?url", png.display()),
+            format!("{}?inline", png.display()),
+        ];
+        let loaded = LoadedInputs::new(&root);
+        for id in &ids {
+            loaded.record(id);
+        }
+        let built = built_inputs(
+            &loaded.snapshot(),
+            ids.iter().map(String::as_str),
+            nothing_left_out,
+        );
+        assert_eq!(built.len(), 2, "{built:?}");
+        assert!(moved(&built).is_empty(), "nothing saved: {built:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An mtime inside the freshness slack however long the machine takes
+    /// between a test's writes and its notes: a minute from now.
+    fn soon() -> SystemTime {
+        SystemTime::now() + std::time::Duration::from_secs(60)
+    }
+
+    fn set_mtime(file: &Path, mtime: SystemTime) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(mtime))
+            .unwrap();
+    }
+
     // A hot engine loads a saved module again right after it produced an
     // output, for the next patch. The output is judged by the notes taken
     // with it: by the table as it is afterwards, the save would compare
@@ -259,7 +484,7 @@ mod tests {
         let left_out = crate::start_bundle::dev::left_out_of_closure(&cache);
         let built = built_inputs(&notes, ids.into_iter(), &left_out);
         assert_eq!(
-            built.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            built.iter().map(|(f, ..)| f.clone()).collect::<Vec<_>>(),
             vec![root.join("src/a.ts")]
         );
 

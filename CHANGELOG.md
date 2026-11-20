@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a source file saved, or a file created under one of the client bundle's `import.meta.glob`s, while the dev server starts on a client bundle restored from the cache reaches the client, from the first page on. Such a save could land after the restore had checked the bundle against the sources and before the server watched them, and the pages then ran the restored bundle while the server rendered the saved file (a hydration mismatch, the old component on the client) until the next edit or restart. The first page now waits for the rebuild of such a save. Vite caches no transformed app module across starts, only optimized deps keyed by `getDepHash` (optimizer/index.ts), and reads sources at request time (`loadAndTransform`, transformRequest.ts), so a restart always serves the sources as they are on the first request. Details: a file of the bundle written again with the same bytes during the start (a plugin that regenerates a source on every start) is not rebuilt for, where every restored start rebuilt in full while the first page waited; a save made after the watcher started and before the server compared the bundle with the disk is rebuilt once, not a second time for its watcher event (which reloaded the first page); and under the editor's HMR gate a save made while the server starts is held for no flush, where it stayed held until the gate's cap with no flush to come.
+
 ## [0.4.18] - 2026-11-20
 
 ### Fixed

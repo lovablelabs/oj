@@ -992,6 +992,22 @@ impl HmrGateHandle {
         gate.hold(&self.state, paths, &Default::default(), true)
     }
 
+    /// Every write made up to now is covered, as a flush covers the writes
+    /// made before it: what the gate holds is let go, with nothing sent (the
+    /// caller takes those writes up itself), and a watcher's later report of
+    /// such a write is not held.
+    pub fn cover_writes_so_far(&self) {
+        let Some(gate) = &self.state.hmr_gate else {
+            return;
+        };
+        let mut inner = gate.inner.lock().unwrap();
+        inner.last_flush = Some(std::time::SystemTime::now());
+        gate.held_reload
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        inner.pending.clear();
+        inner.born.clear();
+    }
+
     /// Whether the gate still holds anything: changes awaiting a flush, or an
     /// armed page reload. The Start rebuild reads this when it finishes — the
     /// hold itself was taken at the watcher event, so an editor flush that

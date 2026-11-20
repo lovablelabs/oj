@@ -273,6 +273,26 @@ impl DevBundler {
         super::inputs::unchanged(&built)
     }
 
+    /// The files of the bundle being served that were saved since it read
+    /// them, or since its restore verified them.
+    pub(crate) fn moved_inputs(&self) -> Vec<PathBuf> {
+        let built = self.built.lock().unwrap().clone();
+        super::inputs::moved(&built)
+    }
+
+    /// The files of the bundle being served, as its build or restore noted
+    /// them.
+    pub(crate) fn input_files(&self) -> std::collections::HashSet<PathBuf> {
+        let built = self.built.lock().unwrap();
+        built.iter().map(|(file, ..)| file.clone()).collect()
+    }
+
+    /// Takes a bundle restored from the store as the one being served, its
+    /// files as the restore verified them (see `RestoreStats::inputs`).
+    pub(crate) fn note_restored(&self, inputs: &[oj_cache::start_bundle::RestoredInput]) {
+        *self.built.lock().unwrap() = super::inputs::restored_inputs(inputs);
+    }
+
     /// Takes `notes`, the load notes as they were when `outputs` was
     /// produced, as what the bundle about to be written was built from: the
     /// modules of its chunks, which the bundle cache keys it by.
