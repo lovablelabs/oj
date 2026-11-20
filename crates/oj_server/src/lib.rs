@@ -89,7 +89,7 @@ const DEV_SERVER_AT_PREFIXES: &[&str] = &[
     "/@virtual/",
 ];
 /// oj's own single-path `/@` urls, and Vite's `/@vite/client`, which oj
-/// does not serve.
+/// answers with its own client.
 const DEV_SERVER_AT_PATHS: &[&str] = &[
     "/@vite/client",
     "/@vite/env",
@@ -1767,6 +1767,16 @@ fn build_router(
                 }),
             )
             .route(
+                "/@vite/client",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    // Vite's `send` answers its client `no-cache`.
+                    (
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        js(state.oj_paths.vite_client_js.clone()),
+                    )
+                }),
+            )
+            .route(
                 "/@oj/refresh-preamble.js",
                 get(|State(state): State<Arc<ServerState>>| async move {
                     js(state.oj_paths.refresh_preamble_js.clone())
@@ -2391,7 +2401,14 @@ impl DevServer {
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
-            vite_env_js: assets_serve::vite_env_module(&config),
+            vite_env_js: assets_serve::vite_env_module(
+                &config,
+                &import_meta_env
+                    .client_defines()
+                    .into_iter()
+                    .find_map(|(k, v)| (k == "import.meta.env").then_some(v))
+                    .unwrap_or_else(|| "{}".to_string()),
+            ),
             ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()

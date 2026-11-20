@@ -70,7 +70,7 @@ try {
     });
     assert.equal(await home.evaluate(() => window.__MARK), 1, "prune did not reload the page");
     assert.equal(
-      await home.evaluate(() => document.querySelectorAll("style[data-oj-id]").length),
+      await home.evaluate(() => document.querySelectorAll("style[data-vite-dev-id]").length),
       0,
       "style tag removed",
     );
