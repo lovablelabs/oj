@@ -1340,7 +1340,8 @@ impl CompileJob {
         })
     }
 
-    fn compile_script(self) -> Result<CachedModule, String> {
+    fn compile_script(mut self) -> Result<CachedModule, String> {
+        let stylex_map = self.stylex_map.take();
         let rw = ImportRewrite {
             job: &self,
             unresolved: RefCell::new(None),
@@ -1351,7 +1352,7 @@ impl CompileJob {
         let output = if self.is_dep {
             self.compile_dep(&rw).map_err(compile_error)
         } else {
-            self.compile_app(&rw).map_err(|err| match err {
+            self.compile_app(&rw, stylex_map).map_err(|err| match err {
                 oj_compiler::StylexModuleError::Stylex(message) => message,
                 oj_compiler::StylexModuleError::Compile(err) => compile_error(err),
             })
@@ -1474,10 +1475,17 @@ impl CompileJob {
     fn compile_app(
         &self,
         rw: &ImportRewrite<'_>,
+        stylex_map: Option<StylexMap>,
     ) -> Result<oj_compiler::CompileOutput, oj_compiler::StylexModuleError> {
         let later = self.later_transforms();
         let may_need_interop = |spec: &str| rw.may_need_interop(spec);
-        let interop = |spec: &str| rw.cjs_interop_url(spec);
+        let interop = |spec: &str| {
+            let target = rw.cjs_interop_url(spec);
+            // What lets a module none of whose imports may need interop skip
+            // the rewrite (`compile_stylex_module`): one that needs it may.
+            debug_assert!(target.is_none() || rw.may_need_interop(spec));
+            target
+        };
         let mut rewrite = |spec: &str| rw.rewrite(spec, &self.state.resolver);
         let mut opts = dev_compile_opts(&self.state);
         if self.is_svelte {
@@ -1515,8 +1523,9 @@ impl CompileJob {
             &interop,
             &mut warn_interop_once,
         );
-        let stylex_map = self.stylex_map.as_ref().map(|map| {
-            oj_compiler::InputMap::Parsed(map.mappings.to_sourcemap(Some(&map.original)))
+        let (mappings, original) = stylex_map.map(|map| (map.mappings, map.original)).unzip();
+        let stylex_map = mappings.map(|mappings: oj_stylex::api::SourceMappings| {
+            oj_compiler::InputMap::Parsed(mappings.into_sourcemap(original.as_deref()))
         });
         let plugin_maps = self
             .plugin_maps

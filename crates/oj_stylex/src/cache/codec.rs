@@ -65,6 +65,18 @@ const JSON_OBJECT: u8 = 9;
 // so anything past this is a damaged file rather than a stack to overflow.
 const MAX_DEPTH: u32 = 128;
 
+// The most elements a count reserves room for ahead of reading them. A count
+// is checked against the bytes left alone, and an element in memory is many
+// times its fewest bytes on disk: a damaged count, at any depth of a tree,
+// reserves no more than this, and a longer run grows as it is read.
+const MAX_RESERVED: usize = 1024;
+
+// The fewest bytes an element of each counted run takes.
+const MIN_RULE_BYTES: usize = 11; // flags, two string lengths, the priority
+const MIN_VALUE_BYTES: usize = 1; // a tag
+const MIN_ENTRY_BYTES: usize = 2; // a key's length, its value's tag
+const MIN_OBJECT_BYTES: usize = 3; // the name's flag, an entry count, the syntax's flag
+
 /// The entry does not decode: truncated, damaged, or another format.
 #[derive(Debug)]
 pub(super) struct Corrupt;
@@ -427,13 +439,22 @@ impl<'a> Reader<'a> {
     }
 
     /// An element count: every element takes at least a byte, so a count past
-    /// the remaining bytes is damage, and never sizes an allocation.
+    /// the remaining bytes is damage.
     fn count(&mut self) -> Decoded<usize> {
         let count = usize::try_from(self.varint()?).map_err(|_| Corrupt)?;
         if count > self.bytes.len() - self.at {
             return Err(Corrupt);
         }
         Ok(count)
+    }
+
+    /// [`Self::count`] with the capacity to reserve for the elements: no
+    /// more than the remaining bytes hold at `min_bytes` each, nor than
+    /// [`MAX_RESERVED`], whatever the count says.
+    fn counted(&mut self, min_bytes: usize) -> Decoded<(usize, usize)> {
+        let count = self.count()?;
+        let fit = (self.bytes.len() - self.at) / min_bytes;
+        Ok((count, count.min(fit).min(MAX_RESERVED)))
     }
 
     fn blob(&mut self) -> Decoded<&'a [u8]> {
@@ -524,8 +545,8 @@ impl<'a> Reader<'a> {
     }
 
     pub fn rules(&mut self) -> Decoded<Vec<StylexRule>> {
-        let count = self.count()?;
-        let mut rules = Vec::with_capacity(count);
+        let (count, reserved) = self.counted(MIN_RULE_BYTES)?;
+        let mut rules = Vec::with_capacity(reserved);
         for _ in 0..count {
             let flags = self.byte()?;
             if flags & !(RULE_RTL | RULE_CONST_KEY | RULE_CONST_VAL) != 0 {
@@ -579,8 +600,8 @@ impl<'a> Reader<'a> {
             }
             JSON_STRING => Value::String(self.str()?.to_string()),
             JSON_ARRAY => {
-                let count = self.count()?;
-                let mut items = Vec::with_capacity(count);
+                let (count, reserved) = self.counted(MIN_VALUE_BYTES)?;
+                let mut items = Vec::with_capacity(reserved);
                 for _ in 0..count {
                     items.push(self.json(depth + 1)?);
                 }
@@ -604,8 +625,8 @@ impl<'a> Reader<'a> {
     }
 
     pub fn objects(&mut self) -> Decoded<Vec<(Option<String>, Arc<JsObjectMap>)>> {
-        let count = self.count()?;
-        let mut objects = Vec::with_capacity(count);
+        let (count, reserved) = self.counted(MIN_OBJECT_BYTES)?;
+        let mut objects = Vec::with_capacity(reserved);
         for _ in 0..count {
             let name = self.opt_str()?.map(str::to_string);
             objects.push((name, Arc::new(self.object(0)?)));
@@ -614,8 +635,8 @@ impl<'a> Reader<'a> {
     }
 
     fn object(&mut self, depth: u32) -> Decoded<JsObjectMap> {
-        let count = self.count()?;
-        let mut object = JsObjectMap::with_capacity(count);
+        let (count, reserved) = self.counted(MIN_ENTRY_BYTES)?;
+        let mut object = JsObjectMap::with_capacity(reserved);
         for _ in 0..count {
             let key = self.str()?;
             object.insert(key, self.value(depth + 1)?);
@@ -638,8 +659,8 @@ impl<'a> Reader<'a> {
             VALUE_NUM => EvalValue::Num(self.f64()?),
             VALUE_STR => EvalValue::Str(self.str()?.to_string()),
             VALUE_ARR => {
-                let count = self.count()?;
-                let mut items = Vec::with_capacity(count);
+                let (count, reserved) = self.counted(MIN_VALUE_BYTES)?;
+                let mut items = Vec::with_capacity(reserved);
                 for _ in 0..count {
                     items.push(self.value(depth + 1)?);
                 }
@@ -648,5 +669,59 @@ impl<'a> Reader<'a> {
             VALUE_OBJ => EvalValue::Obj(Arc::new(self.object(depth)?)),
             _ => return Err(Corrupt),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_count_reserves_no_more_than_the_bytes_left_could_hold() {
+        let counted = |count: u64, left: usize, min_bytes: usize| {
+            let mut bytes = Vec::new();
+            put_varint(&mut bytes, count);
+            bytes.resize(bytes.len() + left, 0);
+            Reader::raw(&bytes).counted(min_bytes).ok()
+        };
+        assert_eq!(counted(40, 40, MIN_VALUE_BYTES), Some((40, 40)));
+        assert_eq!(counted(40, 40, MIN_RULE_BYTES), Some((40, 3)));
+        assert_eq!(counted(40, 40, MIN_OBJECT_BYTES), Some((40, 13)));
+        assert_eq!(counted(41, 40, MIN_VALUE_BYTES), None);
+        assert_eq!(
+            counted(1 << 20, 1 << 20, MIN_VALUE_BYTES),
+            Some((1 << 20, MAX_RESERVED))
+        );
+    }
+
+    #[test]
+    fn a_run_longer_than_its_reserve_decodes_whole() {
+        let count = MAX_RESERVED * 3 + 1;
+        let items = EvalValue::Arr((0..count).map(|i| EvalValue::Num(i as f64)).collect());
+        let mut bytes = Vec::new();
+        put_value(&mut bytes, &items);
+        let mut reader = Reader::raw(&bytes);
+        let decoded = reader.value(0).expect("decodes");
+        assert!(reader.is_empty());
+        assert!(matches!(&decoded, EvalValue::Arr(items) if items.len() == count));
+        let mut again = Vec::new();
+        put_value(&mut again, &decoded);
+        assert!(bytes == again, "round-trip drifted");
+
+        let rules: Vec<StylexRule> = (0..count)
+            .map(|i| StylexRule {
+                class_name: format!("x{i}").into(),
+                ltr: format!(".x{i}{{order:{i}}}").into(),
+                rtl: None,
+                const_key: None,
+                const_val: None,
+                priority: 3000.0,
+            })
+            .collect();
+        let mut bytes = Vec::new();
+        put_rules(&mut bytes, &rules);
+        let mut reader = Reader::raw(&bytes);
+        assert_eq!(reader.rules().expect("decodes"), rules);
+        assert!(reader.is_empty());
     }
 }

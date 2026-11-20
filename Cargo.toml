@@ -175,9 +175,11 @@ oj_env = { opt-level = 3 }
 oj_config = { opt-level = 3 }
 oj_stylex = { opt-level = 3 }
 fru = { opt-level = 3 }
-# fru's allocator (nothing else links it): at "z" its malloc and free fast
-# paths are chains of out-of-line calls, about 15% of a batch compile.
+# fru's allocator (nothing else links it), the library and its Rust shim: at
+# "z" its malloc and free fast paths are chains of out-of-line calls, about
+# 15% of a batch compile.
 libmimalloc-sys = { opt-level = 3 }
+mimalloc = { opt-level = 3 }
 oj_js = { opt-level = 3 }
 oxc = { opt-level = 3 }
 oxc_allocator = { opt-level = 3 }

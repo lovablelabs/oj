@@ -288,8 +288,8 @@ fn dev_compile_in_steps(plugin: &StylexPlugin, file: &Path, source: &str) -> Com
         &mut |_| {},
     );
     let input_maps: Vec<InputMap> = mappings
-        .iter()
-        .map(|mappings| InputMap::Parsed(mappings.to_sourcemap(Some(source))))
+        .into_iter()
+        .map(|mappings| InputMap::Parsed(mappings.into_sourcemap(Some(source))))
         .collect();
     compile_module_with_input_maps(
         file,

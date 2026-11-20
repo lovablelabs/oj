@@ -469,7 +469,7 @@ struct ServerState {
     /// The config's `@stylexjs/unplugin`, run natively (see [`stylex`]).
     stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
     /// The processed dev stylesheet (see [`stylex::DevSheet`]).
-    stylex_css: stylex::DevSheet,
+    stylex_css: Arc<stylex::DevSheet>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     /// The keys `import_meta_env` redirects to `/@oj/env.js`, with their
@@ -2530,7 +2530,7 @@ impl DevServer {
             jsx_overrides,
             jsx,
             stylex,
-            stylex_css: stylex::DevSheet::default(),
+            stylex_css: Arc::default(),
             import_meta_env,
             runtime_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),

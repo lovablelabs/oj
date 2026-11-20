@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{LazyLock, OnceLock, RwLock, Weak};
+use std::sync::{LazyLock, OnceLock, PoisonError, RwLock, Weak};
 
 use oj_stylex::plugin::{
     DevMode, StylexPlugin, CSS_UPDATE_EVENT, DEV_CSS_PATH, DEV_RUNTIME_JS, DEV_RUNTIME_PATH,
@@ -272,10 +272,10 @@ fn module_id(root: &Path, url: &str) -> String {
 
 /// The plugin's dev routes: the stylesheet and, in `full` mode, the plain
 /// runtime script. `None` for any other path.
-pub(crate) fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
+pub(crate) async fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
     let plugin = state.stylex.as_ref()?;
     if path == DEV_CSS_PATH {
-        let css = match state.stylex_css.css(&state.root, plugin) {
+        let css = match state.stylex_css.fetch(&state.root, plugin).await {
             Ok(css) => css,
             Err(e) => {
                 return Some(
@@ -317,6 +317,9 @@ const TARGETS_RECHECK: Duration = UPDATE_COALESCE;
 /// for the app's browserslist and `lightningcssOptions`), rebuilt only when
 /// the rule store or the browserslist files moved: every update event makes
 /// each open tab refetch it.
+///
+/// A request reads it through [`DevSheet::fetch`]: a rebuild blocks, on the
+/// sheet's assembly, on lightningcss and on a rebuild another request began.
 #[derive(Default)]
 pub(crate) struct DevSheet {
     /// Whether `lightningcssOptions` names the targets, which then never
@@ -339,12 +342,38 @@ struct Built {
 }
 
 impl DevSheet {
+    /// The sheet for a request. A poll that finds nothing new is answered
+    /// where it stands; a rebuild runs on the blocking pool, so the tabs
+    /// that refetch at once park none of the runtime's workers on it.
+    pub(crate) async fn fetch(
+        self: &Arc<Self>,
+        root: &Path,
+        plugin: &Arc<StylexPlugin>,
+    ) -> Result<Bytes, String> {
+        if let Some(css) = self.current(root, plugin) {
+            return Ok(css);
+        }
+        let (sheet, root, plugin) = (Arc::clone(self), root.to_path_buf(), Arc::clone(plugin));
+        tokio::task::spawn_blocking(move || sheet.css(&root, &plugin))
+            .await
+            .unwrap_or_else(|err| Err(format!("the StyleX stylesheet was not built: {err}")))
+    }
+
+    /// The sheet, when the one last built still stands. Waits on no rebuild.
+    fn current(&self, root: &Path, plugin: &StylexPlugin) -> Option<Bytes> {
+        self.served(plugin.generation(), &self.targets(root, plugin))
+    }
+
+    /// The sheet, rebuilt on this thread when it moved.
     pub(crate) fn css(&self, root: &Path, plugin: &StylexPlugin) -> Result<Bytes, String> {
         let targets = self.targets(root, plugin);
         if let Some(css) = self.served(plugin.generation(), &targets) {
             return Ok(css);
         }
-        let mut built = self.built.lock().unwrap();
+        // A rebuild that panicked wrote nothing here (the last pass is
+        // replaced whole, once the next is done), so what it left is still
+        // the last pass: the next request builds on it.
+        let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
         // The generation the assembled sheet is at least as new as.
         let generation = plugin.generation();
         if let Some(css) = self.served(generation, &targets) {
@@ -564,6 +593,68 @@ mod tests {
             tabs.into_iter().map(|tab| tab.join().unwrap()).collect()
         });
         assert!(fetched.iter().all(|css| *css == fetched[0]), "{fetched:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sheet_being_built_parks_no_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        // Another request's rebuild holds the sheet until told, or for long
+        // enough that a fetch waiting on this test's one worker shows.
+        let (held, holds) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let building = std::thread::spawn({
+            let sheet = Arc::clone(&sheet);
+            move || {
+                let _built = sheet.built.lock().unwrap();
+                held.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(2));
+            }
+        });
+        holds.recv().unwrap();
+        let fetch = tokio::spawn({
+            let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+            async move { sheet.fetch(&root, &p).await }
+        });
+        // The worker runs on while the fetch waits for the rebuild.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!fetch.is_finished());
+        release.send(()).unwrap();
+        let css = fetch.await.unwrap().unwrap();
+        assert!(text(&css).contains("color: red"), "{}", text(&css));
+        building.join().unwrap();
+
+        // A poll that finds nothing new is answered where it stands.
+        assert_eq!(sheet.current(root, &p).unwrap().as_ptr(), css.as_ptr());
+        assert_eq!(sheet.fetch(root, &p).await.unwrap().as_ptr(), css.as_ptr());
+    }
+
+    #[test]
+    fn a_rebuild_that_panicked_leaves_the_sheet_to_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), plugin(dir.path(), json!({})));
+        let sheet = DevSheet::default();
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+        let first = sheet.css(root, &p).unwrap();
+
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xb", "color:blue")]));
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _built = sheet.built.lock().unwrap();
+                    panic!("a rebuild that panics");
+                })
+                .join()
+        });
+        assert!(panicked.is_err() && sheet.built.is_poisoned());
+
+        let next = sheet.css(root, &p).unwrap();
+        assert!(text(&next).contains("color: #00f"), "{}", text(&next));
+        assert_ne!(next, first);
+        assert_eq!(sheet.css(root, &p).unwrap().as_ptr(), next.as_ptr());
     }
 
     #[test]

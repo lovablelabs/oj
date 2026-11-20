@@ -511,6 +511,8 @@ pub enum HitParts {
     Full,
     /// `code`, `map`, `rules` and `modified`; `create_objects` stays empty.
     Output,
+    /// `code`, `rules` and `modified`: the map stays `None` too, undecoded.
+    Code,
     /// `rules` and `modified` only: `code` stays empty too.
     Rules,
 }
@@ -550,6 +552,9 @@ fn decode_hit(
         return Ok(Some(result));
     }
     result.code = reader.code()?;
+    if parts == HitParts::Code {
+        return Ok(Some(result));
+    }
     if header.has_map {
         result.map = Some(reader.code()?);
     }
@@ -1216,6 +1221,11 @@ mod tests {
         assert_eq!(rules.rules, full.rules);
         assert!(rules.modified);
         assert!(rules.code.is_empty() && rules.map.is_none() && rules.create_objects.is_empty());
+        let code = decode(&entry, HitParts::Code).unwrap().unwrap();
+        assert_eq!(code.code, full.code);
+        assert_eq!(code.rules, full.rules);
+        assert!(code.modified);
+        assert!(full.map.is_some() && code.map.is_none() && code.create_objects.is_empty());
         let output = decode(&entry, HitParts::Output).unwrap().unwrap();
         assert_eq!(output.code, full.code);
         assert_eq!(output.map, full.map);
@@ -1280,6 +1290,7 @@ mod tests {
                 );
                 // A partial read stops before the damage or reports it.
                 let _ = decode(&short, HitParts::Rules);
+                let _ = decode(&short, HitParts::Code);
                 let _ = decode(&short, HitParts::Output);
             }
         }

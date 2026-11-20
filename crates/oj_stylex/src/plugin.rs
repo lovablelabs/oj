@@ -103,6 +103,12 @@ struct RuleStore {
 /// from two atomic reads and no lock, that the store holds nothing of
 /// theirs. Ids are never taken out: a wrong "maybe" only costs the store's
 /// read lock.
+///
+/// The bits are set under the store's write lock, before the module they
+/// stand for goes in. Whatever orders a later call after that record (the
+/// lock, or the hand-off between the threads that serve the module) orders
+/// it after the bits too, and a call nothing orders after the record may as
+/// well have come before it: the bits take no ordering of their own.
 struct EverRecorded {
     bits: Box<[AtomicU64]>,
 }
@@ -130,7 +136,7 @@ impl EverRecorded {
 
     fn insert(&self, id: &str) {
         for (word, bit) in Self::slots(id) {
-            self.bits[word].fetch_or(bit, Ordering::SeqCst);
+            self.bits[word].fetch_or(bit, Ordering::Relaxed);
         }
     }
 
@@ -138,7 +144,7 @@ impl EverRecorded {
     fn may_contain(&self, id: &str) -> bool {
         Self::slots(id)
             .iter()
-            .all(|(word, bit)| self.bits[*word].load(Ordering::SeqCst) & bit != 0)
+            .all(|(word, bit)| self.bits[*word].load(Ordering::Relaxed) & bit != 0)
     }
 }
 
@@ -596,8 +602,9 @@ impl RuleStore {
     }
 }
 
-/// `a == b`, told sooner for rules that share their strings: a module
-/// recorded again from a cache hands back the rules it recorded.
+/// `a == b`, with a priority equal to itself whatever its bits, and told
+/// sooner for rules that share their strings: a module recorded again from a
+/// cache hands back the rules it recorded.
 fn same_rules(a: &[StylexRule], b: &[StylexRule]) -> bool {
     fn same(a: &Arc<str>, b: &Arc<str>) -> bool {
         Arc::ptr_eq(a, b) || a == b
@@ -620,7 +627,9 @@ fn same_rules(a: &[StylexRule], b: &[StylexRule]) -> bool {
                 const_val,
                 priority,
             } = a;
-            *priority == b.priority
+            // By its bits: a NaN is the priority that was recorded, not a
+            // change to record on every serve.
+            priority.to_bits() == b.priority.to_bits()
                 && same(class_name, &b.class_name)
                 && same(ltr, &b.ltr)
                 && same_or_none(rtl, &b.rtl)
@@ -1155,12 +1164,21 @@ mod tests {
         assert!(!p.set_module_rules("/app/src/plain.ts", Vec::new()));
         assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (1, 1));
 
+        // A priority that is not a number is still the one recorded.
+        let mut unordered = red.clone();
+        unordered[0].priority = f64::NAN;
+        assert!(p.record_module_rules("/app/src/nan.ts", &unordered));
+        assert!(!p.record_module_rules("/app/src/nan.ts", &unordered));
+        assert!(!p.set_module_rules("/app/src/nan.ts", unordered));
+        assert!(p.record_module_rules("/app/src/nan.ts", &[]));
+        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (3, 3));
+
         let blue = compile(&SRC.replace("red", "blue"));
         assert!(p.record_module_rules("/app/src/a.ts", &blue));
         assert_eq!(p.stylesheet().unwrap().unwrap(), ".xju2f9n{color:blue}");
         assert!(p.record_module_rules("/app/src/a.ts", &[]));
         assert_eq!(p.stylesheet().unwrap(), None);
-        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (3, 3));
+        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (5, 5));
     }
 
     // A served module's rules reach the store while a sheet is assembled:

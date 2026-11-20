@@ -855,9 +855,9 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
             let mut allocator = cell.borrow_mut();
             allocator.reset();
             if let Some(cache) = ctx.cache {
-                // A hit decodes only what this run writes out.
+                // A hit decodes only what this run writes out: never a map.
                 let parts = match ctx.payload {
-                    Payload::Full => HitParts::Output,
+                    Payload::Full => HitParts::Code,
                     Payload::Rules => HitParts::Rules,
                 };
                 let (result, status) = compile_through_cache_parts_in(

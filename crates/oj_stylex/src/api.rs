@@ -56,17 +56,14 @@ pub struct SourceMappings {
 impl SourceMappings {
     /// The v3 sourcemap over these positions, inlining `source_text` (the
     /// original) when given.
-    pub fn to_sourcemap<'a>(
-        &'a self,
-        source_text: Option<&'a str>,
-    ) -> oxc_sourcemap::SourceMap<'a> {
+    pub fn into_sourcemap(self, source_text: Option<&str>) -> oxc_sourcemap::SourceMap<'_> {
         oxc_sourcemap::SourceMap::new(
-            Some(self.filename.as_str().into()),
+            Some(self.filename.clone().into()),
             Vec::new(),
             None,
-            vec![self.filename.as_str().into()],
+            vec![self.filename.into()],
             vec![source_text.map(Into::into)],
-            self.tokens.clone(),
+            self.tokens,
             None,
         )
     }
@@ -130,7 +127,7 @@ pub fn transform_source_in_with_map(
     };
     result.map = mappings.map(|mappings| {
         mappings
-            .to_sourcemap((map_mode == MapMode::WithContent).then_some(ctx.source_text))
+            .into_sourcemap((map_mode == MapMode::WithContent).then_some(ctx.source_text))
             .to_json_string()
     });
     Ok(Some(result))

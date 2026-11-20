@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-use oj_stylex::plugin::StylexPlugin;
+use oj_stylex::plugin::{MappedOutput, StylexPlugin};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_parser::Parser;
@@ -58,28 +58,35 @@ pub fn compile_stylex_module(
     interop: InteropPass<'_>,
     rewriter: &mut ImportRewriter,
 ) -> Result<CompileOutput, StylexModuleError> {
-    let allocator = Allocator::default();
-    let module = Module {
-        allocator: &allocator,
-        path,
-        source_text,
-        opts,
-        stylex,
-    };
-    let mut parsed = module.parse();
-    let fused =
-        parsed.take_if(|(program, _)| !may_rewrite(program, source_text, interop.may_need_interop));
-    if let Some((program, source_type)) = fused {
-        let output = module.in_one_pass(program, source_type, interop.may_need_interop, rewriter);
-        if let Some(output) = output {
-            return Ok(output);
+    // The parse and its arena end with this block: the steps past the
+    // plugin's transform parse what it wrote into arenas of their own, and
+    // none of them is held beside this one.
+    let compiled = {
+        let allocator = Allocator::default();
+        let module = Module {
+            allocator: &allocator,
+            path,
+            source_text,
+            opts,
+            stylex,
+        };
+        match module.parse() {
+            Some((program, source_type)) if !module.may_rewrite(&program, &interop) => {
+                if let Some(output) = module.in_one_pass(program, source_type, &interop, rewriter) {
+                    return Ok(output);
+                }
+                // The plugin compiled the parse in place: the steps start
+                // over from the source.
+                None
+            }
+            Some((program, _)) => Some(module.stylex_step(&program)),
+            None => None,
         }
-    }
-    module.in_steps(
-        parsed.as_ref().map(|(program, _)| program),
-        interop,
-        rewriter,
-    )
+    };
+    let compiled = compiled
+        .unwrap_or_else(|| stylex.transform_source_mapped(path, source_text, opts.sourcemap))
+        .map_err(StylexModuleError::Stylex)?;
+    finish_steps(path, source_text, opts, compiled, interop, rewriter)
 }
 
 struct Module<'a> {
@@ -118,11 +125,22 @@ impl<'a> Module<'a> {
         shared.then_some((parsed.program, source_type))
     }
 
+    /// Whether the interop rewrite could take the module `program` is the
+    /// parse of (see [`may_rewrite`]).
+    fn may_rewrite(&self, program: &Program<'_>, interop: &InteropPass<'_>) -> bool {
+        may_rewrite(
+            program,
+            self.source_text,
+            interop.later,
+            interop.may_need_interop,
+        )
+    }
+
     fn in_one_pass(
         &self,
         mut program: Program<'a>,
         source_type: SourceType,
-        may_need_interop: &dyn Fn(&str) -> bool,
+        interop: &InteropPass<'_>,
         rewriter: &mut ImportRewriter,
     ) -> Option<CompileOutput> {
         let rules = self
@@ -131,7 +149,14 @@ impl<'a> Module<'a> {
             .ok()?;
         // The plugin adds static imports only (its runtime's), so the dynamic
         // ones stand as they were checked.
-        if rules.is_some() && imports_may_need_interop(&program, may_need_interop) {
+        if rules.is_some()
+            && imports_may_need_interop(
+                &program,
+                self.source_text,
+                interop.later,
+                interop.may_need_interop,
+            )
+        {
             return None;
         }
         program.source_type = program.source_type.with_standard(!source_type.is_jsx());
@@ -149,54 +174,53 @@ impl<'a> Module<'a> {
         Some(output)
     }
 
-    /// `parsed`: the module's parse, when [`Self::parse`] made one the plugin
-    /// has not touched.
-    fn in_steps(
-        &self,
-        parsed: Option<&Program<'_>>,
-        interop: InteropPass<'_>,
-        rewriter: &mut ImportRewriter,
-    ) -> Result<CompileOutput, StylexModuleError> {
-        let (path, source_text) = (self.path, self.source_text);
-        let want_mappings = self.opts.sourcemap;
-        let compiled = match parsed {
-            Some(program) => {
-                self.stylex
-                    .transform_parsed(program, path, source_text, want_mappings)
-            }
-            None => self
-                .stylex
-                .transform_source_mapped(path, source_text, want_mappings),
-        }
-        .map_err(StylexModuleError::Stylex)?;
-        let (code, mappings, rules) = match compiled {
-            Some(out) => (Cow::Owned(out.code), out.mappings, out.rules),
-            None => (Cow::Borrowed(source_text), None, Vec::new()),
-        };
-        let interopped = rewrite_cjs_interop_logged(
-            &code,
-            path,
-            interop.format,
-            interop.later,
-            interop.may_need_interop,
-            interop.interop,
-            interop.warn,
-        );
-        let input_maps: Vec<InputMap> = mappings
-            .iter()
-            .map(|mappings| InputMap::Parsed(mappings.to_sourcemap(Some(source_text))))
-            .collect();
-        let mut output = compile_text(
-            path,
-            interopped.as_deref().unwrap_or(&code),
-            self.opts,
-            Some(rewriter),
-            &input_maps,
-            None,
-        )?;
-        output.stylex_rules = rules;
-        Ok(output)
+    /// The first of the steps over the module's parse, where
+    /// [`Self::parse`] made one the plugin has not touched: its transform,
+    /// spared a parse of its own.
+    fn stylex_step(&self, program: &Program<'_>) -> Result<Option<MappedOutput>, String> {
+        self.stylex
+            .transform_parsed(program, self.path, self.source_text, self.opts.sourcemap)
     }
+}
+
+/// The steps past the plugin's transform, which made `compiled` of
+/// `source_text` (`None`: nothing to compile): the CJS interop rewrite and
+/// the compile.
+fn finish_steps(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    compiled: Option<MappedOutput>,
+    interop: InteropPass<'_>,
+    rewriter: &mut ImportRewriter,
+) -> Result<CompileOutput, StylexModuleError> {
+    let (code, mappings, rules) = match compiled {
+        Some(out) => (Cow::Owned(out.code), out.mappings, out.rules),
+        None => (Cow::Borrowed(source_text), None, Vec::new()),
+    };
+    let interopped = rewrite_cjs_interop_logged(
+        &code,
+        path,
+        interop.format,
+        interop.later,
+        interop.may_need_interop,
+        interop.interop,
+        interop.warn,
+    );
+    let input_maps: Vec<InputMap> = mappings
+        .into_iter()
+        .map(|mappings| InputMap::Parsed(mappings.into_sourcemap(Some(source_text))))
+        .collect();
+    let mut output = compile_text(
+        path,
+        interopped.as_deref().unwrap_or(&code),
+        opts,
+        Some(rewriter),
+        &input_maps,
+        None,
+    )?;
+    output.stylex_rules = rules;
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -257,10 +281,10 @@ export function Counter() {
         StylexPlugin::new(&serde_json::json!({}), Path::new("/app"), true, true).unwrap()
     }
 
-    fn opts() -> CompileOptions {
+    fn opts_under(later: &LaterTransforms) -> CompileOptions {
         let mut opts = CompileOptions::dev();
         opts.class_field_set_semantics = Some(false);
-        opts.verbatim_module_syntax = Some(false);
+        opts.verbatim_module_syntax = Some(later.keep_value_imports);
         opts
     }
 
@@ -277,14 +301,22 @@ export function Counter() {
     }
 
     fn compile(path: &str, source: &str) -> Result<CompileOutput, String> {
+        compile_under(path, source, &LaterTransforms::default())
+    }
+
+    fn compile_under(
+        path: &str,
+        source: &str,
+        later: &LaterTransforms,
+    ) -> Result<CompileOutput, String> {
         compile_stylex_module(
             Path::new(path),
             source,
-            &opts(),
+            &opts_under(later),
             &plugin(),
             InteropPass {
                 format: ImporterFormat::ESM,
-                later: &LaterTransforms::default(),
+                later,
                 may_need_interop: &needs_interop,
                 interop: &interop,
                 warn: &mut |_| {},
@@ -301,6 +333,14 @@ export function Counter() {
     /// compile took the plugin's transform: the plugin's own serialized map
     /// is the compile's input map.
     fn steps(path: &str, source: &str) -> Result<CompileOutput, String> {
+        steps_under(path, source, &LaterTransforms::default())
+    }
+
+    fn steps_under(
+        path: &str,
+        source: &str,
+        later: &LaterTransforms,
+    ) -> Result<CompileOutput, String> {
         let path = Path::new(path);
         let pre = plugin()
             .transform_source(path, source)
@@ -313,7 +353,7 @@ export function Counter() {
             &code,
             path,
             ImporterFormat::ESM,
-            &LaterTransforms::default(),
+            later,
             &needs_interop,
             &interop,
             &mut |_| {},
@@ -321,7 +361,7 @@ export function Counter() {
         let mut output = compile_module_with_maps(
             path,
             interopped.as_deref().unwrap_or(&code),
-            &opts(),
+            &opts_under(later),
             Some(&mut served),
             &maps,
         )
@@ -460,10 +500,121 @@ export function Counter() {
     #[test]
     fn a_type_import_of_a_dep_that_needs_interop_keeps_the_one_parse() {
         let allocator = Allocator::default();
+        let later = LaterTransforms::default();
         let parsed = Parser::new(&allocator, CARD, SourceType::tsx()).parse();
-        assert!(!may_rewrite(&parsed.program, CARD, &needs_interop));
+        assert!(!may_rewrite(&parsed.program, CARD, &later, &needs_interop));
         let parsed = Parser::new(&allocator, COUNTER, SourceType::tsx()).parse();
-        assert!(may_rewrite(&parsed.program, COUNTER, &needs_interop));
+        assert!(may_rewrite(
+            &parsed.program,
+            COUNTER,
+            &later,
+            &needs_interop
+        ));
+    }
+
+    /// [`CARD`] with its create calls on one line each and every element
+    /// ahead of the styles on its line, so the plugin's output has each
+    /// where the source does and the two ways agree on the positions too.
+    const FLAT_CARD: &str = r#"import * as stylex from '@stylexjs/stylex';
+import type { ReactNode } from 'react';
+
+const styles = stylex.create({ root: { color: 'red' }, title: { fontWeight: 700 } });
+
+export function Card({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <section {...stylex.props(styles.root)}>
+      <h2 {...stylex.props(styles.title)}>{title}</h2>
+      {children}
+    </section>
+  );
+}
+"#;
+
+    const TYPE_IMPORT: &str = "import type { ReactNode } from 'react';";
+
+    /// The imports of a dep that needs interop the rewrite never asks about:
+    /// the TypeScript transform leaves no binding of them.
+    const REMOVED_IMPORTS: &[&str] = &[
+        TYPE_IMPORT,
+        "import type * as React from 'react'; type ReactNode = React.ReactNode;",
+        "import { type ReactNode } from 'react';",
+        "import { type ReactNode, type FC as Component } from 'react';",
+        // Written as values, used as types or not at all.
+        "import { ReactNode } from 'react';",
+        "import { ReactNode, useState } from 'react';",
+        "import * as R from 'react'; type ReactNode = R.ReactNode;",
+        "import Default, { ReactNode } from 'react'; type D = typeof Default;",
+    ];
+
+    #[test]
+    fn an_import_the_transform_removes_keeps_the_one_parse() {
+        let line = 1 + CARD.lines().position(|l| l.contains("<section")).unwrap();
+        for import in REMOVED_IMPORTS {
+            // The one parse took the module: its positions are the source's.
+            let card = CARD.replace(TYPE_IMPORT, import);
+            let one = compile("/app/src/Card.tsx", &card).unwrap();
+            let steps = steps("/app/src/Card.tsx", &card).unwrap();
+            assert!(
+                one.code.contains(&format!("lineNumber: {line},")),
+                "{import}\n{}",
+                one.code
+            );
+            assert!(!steps.code.contains(&format!("lineNumber: {line},")));
+            assert_same_module(&one, &steps);
+            assert!(!one.code.contains("react.js"), "{import}\n{}", one.code);
+
+            // And where the positions agree, it is the steps' byte for byte.
+            let flat = FLAT_CARD.replace(TYPE_IMPORT, import);
+            let one = compile("/app/src/Card.tsx", &flat).unwrap();
+            let steps = self::steps("/app/src/Card.tsx", &flat).unwrap();
+            assert_eq!(one.code, steps.code, "{import}");
+            assert_same_module(&one, &steps);
+            assert!(!one.stylex_rules.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_import_the_transform_keeps_goes_through_the_steps() {
+        let verbatim = LaterTransforms {
+            keep_value_imports: true,
+            ..Default::default()
+        };
+        let default = LaterTransforms::default();
+        for (import, later) in [
+            // `verbatimModuleSyntax` keeps what is written as a value.
+            ("import { type ReactNode } from 'react';", &verbatim),
+            ("import { ReactNode } from 'react';", &verbatim),
+            // A value refers to one of the bindings.
+            (
+                "import { ReactNode, useState } from 'react'; export const use = useState;",
+                &default,
+            ),
+            // The JSX transform's `React`.
+            (
+                "import React from 'react'; type ReactNode = React.ReactNode;",
+                &default,
+            ),
+            // No binding to remove.
+            ("import 'react'; type ReactNode = unknown;", &default),
+        ] {
+            let allocator = Allocator::default();
+            let card = FLAT_CARD.replace(TYPE_IMPORT, import);
+            let parsed = Parser::new(&allocator, &card, SourceType::tsx()).parse();
+            assert!(
+                may_rewrite(&parsed.program, &card, later, &needs_interop),
+                "{import}"
+            );
+            let module = compile_under("/app/src/Card.tsx", &card, later).unwrap();
+            let steps = steps_under("/app/src/Card.tsx", &card, later).unwrap();
+            assert_eq!(module.code, steps.code, "{import}");
+            assert_eq!(module.map_json, steps.map_json, "{import}");
+            assert_eq!(module.imports, steps.imports);
+            assert!(
+                module.code.contains("react.js"),
+                "{import}\n{}",
+                module.code
+            );
+        }
     }
 
     #[test]
