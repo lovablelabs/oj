@@ -80,6 +80,9 @@ pub struct ViteValues {
     /// The routes directory, route tree and options TanStack Start's router
     /// generator ran with (`startRouter`).
     pub start_router: Option<oj_config::StartRouterPaths>,
+    /// The import protection options Start was validated with
+    /// (`startImportProtection`).
+    pub start_import_protection: Option<serde_json::Value>,
     /// Why the app's Vite failed to resolve the config (a throwing plugin
     /// hook), which fails Vite's createServer.
     pub resolve_error: Option<String>,
@@ -1306,6 +1309,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
                     .unwrap_or_default(),
             })
         }),
+        start_import_protection: non_null(json, "startImportProtection"),
         resolve_error: str_field(json, "resolveError"),
     }
 }
@@ -1427,6 +1431,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     config.vite_stylex = v.stylex;
     config.vite_start_router = v.start_router;
+    config.vite_start_import_protection = v.start_import_protection;
     if config.base.is_none() {
         config.base = v.base;
     }

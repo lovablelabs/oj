@@ -3916,6 +3916,24 @@ fn strip_base<'a>(base: &str, path: &'a str) -> &'a str {
     }
 }
 
+/// `/@vite/client` under Start dev: oj's dev client, as the inner server
+/// answers it, after a check that leaves the socket to the Start client on a
+/// document oj rendered. Its live-reload tag follows the stream's last chunk,
+/// so while the document still parses the decision waits for its end.
+fn page_client_js(base: &str, path: &str) -> Option<String> {
+    match path {
+        "/@vite/client" => Some(format!(
+            "import \"{base}/@vite/env\";\nimport \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
+        )),
+        "/@oj-start/page-client.js" => Some(
+            "if (document.querySelector('script[src*=\"/@oj-start/live-reload.js\"]')) globalThis.__ojPageClient = \"start\";\n\
+             else if (document.readyState === \"loading\") globalThis.__ojPageClient = \"pending\";\n"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// The Start dev host's own urls (its client, chunks, patches and route
 /// list); `None` for any other path.
 async fn serve_start_url(
@@ -3991,6 +4009,24 @@ async fn serve_start_url(
             Some(body) => css_response(body),
             None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
         });
+    }
+    // Not for a page navigation to `/@vite/client`, which Vite's transform
+    // middleware never answers: that one is the app's, like any other page.
+    if oj_server::is_dev_server_request(path, &req.headers) {
+        if let Some(js) = page_client_js(&state.base, path) {
+            // Vite's `send`: `no-cache`, and `server.headers` on its client.
+            return Some(with_dev_headers(
+                state,
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/javascript"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    js,
+                )
+                    .into_response(),
+            ));
+        }
     }
     if let Some(name) = path.strip_prefix("/@oj-start/") {
         let page = oj_server::is_page_request(&req.headers);
@@ -5379,7 +5415,13 @@ async fn public_response(
     method: &Method,
     headers: &header::HeaderMap,
 ) -> Response {
-    let mut response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    let response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    with_dev_headers(state, response)
+}
+
+/// `response` with `server.headers` set over its own, as Vite's `send` and
+/// sirv's `setHeaders` set them.
+fn with_dev_headers(state: &StartState, mut response: Response) -> Response {
     for (name, value) in state.dev_headers.iter() {
         response.headers_mut().insert(name.clone(), value.clone());
     }

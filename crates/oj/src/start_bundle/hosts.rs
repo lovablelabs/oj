@@ -47,6 +47,13 @@ pub(crate) async fn spawn(
         Command::Serve => "serve",
         Command::Build => "build",
     };
+    // A dev bundle on a host of its own checks Start's imports itself where
+    // it can (see `oj_server::import_protection`); a build runs Start's plugin.
+    let import_protection = (start.command == Command::Serve)
+        .then(|| {
+            oj_server::import_protection::ImportProtection::for_dev(&start.root, &start.config)
+        })
+        .flatten();
     let payload = serde_json::json!({
         "config": {
             "root": start.root.display().to_string(),
@@ -64,11 +71,15 @@ pub(crate) async fn spawn(
         "pluginsFormat": format,
         "ojStartMode": true,
         "ojBundleHost": true,
+        "ojNativeImportProtection": import_protection.is_some(),
     })
     .to_string();
     let host = PluginHost::spawn(&start.root, &file, &payload, None)
         .await
         .map_err(|e| anyhow::anyhow!("the {env_name} plugin host failed to start: {e}"))?;
+    if let Some(import_protection) = import_protection {
+        host.set_import_protection(import_protection);
+    }
     // The hook gates read the plugins' filters before any module is offered,
     // as rolldown reads them in Vite: a filtered hook never crosses into JS
     // for a module it does not claim.

@@ -731,6 +731,23 @@ fn oj_modules_are_imported_under_the_base() {
         .starts_with("import \"/@oj/client.js\";\n"));
 }
 
+// Vite's `clientAlias` (config.ts): a bare `@vite/client` or `@vite/env`
+// import names the dev-server path under the base, which oj serves itself.
+#[test]
+fn bare_vite_client_and_env_imports_name_the_based_paths() {
+    let paths = OjPublicPaths::new(Some("/app/"));
+    assert_eq!(paths.vite_alias("@vite/client"), Some("/app/@vite/client"));
+    assert_eq!(paths.vite_alias("@vite/env"), Some("/app/@vite/env"));
+    assert_eq!(paths.vite_alias("vite/client"), None);
+    assert!(paths.owns("/app/@vite/client") && paths.owns("/app/@vite/env"));
+    assert_eq!(
+        std::str::from_utf8(&paths.vite_client_js).unwrap(),
+        "import \"/app/@vite/env\";\nexport * from \"/app/@oj/client.js\";\n"
+    );
+    let root = OjPublicPaths::new(None);
+    assert_eq!(root.vite_alias("@vite/client"), Some("/@vite/client"));
+}
+
 #[test]
 fn restart_triggers_are_the_files_oj_loaded() {
     let root = Path::new("/app");
@@ -2665,12 +2682,44 @@ fn the_vite_env_module_assigns_the_clients_user_defines() {
              "environments": { "client": { "define": { "app.flag": true } } } }"#,
     )
     .unwrap();
-    let js = vite_env_module(&cfg);
+    let js = vite_env_module(&cfg, "{\"DEV\":true}");
     assert!(
         js.contains(r#"const defines = {"__A__": 1, "__B__": "b", "app.flag": true};"#),
         "{js}"
     );
     assert!(js.contains("target[segment] = defines[key];"), "{js}");
+    assert!(!js.contains("import.meta.env ="), "{js}");
+}
+
+// A define reading `import.meta.env` would throw in the raw module: Vite's
+// import analysis assigns the env object ahead of it (importAnalysis.ts).
+#[test]
+fn a_define_reading_import_meta_env_gets_the_env_object_first() {
+    let cfg: oj_config::OjConfig =
+        serde_json::from_str(r#"{ "define": { "__DEV__": "import.meta.env.DEV" } }"#).unwrap();
+    let js = vite_env_module(&cfg, "{\"DEV\":true}");
+    assert!(
+        js.starts_with("import.meta.env = {\"DEV\":true};\nconst context"),
+        "{js}"
+    );
+    assert!(js.contains(r#"{"__DEV__": import.meta.env.DEV}"#), "{js}");
+}
+
+// Only a value that reads `import.meta.env` needs it: a string literal whose
+// text names it reads nothing (Vite's lexer finds no `import.meta` in it),
+// nor does a key, which is a property name in the module.
+#[test]
+fn a_define_that_only_names_import_meta_env_gets_no_env_object() {
+    let cfg: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "define": { "__NOTE__": "\"see import.meta.env.DEV\"", "import.meta.env": "{}" } }"#,
+    )
+    .unwrap();
+    let js = vite_env_module(&cfg, "{\"DEV\":true}");
+    assert!(js.starts_with("const context"), "{js}");
+    assert!(
+        js.contains(r#""__NOTE__": "see import.meta.env.DEV""#),
+        "{js}"
+    );
 }
 
 // A function `assetsInlineLimit` decides first; when it returns nothing the

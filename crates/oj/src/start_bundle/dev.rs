@@ -703,6 +703,14 @@ impl DevBundler {
             // A build runs no watchChange (the dev engine's does, before each
             // rebuild): Start's import protection forgets the batch here.
             if let Some(h) = host.filter(|_| !changed.is_empty()) {
+                if let Some(ip) = h.host.import_protection() {
+                    for file in changed {
+                        ip.changed(
+                            oj_server::import_protection::Side::Client,
+                            &file.to_string_lossy(),
+                        );
+                    }
+                }
                 let files: Vec<String> = changed
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
@@ -879,6 +887,11 @@ impl DevBundler {
                 }));
             }
 
+            if let Some(ip) = h.host.import_protection() {
+                plugins.push(Pluginable::new_shared(
+                    super::import_protection::ImportProtectionPlugin(ip),
+                ));
+            }
             plugins.push(Pluginable::new_shared(
                 StartHostPlugin::new(
                     Arc::clone(&h.host),

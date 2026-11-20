@@ -20,6 +20,7 @@ use oj_cache::CachedModule;
 
 pub mod css_engine;
 pub mod etag;
+pub mod import_protection;
 mod public_file;
 pub use public_file::{public_content_type, public_file_response};
 pub mod load_error;
@@ -88,7 +89,7 @@ const DEV_SERVER_AT_PREFIXES: &[&str] = &[
     "/@virtual/",
 ];
 /// oj's own single-path `/@` urls, and Vite's `/@vite/client`, which oj
-/// does not serve.
+/// answers with its own client.
 const DEV_SERVER_AT_PATHS: &[&str] = &[
     "/@vite/client",
     "/@vite/env",
@@ -1138,6 +1139,7 @@ fn plugin_host_payload(
     cli: &serde_json::Value,
     format: PluginsFormat,
     is_start: bool,
+    native_import_protection: bool,
 ) -> String {
     let mut cfg = serde_json::json!({
         "config": {
@@ -1167,6 +1169,9 @@ fn plugin_host_payload(
         // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
         "preseedIncludePath": oj_cache::cache_root(root).join("preseed-include.json").to_string_lossy(),
         "ojStartMode": is_start,
+        // oj checks Start's imports itself, so the host leaves Start's import
+        // protection plugins out.
+        "ojNativeImportProtection": native_import_protection,
         // `--debug boot`: the host's own `[oj-phase]` lines.
         "bootPhases": oj_env::get().knobs.boot_phases,
         // What the command line set (`--port`, `--host`): Vite's CLI puts these in
@@ -1762,6 +1767,16 @@ fn build_router(
                 }),
             )
             .route(
+                "/@vite/client",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    // Vite's `send` answers its client `no-cache`.
+                    (
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        js(state.oj_paths.vite_client_js.clone()),
+                    )
+                }),
+            )
+            .route(
                 "/@oj/refresh-preamble.js",
                 get(|State(state): State<Arc<ServerState>>| async move {
                     js(state.oj_paths.refresh_preamble_js.clone())
@@ -2039,6 +2054,9 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
+        let import_protection = is_start
+            .then(|| import_protection::ImportProtection::for_dev(&root, &config))
+            .flatten();
         let payload = plugin_host_payload(
             &root,
             &config,
@@ -2048,6 +2066,7 @@ impl DevServer {
             &cli_inline(self.port, self.host.as_deref()),
             plugin_file.as_ref().map_or(PluginsFormat::Oj, |f| f.format),
             is_start,
+            import_protection.is_some(),
         );
         // Optimizer quarantine: a cold deps cache would run Vite's dep optimizer (rolldown,
         // process-scoped native retention) inside oj; pre-seed in a one-shot child so the
@@ -2081,6 +2100,10 @@ impl DevServer {
             }
             None => None,
         };
+        // Before the host is handed to anything that resolves through it.
+        if let (Some(host), Some(import_protection)) = (&plugin_host, import_protection) {
+            host.set_import_protection(import_protection);
+        }
         boot_phase("plugin host ready");
         // Vite runs the configResolved hooks on the resolved config it then
         // serves from (resolveConfig), so their edits reach everything below.
@@ -2378,7 +2401,14 @@ impl DevServer {
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
-            vite_env_js: assets_serve::vite_env_module(&config),
+            vite_env_js: assets_serve::vite_env_module(
+                &config,
+                &import_meta_env
+                    .client_defines()
+                    .into_iter()
+                    .find_map(|(k, v)| (k == "import.meta.env").then_some(v))
+                    .unwrap_or_else(|| "{}".to_string()),
+            ),
             ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()

@@ -1806,7 +1806,18 @@ function hostedPlugins(list, userConfig, c = main) {
 // top-level list and what applyToEnvironment returns alike.
 function ojRunsNatively(p, c = main) {
   const name = p && p.name;
-  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (c.leaveOut && startLeavesOut(name));
+  return OJ_NATIVE_PLUGIN_NAMES.has(name) || nativeImportProtection(name) || (c.leaveOut && startLeavesOut(name));
+}
+// Start's import protection (its resolve and transform-cache plugins), where
+// oj checks imports itself (`ojNativeImportProtection`: a dev server whose
+// options oj's own check reads as Start does).
+function nativeImportProtection(name) {
+  return (
+    initial.ojNativeImportProtection === true &&
+    command === "serve" &&
+    typeof name === "string" &&
+    name.startsWith("tanstack-start-core:import-protection")
+  );
 }
 // Where Start's compiler sits among the plugins (noteStartCompilerPosition),
 // set as the plugins load.
@@ -5167,6 +5178,11 @@ async function setupConfigureServer() {
       if (built && Object.keys(built).length > 0) {
         server.environments = built;
         runnerEnvironmentsBuilt = true;
+        if (initial.ojNativeImportProtection === true) {
+          process.stderr.write(
+            `${OJ} warning: a custom dev environment came up that config extraction did not report; Start's import protection does not check its imports\n`,
+          );
+        }
       }
     } catch (e) {
       process.stderr.write(`${OJ} plugin host: buildEnvironments failed: ${(e && e.message) || e}\n`);

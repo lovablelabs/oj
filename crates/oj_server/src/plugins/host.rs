@@ -71,6 +71,10 @@ pub struct PluginHost {
 /// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
 /// every container on it.
 pub(crate) struct HostCore {
+    /// Start's import protection, where oj checks imports itself: the host
+    /// was told to leave Start's own plugins out (`ojNativeImportProtection`).
+    import_protection:
+        std::sync::OnceLock<std::sync::Arc<crate::import_protection::ImportProtection>>,
     /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
     /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
     engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
@@ -1158,6 +1162,7 @@ impl PluginHost {
             "cacheRoot": oj_cache::cache_root(root),
         });
         let core = std::sync::Arc::new(HostCore {
+            import_protection: std::sync::OnceLock::new(),
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
             ws_out: std::sync::OnceLock::new(),
@@ -1632,6 +1637,9 @@ impl PluginHost {
     /// Hands changed files to Start's import protection, which forgets what
     /// it learned about them (see `importProtectionChanged` in the host).
     pub async fn import_protection_changed(&self, files: &[String]) -> Result<(), String> {
+        if self.import_protection().is_some() {
+            return Ok(());
+        }
         let json = serde_json::to_string(files).map_err(|e| e.to_string())?;
         self.call_unit("importProtectionChanged", &[&json]).await
     }
@@ -2126,6 +2134,24 @@ impl PluginHost {
         // Gated by `worker.plugins`' own filters, not the app's.
         worker.ensure_hook_plan().await;
         Ok(worker)
+    }
+
+    /// Start's import protection, when oj checks imports itself in place of
+    /// the plugins this host left out. Every container of the host shares
+    /// it, as Start's plugin shares its state across environments.
+    pub fn import_protection(
+        &self,
+    ) -> Option<std::sync::Arc<crate::import_protection::ImportProtection>> {
+        self.core.import_protection.get().cloned()
+    }
+
+    /// Sets [`import_protection`](Self::import_protection), for a host
+    /// spawned with `ojNativeImportProtection`. The first call stands.
+    pub fn set_import_protection(
+        &self,
+        import_protection: std::sync::Arc<crate::import_protection::ImportProtection>,
+    ) {
+        let _ = self.core.import_protection.set(import_protection);
     }
 
     /// Another Vite environment on this host's plugin instances (Vite's

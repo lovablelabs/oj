@@ -6,7 +6,13 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode, esmEntry, pluginContextMeta, startRouterGenerator } from "./vite-config-node.mjs";
+import {
+  asNode,
+  esmEntry,
+  pluginContextMeta,
+  recordStartImportProtection,
+  startRouterGenerator,
+} from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
@@ -2051,12 +2057,16 @@ async function extractValues(input) {
   try {
     installConfigReadRecorder();
     const restoreGenerator = await recordStartRouterPaths();
+    let importProtection;
     let loaded;
     try {
+      importProtection = await recordStartImportProtection(appRoot);
       loaded = await loadConfig();
     } finally {
       restoreGenerator();
+      importProtection?.restore();
     }
+    const startImportProtection = importProtection.read();
     const { config, raw, deps, runnerBacked, merge } = loaded ?? {};
     const c = config ?? {};
     warnUnsupported(raw ?? c, input.spaBuild === true);
@@ -2204,6 +2214,7 @@ async function extractValues(input) {
         // Only when Start's generator ran: a plain app's output stays the one
         // the Rust static reader's template holds (static_config_parity).
         ...(startRouterPaths ? { startRouter: startRouterPaths } : {}),
+        ...(startImportProtection ? { startImportProtection } : {}),
         cors: extractCors(c.server?.cors),
         allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
         preview: extractPreview(c.preview),
