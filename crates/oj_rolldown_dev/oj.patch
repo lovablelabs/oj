@@ -1,0 +1,22 @@
+--- a/src/dev_engine.rs
++++ b/src/dev_engine.rs
+@@ -444,7 +444,18 @@
+       // A new build can start before the coordinator reads this message, and its list
+       // starts empty, so send this list with the message.
+       // See internal-docs/dev-engine/implementation.md §15.
+-      self.notify_module_changed(proxy_module_id, Arc::clone(bundler.watch_files()));
++      //
++      // oj: only rolldown's own lazy compilation leaves a route out of the graph until it
++      // is first asked for. With it off, the host's plugin declared the lazy boundary and
++      // the modules behind it were built with the rest, so the compile merged nothing new
++      // and loaded no new file: there is nothing for a rebuild to bring in line. The one
++      // exception is a compile that follows a task that errored: a module that task could
++      // not load is loaded by this compile, as it is on disk now.
++      if bundler.lazy_compilation_context.is_some()
++        || self.dev_context.last_task_errored.load(std::sync::atomic::Ordering::Relaxed)
++      {
++        self.notify_module_changed(proxy_module_id, Arc::clone(bundler.watch_files()));
++      }
+     }
+ 
+     result

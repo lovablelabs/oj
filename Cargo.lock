@@ -6308,6 +6308,7 @@ dependencies = [
  "oj_js",
  "oj_notify",
  "oj_resolver",
+ "oj_rolldown_dev",
  "oj_server",
  "oj_stylex",
  "oj_typecheck",
@@ -6323,7 +6324,6 @@ dependencies = [
  "rolldown",
  "rolldown-ariadne",
  "rolldown_common",
- "rolldown_dev",
  "rolldown_dev_common",
  "rolldown_devtools",
  "rolldown_devtools_action",
@@ -6657,6 +6657,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "oj_rolldown_dev"
+version = "0.4.17"
+dependencies = [
+ "anyhow",
+ "arcstr",
+ "dunce",
+ "futures",
+ "rolldown",
+ "rolldown_common",
+ "rolldown_dev_common",
+ "rolldown_error",
+ "rolldown_fs_watcher",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -9191,26 +9210,6 @@ dependencies = [
  "string_wizard",
  "sugar_path",
  "tokio",
-]
-
-[[package]]
-name = "rolldown_dev"
-version = "1.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ec8a4d75da2873f4864c5c0863a09b2ee1487b582169e17dcb851159ff8915f"
-dependencies = [
- "anyhow",
- "arcstr",
- "futures",
- "rolldown",
- "rolldown_common",
- "rolldown_dev_common",
- "rolldown_error",
- "rolldown_fs_watcher",
- "rolldown_utils",
- "rustc-hash 2.1.3",
- "tokio",
- "tracing",
 ]
 
 [[package]]

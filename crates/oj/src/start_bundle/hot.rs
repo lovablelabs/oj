@@ -237,10 +237,8 @@ impl HotSession {
             .filter(|p| self.engine.get_module_info(p).is_some() || under_a_glob(p))
             .collect();
         // The engine's watcher reports an edit within milliseconds, unless it
-        // is at work: an edit that lands during a build waits for it (the
-        // engine rebuilds its output after each module it compiles for a
-        // page's `import()`), and giving up on it then would turn a hot
-        // update into a reload.
+        // is at work: an edit that lands during a build waits for it, and
+        // giving up on it then would turn a hot update into a reload.
         let ready = || {
             self.events.error.lock().unwrap().is_some() || {
                 let seen = self.events.seen.lock().unwrap();
@@ -303,9 +301,7 @@ impl HotSession {
     pub async fn latest_output(&self) -> Result<(Vec<Output>, Notes), BundleError> {
         // Every build the engine owes, not only the one running: a change
         // that arrived during a build waits for it and starts as it ends,
-        // and the build it waited for says the output is current. The
-        // engine rebuilds after each module it compiles for a page's
-        // `import()`, so an edit often lands during one.
+        // and the build it waited for says the output is current.
         for _ in 0..8 {
             let done = self.events.tasks.load(Ordering::SeqCst);
             let _ = self.engine.wait_for_ongoing_bundle().await;

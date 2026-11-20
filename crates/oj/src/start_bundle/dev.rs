@@ -394,11 +394,8 @@ impl DevBundler {
                 }
             }
         };
-        // Not while a bundle is being made: the engine rebuilds its output
-        // after each module it compiles, and a run that waits for the
-        // engine's output to be current would wait for as long as pages
-        // keep asking (a page that opens imports its route). A run in
-        // progress is waited for; one that starts waits for this compile.
+        // Not while a bundle is being made: a run in progress is waited
+        // for, and one that starts waits for this compile.
         let _no_run = self.session.lock().await;
         // Known to the engine before it compiles for it: what the page
         // already holds is left out of the answer. (The page's socket
