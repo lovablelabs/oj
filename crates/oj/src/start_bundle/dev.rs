@@ -360,7 +360,9 @@ impl DevBundler {
     /// Nothing here starts a bundle: a request cannot make the dev server
     /// build.
     pub(crate) async fn lazy_chunk(&self, proxy: &str, client: &str) -> LazyAnswer {
-        if !self.hot_bundle() {
+        // Only the id of an `import()`'s boundary: the engine would scan
+        // any other module of the graph it is given as if it had changed.
+        if !self.hot_bundle() || rolldown_common::lazy_proxy_target(proxy).is_none() {
             return LazyAnswer::Unknown;
         }
         let engine = match self.engine.get() {

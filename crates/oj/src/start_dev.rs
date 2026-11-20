@@ -4489,10 +4489,15 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
     // it too, through the same guard (once per stamp: a document that comes
     // back from a cache under the same stamp is not reloaded again), and
     // stays pending while it does. Past the guard the import rejects.
-    if state.bundler.page_from_another_run(&client) {
+    //
+    // The request says which run rendered its page (the document's stamp,
+    // as its socket does): the socket of such a tab may not have come back
+    // yet, or may never open.
+    if state.reloads.another_run(query) || state.bundler.page_from_another_run(&client) {
         return module(
             "if (globalThis.__ojStartHmr?.reloadBehind?.()) await new Promise(() => {});\n\
-             throw new Error(\"[oj] this page was served by another run of the dev server: reload it\");\n"
+             throw new Error(\"[oj] this page was served by another run of the dev server: reload it\");\n\
+             export {};\n"
                 .to_string(),
         );
     }
@@ -4594,10 +4599,8 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
                 } else {
                     // Flushed, its patches not sent yet (a flush that lands
                     // while a rebundle runs releases at the run's end): a
-                    // moment. Frames that stay parked with nothing held are
-                    // of changes taken back before any flush (the gate
-                    // drops a file that is back to what the pages show):
-                    // the code compiled is then what the pages run.
+                    // moment, and bounded, so that frames no run comes to
+                    // release cannot keep an import waiting.
                     let since = *flushed_at.get_or_insert(now);
                     if now.duration_since(since) > PARKED_AFTER_FLUSH {
                         break answer;
@@ -4645,8 +4648,11 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         // A module that throws, with the error as the bundler gave it, after
         // showing it in the overlay of the page that asked (Vite's client
         // shows the error of a failed transform).
+        // A module, like the other answers: the `export` makes it a syntax
+        // error as a classic script, so a page of another origin cannot run
+        // it with a `<script>` and read the error (see `start_hot`).
         LazyAnswer::Unavailable(e) | LazyAnswer::Failed(e) => module(format!(
-            "globalThis.__ojStartHmr?.showBuildError?.({});\nthrow new Error({});\n",
+            "globalThis.__ojStartHmr?.showBuildError?.({});\nthrow new Error({});\nexport {{}};\n",
             e.payload(),
             serde_json::Value::String(e.message.clone())
         )),
@@ -4715,7 +4721,16 @@ fn names_module(err: &serde_json::Value, proxy: &str) -> bool {
     !file.is_empty()
         && (about(&err["id"])
             || about(&err["loc"]["file"])
-            || err["message"].as_str().is_some_and(|m| m.contains(file)))
+            || err["message"].as_str().is_some_and(|m| {
+                // The path where it ends: `note.ts` is not named by an error
+                // about `note.tsx`.
+                m.match_indices(file).any(|(at, _)| {
+                    !m[at + file.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                })
+            }))
 }
 
 /// The files among what the bundler's engine reports as changed, which is
@@ -7308,6 +7323,18 @@ mod tests {
         });
         assert!(names_module(&err, "/app/src/lib/note.ts?rolldown-lazy=1"));
         assert!(!names_module(&err, "/app/src/lib/other.ts?rolldown-lazy=1"));
+        // A file whose path only starts with the module's is another file.
+        let longer = serde_json::json!({
+            "message": "plugin transform failed for /app/src/lib/note.tsx:\nError: Unterminated string",
+        });
+        assert!(!names_module(
+            &longer,
+            "/app/src/lib/note.ts?rolldown-lazy=1"
+        ));
+        assert!(names_module(
+            &longer,
+            "/app/src/lib/note.tsx?rolldown-lazy=1"
+        ));
     }
 
     #[test]

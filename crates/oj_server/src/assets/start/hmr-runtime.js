@@ -111,6 +111,10 @@ class OjHmrClient {
     // Patches announced and not yet applied.
     this.pending = [];
     this.lastSeq = 0;
+    // The last update applied (`lastSeq` counts one as soon as it is taken
+    // in), and how many `notify` calls are waiting for their listeners.
+    this.applied = 0;
+    this.listening = 0;
     this.reloadPending = false;
     this.firstInvalidatedBy = undefined;
     // Waiting for an update to be taken in (`OjDevRuntime.ojPatched`).
@@ -123,7 +127,16 @@ class OjHmrClient {
 
   async notify(event, data) {
     const cbs = this.listeners.get(event);
-    if (cbs) await Promise.allSettled(cbs.map((cb) => cb(data)));
+    if (!cbs) return;
+    // An `import()` a listener awaits must not wait for the update this
+    // call is part of, or for one queued behind it (`ojPatched`).
+    this.listening++;
+    this.wake();
+    try {
+      await Promise.allSettled(cbs.map((cb) => cb(data)));
+    } finally {
+      this.listening--;
+    }
   }
 
   selfAccepted(id) {
@@ -201,6 +214,8 @@ class OjHmrClient {
 
   // Vite's warnFailedUpdate: the page keeps running, the next edit retries.
   failed(err, path) {
+    this.applied = this.lastSeq;
+    this.wake();
     if (!(err instanceof Error) || !err.message.includes("fetch")) console.error("[oj]", err);
     console.error(
       `[oj] Failed to reload ${path}. This could be due to syntax errors or importing non-existent modules. (see errors above)`,
@@ -266,7 +281,13 @@ class OjHmrClient {
         update = next;
         const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
         for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
-        if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+        if (fresh.length) {
+          await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+          // A module a listener imported meanwhile runs here now.
+          const again = this.compute([...changedIds]);
+          if (again?.reload) return this.requestReload(again.reload);
+          update = again ?? update;
+        }
         if (this.beforeApply() === "reload") return;
       }
       // A patch nothing here runs yet is imported all the same: it holds
@@ -288,9 +309,10 @@ class OjHmrClient {
         }
       }
     }
-    if (!update) return;
-    await this.apply(update);
-    await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
+    if (update) await this.apply(update);
+    this.applied = this.lastSeq;
+    this.wake();
+    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
   }
 
   async applyInvalidate(id) {
@@ -371,7 +393,10 @@ class OjDevRuntime extends DevRuntime {
   }
   lazyChunkUrl(proxyModuleId) {
     this.lazyAsked = (this.lazyAsked ?? 0) + 1;
-    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}`;
+    // With the document's stamp: a page another run of the dev server
+    // rendered is told to reload, not answered as one of this run's.
+    const run = __ojBus.stamp == null ? "" : `&g=${encodeURIComponent(__ojBus.stamp)}`;
+    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}${run}`;
   }
   // A module with top-level `await` is an async factory, which rolldown's
   // runtime starts and does not wait for: its promise is kept, so an
@@ -430,32 +455,33 @@ class OjDevRuntime extends DevRuntime {
   // no update at all, and reloads when it is back.
   async ojPatched(seq) {
     const hmr = this.hmr;
-    if (hmr.lastSeq < seq && !hmr.reloadPending) {
-      // Woken as the page takes updates in (not by a timer of its own: a
-      // hidden tab's timers are slowed), up to a bound.
-      let timer;
-      const late = new Promise((resolve) => (timer = setTimeout(resolve, 10000, "late")));
-      for (;;) {
-        const heard = new Promise((resolve) => hmr.heard.push(resolve));
-        if (hmr.lastSeq >= seq || hmr.reloadPending) break;
-        if ((await Promise.race([heard, late])) === "late") {
-          console.warn(
-            `[oj] hot update ${seq} did not reach this page in time; running the imported module without it`,
-          );
-          break;
-        }
+    // Not while a listener is being waited for (`vite:beforeUpdate`, a
+    // custom event): the update cannot go on until the listener returns,
+    // so an `import()` the listener awaits would wait for itself. Under
+    // Vite that import is an ordinary request.
+    const ready = () => hmr.applied >= seq || hmr.reloadPending || hmr.listening > 0;
+    if (ready()) return;
+    // Woken as the page takes updates in (not by a timer of its own: a
+    // hidden tab's timers are slowed), up to a bound.
+    let timer;
+    const late = new Promise((resolve) => (timer = setTimeout(resolve, 10000, "late")));
+    for (;;) {
+      const heard = new Promise((resolve) => hmr.heard.push(resolve));
+      if (ready()) break;
+      if ((await Promise.race([heard, late])) === "late") {
+        console.warn(`[oj] hot update ${seq} did not reach this page in time; running the imported module without it`);
+        break;
       }
-      clearTimeout(timer);
     }
-    await hmr.queue;
+    clearTimeout(timer);
   }
   // The dev server compiled a module for an `import()` while the editor's
   // gate holds a change, and the chunk at `url` carries the modules `held`
   // of that change. If this page already runs them all, it takes the chunk,
   // which leaves them alone (`ojSkipHeld`): a module that ran is not run
   // again, so the chunk runs nothing of the held change. Otherwise it asks
-  // for the module again, to be answered after the flush. A kept chunk the
-  // server no longer has is asked for anew.
+  // for the module again, to be answered after the flush, as it does for a
+  // kept chunk the server no longer has.
   async ojLazyWhileHeld(held, url, proxyModuleId) {
     if (!held.every((id) => this.moduleCache.has(id))) {
       return this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
@@ -463,13 +489,9 @@ class OjDevRuntime extends DevRuntime {
     try {
       await this.ojImport(url);
     } catch {
-      // Asked anew once (the server may hand back another chunk to take);
-      // if that fails too, the import waits for the flush.
-      try {
-        await this.ojImport(this.lazyChunkUrl(proxyModuleId));
-      } catch {
-        await this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
-      }
+      // Not asked anew for another chunk to take (that answer would be
+      // one of these again, and so on): the import waits for the flush.
+      await this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
     }
   }
   ojImport(url) {

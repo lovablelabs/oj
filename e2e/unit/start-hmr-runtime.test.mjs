@@ -226,15 +226,20 @@ test("an import() settles when a module with top-level await has finished, and r
 test("a module compiled after a hot update waits for the page to have applied it", async () => {
   const runtime = lazyRuntime();
   let applied = false;
-  const waited = runtime.ojPatched(2).then(() => (applied = runtime.hmr.lastSeq));
+  const waited = runtime.ojPatched(2).then(() => (applied = runtime.hmr.applied));
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(applied, false, "it did not wait for update 2");
-  // Woken by the updates as they are taken in, not by a timer of its own.
-  runtime.hmr.lastSeq = 1;
+  // Woken by the updates as they are applied, not by a timer of its own.
+  runtime.hmr.applied = 1;
   runtime.hmr.wake();
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(applied, false, "update 1 is not update 2");
+  // Taken in is not applied.
   runtime.hmr.lastSeq = 2;
+  runtime.hmr.wake();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(applied, false, "update 2 is counted, not applied");
+  runtime.hmr.applied = 2;
   runtime.hmr.wake();
   assert.equal(await waited, 2);
   // Nothing sent: nothing to wait for.
@@ -299,7 +304,7 @@ function heldRuntime() {
   return page.__rolldown_runtime__;
 }
 
-test("a chunk carrying held modules is taken only by a page that runs them all; one the server lost is asked for anew", async () => {
+test("a chunk carrying held modules is taken only by a page that runs them all; one the server lost waits for the flush", async () => {
   const runtime = heldRuntime();
   const asked = [];
   runtime.ojImport = async (url) => {
@@ -320,12 +325,13 @@ test("a chunk carrying held modules is taken only by a page that runs them all; 
   await runtime.ojLazyWhileHeld(["src/util.ts", "src/other.ts"], "/@oj-start/hmr/lazy_held_1.js", proxy);
   assert.deepEqual(asked, ["/@oj-start/hmr/lazy_held_1.js"]);
 
-  // The kept chunk is gone: the module is asked for anew, not to wait.
+  // The kept chunk is gone: the module is asked for once more, to be
+  // answered after the flush (not for another chunk to take, which could
+  // be gone in turn, without end).
   asked.length = 0;
   await runtime.ojLazyWhileHeld(["src/util.ts"], "/@oj-start/hmr/lazy_held_gone.js", proxy);
   assert.equal(asked.length, 2);
-  assert.match(asked[1], /^\/@oj-start\/hmr\/lazy\?id=/);
-  assert.doesNotMatch(asked[1], /held=1/);
+  assert.match(asked[1], /^\/@oj-start\/hmr\/lazy\?id=.*&held=1$/);
 });
 
 test("a taken chunk leaves the held modules' factories, graph rows and stamps as the page has them", async () => {
@@ -500,5 +506,69 @@ test(
       !log.includes("location.reload") && !log.some((l) => l?.type === "oj:reload-needed"),
       JSON.stringify(log),
     );
+  },
+);
+
+test(
+  "a listener of an update that awaits a first import() does not hold the update (rolldown's runtime)",
+  { skip: realRuntime || process.env.CI ? false : "rolldown_plugin_hmr is not in the cargo registry" },
+  async () => {
+    assert.ok(realRuntime, "rolldown_plugin_hmr's runtime file is in the cargo registry");
+    const { runtime, urls, log } = loadRealRuntime(realRuntime);
+    runtime.registerGraph({ ids: ["app", "a"], localCount: 2, edges: [[1], []] });
+    runtime.registerModule("app");
+    runtime.registerModule("a");
+    const app = runtime.createModuleHotContext("app");
+    app.accept();
+    const done = [];
+    app.on("vite:beforeUpdate", async () => {
+      await runtime.requestLazy("x", "/abs/x?rolldown-lazy=1");
+      done.push("before");
+    });
+    runtime.createModuleHotContext("other").on("my:event", async () => {
+      await runtime.requestLazy("y", "/abs/y?rolldown-lazy=1");
+      done.push("custom");
+    });
+    // The server's answers name the last update it sent this page.
+    let sent = 0;
+    urls.set("/@oj-start/hmr/lazy?id=%2Fabs%2Fx", async () => {
+      await runtime.ojPatched(sent);
+      runtime.registerFactory("x", (id) => runtime.registerModule(id, { exports: {} }));
+    });
+    urls.set("/@oj-start/hmr/lazy?id=%2Fabs%2Fy", async () => {
+      await runtime.ojPatched(sent);
+      runtime.registerFactory("y", (id) => runtime.registerModule(id, { exports: {} }));
+    });
+    urls.set("/patch", () => {
+      runtime.registerFactory("a", (id) => runtime.registerModule(id), sent);
+      runtime.registerFactory(
+        "app",
+        (id) => (
+          runtime.registerModule(id),
+          runtime.initModule("a"),
+          runtime.createModuleHotContext(id).accept(),
+          log.push("app re-ran")
+        ),
+        sent,
+      );
+    });
+    const within = (promise, what) =>
+      Promise.race([promise, new Promise((_, no) => setTimeout(() => no(new Error(what + " never settled")), 2000))]);
+
+    sent = 1;
+    runtime.ojApply({ url: "/patch", seq: 1, changedIds: ["a"] });
+    await within(runtime.hmr.queue, "the update whose listener imports");
+    assert.deepEqual(done, ["before"]);
+    assert.equal(log.filter((l) => l === "app re-ran").length, 1);
+
+    // A custom event's listener, with update 2 sent and not yet taken in
+    // (its frame is behind the event in the socket's queue).
+    sent = 2;
+    await within(runtime.hmr.notify("my:event", {}), "the custom event's listener");
+    assert.deepEqual(done, ["before", "custom"]);
+    runtime.ojApply({ url: "/patch", seq: 2, changedIds: ["a"] });
+    await within(runtime.hmr.queue, "the next update");
+    assert.equal(runtime.hmr.applied, 2);
+    assert.equal(log.filter((l) => l === "app re-ran").length, 2, JSON.stringify(log));
   },
 );

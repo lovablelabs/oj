@@ -252,6 +252,9 @@
     } catch {}
     return true;
   };
+  // Sent with each request for a module behind an `import()`: which run of
+  // the dev server rendered this document.
+  bus.stamp = stamp;
   // For the answer to an `import()` made by a page another run of the dev
   // server rendered (the same reload its socket is told to make, under the
   // same guard); whether it reloads.

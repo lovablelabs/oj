@@ -469,6 +469,19 @@ async fn a_lazy_route_no_update_changed_loads_in_place() {
     .await;
     go_to_about(&page).await;
     shows(&page, &dev, "2").await;
+    // The request for the route's module says which run of the dev server
+    // rendered the page.
+    assert!(
+        page.eval::<bool>(
+            "performance.getEntriesByType('resource').some((e) => e.name.includes('/@oj-start/hmr/lazy') && /[?&]g=[0-9a-f]+-\\d+/.test(e.name))"
+        )
+        .await,
+        "no request for a module carried the document's stamp: {:?}",
+        page.eval::<Vec<String>>(
+            "performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/hmr/'))"
+        )
+        .await
+    );
     kept(&page, &dev).await;
     page.close().await;
 }
@@ -1128,6 +1141,40 @@ async fn a_module_edited_after_a_module_it_imports_is_imported_as_edited() {
     page.close().await;
 }
 
+/// An `import()` with an import attribute (`with { type: "json" }`) of a
+/// file the page has not loaded, edited before the page imports it: the
+/// page gets the file as edited, as with any other `import()`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_with_an_attribute_is_answered_as_the_file_is_now() {
+    let Some(app) = lazy_app("lazy-import-attribute", "export const EVENTS = [\"a\"];\n") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let with_attribute = ROOT.replace(
+        "import(\"../lib/note\").then((m) => setNote(m.note),",
+        "import(\"../lib/data.json\", { with: { type: \"json\" } }).then((m) => setNote(m.default.note),",
+    );
+    assert_ne!(with_attribute, ROOT);
+    write(&root, "src/routes/__root.tsx", &with_attribute);
+    write(&root, "src/lib/data.json", "{ \"note\": \"data v1\" }\n");
+    let dev = Server::oj_dev(&root);
+    // The entry asks for it by id, like an `import()` with no attribute.
+    assert!(proxy_of(&dev, "src/lib/data.json").ends_with("data.json?rolldown-lazy=1"));
+    let page = open_home(&dev).await;
+
+    let before = hot_updates(&dev);
+    write(&root, "src/lib/data.json", "{ \"note\": \"data v2\" }\n");
+    hot_updated(&dev, before).await;
+    load_note(&page).await;
+    notes(&page, &dev, "data v2").await;
+    kept(&page, &dev).await;
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    page.close().await;
+}
+
 /// Plain `oj dev`, a file-routed app: the router's code splitter moves a
 /// route's component into `route.tsx?tsr-split=component`. A page open on
 /// the home route has not loaded it; a module only that component imports is
@@ -1212,6 +1259,13 @@ async fn an_import_that_failed_to_compile_is_asked_for_again() {
         rejected(&first),
         "the import of a module that does not compile: {first}"
     );
+    // The answer is a module and nothing else: as a classic script (a
+    // `<script>` on a page of another origin) it does not parse.
+    let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
+    assert!(
+        status == 200 && body.contains("showBuildError") && body.trim_end().ends_with("export {};"),
+        "{status} {body}"
+    );
     load_note(&page).await;
     assert!(
         page.poll(&format!("{NOTE_SHOWN}.startsWith('failed: ')"), WAIT)
@@ -1225,6 +1279,14 @@ async fn an_import_that_failed_to_compile_is_asked_for_again() {
     go_to_about(&page).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    // Waiting: the request for the route's module is not answered, and
+    // the route has neither rendered nor failed.
+    let state = "JSON.stringify([performance.getEntriesByType('resource').filter((e) => e.name.includes('/@oj-start/hmr/lazy') && decodeURIComponent(e.name).includes('about.tsx')).map((e) => e.responseEnd > 0), document.querySelector('#about') === null])";
+    let waiting = page.eval::<String>(state).await;
+    assert!(
+        waiting == "[[],true]",
+        "the import of a module the error is not about did not wait: {waiting}"
+    );
 
     write(&root, NOTE, "export const note = \"note fixed\";\n");
     notes_once_current(&page, &dev, "note fixed").await;
@@ -1712,6 +1774,13 @@ fn a_request_for_a_module_starts_no_build_and_answers_a_page_with_no_socket() {
     ) else {
         return;
     };
+    // The module imports a package the entry holds too: an answer for a
+    // page the bundler did not know would carry the package as well.
+    write(
+        &app.0,
+        NOTE,
+        "import { version } from \"react\";\nexport const note = \"note v1 \" + version;\n",
+    );
     let dev = Server::oj_dev(&app.0);
     let proxy = proxy_of(&dev, "src/lib/note.ts");
     let builds = |dev: &Server| dev.output().matches("client bundling").count();
@@ -1723,18 +1792,33 @@ fn a_request_for_a_module_starts_no_build_and_answers_a_page_with_no_socket() {
     assert_eq!(status, 405, "only a GET is answered");
     assert!(
         body.contains("note v1") && body.len() < 4096,
-        "the module with what the entry already holds: {} bytes",
+        "the module without what the entry already holds: {} bytes",
         body.len()
     );
 
+    // Only the id of an `import()`'s boundary is answered: not the module
+    // behind it under its own id, nor any other module of the bundle.
+    let module = proxy
+        .strip_suffix("?rolldown-lazy=1")
+        .expect("a proxy id")
+        .to_string();
     for id in [
         "/etc/passwd?rolldown-lazy=1",
         "garbage",
         &format!("{proxy}x"),
+        &module,
     ] {
         let (status, body) = dev.request("GET", &lazy_url(id, "no-socket"), &[]);
         assert_eq!(status, 404, "{id}: {body}");
     }
+    // A page another run of the dev server rendered says so in its
+    // request, socket or not, and is told to reload.
+    let other_run = format!("{}&g=1-0", lazy_url(&proxy, "old-tab"));
+    let (status, body) = dev.request("GET", &other_run, &[]);
+    assert!(
+        status == 200 && body.contains("reloadBehind") && !body.contains("note v1"),
+        "{status} {body}"
+    );
     assert_eq!(
         builds(&dev),
         built,
@@ -1748,6 +1832,11 @@ fn a_request_for_a_module_starts_no_build_and_answers_a_page_with_no_socket() {
     let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
     assert!(
         status == 200 && body.starts_with("import \"../"),
+        "{status} {body}"
+    );
+    let (status, body) = dev.request("GET", &other_run, &[]);
+    assert!(
+        status == 200 && body.contains("reloadBehind") && !body.contains("import \"../"),
         "{status} {body}"
     );
     for id in ["/etc/passwd?rolldown-lazy=1", "garbage"] {
@@ -1800,9 +1889,11 @@ async fn an_import_the_server_does_not_answer_rejects_without_a_reload() {
     }
     let dev = Server::oj_dev(&app.0);
     let page = open_home(&dev).await;
-    // Left uncaught, as an app's own `import()` may be.
+    // Left uncaught, as an app's own `import()` may be; its outcome is
+    // kept on the side.
     page.eval::<bool>(
-        "(void globalThis.__rolldown_runtime__.requestLazy('src/nope.ts', '/nope.ts?rolldown-lazy=1'), true)",
+        "(() => { const asked = globalThis.__rolldown_runtime__.requestLazy('src/nope.ts', '/nope.ts?rolldown-lazy=1'); \
+         asked.then(() => (window.__nope = 'resolved'), (e) => (window.__nope = 'rejected: ' + e.message)); return true; })()",
     )
     .await;
     assert!(
@@ -1811,6 +1902,12 @@ async fn an_import_the_server_does_not_answer_rejects_without_a_reload() {
             WAIT
         )
         .await
+    );
+    assert!(
+        page.poll("String(window.__nope).startsWith('rejected: ')", WAIT)
+            .await,
+        "the import did not reject: {:?}",
+        page.eval::<String>("String(window.__nope)").await
     );
     kept(&page, &dev).await;
     page.close().await;
@@ -2125,9 +2222,10 @@ async fn two_imports_in_one_hold_under_a_base_are_each_answered_by_the_rule() {
 }
 
 /// A kept chunk the dev server no longer has (taken, or pushed out): the
-/// page asks for the module anew and gets it.
+/// page asks for the module again, to be answered once nothing is held,
+/// and gets it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_kept_chunk_that_is_gone_is_asked_for_anew() {
+async fn a_kept_chunk_that_is_gone_is_asked_for_again() {
     let Some(app) = lazy_app(
         "lazy-import-held-gone",
         "export const EVENTS = [\"a\", \"b\"];\n",
@@ -2235,9 +2333,11 @@ async fn a_flush_during_the_fetch_of_a_kept_chunk_keeps_the_patchs_factories() {
     page.close().await;
 }
 
-/// Pages keep importing modules (each import makes the bundler rebuild its
-/// output) while an edit that needs a new bundle is made: the dev server's
-/// rebundle must end, not wait for a moment when no page asks.
+/// Pages keep importing modules while an edit that needs a new bundle is
+/// made: the dev server's rebundle ends, with no moment when no page asks.
+/// (It could not while each compile made the bundler rebuild its output;
+/// none does now, and this passes with or without the lock that keeps a
+/// compile out of a bundle run.)
 #[test]
 fn a_rebundle_ends_while_pages_keep_importing() {
     let Some(app) = lazy_app(
