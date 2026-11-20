@@ -1,24 +1,29 @@
 //! Local content-addressed compile cache (docs/design-cache.md): entries pair
 //! the result with an fs-observation log, replayed to validate every hit.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod codec;
+
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-use serde::{Deserialize, Serialize};
 
 use crate::api::{
     FileContext, SourceCompileResult, might_contain_stylex, transform_source_with_dep_log_in,
 };
 use crate::errors::StylexError;
-use crate::eval::value::{EvalValue, JsObjectMap};
 use crate::module_resolution::{FsProvider, ResolveConfig, path_relative};
 use crate::options::ResolvedOptions;
-use crate::rules::StylexRule;
+use crate::timings::{self, Stage};
+
+use codec::{Corrupt, DepRecord, PathRef, Reader};
 
 // v2: options key material moved to the precomputed ResolvedOptions::cache_repr.
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+// v3: entries are binary (`codec`; v2 was JSON), and the key hashes its
+// run-constant fields first.
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 
 /// Bump on any behavior-affecting compiler change (the STYLEX_PASS_VERSION
 /// pattern): the crate version alone does not move per commit.
@@ -187,319 +192,445 @@ pub fn cache_key_with_fingerprint(
     options: &ResolvedOptions,
     fingerprint: &str,
 ) -> CacheKey {
+    let mut hasher = options_prefix(options, fingerprint);
+    update_field(&mut hasher, filename_key.as_bytes());
+    update_field(&mut hasher, source.as_bytes());
+    CacheKey(*hasher.finalize().as_bytes())
+}
+
+// Length-prefixed, so bytes cannot shift across a field boundary unnoticed.
+fn update_field(hasher: &mut blake3::Hasher, field: &[u8]) {
+    hasher.update(&(field.len() as u64).to_le_bytes());
+    hasher.update(field);
+}
+
+/// The key's leading fields, the ones every file of a run shares.
+fn options_prefix(options: &ResolvedOptions, fingerprint: &str) -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    update_field(&mut hasher, fingerprint.as_bytes());
     // The precomputed Debug capture keys every ResolvedOptions field, present
     // and future — no per-field listing to drift out of sync with options.rs.
-    let mut hasher = blake3::Hasher::new();
-    for field in [source, filename_key, &options.cache_repr, fingerprint] {
-        hasher.update(&(field.len() as u64).to_le_bytes());
-        hasher.update(field.as_bytes());
-    }
-    CacheKey(*hasher.finalize().as_bytes())
+    update_field(&mut hasher, options.cache_repr.as_bytes());
+    hasher
 }
 
 pub fn filename_key(cwd: &Path, filename: &Path) -> String {
     path_relative(cwd, filename)
 }
 
-// ------------------------------------------------------------- wire format
-
-#[derive(Serialize, Deserialize)]
-struct EntryWire {
-    schema: u32,
-    fingerprint: String,
-    root: String,
-    deps: Vec<DepEventWire>,
-    result: ResultWire,
+thread_local! {
+    // The option set this thread keyed last, with the hasher that absorbed it.
+    static KEY_PREFIX: RefCell<Option<(String, blake3::Hasher)>> = const { RefCell::new(None) };
 }
 
-/// In-root paths serialize root-relative so a hit can revalidate from any
-/// worktree; an absolute path pins the entry to its recorded root.
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
-#[serde(tag = "t")]
-enum PathWire {
-    #[serde(rename = "r")]
-    Rel { p: String },
-    #[serde(rename = "a")]
-    Abs { p: String },
+/// [`cache_key`] of a compile: the same bytes hashed, without building the
+/// filename key or rehashing the options the previous file had.
+fn compile_key(ctx: &FileContext<'_>, options: &ResolvedOptions) -> CacheKey {
+    let mut hasher = KEY_PREFIX.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        match &*memo {
+            Some((repr, hasher)) if *repr == options.cache_repr => hasher.clone(),
+            _ => {
+                let hasher = options_prefix(options, compiler_fingerprint());
+                *memo = Some((options.cache_repr.clone(), hasher.clone()));
+                hasher
+            }
+        }
+    });
+    update_filename_key(&mut hasher, ctx.cwd, ctx.filename);
+    update_field(&mut hasher, ctx.source_text.as_bytes());
+    CacheKey(*hasher.finalize().as_bytes())
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "t")]
-enum DepEventWire {
-    #[serde(rename = "pkg")]
-    NearestPackage {
-        from: PathWire,
-        found: Option<(String, PathWire)>,
-        hash: Option<String>,
-    },
-    #[serde(rename = "imp")]
-    ResolveImport {
-        specifier: String,
-        importer: PathWire,
-        resolved: Option<PathWire>,
-    },
-    #[serde(rename = "ex")]
-    Exists { path: PathWire, found: bool },
-    #[serde(rename = "exa")]
-    ExistsAny { path: PathWire, found: bool },
-}
-
-#[derive(Serialize, Deserialize)]
-struct ResultWire {
-    code: String,
-    map: Option<String>,
-    rules: Vec<StylexRule>,
-    modified: bool,
-    create_objects: Vec<(Option<String>, ObjWire)>,
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
-struct ObjWire {
-    entries: Vec<(String, ValueWire)>,
-    css_type: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
-#[serde(tag = "t")]
-enum ValueWire {
-    Null,
-    Undef,
-    Bool {
-        v: bool,
-    },
-    /// f64 bits — exact for NaN payloads, -0.0, and infinities.
-    Num {
-        bits: u64,
-    },
-    Str {
-        v: String,
-    },
-    Arr {
-        v: Vec<ValueWire>,
-    },
-    Obj {
-        v: ObjWire,
-    },
-}
-
-fn encode_value(value: &EvalValue) -> ValueWire {
-    match value {
-        EvalValue::Null => ValueWire::Null,
-        EvalValue::Undefined => ValueWire::Undef,
-        EvalValue::Bool(b) => ValueWire::Bool { v: *b },
-        EvalValue::Num(n) => ValueWire::Num { bits: n.to_bits() },
-        EvalValue::Str(s) => ValueWire::Str { v: s.clone() },
-        EvalValue::Arr(items) => ValueWire::Arr {
-            v: items.iter().map(encode_value).collect(),
-        },
-        EvalValue::Obj(map) => ValueWire::Obj {
-            v: encode_object(map),
-        },
+/// Hashes [`filename_key`]'s answer as a field, streaming it when the file
+/// sits plainly below `cwd`.
+fn update_filename_key(hasher: &mut blake3::Hasher, cwd: &Path, filename: &Path) {
+    let Some(below) = plain_suffix(cwd, filename) else {
+        update_field(hasher, filename_key(cwd, filename).as_bytes());
+        return;
+    };
+    let parts = || below.components().map(|part| part.as_os_str());
+    let len = parts()
+        .map(|part| part.len() + 1)
+        .sum::<usize>()
+        .saturating_sub(1);
+    hasher.update(&(len as u64).to_le_bytes());
+    for (i, part) in parts().enumerate() {
+        if i > 0 {
+            hasher.update(b"/");
+        }
+        hasher.update(part.as_encoded_bytes());
     }
 }
 
-fn decode_value(wire: ValueWire) -> EvalValue {
-    match wire {
-        ValueWire::Null => EvalValue::Null,
-        ValueWire::Undef => EvalValue::Undefined,
-        ValueWire::Bool { v } => EvalValue::Bool(v),
-        ValueWire::Num { bits } => EvalValue::Num(f64::from_bits(bits)),
-        ValueWire::Str { v } => EvalValue::Str(v),
-        ValueWire::Arr { v } => EvalValue::Arr(v.into_iter().map(decode_value).collect()),
-        ValueWire::Obj { v } => EvalValue::Obj(Arc::new(decode_object(v))),
+/// `filename` below `cwd` with nothing for `path_relative` to fold or to
+/// re-encode: its answer is then this remainder's components joined by `/`.
+fn plain_suffix<'a>(cwd: &Path, filename: &'a Path) -> Option<&'a Path> {
+    let below = filename.strip_prefix(cwd).ok()?;
+    let folds = |part: Component<'_>| matches!(part, Component::CurDir | Component::ParentDir);
+    if cwd.components().any(folds) {
+        return None;
     }
+    below
+        .components()
+        .all(|part| matches!(part, Component::Normal(name) if name.to_str().is_some()))
+        .then_some(below)
 }
 
-fn encode_object(map: &JsObjectMap) -> ObjWire {
-    ObjWire {
-        entries: map
-            .entries()
-            .map(|(k, v)| (k.to_string(), encode_value(v)))
-            .collect(),
-        css_type: map.css_type().map(str::to_string),
-    }
+// ------------------------------------------------------------ entry writing
+
+/// A dep-log path in its stored spelling (see [`PathRef`]).
+struct StoredPath<'a> {
+    relative: bool,
+    text: Cow<'a, str>,
 }
 
-fn decode_object(wire: ObjWire) -> JsObjectMap {
-    let mut map = JsObjectMap::new();
-    for (k, v) in wire.entries {
-        map.insert(k, decode_value(v));
-    }
-    if let Some(syntax) = wire.css_type {
-        map.set_css_type(syntax);
-    }
-    map
-}
-
-fn encode_result(result: &SourceCompileResult) -> ResultWire {
-    ResultWire {
-        code: result.code.clone(),
-        map: result.map.clone(),
-        rules: result.rules.clone(),
-        modified: result.modified,
-        create_objects: result
-            .create_objects
-            .iter()
-            .map(|(name, obj)| (name.clone(), encode_object(obj)))
-            .collect(),
-    }
-}
-
-fn decode_result(wire: ResultWire) -> SourceCompileResult {
-    SourceCompileResult {
-        code: wire.code,
-        map: wire.map,
-        rules: wire.rules,
-        modified: wire.modified,
-        create_objects: wire
-            .create_objects
-            .into_iter()
-            .map(|(name, obj)| (name, Arc::new(decode_object(obj))))
-            .collect(),
-    }
-}
-
-fn to_wire_path(log: &DepLog, p: &Path) -> PathWire {
-    for root in [&log.root, &log.raw_root] {
-        if let Ok(rel) = p.strip_prefix(root) {
-            return PathWire::Rel {
-                p: rel.to_string_lossy().replace('\\', "/"),
-            };
+impl<'a> StoredPath<'a> {
+    fn of(log: &DepLog, path: &'a Path) -> Self {
+        for root in [&log.root, &log.raw_root] {
+            if let Ok(below) = path.strip_prefix(root) {
+                let text = below.to_string_lossy();
+                let text = if text.contains('\\') {
+                    Cow::Owned(text.replace('\\', "/"))
+                } else {
+                    text
+                };
+                return StoredPath {
+                    relative: true,
+                    text,
+                };
+            }
+        }
+        StoredPath {
+            relative: false,
+            text: path.to_string_lossy(),
         }
     }
-    PathWire::Abs {
-        p: p.to_string_lossy().into_owned(),
+
+    fn as_ref(&self) -> PathRef<'_> {
+        if self.relative {
+            PathRef::Rel(&self.text)
+        } else {
+            PathRef::Abs(&self.text)
+        }
     }
 }
 
-fn to_wire_event(log: &DepLog, event: &DepEvent) -> DepEventWire {
+fn put_event(buf: &mut Vec<u8>, log: &DepLog, event: &DepEvent) {
     match event {
         DepEvent::NearestPackage {
             from,
             found,
             package_json_hash,
-        } => DepEventWire::NearestPackage {
-            from: to_wire_path(log, from),
-            found: found
+        } => {
+            let from = StoredPath::of(log, from);
+            let found = found
                 .as_ref()
-                .map(|(name, dir)| (name.clone(), to_wire_path(log, dir))),
-            hash: package_json_hash.clone(),
-        },
+                .map(|(name, dir)| (name.as_str(), StoredPath::of(log, dir)));
+            codec::put_dep(
+                buf,
+                &DepRecord::NearestPackage {
+                    from: from.as_ref(),
+                    found: found.as_ref().map(|(name, dir)| (*name, dir.as_ref())),
+                    hash: package_json_hash.as_deref(),
+                },
+            );
+        }
         DepEvent::ResolveImport {
             specifier,
             importer,
             resolved,
-        } => DepEventWire::ResolveImport {
-            specifier: specifier.clone(),
-            importer: to_wire_path(log, importer),
-            resolved: resolved.as_ref().map(|p| to_wire_path(log, p)),
-        },
-        DepEvent::Exists { path, found } => DepEventWire::Exists {
-            path: to_wire_path(log, path),
-            found: *found,
-        },
-        DepEvent::ExistsAny { path, found } => DepEventWire::ExistsAny {
-            path: to_wire_path(log, path),
-            found: *found,
-        },
+        } => {
+            let importer = StoredPath::of(log, importer);
+            let resolved = resolved.as_ref().map(|path| StoredPath::of(log, path));
+            codec::put_dep(
+                buf,
+                &DepRecord::ResolveImport {
+                    specifier,
+                    importer: importer.as_ref(),
+                    resolved: resolved.as_ref().map(StoredPath::as_ref),
+                },
+            );
+        }
+        DepEvent::Exists { path, found } => codec::put_dep(
+            buf,
+            &DepRecord::Exists {
+                path: StoredPath::of(log, path).as_ref(),
+                found: *found,
+            },
+        ),
+        DepEvent::ExistsAny { path, found } => codec::put_dep(
+            buf,
+            &DepRecord::ExistsAny {
+                path: StoredPath::of(log, path).as_ref(),
+                found: *found,
+            },
+        ),
     }
+}
+
+/// The whole entry into `buf`; `false` when it is too large to store.
+fn encode_entry(buf: &mut Vec<u8>, result: &SourceCompileResult, deps: &DepLog) -> bool {
+    codec::begin_entry(
+        buf,
+        compiler_fingerprint(),
+        &deps.root.to_string_lossy(),
+        result.modified,
+        result.map.is_some(),
+    );
+    codec::put_varint(buf, deps.events.len() as u64);
+    for event in &deps.events {
+        put_event(buf, deps, event);
+    }
+    codec::put_rules(buf, &result.rules);
+    codec::put_output(buf, &result.code, result.map.as_deref());
+    codec::put_objects(buf, &result.create_objects);
+    codec::finish_entry(buf)
 }
 
 // ---------------------------------------------------------- hit validation
 
-struct Anchor {
-    current_root: PathBuf,
+/// Rebuilds stored paths against the root a hit is validated from.
+struct Anchor<'a> {
+    current_root: &'a Path,
     same_root: bool,
 }
 
-/// `None` on an absolute path under a different root: such entries are
-/// root-pinned because relative derivations cannot reconstruct them.
-fn from_wire_path(anchor: &Anchor, wire: &PathWire) -> Option<PathBuf> {
-    match wire {
-        PathWire::Rel { p } => Some(anchor.current_root.join(p)),
-        PathWire::Abs { p } if anchor.same_root => Some(PathBuf::from(p)),
-        PathWire::Abs { .. } => None,
+impl Anchor<'_> {
+    /// The stored path into `out`; `false` on an absolute path under a
+    /// different root: such entries are root-pinned because relative
+    /// derivations cannot reconstruct them.
+    fn resolve(&self, stored: PathRef<'_>, out: &mut PathBuf) -> bool {
+        out.clear();
+        match stored {
+            PathRef::Rel(below) => {
+                out.push(self.current_root);
+                out.push(below);
+                true
+            }
+            PathRef::Abs(path) if self.same_root => {
+                out.push(path);
+                true
+            }
+            PathRef::Abs(_) => false,
+        }
     }
 }
 
-fn deps_valid(
-    entry: &EntryWire,
+/// Replays the dep log straight off the entry bytes; the first observation
+/// that no longer holds ends it.
+fn deps_hold(
+    reader: &mut Reader<'_>,
+    recorded_root: &str,
     current_root: &Path,
     fs: &dyn FsProvider,
     config: ResolveConfig<'_>,
-) -> bool {
+) -> Result<bool, Corrupt> {
+    let count = reader.dep_count()?;
+    if count == 0 {
+        return Ok(true);
+    }
     let canonical = fs.canonicalize_root(current_root);
     let anchor = Anchor {
-        same_root: canonical == Path::new(&entry.root),
-        current_root: canonical,
+        same_root: canonical == Path::new(recorded_root),
+        current_root: &canonical,
     };
-    entry
-        .deps
-        .iter()
-        .all(|dep| dep_valid(dep, &anchor, fs, config))
+    // Every event's paths are rebuilt in these two buffers.
+    let (mut first, mut second) = (PathBuf::new(), PathBuf::new());
+    for _ in 0..count {
+        if !dep_holds(&reader.dep()?, &anchor, fs, config, &mut first, &mut second) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-fn dep_valid(
-    dep: &DepEventWire,
-    anchor: &Anchor,
+fn dep_holds(
+    dep: &DepRecord<'_>,
+    anchor: &Anchor<'_>,
     fs: &dyn FsProvider,
     config: ResolveConfig<'_>,
+    first: &mut PathBuf,
+    second: &mut PathBuf,
 ) -> bool {
-    match dep {
-        DepEventWire::NearestPackage { from, found, hash } => {
-            let Some(from) = from_wire_path(anchor, from) else {
-                return false;
-            };
-            let expected = match found {
-                None => None,
-                Some((name, dir)) => match from_wire_path(anchor, dir) {
-                    Some(dir) => Some((name.clone(), dir)),
-                    None => return false,
-                },
-            };
-            if fs.nearest_package(&from) != expected {
+    match *dep {
+        DepRecord::NearestPackage { from, found, hash } => {
+            if !anchor.resolve(from, first) {
                 return false;
             }
-            let recomputed = expected
-                .as_ref()
-                .and_then(|(_, dir)| fs.hash_file(&dir.join("package.json")));
-            recomputed == *hash
+            let expected = match found {
+                None => None,
+                Some((name, dir)) => {
+                    if !anchor.resolve(dir, second) {
+                        return false;
+                    }
+                    Some(name)
+                }
+            };
+            match (fs.nearest_package(first), expected) {
+                (None, None) => hash.is_none(),
+                (Some((name, dir)), Some(expected)) if name == expected && dir == *second => {
+                    second.push("package.json");
+                    fs.hash_file(second).as_deref() == hash
+                }
+                _ => false,
+            }
         }
-        DepEventWire::ResolveImport {
+        DepRecord::ResolveImport {
             specifier,
             importer,
             resolved,
         } => {
-            let Some(importer) = from_wire_path(anchor, importer) else {
+            if !anchor.resolve(importer, first) {
                 return false;
-            };
+            }
             let expected = match resolved {
                 None => None,
-                Some(p) => match from_wire_path(anchor, p) {
-                    Some(p) => Some(p),
-                    None => return false,
-                },
+                Some(path) => {
+                    if !anchor.resolve(path, second) {
+                        return false;
+                    }
+                    Some(second.as_path())
+                }
             };
-            fs.resolve_import(specifier, &importer, config) == expected
+            fs.resolve_import(specifier, first, config).as_deref() == expected
         }
-        DepEventWire::Exists { path, found } => {
-            let Some(path) = from_wire_path(anchor, path) else {
-                return false;
-            };
-            fs.exists(&path) == *found
+        DepRecord::Exists { path, found } => {
+            anchor.resolve(path, first) && fs.exists(first) == found
         }
-        DepEventWire::ExistsAny { path, found } => {
-            let Some(path) = from_wire_path(anchor, path) else {
-                return false;
-            };
-            fs.exists_any(&path) == *found
+        DepRecord::ExistsAny { path, found } => {
+            anchor.resolve(path, first) && fs.exists_any(first) == found
         }
     }
+}
+
+/// How much of a hit comes back; a miss always returns the whole fresh result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HitParts {
+    /// Every field.
+    Full,
+    /// `code`, `map`, `rules` and `modified`; `create_objects` stays empty.
+    Output,
+    /// `rules` and `modified` only: `code` stays empty too.
+    Rules,
+}
+
+/// `Ok(None)` is a clean miss (another compiler's entry, or a dep that moved).
+fn decode_hit(
+    entry: &[u8],
+    current_root: &Path,
+    fs: &dyn FsProvider,
+    config: ResolveConfig<'_>,
+    parts: HitParts,
+) -> Result<Option<SourceCompileResult>, Corrupt> {
+    let (mut reader, header) = {
+        let _t = timings::start(Stage::CacheParse);
+        let mut reader = Reader::open(entry)?;
+        let header = reader.header()?;
+        (reader, header)
+    };
+    if header.fingerprint != compiler_fingerprint() {
+        return Ok(None);
+    }
+    {
+        let _t = timings::start(Stage::CacheReplay);
+        if !deps_hold(&mut reader, header.root, current_root, fs, config)? {
+            return Ok(None);
+        }
+    }
+    let _t = timings::start(Stage::CacheDecode);
+    let mut result = SourceCompileResult {
+        code: String::new(),
+        map: None,
+        rules: reader.rules()?,
+        modified: header.modified,
+        create_objects: Vec::new(),
+    };
+    if parts == HitParts::Rules {
+        return Ok(Some(result));
+    }
+    result.code = reader.code()?;
+    if header.has_map {
+        result.map = Some(reader.code()?);
+    }
+    if parts == HitParts::Output {
+        return Ok(Some(result));
+    }
+    result.create_objects = reader.objects()?;
+    if !reader.is_empty() {
+        return Err(Corrupt);
+    }
+    Ok(Some(result))
 }
 
 // ------------------------------------------------------------------- store
 
 const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// One read takes an entry up to this size whole; a larger one takes a second.
+const READ_CHUNK: usize = 64 << 10;
+
+/// A thread's scratch buffer that grew past this is dropped after the call
+/// rather than pinned at its high-water mark.
+const SCRATCH_KEEP: usize = 1 << 20;
+
+thread_local! {
+    // Entries are read into and encoded in per-thread buffers: a hit allocates
+    // only what it returns. Taken out for the call, so a nested one still works.
+    static READ_BUF: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+    static WRITE_BUF: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+}
+
+fn with_scratch<T>(
+    slot: &'static std::thread::LocalKey<Cell<Vec<u8>>>,
+    run: impl FnOnce(&mut Vec<u8>) -> T,
+) -> T {
+    let mut buf = slot.take();
+    let out = run(&mut buf);
+    if buf.capacity() <= SCRATCH_KEEP {
+        slot.set(buf);
+    }
+    out
+}
+
+/// Reads the entry at `path` into the front of `buf` and returns its length.
+/// The length the entry declares ends the read, so the usual hit costs one
+/// `read` with no probe for end-of-file; a file that disagrees with its own
+/// prelude comes back as read and fails to decode.
+fn read_entry(path: &Path, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+    let mut file = std::fs::File::open(path)?;
+    if buf.len() < READ_CHUNK {
+        buf.resize(READ_CHUNK, 0);
+    }
+    let mut filled = 0;
+    loop {
+        let read = match file.read(&mut buf[filled..]) {
+            Ok(read) => read,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        filled += read;
+        let Some(total) = codec::declared_len(&buf[..filled]) else {
+            if read == 0 || filled >= codec::PRELUDE_LEN {
+                return Ok(filled);
+            }
+            continue;
+        };
+        if total <= filled {
+            return Ok(filled);
+        }
+        // The length is the file's own claim: the buffer grows to it only once
+        // the file is seen to be that long.
+        if file.metadata()?.len() != total as u64 {
+            return Ok(filled);
+        }
+        if buf.len() < total {
+            buf.resize(total, 0);
+        }
+        file.read_exact(&mut buf[filled..total])?;
+        return Ok(total);
+    }
+}
 
 /// One file per key under `dir`; atomic tmp+rename writes, lock-free.
 pub struct CacheStore {
@@ -527,10 +658,10 @@ impl CacheStore {
     }
 
     fn entry_path(&self, key: &CacheKey) -> PathBuf {
-        self.dir.join(key.hex())
+        self.dir.join(blake3::Hash::from(key.0).to_hex().as_str())
     }
 
-    /// A hit only when the entry parses, matches the compiler fingerprint,
+    /// A hit only when the entry decodes, matches the compiler fingerprint,
     /// and every logged fs observation replays identically against `fs`.
     pub fn get_validated(
         &self,
@@ -539,30 +670,33 @@ impl CacheStore {
         fs: &dyn FsProvider,
         config: ResolveConfig<'_>,
     ) -> Option<SourceCompileResult> {
+        self.get_validated_parts(key, current_root, fs, config, HitParts::Full)
+    }
+
+    /// [`CacheStore::get_validated`] returning only `parts` of the entry: the
+    /// rest is neither validated nor allocated.
+    pub fn get_validated_parts(
+        &self,
+        key: &CacheKey,
+        current_root: &Path,
+        fs: &dyn FsProvider,
+        config: ResolveConfig<'_>,
+        parts: HitParts,
+    ) -> Option<SourceCompileResult> {
         let path = self.entry_path(key);
-        let bytes = {
-            let _t = crate::timings::start(crate::timings::Stage::CacheRead);
-            std::fs::read(&path).ok()?
-        };
-        let entry = {
-            let _t = crate::timings::start(crate::timings::Stage::CacheParse);
-            serde_json::from_slice::<EntryWire>(&bytes)
-        };
-        let Ok(entry) = entry else {
-            let _ = std::fs::remove_file(&path);
-            return None;
-        };
-        if entry.schema != CACHE_SCHEMA_VERSION || entry.fingerprint != compiler_fingerprint() {
-            return None;
-        }
-        {
-            let _t = crate::timings::start(crate::timings::Stage::CacheReplay);
-            if !deps_valid(&entry, current_root, fs, config) {
-                return None;
+        with_scratch(&READ_BUF, |buf| {
+            let len = {
+                let _t = timings::start(Stage::CacheRead);
+                read_entry(&path, buf).ok()?
+            };
+            match decode_hit(&buf[..len], current_root, fs, config, parts) {
+                Ok(hit) => hit,
+                Err(Corrupt) => {
+                    let _ = std::fs::remove_file(&path);
+                    None
+                }
             }
-        }
-        let _t = crate::timings::start(crate::timings::Stage::CacheDecode);
-        Some(decode_result(entry.result))
+        })
     }
 
     pub fn put(
@@ -571,27 +705,22 @@ impl CacheStore {
         result: &SourceCompileResult,
         deps: &DepLog,
     ) -> std::io::Result<()> {
-        let entry = EntryWire {
-            schema: CACHE_SCHEMA_VERSION,
-            fingerprint: compiler_fingerprint().to_string(),
-            root: deps.root.to_string_lossy().into_owned(),
-            deps: deps.events.iter().map(|e| to_wire_event(deps, e)).collect(),
-            result: encode_result(result),
-        };
-        let bytes = serde_json::to_vec(&entry).map_err(std::io::Error::other)?;
-        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let tmp = self.dir.join(format!(
-            ".tmp-{}-{}",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&tmp, &bytes)?;
-        std::fs::rename(&tmp, self.entry_path(key))?;
-        let written = self
-            .written_since_gc
-            .fetch_add(bytes.len() as u64, Ordering::Relaxed)
-            + bytes.len() as u64;
-        if written > self.max_bytes / 8 {
+        let written = with_scratch(&WRITE_BUF, |buf| {
+            if !encode_entry(buf, result, deps) {
+                return Err(std::io::Error::other("cache entry larger than 4 GiB"));
+            }
+            static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+            let tmp = self.dir.join(format!(
+                ".tmp-{}-{}",
+                std::process::id(),
+                TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::write(&tmp, &buf[..])?;
+            std::fs::rename(&tmp, self.entry_path(key))?;
+            Ok(buf.len() as u64)
+        })?;
+        let since_gc = self.written_since_gc.fetch_add(written, Ordering::Relaxed) + written;
+        if since_gc > self.max_bytes / 8 {
             self.written_since_gc.store(0, Ordering::Relaxed);
             self.gc()?;
         }
@@ -669,7 +798,7 @@ fn snippet(text: &str) -> String {
     s
 }
 
-/// Byte-exact comparison via the lossless wire encoding of each field.
+/// Byte-exact comparison: `create_objects` through its lossless entry encoding.
 pub fn compare_results(
     cached: &SourceCompileResult,
     fresh: &SourceCompileResult,
@@ -704,18 +833,16 @@ pub fn compare_results(
         ));
     }
     let encode = |result: &SourceCompileResult| {
-        serde_json::to_string(
-            &result
-                .create_objects
-                .iter()
-                .map(|(name, obj)| (name.clone(), encode_object(obj)))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default()
+        let mut bytes = Vec::new();
+        codec::put_objects(&mut bytes, &result.create_objects);
+        bytes
     };
-    let (cached_objs, fresh_objs) = (encode(cached), encode(fresh));
-    if cached_objs != fresh_objs {
-        return Err(mismatch("create_objects", &cached_objs, &fresh_objs));
+    if encode(cached) != encode(fresh) {
+        return Err(mismatch(
+            "create_objects",
+            &format!("{:?}", cached.create_objects),
+            &format!("{:?}", fresh.create_objects),
+        ));
     }
     Ok(())
 }
@@ -743,17 +870,28 @@ pub fn compile_through_cache_in(
     fs: &dyn FsProvider,
     verify: bool,
 ) -> Result<(Option<SourceCompileResult>, CacheStatus), StylexError> {
+    compile_through_cache_parts_in(allocator, store, ctx, options, fs, verify, HitParts::Full)
+}
+
+/// [`compile_through_cache_in`] for a caller that reads only `parts` of a hit
+/// (see [`HitParts`]); `verify` still compares the whole entry.
+pub fn compile_through_cache_parts_in(
+    allocator: &oxc_allocator::Allocator,
+    store: &CacheStore,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+    verify: bool,
+    parts: HitParts,
+) -> Result<(Option<SourceCompileResult>, CacheStatus), StylexError> {
     if !might_contain_stylex(ctx.source_text, options) {
         return Ok((None, CacheStatus::Gated));
     }
-    let key = cache_key(
-        ctx.source_text,
-        &filename_key(ctx.cwd, ctx.filename),
-        options,
-    );
+    let key = compile_key(ctx, options);
+    let parts = if verify { HitParts::Full } else { parts };
     // The key hashes every ResolvedOptions field, so an entry under it was
     // recorded with this resolver config; replaying under it is sound.
-    let hit = store.get_validated(&key, ctx.cwd, fs, ResolveConfig::of(options));
+    let hit = store.get_validated_parts(&key, ctx.cwd, fs, ResolveConfig::of(options), parts);
     if let Some(hit) = hit {
         if !verify {
             return Ok((Some(hit), CacheStatus::Hit));
@@ -783,8 +921,12 @@ pub fn compile_through_cache_in(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::eval::value::{EvalValue, JsObjectMap};
     use crate::options::CompilerOptions;
+    use crate::rules::StylexRule;
 
     fn options(json: serde_json::Value) -> ResolvedOptions {
         CompilerOptions::from_json(&json)
@@ -847,31 +989,417 @@ mod tests {
         );
     }
 
-    #[test]
-    fn value_wire_roundtrip_is_lossless() {
+    fn sample_object() -> JsObjectMap {
         let mut inner = JsObjectMap::new();
         inner.insert("width", EvalValue::Str("1px".into()));
         inner.set_css_type("<length>".to_string());
         let mut obj = JsObjectMap::new();
         obj.insert("2", EvalValue::Num(-0.0));
-        obj.insert("b", EvalValue::Num(f64::NAN));
+        obj.insert("b", EvalValue::Num(f64::from_bits(0x7ff8_0000_0000_beef)));
         obj.insert("0", EvalValue::Num(f64::NEG_INFINITY));
         obj.insert("a", EvalValue::Undefined);
+        obj.insert("t", EvalValue::Bool(true));
         obj.insert(
             "arr",
             EvalValue::Arr(vec![EvalValue::Null, EvalValue::Obj(inner.into())]),
         );
-        let value = EvalValue::Obj(obj.into());
-        let wire = encode_value(&value);
-        let rewire = encode_value(&decode_value(wire.clone()));
-        assert!(wire == rewire, "round-trip drifted");
-        if let EvalValue::Obj(map) = decode_value(wire) {
-            assert_eq!(
-                map.keys().collect::<Vec<_>>(),
-                vec!["0", "2", "b", "a", "arr"]
-            );
-        } else {
+        obj
+    }
+
+    #[test]
+    fn value_encoding_roundtrip_is_lossless() {
+        let value = EvalValue::Obj(sample_object().into());
+        let mut bytes = Vec::new();
+        codec::put_value(&mut bytes, &value);
+        let mut reader = Reader::raw(&bytes);
+        let decoded = reader.value(0).expect("decodes");
+        assert!(reader.is_empty());
+        let mut again = Vec::new();
+        codec::put_value(&mut again, &decoded);
+        assert!(bytes == again, "round-trip drifted");
+        let EvalValue::Obj(map) = decoded else {
             panic!("expected object");
+        };
+        assert_eq!(
+            map.keys().collect::<Vec<_>>(),
+            vec!["0", "2", "b", "a", "t", "arr"]
+        );
+        // The NaN payload and the zero's sign survive: the bits are stored.
+        let bits = |key: &str| match map.get(key) {
+            Some(EvalValue::Num(n)) => n.to_bits(),
+            other => panic!("{key}: {other:?}"),
+        };
+        assert_eq!(bits("b"), 0x7ff8_0000_0000_beef);
+        assert_eq!(bits("2"), (-0.0f64).to_bits());
+        let Some(EvalValue::Arr(items)) = map.get("arr") else {
+            panic!("expected array");
+        };
+        let EvalValue::Obj(inner) = &items[1] else {
+            panic!("expected nested object");
+        };
+        assert_eq!(inner.css_type(), Some("<length>"));
+    }
+
+    fn sample_result() -> SourceCompileResult {
+        let rule = |class_name: &str, priority: f64| StylexRule {
+            class_name: class_name.into(),
+            ltr: format!(".{class_name}{{color:\"red\"}}\n").into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority,
+        };
+        SourceCompileResult {
+            code: "const s = {a: \"x1\"};\n// \u{1F600} \\ done\n".to_string(),
+            map: Some("{\"version\":3}".to_string()),
+            rules: vec![
+                rule("x1", 3000.0),
+                StylexRule {
+                    rtl: Some(".x2{margin-right:0}".into()),
+                    ..rule("x2", 3000.5)
+                },
+                StylexRule {
+                    const_key: Some("xk".into()),
+                    const_val: Some(Box::new(serde_json::json!({
+                        "z": [1, -2, 1.5, 1e300, u64::MAX, i64::MIN, null, true, "s"],
+                        "a": { "__jsnum": "NaN" },
+                    }))),
+                    ..rule("xk", 0.0)
+                },
+            ],
+            modified: true,
+            create_objects: vec![
+                (Some("styles".to_string()), Arc::new(sample_object())),
+                (None, Arc::new(JsObjectMap::new())),
+            ],
+        }
+    }
+
+    fn sample_log() -> DepLog {
+        DepLog {
+            root: PathBuf::from("/work/app"),
+            raw_root: PathBuf::from("/alias/app"),
+            events: vec![
+                DepEvent::NearestPackage {
+                    from: PathBuf::from("/work/app/src/input.ts"),
+                    found: Some(("app".to_string(), PathBuf::from("/work/app"))),
+                    package_json_hash: Some("ab".repeat(32)),
+                },
+                DepEvent::NearestPackage {
+                    from: PathBuf::from("/elsewhere/x.ts"),
+                    found: None,
+                    package_json_hash: None,
+                },
+                DepEvent::ResolveImport {
+                    specifier: "./tokens.stylex".to_string(),
+                    importer: PathBuf::from("/alias/app/src/input.ts"),
+                    resolved: Some(PathBuf::from("/work/app/src/tokens.stylex.ts")),
+                },
+                DepEvent::ResolveImport {
+                    specifier: "missing".to_string(),
+                    importer: PathBuf::from("/work/app/src/input.ts"),
+                    resolved: None,
+                },
+                DepEvent::Exists {
+                    path: PathBuf::from("/work/app/src/tokens.stylex.js"),
+                    found: false,
+                },
+                DepEvent::ExistsAny {
+                    path: PathBuf::from("/outside/lib"),
+                    found: true,
+                },
+            ],
+        }
+    }
+
+    /// Answers every probe the way [`sample_log`] recorded it from `/work/app`.
+    struct SampleFs;
+    impl FsProvider for SampleFs {
+        fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
+            (from == Path::new("/work/app/src/input.ts"))
+                .then(|| ("app".to_string(), PathBuf::from("/work/app")))
+        }
+        fn resolve_import(
+            &self,
+            specifier: &str,
+            _: &Path,
+            _: ResolveConfig<'_>,
+        ) -> Option<PathBuf> {
+            (specifier == "./tokens.stylex")
+                .then(|| PathBuf::from("/work/app/src/tokens.stylex.ts"))
+        }
+        fn exists(&self, _: &Path) -> bool {
+            false
+        }
+        fn exists_any(&self, path: &Path) -> bool {
+            path == Path::new("/outside/lib")
+        }
+        fn hash_file(&self, path: &Path) -> Option<String> {
+            (path == Path::new("/work/app/package.json")).then(|| "ab".repeat(32))
+        }
+        fn canonicalize_root(&self, root: &Path) -> PathBuf {
+            root.to_path_buf()
+        }
+    }
+
+    fn sample_entry() -> Vec<u8> {
+        let mut entry = Vec::new();
+        assert!(encode_entry(&mut entry, &sample_result(), &sample_log()));
+        entry
+    }
+
+    fn decode(entry: &[u8], parts: HitParts) -> Result<Option<SourceCompileResult>, Corrupt> {
+        decode_hit(
+            entry,
+            Path::new("/work/app"),
+            &SampleFs,
+            ResolveConfig::default(),
+            parts,
+        )
+    }
+
+    #[test]
+    fn entry_roundtrip_is_lossless() {
+        let entry = sample_entry();
+        let hit = decode(&entry, HitParts::Full)
+            .expect("decodes")
+            .expect("deps replay");
+        compare_results(&hit, &sample_result()).expect("identical");
+        assert_eq!(hit.rules, sample_result().rules);
+        assert_eq!(hit.create_objects[0].0.as_deref(), Some("styles"));
+
+        // The stored paths: in-root ones relative to either root spelling,
+        // the rest absolute.
+        let mut reader = Reader::open(&entry).expect("prelude");
+        let header = reader.header().expect("header");
+        assert_eq!(header.root, "/work/app");
+        let count = reader.dep_count().expect("count");
+        let deps: Vec<DepRecord<'_>> = (0..count).map(|_| reader.dep().expect("dep")).collect();
+        assert_eq!(
+            deps[0],
+            DepRecord::NearestPackage {
+                from: PathRef::Rel("src/input.ts"),
+                found: Some(("app", PathRef::Rel(""))),
+                hash: Some(&"ab".repeat(32)),
+            }
+        );
+        assert_eq!(
+            deps[1],
+            DepRecord::NearestPackage {
+                from: PathRef::Abs("/elsewhere/x.ts"),
+                found: None,
+                hash: None,
+            }
+        );
+        assert_eq!(
+            deps[2],
+            DepRecord::ResolveImport {
+                specifier: "./tokens.stylex",
+                importer: PathRef::Rel("src/input.ts"),
+                resolved: Some(PathRef::Rel("src/tokens.stylex.ts")),
+            }
+        );
+        assert_eq!(
+            deps[5],
+            DepRecord::ExistsAny {
+                path: PathRef::Abs("/outside/lib"),
+                found: true,
+            }
+        );
+    }
+
+    #[test]
+    fn partial_hits_return_only_what_was_asked() {
+        let entry = sample_entry();
+        let full = sample_result();
+        let rules = decode(&entry, HitParts::Rules).unwrap().unwrap();
+        assert_eq!(rules.rules, full.rules);
+        assert!(rules.modified);
+        assert!(rules.code.is_empty() && rules.map.is_none() && rules.create_objects.is_empty());
+        let output = decode(&entry, HitParts::Output).unwrap().unwrap();
+        assert_eq!(output.code, full.code);
+        assert_eq!(output.map, full.map);
+        assert_eq!(output.rules, full.rules);
+        assert!(output.create_objects.is_empty());
+    }
+
+    #[test]
+    fn a_moved_dep_or_a_foreign_root_misses_cleanly() {
+        let entry = sample_entry();
+        // Root-relative deps follow the root; the absolute ones pin the entry.
+        let moved = decode_hit(
+            &entry,
+            Path::new("/work/other"),
+            &SampleFs,
+            ResolveConfig::default(),
+            HitParts::Full,
+        );
+        assert!(matches!(moved, Ok(None)), "foreign root must miss");
+
+        struct Moved;
+        impl FsProvider for Moved {
+            fn nearest_package(&self, from: &Path) -> Option<(String, PathBuf)> {
+                SampleFs.nearest_package(from)
+            }
+            fn resolve_import(&self, _: &str, _: &Path, _: ResolveConfig<'_>) -> Option<PathBuf> {
+                Some(PathBuf::from("/work/app/src/tokens.stylex.tsx"))
+            }
+            fn exists(&self, _: &Path) -> bool {
+                false
+            }
+            fn hash_file(&self, path: &Path) -> Option<String> {
+                SampleFs.hash_file(path)
+            }
+            fn canonicalize_root(&self, root: &Path) -> PathBuf {
+                root.to_path_buf()
+            }
+        }
+        let moved = decode_hit(
+            &entry,
+            Path::new("/work/app"),
+            &Moved,
+            ResolveConfig::default(),
+            HitParts::Full,
+        );
+        assert!(matches!(moved, Ok(None)), "re-resolved import must miss");
+    }
+
+    #[test]
+    fn truncated_and_damaged_entries_are_corrupt_never_a_panic() {
+        let entry = sample_entry();
+        for cut in 0..entry.len() {
+            // As the file would be after a short write…
+            assert!(decode(&entry[..cut], HitParts::Full).is_err(), "cut {cut}");
+            // …and with a prelude that vouches for the shorter length.
+            let mut short = entry[..cut].to_vec();
+            if cut >= codec::PRELUDE_LEN {
+                short[4..8].copy_from_slice(&(cut as u32).to_le_bytes());
+                assert!(
+                    decode(&short, HitParts::Full).is_err(),
+                    "resealed cut {cut}"
+                );
+                // A partial read stops before the damage or reports it.
+                let _ = decode(&short, HitParts::Rules);
+                let _ = decode(&short, HitParts::Output);
+            }
+        }
+        let mut long = entry.clone();
+        long.push(0);
+        assert!(decode(&long, HitParts::Full).is_err(), "trailing byte");
+        let resealed = (long.len() as u32).to_le_bytes();
+        long[4..8].copy_from_slice(&resealed);
+        assert!(
+            decode(&long, HitParts::Full).is_err(),
+            "resealed trailing byte"
+        );
+
+        // Any byte changed to any value decodes to something or to Corrupt.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let at = (state >> 33) as usize % entry.len();
+            let mut damaged = entry.clone();
+            damaged[at] = (state >> 24) as u8;
+            let _ = decode(&damaged, HitParts::Full);
+        }
+    }
+
+    #[test]
+    fn store_roundtrips_large_entries_and_drops_damaged_ones() {
+        let dir = std::env::temp_dir().join(format!("stylex-cache-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = CacheStore::new(&dir).expect("store");
+        let opts = options(serde_json::json!({}));
+        let lookup = |key: &CacheKey, parts| {
+            store.get_validated_parts(
+                key,
+                Path::new("/work/app"),
+                &SampleFs,
+                ResolveConfig::default(),
+                parts,
+            )
+        };
+
+        // Past the read chunk: the entry arrives in two reads.
+        let big = SourceCompileResult {
+            code: "const filler = 1;\n".repeat(READ_CHUNK / 8),
+            ..sample_result()
+        };
+        let key = cache_key("big", "input.ts", &opts);
+        store.put(&key, &big, &sample_log()).expect("put");
+        for _ in 0..2 {
+            let hit = lookup(&key, HitParts::Full).expect("large entry hits");
+            compare_results(&hit, &big).expect("identical");
+        }
+        // A small entry read into the buffer the large one grew.
+        let small_key = cache_key("small", "input.ts", &opts);
+        store
+            .put(&small_key, &sample_result(), &sample_log())
+            .expect("put");
+        let hit = lookup(&small_key, HitParts::Full).expect("small entry hits");
+        compare_results(&hit, &sample_result()).expect("identical");
+        assert!(lookup(&small_key, HitParts::Rules).is_some());
+
+        // Damage is a miss that removes the file: garbage, a cut-off write, a
+        // v2 JSON entry, an empty file.
+        let path = store.entry_path(&small_key);
+        let good = std::fs::read(&path).expect("entry bytes");
+        for damaged in [
+            b"not an entry".to_vec(),
+            good[..good.len() - 1].to_vec(),
+            br#"{"schema":2,"fingerprint":"x","root":"/","deps":[]}"#.to_vec(),
+            Vec::new(),
+        ] {
+            std::fs::write(&path, &damaged).expect("write");
+            assert!(lookup(&small_key, HitParts::Full).is_none());
+            assert!(!path.exists(), "damaged entry must be removed");
+        }
+        // Another compiler's entry is left alone: its own key never names it.
+        let mut foreign = Vec::new();
+        codec::begin_entry(&mut foreign, "other-compiler", "/work/app", false, false);
+        assert!(codec::finish_entry(&mut foreign));
+        std::fs::write(&path, &foreign).expect("write");
+        assert!(lookup(&small_key, HitParts::Full).is_none());
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compile_key_matches_the_public_key_for_every_path_shape() {
+        let opts = options(serde_json::json!({ "dev": true }));
+        let other = options(serde_json::json!({}));
+        for (cwd, filename) in [
+            ("/work/app", "/work/app/src/input.ts"),
+            ("/work/app/", "/work/app/src//deep/./input.ts"),
+            ("/work/app", "/work/app"),
+            ("/work/app", "/work/app/src/../input.ts"),
+            ("/work/app", "/work/other/input.ts"),
+            ("/work/../work/app", "/work/../work/app/input.ts"),
+            ("./app", "./app/input.ts"),
+            ("app", "app/src/input.ts"),
+            ("", "src/input.ts"),
+            ("", "/abs/input.ts"),
+            ("/", "/input.ts"),
+        ] {
+            // Alternating option sets also turns the per-thread prefix over.
+            for options in [&opts, &other, &opts] {
+                let ctx = FileContext {
+                    filename: Path::new(filename),
+                    source_text: "const a = 1;",
+                    cwd: Path::new(cwd),
+                };
+                assert_eq!(
+                    compile_key(&ctx, options),
+                    cache_key(
+                        ctx.source_text,
+                        &filename_key(ctx.cwd, ctx.filename),
+                        options
+                    ),
+                    "{cwd:?} {filename:?}"
+                );
+            }
         }
     }
 

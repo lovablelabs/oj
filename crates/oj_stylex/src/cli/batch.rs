@@ -14,7 +14,7 @@ use crate::api::{
     FileContext, compile_program, compile_rules, parse_program, transform_source_in,
     transform_source_rules_in,
 };
-use crate::cache::{CacheStatus, CacheStore, compile_through_cache_in};
+use crate::cache::{CacheStatus, CacheStore, HitParts, compile_through_cache_parts_in};
 use crate::errors::StylexError;
 use crate::module_resolution::MemoFs;
 use crate::options::CompilerOptions;
@@ -848,13 +848,19 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
             let mut allocator = cell.borrow_mut();
             allocator.reset();
             if let Some(cache) = ctx.cache {
-                let (result, status) = compile_through_cache_in(
+                // A hit decodes only what this run writes out.
+                let parts = match ctx.payload {
+                    Payload::Full => HitParts::Output,
+                    Payload::Rules => HitParts::Rules,
+                };
+                let (result, status) = compile_through_cache_parts_in(
                     &allocator,
                     &cache.store,
                     &file,
                     &options,
                     fs,
                     cache.verify,
+                    parts,
                 )?;
                 let outcome = Some(CacheOutcome::Status(status));
                 return match result {
