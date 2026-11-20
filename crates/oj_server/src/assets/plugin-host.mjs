@@ -3540,15 +3540,20 @@ async function environmentsConfig() {
 // modules, so a runner environment compiles them through oj's compiler.
 function runnerStylex(p) {
   if (p?.name !== "@stylexjs/unplugin" || !p.__ojStylexOptions || p.transform) return p;
-  // The plugin's shouldHandle, loosely: oj checks the imports exactly.
+  // The plugin's shouldHandle, loosely: oj checks the imports exactly. The
+  // built-in sources count whatever `importSources` lists.
   const listed = p.__ojStylexOptions.importSources;
-  const sources = (Array.isArray(listed) ? listed : ["stylex", "@stylexjs/stylex"])
+  const sources = ["stylex", "@stylexjs/stylex", ...(Array.isArray(listed) ? listed : [])]
     .map((s) => (typeof s === "string" ? s : s?.from))
     .filter((s) => typeof s === "string");
+  // The modules oj was asked to compile: one that then drops its StyleX
+  // imports is handed over once more, for its rules to leave the sheet.
+  const compiled = new Set();
   return {
     ...p,
     async transform(code, id) {
-      if (!sources.some((s) => code.includes(s))) return null;
+      if (sources.some((s) => code.includes(s))) compiled.add(id);
+      else if (!compiled.delete(id)) return null;
       return await ctxRpc("stylexTransform", [id, code]);
     },
   };

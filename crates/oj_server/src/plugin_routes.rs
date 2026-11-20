@@ -71,10 +71,13 @@ async fn compile_plugin_source(
     let claimed = pre_resolve_bare(state, Path::new(&importer), &source, &dep_map).await;
     let claim_state = Arc::clone(state);
     let compiled = tokio::task::spawn_blocking(move || {
-        let (source, stylex_rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
-            Some(pre) => (pre.code, Some((stylex_id, pre.rules))),
-            None => (source, None),
+        // Recorded even when the plugin passes over the module: one that
+        // dropped its StyleX imports drops the rules its last load recorded.
+        let (source, rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
+            Some(pre) => (pre.code, pre.rules),
+            None => (source, Vec::new()),
         };
+        let stylex_rules = (stylex_id, rules);
         let mut rewrite = |spec: &str| {
             // A claim wins over the pre-bundle, as in app modules; a bundle or an
             // answer oj's resolver gave maps onto its pre-bundle URL.
@@ -129,10 +132,8 @@ async fn compile_plugin_source(
     })
     .await
     .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))?;
-    let (code, stylex_rules) = compiled;
-    if let Some((id, rules)) = stylex_rules {
-        crate::stylex::record_id(state, &id, &rules);
-    }
+    let (code, (id, rules)) = compiled;
+    crate::stylex::record_id(state, &id, &rules);
     Ok(code)
 }
 
