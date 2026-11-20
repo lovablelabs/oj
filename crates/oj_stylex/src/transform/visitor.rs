@@ -1911,7 +1911,7 @@ impl<'a, 'env> Shared<'a, 'env> {
                 self.splice_text(|| print_create_parens(&out.compiled, &dynamic))
             };
             let edit_idx = self.push_edit(Edit::replace(call.span, text));
-            print_deferred = style_var && !self.build_plan;
+            print_deferred = style_var && !self.build_plan && !self.rules_only;
             (edit_idx, plan_idx)
         } else {
             let uid = self.generate_uid("styles", call_node);
