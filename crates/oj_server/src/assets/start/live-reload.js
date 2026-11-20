@@ -280,9 +280,21 @@
   // chunks as it loads would otherwise reload for each in turn, forever.
   const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
   const GONE_CHUNK_MARKS = 64;
+  // The document's hot changes are part of the mark as well: hot updates
+  // rename chunks back and forth (an edit taken back brings the old name
+  // back) without a new stamp, so a tab can meet a name it reloaded for
+  // under an earlier document, and that document is not this one. One
+  // served from a cache comes back with the same changes, and stops.
+  // Once per document and chunk: the server's frame and the import's own
+  // rejection can both speak of one failed import, and the second, finding
+  // the mark the first left, would say the reload served the same document
+  // while this one is still on its way out. By name, not for the document
+  // as a whole: a reload the user declined (a `beforeunload` prompt) leaves
+  // the document where it is, and the next chunk it finds gone asks again.
+  const reloadedFor = new Set();
   const reloadForGoneChunk = (what) => {
-    if (stamp == null) return;
-    const mark = stamp + "|" + what;
+    if (stamp == null || reloadedFor.has(what)) return;
+    const mark = stamp + "|" + (docHas ?? "") + "|" + what;
     let marks = [];
     try {
       const kept = JSON.parse(sessionStorage.getItem(GONE_CHUNK_KEY) || "[]");
@@ -299,18 +311,23 @@
       sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
     } catch {}
     console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
+    reloadedFor.add(what);
     snapshot();
     location.reload();
   };
   // The server says which chunk is gone (oj:chunk-gone) to every open page,
-  // and the one that asked for it is the one to reload: the others, behind
-  // or not, have nothing broken. A page knows what it asked for from its
-  // resource timeline, kept here by an observer since the timeline's own
-  // buffer fills on a large app. The import's rejection would not do: a
-  // router catches a failed lazy import (TanStack Router's
-  // lazyRouteComponent), so no unhandled rejection is ever raised, where
-  // Vite's `vite:preloadError` is dispatched by its preload helper before
-  // the import rejects, caught or not.
+  // and the one that asked for it and did not get it is the one to reload:
+  // the others, behind or not, have nothing broken. A page knows what it
+  // asked for from its resource timeline, kept here by an observer since
+  // the timeline's own buffer fills on a large app. A request that was
+  // answered with the chunk does not count (`responseStatus`, where the
+  // browser reports one): a page that has the chunk loaded keeps running
+  // it, and the frame is about another page's request, made after the
+  // chunk went. The import's rejection would not do: a router catches a
+  // failed lazy import (TanStack Router's lazyRouteComponent), so no
+  // unhandled rejection is ever raised, where Vite's `vite:preloadError` is
+  // dispatched by its preload helper before the import rejects, caught or
+  // not.
   const CHUNKS = base + "/@oj-start/";
   const asked = new Set();
   // The chunk a url names (null for a url that is not one of the dev
@@ -330,10 +347,16 @@
       return name;
     }
   };
+  // Whether the request got its chunk. No status (an older browser) or 0
+  // (one the browser will not tell) is not known to have.
+  const answered = (entry) => {
+    const status = entry.responseStatus;
+    return typeof status === "number" && status > 0 && status < 400;
+  };
   const noteAsked = (entries) => {
     for (const entry of entries) {
       const name = chunkNamed(entry.name);
-      if (name != null) asked.add(name);
+      if (name != null && !answered(entry)) asked.add(name);
     }
   };
   try {

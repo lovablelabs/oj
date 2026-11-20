@@ -4305,7 +4305,9 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
 /// open across a restart of the dev server names chunks this run never had,
 /// and its socket is not reloaded on connect (a stamp from another run
 /// counts as current, see start_reloads), so this is what brings it back. A
-/// page that asks for a name nothing ever had reloads once for it and stays.
+/// page that asks for a name nothing ever had reloads for it once per
+/// document it is served (its stamp and the hot changes it has), and stays
+/// when the reload brings the same document back.
 /// A source map is asked for by the browser's tools, not by a page.
 fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     if !name.ends_with(".map") {
@@ -4390,8 +4392,33 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
-    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !served.entry;
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`, and
+    // a name's content never changes. What changes is whether the dev
+    // server still answers for the name: a page that took a change as a hot
+    // update was not reloaded for it, so it can ask for a chunk long after
+    // the bundle that named it, and one the server no longer has is how
+    // such a page learns it is too old (`chunk_gone`). A browser that cached
+    // the chunk for good never asks, and runs the old code out of its
+    // cache. So with hot updates on the browser asks each time and the ETag
+    // makes that a 304, as Vite's dev server sends every module
+    // (server/send.ts `send`: `Cache-Control: no-cache` with an `Etag`, 304
+    // on `If-None-Match`; server/middlewares/transform.ts keeps
+    // `max-age=31536000,immutable` for versioned dependency urls alone).
+    // This only reaches a chunk the document has yet to import: one in its
+    // module map is never asked for again.
+    //
+    // Without hot updates a change reloads the pages onto the new names
+    // (once the editor's gate lets the reload through), and a page still on
+    // an old entry with an old chunk in the cache is consistent with
+    // itself, so a name is fetched once. Left open in that mode: a page
+    // kept across a restart of the dev server, which nothing reloads, runs
+    // a cached chunk of the run before.
+    //
+    // `hot_bundle` is the gate's and the client's word alone: an app with
+    // `server.hmr: false` reloads for every change too (its bundle is not
+    // built hot, see `DevBundler::run`) and still revalidates here, which
+    // costs it a 304 per chunk and no more.
+    let immutable = !served.entry && !state.bundler.hot_bundle();
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
