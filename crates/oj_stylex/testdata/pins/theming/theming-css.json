@@ -119,7 +119,7 @@
   "cfg": {
    "useLayers": true
   },
-  "css": "\n@layer priority1;\n@property --x9pzyqx { syntax: \"<color>\"; inherits: true; initial-value: red }\n@property --x1bae8y { syntax: \"<length>\"; inherits: true; initial-value: 4px }\n@property --x1i2jlu1 { syntax: \"<percentage>\"; inherits: true; initial-value: 50% }\n:root, .x1cqtnnb{--x9pzyqx:red;--x1bae8y:4px;--x1i2jlu1:50%;}\n@media print{:root, .x1cqtnnb{--x1bae8y:8px;}}"
+  "css": "\n@layer priority1;\n@property --x9pzyqx { syntax: \"<color>\"; inherits: true; initial-value: red }\n@property --x1bae8y { syntax: \"<length>\"; inherits: true; initial-value: 4px }\n@property --x1i2jlu1 { syntax: \"<percentage>\"; inherits: true; initial-value: 50% }\n@layer priority1{\n:root, .x1cqtnnb{--x9pzyqx:red;--x1bae8y:4px;--x1i2jlu1:50%;}\n@media print{:root, .x1cqtnnb{--x1bae8y:8px;}}\n}"
  },
  {
   "name": "keyframes valued vars|flat",
@@ -157,7 +157,7 @@
   "cfg": {
    "useLayers": true
   },
-  "css": "\n@layer priority1;\n@keyframes xw2c1lr-B{from{opacity:0;}}\n@keyframes x1wc8ddo-B{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}\n:root, .xqsnfpt{--xcqpruy:x1wc8ddo-B;--x1l4xu1z:xw2c1lr-B;}"
+  "css": "\n@layer priority1;\n@keyframes xw2c1lr-B{from{opacity:0;}}\n@keyframes x1wc8ddo-B{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}\n@layer priority1{\n:root, .xqsnfpt{--xcqpruy:x1wc8ddo-B;--x1l4xu1z:xw2c1lr-B;}\n}"
  },
  {
   "name": "nested at-rules and self refs|flat",
@@ -256,13 +256,12 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "cfg": {
    "useLayers": false
   },
-  "css": ":root, .x13x9ibv{--accent-xhxt09h:red;--_2fast-xjl3me5:1s;}"
+  "css": ":root, .x13x9ibv{--xhxt09h:red;--xjl3me5:1s;}"
  },
  {
   "name": "debug named group|layers",
@@ -277,13 +276,12 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "cfg": {
    "useLayers": true
   },
-  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x13x9ibv{--accent-xhxt09h:red;--_2fast-xjl3me5:1s;}\n}"
+  "css": "\n@layer priority1;\n@layer priority1{\n:root, .x13x9ibv{--xhxt09h:red;--xjl3me5:1s;}\n}"
  },
  {
   "name": "empty group and empty theme|flat",

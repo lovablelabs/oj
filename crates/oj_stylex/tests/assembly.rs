@@ -380,6 +380,344 @@ fn plain_rule(class_name: &str, ltr: &str, priority: f64) -> StylexRule {
     }
 }
 
+fn rtl_rule(class_name: &str, ltr: &str, rtl: &str, priority: f64) -> StylexRule {
+    StylexRule {
+        rtl: Some(rtl.into()),
+        ..plain_rule(class_name, ltr, priority)
+    }
+}
+
+fn const_rule(name: &str, value: serde_json::Value) -> StylexRule {
+    StylexRule {
+        class_name: name.into(),
+        ltr: "".into(),
+        rtl: None,
+        const_key: Some(name.into()),
+        const_val: Some(Box::new(value)),
+        priority: 0.0,
+    }
+}
+
+fn media_rule(class_name: &str, query: &str, declaration: &str) -> StylexRule {
+    plain_rule(
+        class_name,
+        &format!("@media {query}{{.{class_name}.{class_name}{{{declaration}}}}}"),
+        3200.0,
+    )
+}
+
+/// `want` is the live 0.19.2 `processStylexRules` answer. Every path must print
+/// the same bytes: the keyed one-shot sort, the comparator sort, and a registry
+/// holding one rule per file that is taken through swap edits and back.
+fn assert_css(rules: &[StylexRule], cfg: serde_json::Value, want: &str) {
+    use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
+    let cfg = AssembleConfig::from_json(&cfg).unwrap();
+    assert_eq!(assemble(rules, &cfg).as_deref(), Ok(want), "one-shot");
+    assert_eq!(
+        assemble_with_comparator(rules, &cfg, default_locale_cmp).as_deref(),
+        Ok(want),
+        "comparator path"
+    );
+    let mut registry = RuleRegistry::new();
+    let paths: Vec<String> = (0..rules.len())
+        .map(|i| format!("src/f{i:03}.ts"))
+        .collect();
+    for (path, rule) in paths.iter().zip(rules) {
+        registry.set_file_rules(path, vec![rule.clone()]);
+    }
+    assert_eq!(registry.emit(&cfg).as_deref(), Ok(want), "registry");
+    for (i, path) in paths.iter().enumerate() {
+        let other = rules[(i + 1) % rules.len()].clone();
+        registry.set_file_rules(path, vec![other]);
+        assert_eq!(
+            registry.emit(&cfg),
+            assemble(&registry.all_rules(), &cfg),
+            "swap {i}"
+        );
+        registry.set_file_rules(path, vec![rules[i].clone()]);
+        assert_eq!(registry.emit(&cfg).as_deref(), Ok(want), "restore {i}");
+    }
+}
+
+// StyleX #1752: with layers on, a band's priority-0 rules (variables,
+// keyframes) print bare and only the rest of the band goes inside its @layer.
+#[test]
+fn layers_print_priority_zero_rules_outside_the_band_layer() {
+    use serde_json::json;
+    let rules = [
+        plain_rule(
+            "xkf-B",
+            "@keyframes xkf-B{from{opacity:0;}to{opacity:1;}}",
+            0.0,
+        ),
+        plain_rule("xvars", ":root, .xvars{--xa:red;}", 0.0),
+        plain_rule(
+            "xvars-1lveb7",
+            "@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}",
+            0.1,
+        ),
+        plain_rule("xlong", ".xlong{color:red}", 3000.0),
+    ];
+    assert_css(
+        &rules,
+        json!({"useLayers": true}),
+        "\n@layer priority1, priority2;\n:root, .xvars{--xa:red;}\n@keyframes xkf-B{from{opacity:0;}to{opacity:1;}}\n@layer priority1{\n@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}\n}\n@layer priority2{\n.xlong{color:red}\n}",
+    );
+    assert_css(
+        &rules,
+        json!({}),
+        ":root, .xvars{--xa:red;}\n@keyframes xkf-B{from{opacity:0;}to{opacity:1;}}\n@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}\n.xlong:not(#\\#){color:red}",
+    );
+
+    // A band holding only one of the two parts prints only that part; the
+    // header still names the band's layer.
+    assert_css(
+        &[plain_rule(
+            "xtheme",
+            ".xtheme, .xtheme:root{--xa:green;}",
+            0.5,
+        )],
+        json!({"useLayers": true}),
+        "\n@layer priority1;\n@layer priority1{\n.xtheme.xtheme, .xtheme.xtheme:root{--xa:green;}\n}",
+    );
+    assert_css(
+        &[plain_rule("xvars", ":root, .xvars{--xa:red;}", 0.0)],
+        json!({"useLayers": true}),
+        "\n@layer priority1;\n:root, .xvars{--xa:red;}",
+    );
+
+    // The last-wins class dedupe runs inside each part, so one class can print
+    // in both; without layers the band is a single dedupe scope.
+    let dup = [
+        plain_rule("xdup", ":root, .xdup{--xa:red;}", 0.0),
+        plain_rule("xdup", ".xdup, .xdup:root{--xa:green;}", 0.5),
+        plain_rule("xdup", ":root, .xdup{--xa:blue;}", 0.0),
+    ];
+    let layers = AssembleConfig::from_json(&json!({"useLayers": true})).unwrap();
+    let want = "\n@layer priority1;\n:root, .xdup{--xa:red;}\n@layer priority1{\n.xdup.xdup, .xdup.xdup:root{--xa:green;}\n}";
+    assert_eq!(assemble(&dup, &layers).as_deref(), Ok(want));
+    let mut registry = RuleRegistry::new();
+    registry.set_file_rules("a.ts", dup.to_vec());
+    assert_eq!(registry.emit(&layers).as_deref(), Ok(want));
+    assert_eq!(
+        assemble(&dup, &AssembleConfig::default()).as_deref(),
+        Ok(".xdup.xdup, .xdup.xdup:root{--xa:green;}")
+    );
+}
+
+// StyleX #1989: a rule wrapped in a defineConsts placeholder was priced as an
+// unknown key (3000); a constant that resolves to an at-rule is re-priced as
+// that at-rule before the sort, which moves the rule to the at-rule's band.
+#[test]
+fn const_at_rule_wrapper_is_repriced_before_the_sort() {
+    use serde_json::json;
+    let rules = |value: serde_json::Value| {
+        vec![
+            const_rule("xbp", value),
+            plain_rule("xa", "var(--xbp){.xa.xa{color:blue}}", 6000.0),
+            plain_rule("xb", ".xb{color:red}", 3000.0),
+            plain_rule(
+                "xc",
+                "@media (min-width: 500px){.xc.xc{color:green}}",
+                3200.0,
+            ),
+            plain_rule("xd", "var(--xbp){.xd.xd:hover{margin:0}}", 4130.0),
+            // Below the placeholder's share: left alone.
+            plain_rule("xe", "var(--xbp){.xe.xe{color:blue}}", 2999.0),
+            // Not directly followed by the brace: not a wrapper.
+            plain_rule("xf", "var(--xbp) {.xf.xf{color:blue}}", 6000.0),
+        ]
+    };
+    assert_css(
+        &rules(json!("@media (min-width: 768px)")),
+        json!({}),
+        "@media (min-width: 768px){.xd.xd:hover{margin:0}}\n@media (min-width: 768px){.xe.xe:not(#\\#){color:blue}}\n.xb:not(#\\#):not(#\\#){color:red}\n@media (min-width: 500px){.xc.xc:not(#\\#):not(#\\#){color:green}}\n@media (min-width: 768px){.xa.xa:not(#\\#):not(#\\#){color:blue}}\n@media (min-width: 768px) {.xf.xf:not(#\\#):not(#\\#):not(#\\#){color:blue}}",
+    );
+    assert_css(
+        &rules(json!("@media (min-width: 768px)")),
+        json!({"useLayers": true}),
+        "\n@layer priority1, priority2, priority3, priority4;\n@layer priority1{\n@media (min-width: 768px){.xd.xd:hover{margin:0}}\n}\n@layer priority2{\n@media (min-width: 768px){.xe.xe{color:blue}}\n}\n@layer priority3{\n.xb{color:red}\n@media (min-width: 500px){.xc.xc{color:green}}\n@media (min-width: 768px){.xa.xa{color:blue}}\n}\n@layer priority4{\n@media (min-width: 768px) {.xf.xf{color:blue}}\n}",
+    );
+    assert_css(
+        &rules(json!("@supports (display: grid)")),
+        json!({}),
+        "@supports (display: grid){.xd.xd:hover{margin:0}}\n@supports (display: grid){.xe.xe:not(#\\#){color:blue}}\n.xb:not(#\\#):not(#\\#){color:red}\n@supports (display: grid){.xa.xa:not(#\\#):not(#\\#){color:blue}}\n@media (min-width: 500px){.xc.xc:not(#\\#):not(#\\#){color:green}}\n@supports (display: grid) {.xf.xf:not(#\\#):not(#\\#):not(#\\#){color:blue}}",
+    );
+    assert_css(
+        &rules(json!("@container (min-width: 100px)")),
+        json!({}),
+        "@container (min-width: 100px){.xd.xd:hover{margin:0}}\n@container (min-width: 100px){.xe.xe:not(#\\#){color:blue}}\n.xb:not(#\\#):not(#\\#){color:red}\n@media (min-width: 500px){.xc.xc:not(#\\#):not(#\\#){color:green}}\n@container (min-width: 100px){.xa.xa:not(#\\#):not(#\\#){color:blue}}\n@container (min-width: 100px) {.xf.xf:not(#\\#):not(#\\#):not(#\\#){color:blue}}",
+    );
+    // Only a string constant that starts with `@` is re-priced.
+    assert_css(
+        &rules(json!("screen")),
+        json!({}),
+        "screen{.xe.xe{color:blue}}\n.xb:not(#\\#){color:red}\n@media (min-width: 500px){.xc.xc:not(#\\#){color:green}}\nscreen{.xd.xd:hover:not(#\\#):not(#\\#){margin:0}}\nscreen {.xf.xf:not(#\\#):not(#\\#):not(#\\#){color:blue}}\nscreen{.xa.xa:not(#\\#):not(#\\#):not(#\\#){color:blue}}",
+    );
+    assert_css(
+        &rules(json!(12)),
+        json!({}),
+        "12{.xe.xe{color:blue}}\n.xb:not(#\\#){color:red}\n@media (min-width: 500px){.xc.xc:not(#\\#){color:green}}\n12{.xd.xd:hover:not(#\\#):not(#\\#){margin:0}}\n12 {.xf.xf:not(#\\#):not(#\\#):not(#\\#){color:blue}}\n12{.xa.xa:not(#\\#):not(#\\#):not(#\\#){color:blue}}",
+    );
+    // Each wrapper of a chain is re-priced, and an alias resolves first.
+    assert_css(
+        &[
+            const_rule("xm", json!("@media (min-width: 768px)")),
+            const_rule("xs", json!("@supports (display: grid)")),
+            const_rule("xalias", json!("var(--xm)")),
+            plain_rule("xh", "var(--xm){var(--xs){.xh.xh.xh{color:blue}}}", 9000.0),
+            plain_rule("xi", "var(--xalias){.xi.xi{color:blue}}", 6000.0),
+            plain_rule("xz", ".xz{color:red}", 3000.0),
+        ],
+        json!({}),
+        ".xz{color:red}\n@media (min-width: 768px){.xi.xi{color:blue}}\n@media (min-width: 768px){@supports (display: grid){.xh.xh.xh{color:blue}}}",
+    );
+}
+
+// StyleX #1652: same-priority rules order by declared property name, then by
+// the one px width bound of their @media wrapper (min-width ascending, then
+// max-width descending, rules without such a bound last), then by text.
+#[test]
+fn px_width_bounds_order_same_property_media_rules() {
+    use serde_json::json;
+    let rules = [
+        media_rule("xa", "(min-width: 1024px)", "color:red"),
+        media_rule("xb", "(max-width: 500px)", "color:red"),
+        media_rule("xc", "(min-width: 768px)", "color:red"),
+        media_rule("xd", "(max-width: 1000px)", "color:red"),
+        media_rule("xe", "(min-width: 40em)", "color:red"),
+        media_rule(
+            "xf",
+            "(min-width: 100px) and (max-width: 200px)",
+            "color:red",
+        ),
+        media_rule("xg", "screen and (min-width: 300px)", "color:red"),
+        media_rule("xh", "(min-width: 0)", "color:red"),
+        media_rule("xi", "(min-width: 1024px)", "background-color:red"),
+        media_rule("xj", "(min-width: 768px)", "background-color:red"),
+        plain_rule(
+            "xk",
+            "@supports (display: grid){@media (min-width: 400px){.xk.xk.xk{color:red}}}",
+            3200.0,
+        ),
+        plain_rule("xl", ".xl{color:red}", 3200.0),
+    ];
+    assert_css(
+        &rules,
+        json!({}),
+        "@media (min-width: 768px){.xj.xj{background-color:red}}\n@media (min-width: 1024px){.xi.xi{background-color:red}}\n@media (min-width: 0){.xh.xh{color:red}}\n@media screen and (min-width: 300px){.xg.xg{color:red}}\n@media (min-width: 768px){.xc.xc{color:red}}\n@media (min-width: 1024px){.xa.xa{color:red}}\n@media (max-width: 1000px){.xd.xd{color:red}}\n@media (max-width: 500px){.xb.xb{color:red}}\n@supports (display: grid){@media (min-width: 400px){.xk.xk.xk{color:red}}}\n.xl{color:red}\n@media (min-width: 100px) and (max-width: 200px){.xf.xf{color:red}}\n@media (min-width: 40em){.xe.xe{color:red}}",
+    );
+    // The legacy class-name sort is untouched by width bounds.
+    assert_css(
+        &rules,
+        json!({"useLegacyClassnamesSort": true}),
+        "@media (min-width: 1024px){.xa.xa{color:red}}\n@media (max-width: 500px){.xb.xb{color:red}}\n@media (min-width: 768px){.xc.xc{color:red}}\n@media (max-width: 1000px){.xd.xd{color:red}}\n@media (min-width: 40em){.xe.xe{color:red}}\n@media (min-width: 100px) and (max-width: 200px){.xf.xf{color:red}}\n@media screen and (min-width: 300px){.xg.xg{color:red}}\n@media (min-width: 0){.xh.xh{color:red}}\n@media (min-width: 1024px){.xi.xi{background-color:red}}\n@media (min-width: 768px){.xj.xj{background-color:red}}\n@supports (display: grid){@media (min-width: 400px){.xk.xk.xk{color:red}}}\n.xl{color:red}",
+    );
+    // The bound is read from the rule after its constants are substituted.
+    assert_css(
+        &[
+            const_rule("xlg", json!("@media (min-width: 1024px)")),
+            const_rule("xsm", json!("@media (min-width: 640px)")),
+            plain_rule("x1", "var(--xlg){.x1.x1{color:red}}", 6000.0),
+            plain_rule("x2", "var(--xsm){.x2.x2{color:red}}", 6000.0),
+            media_rule("x3", "(min-width: 768px)", "color:red"),
+        ],
+        json!({}),
+        "@media (min-width: 640px){.x2.x2{color:red}}\n@media (min-width: 768px){.x3.x3{color:red}}\n@media (min-width: 1024px){.x1.x1{color:red}}",
+    );
+}
+
+// StyleX #1872: a constant's value is inserted verbatim, so `$&`, `$$`, `` $` ``
+// and `$'` in it are text. The declaration-key rewrite for a constant that is
+// itself a `var()` still goes through a pattern-reading string replace.
+#[test]
+fn constants_are_substituted_verbatim() {
+    use serde_json::json;
+    assert_css(
+        &[
+            const_rule("xamp", json!("\"$&\"")),
+            const_rule("xdd", json!("\"$$\"")),
+            const_rule("xpre", json!("\"$`\"")),
+            const_rule("xpost", json!("\"$'\"")),
+            const_rule("xchain", json!("var(--xamp) var(--xdd)")),
+            const_rule("xvar", json!("var(--tar$&get, 1px)")),
+            plain_rule("x1", ".x1{content:var(--xamp)}", 3000.0),
+            plain_rule("x2", ".x2{content:var(--xdd)}", 3000.0),
+            plain_rule("x3", ".x3{content:var(--xpre)}", 3000.0),
+            plain_rule("x4", ".x4{content:var(--xpost)}", 3000.0),
+            plain_rule("x5", ".x5{content:var(--xchain)}", 3000.0),
+            plain_rule("x6", ".x6{--xvar:2px;width:var(--xvar)}", 3000.0),
+        ],
+        json!({}),
+        ".x6{--tar--xvar:get:2px;width:var(--tar$&get, 1px)}\n.x4{content:\"$'\"}\n.x5{content:\"$&\" \"$$\"}\n.x1{content:\"$&\"}\n.x3{content:\"$`\"}\n.x2{content:\"$$\"}",
+    );
+    // Rules sort on the substituted text, and a constant can bring in the
+    // logical-float variables.
+    assert_css(
+        &[
+            const_rule("xz", json!("aqua")),
+            const_rule("xa", json!("zinc")),
+            plain_rule("x1", ".x1{color:var(--xa)}", 3000.0),
+            plain_rule("x2", ".x2{color:var(--xz)}", 3000.0),
+            plain_rule("x3", ".x3{color:blue}", 3000.0),
+        ],
+        json!({}),
+        ".x2{color:aqua}\n.x3{color:blue}\n.x1{color:zinc}",
+    );
+    assert_css(
+        &[
+            const_rule("xfloat", json!("var(--stylex-logical-start)")),
+            plain_rule("x1", ".x1{float:var(--xfloat)}", 3000.0),
+        ],
+        json!({}),
+        ":root, [dir=\"ltr\"] {\n  --stylex-logical-start: left;\n  --stylex-logical-end: right;\n}\n[dir=\"rtl\"] {\n  --stylex-logical-start: right;\n  --stylex-logical-end: left;\n}\n.x1{float:var(--stylex-logical-start)}",
+    );
+}
+
+// StyleX #1854: like @keyframes, an @position-try rule takes neither the
+// specificity bump nor a direction ancestor.
+#[test]
+fn position_try_takes_no_specificity_bump_and_no_direction_ancestor() {
+    use serde_json::json;
+    let rules = [
+        plain_rule("xshort", ".xshort{margin:0}", 1000.0),
+        rtl_rule(
+            "--xpt1",
+            "@position-try --xpt1{top:0;left:0;}",
+            "@position-try --xpt1{top:0;right:0;}",
+            3000.0,
+        ),
+        plain_rule("--xpt2", "@position-try --xpt2{bottom:0;}", 3000.0),
+        rtl_rule(
+            "xkf-B",
+            "@keyframes xkf-B{from{left:0;}}",
+            "@keyframes xkf-B{from{right:0;}}",
+            3000.0,
+        ),
+        rtl_rule(
+            "xrtl",
+            ".xrtl{margin-left:0}",
+            ".xrtl{margin-right:0}",
+            4000.0,
+        ),
+    ];
+    assert_css(
+        &rules,
+        json!({}),
+        ".xshort{margin:0}\n@position-try --xpt2{bottom:0;}\n@keyframes xkf-B{from{left:0;}}\n@keyframes xkf-B{from{right:0;}}\n@position-try --xpt1{top:0;left:0;}\n@position-try --xpt1{top:0;right:0;}\nhtml:not([dir='rtl']) .xrtl:not(#\\#):not(#\\#){margin-left:0}\nhtml[dir='rtl'] .xrtl:not(#\\#):not(#\\#){margin-right:0}",
+    );
+    assert_css(
+        &rules,
+        json!({"useLayers": true}),
+        "\n@layer priority1, priority2, priority3;\n@layer priority1{\n.xshort{margin:0}\n}\n@layer priority2{\n@position-try --xpt2{bottom:0;}\n@keyframes xkf-B{from{left:0;}}\n@keyframes xkf-B{from{right:0;}}\n@position-try --xpt1{top:0;left:0;}\n@position-try --xpt1{top:0;right:0;}\n}\n@layer priority3{\nhtml:not([dir='rtl']) .xrtl{margin-left:0}\nhtml[dir='rtl'] .xrtl{margin-right:0}\n}",
+    );
+    assert_css(
+        &rules,
+        json!({"enableLTRRTLComments": true}),
+        ".xshort{margin:0}\n@position-try --xpt2{bottom:0;}\n/* @ltr begin */@keyframes xkf-B{from{left:0;}}/* @ltr end */\n/* @rtl begin */@keyframes xkf-B{from{right:0;}}/* @rtl end */\n/* @ltr begin */@position-try --xpt1{top:0;left:0;}/* @ltr end */\n/* @rtl begin */@position-try --xpt1{top:0;right:0;}/* @rtl end */\n/* @ltr begin */.xrtl:not(#\\#):not(#\\#){margin-left:0}/* @ltr end */\n/* @rtl begin */.xrtl:not(#\\#):not(#\\#){margin-right:0}/* @rtl end */",
+    );
+}
+
 #[test]
 fn registry_shared_owners_match_full_assembly_across_batches() {
     let mut registry = RuleRegistry::new();
