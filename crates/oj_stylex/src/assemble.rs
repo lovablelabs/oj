@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, BuildHasherDefault};
+use std::ops::ControlFlow;
 use std::sync::{Arc, Weak};
 
 use crate::fxhash::{FxHashMap, FxHashSet};
@@ -157,11 +158,25 @@ fn js_truthy(v: &serde_json::Value) -> bool {
 
 // JS string|number const value; `Other` covers metadata that upstream would
 // stringify via String().
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 enum ConstVal {
     Str(String),
     Num(f64),
     Other(serde_json::Value),
+}
+
+// Equality asks whether a constant was redeclared with the value it had, so
+// numbers compare by bits: a NaN constant equals itself instead of reading
+// as changed on every edit.
+impl PartialEq for ConstVal {
+    fn eq(&self, other: &ConstVal) -> bool {
+        match (self, other) {
+            (ConstVal::Str(a), ConstVal::Str(b)) => a == b,
+            (ConstVal::Num(a), ConstVal::Num(b)) => a.to_bits() == b.to_bits(),
+            (ConstVal::Other(a), ConstVal::Other(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl ConstVal {
@@ -209,7 +224,7 @@ fn js_string_of_value(v: &serde_json::Value) -> String {
 }
 
 pub fn assemble(rules: &[StylexRule], cfg: &AssembleConfig) -> Result<String, AssembleError> {
-    assemble_impl(rules.iter(), cfg, None)
+    assemble_impl(rules.iter(), rules.len(), cfg, None)
 }
 
 pub fn assemble_with_comparator(
@@ -217,7 +232,7 @@ pub fn assemble_with_comparator(
     cfg: &AssembleConfig,
     cmp: Comparator,
 ) -> Result<String, AssembleError> {
-    assemble_impl(rules.iter(), cfg, Some(cmp))
+    assemble_impl(rules.iter(), rules.len(), cfg, Some(cmp))
 }
 
 fn is_const_rule(r: &StylexRule) -> bool {
@@ -456,14 +471,17 @@ fn compare_rules(
     .then_with(|| cmp(rule_a, rule_b))
 }
 
+// `rule_count` is how many rules the iterator yields; a flattened iterator's
+// own size hint is no use for sizing the list up front.
 fn assemble_impl<'a>(
     rules: impl Iterator<Item = &'a StylexRule>,
+    rule_count: usize,
     cfg: &AssembleConfig,
     custom_cmp: Option<Comparator>,
 ) -> Result<String, AssembleError> {
     let consts_timer = timings::start(Stage::AssembleConsts);
     let mut decls: Vec<ConstDecl> = Vec::new();
-    let mut non_const: Vec<&StylexRule> = Vec::with_capacity(rules.size_hint().0);
+    let mut non_const: Vec<&StylexRule> = Vec::with_capacity(rule_count);
     let mut any_rule = false;
     for rule in rules {
         any_rule = true;
@@ -1135,8 +1153,12 @@ fn is_var_ident_byte(b: u8) -> bool {
 }
 
 // Every `--name:` in `text` whose name is one or more identifier bytes, i.e.
-// every place a regular constant's key-rewrite needle can match.
-fn for_each_custom_property_key<'a>(text: &'a str, mut visit: impl FnMut(&'a str)) {
+// every place a regular constant's key-rewrite needle can match. The visitor
+// ends the walk by breaking.
+fn for_each_custom_property_key<'a>(
+    text: &'a str,
+    mut visit: impl FnMut(&'a str) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     let bytes = text.as_bytes();
     for colon in memchr::memchr_iter(b':', bytes) {
         let mut run = colon;
@@ -1145,10 +1167,11 @@ fn for_each_custom_property_key<'a>(text: &'a str, mut visit: impl FnMut(&'a str
         }
         for at in run..colon.saturating_sub(2) {
             if bytes[at] == b'-' && bytes[at + 1] == b'-' {
-                visit(&text[at + 2..colon]);
+                visit(&text[at + 2..colon])?;
             }
         }
     }
+    ControlFlow::Continue(())
 }
 
 // The per-const strings substitution needs, derived once per assemble instead
@@ -1170,6 +1193,23 @@ impl PreparedConst {
                 .key_rewrite
                 .as_ref()
                 .is_some_and(|(needle, _)| text.contains(needle.as_str()))
+    }
+
+    // parity: one iteration of the per-rule constsMap loop, over the running
+    // text (`out`, or `text` while nothing has matched yet).
+    fn substitute(&self, text: &str, out: &mut Option<String>) {
+        let cur = out.as_deref().unwrap_or(text);
+        if cur.contains(self.var_ref.as_str()) {
+            // Verbatim, like the function replacer upstream passes; only the
+            // key rewrite below still reads `$` patterns in its replacement.
+            *out = Some(cur.replace(self.var_ref.as_str(), &self.replacement));
+        }
+        let cur = out.as_deref().unwrap_or(text);
+        if let Some((needle, target)) = &self.key_rewrite
+            && cur.contains(needle.as_str())
+        {
+            *out = Some(js_replace_all(cur, needle, target));
+        }
     }
 }
 
@@ -1249,15 +1289,22 @@ impl ConstTable {
             scan_from = end;
         }
         if self.rewrites_keys {
-            for_each_custom_property_key(text, |name| {
+            let found_from = for_each_custom_property_key(text, |name| {
                 if let Some(&i) = self.by_name.get(name)
                     && i >= from
                     && i < best
                     && self.consts[i as usize].key_rewrite.is_some()
                 {
                     best = i;
+                    if i == from {
+                        return ControlFlow::Break(());
+                    }
                 }
+                ControlFlow::Continue(())
             });
+            if found_from.is_break() {
+                return Some(from);
+            }
         }
         for &i in &self.irregular {
             if i >= best {
@@ -1272,32 +1319,42 @@ impl ConstTable {
     }
 }
 
+// Finding a rule's next active constant rescans its text, a name lookup per
+// reference and key in it, so a rule that thousands of constants rewrite
+// would pay steps x references in lookups. Past this many steps the rest run
+// as upstream's plain loop: a substring search per remaining constant, and
+// never more than upstream pays for the rule.
+const MAX_INDEXED_STEPS: u32 = 32;
+
 // parity: the per-rule constsMap loop. Upstream runs every constant's step in
 // order over the running text; a step that matches nothing copies the text, so
 // only the steps `next_active` finds are run, each exactly as upstream does.
 /// `None` when no const reference matched: callers keep sharing the rule's
 /// Arc'd text instead of materializing an identical String.
 fn substitute_consts(text: &str, consts: &ConstTable) -> Option<String> {
+    substitute_consts_capped(text, consts, MAX_INDEXED_STEPS)
+}
+
+// `substitute_consts` with the number of indexed steps it may take before the
+// remaining constants run in sequence; the result is the same for any cap.
+fn substitute_consts_capped(text: &str, consts: &ConstTable, max_indexed: u32) -> Option<String> {
     if consts.is_empty() {
         return None;
     }
     let mut out: Option<String> = None;
     let mut from = 0;
+    let mut indexed = 0;
     while let Some(i) = consts.next_active(out.as_deref().unwrap_or(text), from) {
-        let c = &consts.consts[i as usize];
-        let cur = out.as_deref().unwrap_or(text);
-        if cur.contains(c.var_ref.as_str()) {
-            // Verbatim, like the function replacer upstream passes; only the
-            // key rewrite below still reads `$` patterns in its replacement.
-            out = Some(cur.replace(c.var_ref.as_str(), &c.replacement));
+        if indexed == max_indexed {
+            // The steps before `i` match nothing, so the sequence starts there.
+            for c in &consts.consts[i as usize..] {
+                c.substitute(text, &mut out);
+            }
+            break;
         }
-        let cur = out.as_deref().unwrap_or(text);
-        if let Some((needle, target)) = &c.key_rewrite
-            && cur.contains(needle.as_str())
-        {
-            out = Some(js_replace_all(cur, needle, target));
-        }
+        consts.consts[i as usize].substitute(text, &mut out);
         from = i + 1;
+        indexed += 1;
     }
     out
 }
@@ -1508,14 +1565,17 @@ struct FilePrep {
 }
 
 impl FilePrep {
-    fn empty(shared: bool) -> FilePrep {
+    // Sized for exactly `rules` prepared rules and `consts` declarations: a
+    // file's preparation lives as long as the file does, so the slack a
+    // growing Vec leaves behind would be held for good.
+    fn empty(shared: bool, rules: usize, consts: usize) -> FilePrep {
         FilePrep {
             rules: if shared {
-                PreparedRules::Shared(Vec::new())
+                PreparedRules::Shared(Vec::with_capacity(rules))
             } else {
-                PreparedRules::Inline(Vec::new())
+                PreparedRules::Inline(Vec::with_capacity(rules))
             },
-            const_decls: Vec::new(),
+            const_decls: Vec::with_capacity(consts),
             safe: true,
             logical_float: false,
         }
@@ -1656,7 +1716,8 @@ fn prepare_file(
     consts: &ConstTable,
     pool: &mut Option<PreparedPool>,
 ) -> FilePrep {
-    let mut prep = FilePrep::empty(pool.is_some());
+    let const_count = rules.iter().filter(|r| is_const_rule(r)).count();
+    let mut prep = FilePrep::empty(pool.is_some(), rules.len() - const_count, const_count);
     for r in rules {
         if is_const_rule(r) {
             prep.const_decls.push(const_decl(r));
@@ -1694,7 +1755,7 @@ struct IncrState {
     // Files set or removed since this state was last brought up to date.
     dirty: BTreeSet<String>,
     consts: Vec<ConstDecl>,
-    table: ConstTable,
+    table: Arc<ConstTable>,
     paths: Vec<String>,
     files: Vec<FilePrep>,
     pool: Option<PreparedPool>,
@@ -1718,13 +1779,24 @@ struct Blocked {
 }
 
 enum Blocker {
-    // This file holds a rule outside the safe preconditions.
-    File(String),
+    // This file holds a rule outside the safe preconditions, as prepared
+    // against these constants: enough to tell, when the file changes, whether
+    // it still does.
+    File {
+        path: String,
+        consts: Arc<ConstTable>,
+    },
     // The constants do not resolve.
     Consts,
 }
 
 const MAX_INCR_STATES: usize = 4;
+
+// A state no emit has asked for collects the path of every file touched in
+// the meantime. Once that backlog outgrows the registry (and this floor,
+// which keeps a small registry from dropping states as it drains), bringing
+// the state up to date costs no less than building it, and it is dropped.
+const MAX_IDLE_DIRTY: usize = 16;
 
 // Incremental assembly for the HMR path (design-core.md §7): file-keyed rule
 // sets, canonical emission order = BTreeMap file order, memoized full assemble.
@@ -1767,9 +1839,11 @@ impl RuleRegistry {
     }
 
     fn touch(&mut self, file: &str) {
-        for state in &mut self.incr {
+        let backlog = self.files.len().max(MAX_IDLE_DIRTY);
+        self.incr.retain_mut(|state| {
             state.dirty.insert(file.to_string());
-        }
+            state.dirty.len() <= backlog
+        });
         self.generation += 1;
     }
 
@@ -1822,7 +1896,10 @@ impl RuleRegistry {
                 }
                 Ok(css)
             }
-            None => assemble_impl(self.files.values().flatten(), cfg, None),
+            None => {
+                let rule_count = self.files.values().map(Vec::len).sum();
+                assemble_impl(self.files.values().flatten(), rule_count, cfg, None)
+            }
         };
         self.cache = Some((self.generation, cfg.clone(), result.clone()));
         result
@@ -1870,17 +1947,25 @@ impl RuleRegistry {
     }
 }
 
-// `file` went from `old` to `new`: every config it was blocking gets another
-// try. A constant reaches the text and priority of every file's rules, so a
-// change to the constants retries them all.
+// `file` went from `old` to `new`: a config it was blocking gets another try
+// once the file is safe. A constant reaches the text and priority of every
+// file's rules, so a change to the constants retries every config.
 fn unblock(blocked: &mut Vec<Blocked>, file: &str, old: &[StylexRule], new: &[StylexRule]) {
     if blocked.is_empty() {
         return;
     }
     let consts_changed = !const_decls(old).eq(const_decls(new));
     blocked.retain(|blocked| match &blocked.on {
-        Blocker::File(path) => !consts_changed && path != file,
         Blocker::Consts => !consts_changed,
+        Blocker::File { .. } if consts_changed => false,
+        Blocker::File { path, .. } if path != file => true,
+        // The blocker changed around the constants it was prepared against
+        // (a change to them drops the entry above): preparing it alone
+        // answers what a retry would prepare every file before it to learn.
+        Blocker::File { consts, .. } => {
+            let legacy = blocked.cfg.use_legacy_classnames_sort;
+            !prepare_file(new, legacy, consts, &mut None).safe
+        }
     });
 }
 
@@ -1925,13 +2010,16 @@ impl IncrState {
     ) -> Result<IncrState, Blocker> {
         let raw = files.values().flat_map(|rules| const_decls(rules));
         let consts = collect_resolved_consts(raw).map_err(|_| Blocker::Consts)?;
-        let table = prepare_consts(&consts);
+        let table = Arc::new(prepare_consts(&consts));
         let prepare_all = |pool: &mut Option<PreparedPool>| -> Result<Vec<FilePrep>, Blocker> {
             let mut preps = Vec::with_capacity(files.len());
             for (path, rules) in files {
                 let prep = prepare_file(rules, cfg.use_legacy_classnames_sort, &table, pool);
                 if !prep.safe {
-                    return Err(Blocker::File(path.clone()));
+                    return Err(Blocker::File {
+                        path: path.clone(),
+                        consts: Arc::clone(&table),
+                    });
                 }
                 preps.push(prep);
             }
@@ -2091,7 +2179,7 @@ impl IncrState {
                     }
                     Slot::Added(at) => {
                         self.paths.push(incoming[at].0.clone());
-                        self.files.push(FilePrep::empty(self.pool.is_some()));
+                        self.files.push(FilePrep::empty(self.pool.is_some(), 0, 0));
                     }
                 }
             }
@@ -2697,8 +2785,150 @@ mod parity_tests {
                 want,
                 "text {text:?} consts {decls:?}"
             );
+            // The hand-over to the sequential loop, at every step it can
+            // happen on.
+            for cap in 0..3 {
+                let got = substitute_consts_capped(&text, &table, cap);
+                assert_eq!(
+                    got.as_deref().unwrap_or(&text),
+                    want,
+                    "cap {cap} text {text:?} consts {decls:?}"
+                );
+            }
         }
         assert!(rewritten > 2_000, "too few rewriting cases: {rewritten}");
+    }
+
+    // `count` constants with `var()` values, the kind whose step rewrites
+    // both its references and its declaration keys. Unresolved on purpose:
+    // every third names a later constant, whose step rewrites it again.
+    fn var_valued_consts(count: usize) -> ConstTable {
+        let decls: Vec<ConstDecl> = (0..count)
+            .map(|i| {
+                let value = match i % 3 {
+                    0 => format!("var(--t{i})"),
+                    1 => format!("var( --t{i} , {i}px)"),
+                    _ => format!("var(--c{})", (i + 7) % count),
+                };
+                (format!("c{i}").into(), ConstVal::Str(value))
+            })
+            .collect();
+        let table = prepare_consts(&decls);
+        assert!(table.rewrites_keys && table.by_name.len() == count);
+        table
+    }
+
+    // One rule that all `count` constants rewrite, the last constant first so
+    // the search for a step's constant reads past all the later ones.
+    // `declaration(i)` is what the rule says about constant `i`.
+    fn const_heavy_rule(count: usize, declaration: impl Fn(usize) -> String) -> String {
+        let declarations: String = (0..count).rev().map(declaration).collect();
+        format!(".x{{{declarations}}}")
+    }
+
+    #[test]
+    fn a_const_heavy_rule_matches_the_sequential_loop_at_any_cap() {
+        for count in [1, 31, 32, 33, 34, 250] {
+            let table = var_valued_consts(count);
+            // Each constant by key and by reference; then only by reference,
+            // under keys no constant owns.
+            let texts = [
+                const_heavy_rule(count, |i| format!("--c{i}:var(--c{i});")),
+                const_heavy_rule(count, |i| format!("--v{i}:var(--c{i}) var(--v{i});")),
+            ];
+            for text in &texts {
+                let want = substitute_sequential(text, &table);
+                assert_ne!(want, *text);
+                assert_eq!(
+                    substitute_consts(text, &table).as_deref(),
+                    Some(want.as_str()),
+                    "{count} constants"
+                );
+                for cap in [0, 1, 2, 31, 32, 33, 100, u32::MAX] {
+                    assert_eq!(
+                        substitute_consts_capped(text, &table, cap).as_deref(),
+                        Some(want.as_str()),
+                        "{count} constants, cap {cap}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The rule every constant rewrites a key of, between values that read
+    // plain variables: without the cap each of its steps looks up every name
+    // in the text again, with it the rule costs what upstream's loop does.
+    // Both are timed here, so the comparison holds on a slow or busy machine.
+    #[test]
+    fn a_const_heavy_rule_is_not_rescanned_for_every_step() {
+        let table = var_valued_consts(600);
+        let text = const_heavy_rule(600, |i| format!("--c{i}:var(--a) var(--b);"));
+        let want = substitute_sequential(&text, &table);
+        let best_of = |cap: u32| {
+            (0..3)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    let got = substitute_consts_capped(&text, &table, cap);
+                    let elapsed = start.elapsed();
+                    assert_eq!(got.as_deref(), Some(want.as_str()));
+                    elapsed
+                })
+                .min()
+                .unwrap()
+        };
+        let (capped, indexed) = (best_of(MAX_INDEXED_STEPS), best_of(u32::MAX));
+        assert!(
+            capped * 2 < indexed,
+            "capped {capped:?} vs indexed throughout {indexed:?}"
+        );
+    }
+
+    #[test]
+    fn nan_constants_compare_equal_to_themselves() {
+        let nan = || ConstVal::from_json(&serde_json::json!({"__jsnum": "NaN"}));
+        assert!(matches!(nan(), ConstVal::Num(n) if n.is_nan()));
+        assert_eq!(nan(), nan());
+        assert_eq!(ConstVal::Num(1.5), ConstVal::Num(1.5));
+        assert_ne!(ConstVal::Num(1.5), ConstVal::Num(2.5));
+        assert_ne!(ConstVal::Num(1.0), ConstVal::Str("1".to_string()));
+        assert_ne!(nan(), ConstVal::Num(f64::INFINITY));
+    }
+
+    #[test]
+    fn a_file_preparation_holds_no_spare_capacity() {
+        let mut rules: Vec<StylexRule> = (0..5)
+            .map(|i| StylexRule {
+                class_name: format!("x{i}").into(),
+                ltr: format!(".x{i}{{order:{i}}}").into(),
+                rtl: None,
+                const_key: None,
+                const_val: None,
+                priority: 3000.0,
+            })
+            .collect();
+        for i in 0..3 {
+            rules.insert(
+                i * 2,
+                StylexRule {
+                    class_name: format!("k{i}").into(),
+                    ltr: "".into(),
+                    rtl: None,
+                    const_key: Some(format!("k{i}").into()),
+                    const_val: Some(Box::new(serde_json::json!("1px"))),
+                    priority: 0.0,
+                },
+            );
+        }
+        for mut pool in [None, Some(PreparedPool::default())] {
+            let prep = prepare_file(&rules, false, &ConstTable::default(), &mut pool);
+            let (len, capacity) = match &prep.rules {
+                PreparedRules::Inline(rules) => (rules.len(), rules.capacity()),
+                PreparedRules::Shared(rules) => (rules.len(), rules.capacity()),
+            };
+            assert_eq!((len, capacity), (5, 5));
+            assert_eq!(prep.const_decls.len(), 3);
+            assert_eq!(prep.const_decls.capacity(), 3);
+        }
     }
 
     // The resolver before the name index: every lookup a scan of the list.
@@ -3164,7 +3394,7 @@ mod splice_tests {
                 .blocked
                 .iter()
                 .map(|blocked| match &blocked.on {
-                    Blocker::File(path) => path.clone(),
+                    Blocker::File { path, .. } => path.clone(),
                     Blocker::Consts => "<consts>".to_string(),
                 })
                 .collect()
@@ -3201,6 +3431,147 @@ mod splice_tests {
         assert_eq!(registry.incr.len(), 1);
         registry.set_file_rules("a.ts", file_rules(5));
         assert!(registry.try_incremental(&cfg).is_some());
+    }
+
+    // The blocker, a rule of non-finite priority, reads a constant: an edit
+    // to it is judged against the constants it was blocked on.
+    #[test]
+    fn an_edited_blocker_is_judged_alone_and_unblocks_once_safe() {
+        let cfg = AssembleConfig::default();
+        let glyph_user = |n: usize| {
+            rule(
+                &format!("xu{n}"),
+                &format!(".xu{n}{{content:var(--xglyph)}}"),
+                f64::INFINITY,
+            )
+        };
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("a.ts", file_rules(1));
+        registry.set_file_rules("b.ts", vec![glyph_user(0)]);
+        registry.set_file_rules("c.ts", file_rules(2));
+        registry.set_file_rules(
+            "tokens.ts",
+            vec![constant("xglyph", serde_json::json!("\"\u{436}\""))],
+        );
+        // The constants the one blocked entry was prepared against.
+        let blocked_consts = |registry: &RuleRegistry| -> Arc<ConstTable> {
+            match &registry.blocked[..] {
+                [
+                    Blocked {
+                        on: Blocker::File { path, consts },
+                        ..
+                    },
+                ] => {
+                    assert_eq!(path, "b.ts");
+                    Arc::clone(consts)
+                }
+                _ => panic!("expected one config blocked on a file"),
+            }
+        };
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let consts = blocked_consts(&registry);
+        assert!(registry.incr.is_empty());
+
+        // Edited but still unsafe: the entry survives the edit and the emit
+        // after it. A retry would have built its constants anew.
+        for n in 1..4 {
+            let mut rules = file_rules(n + 2);
+            rules.push(glyph_user(n));
+            registry.set_file_rules("b.ts", rules);
+            assert!(Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+            let css = registry.emit(&cfg);
+            assert!(css.as_ref().unwrap().contains("content:\"\u{436}\""));
+            assert_eq!(css, assemble(&registry.all_rules(), &cfg));
+            assert!(Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+            assert!(registry.incr.is_empty());
+        }
+
+        // Edited to be safe: unblocked at once, and the next emit builds the
+        // state that later edits are spliced into.
+        registry.set_file_rules("b.ts", file_rules(6));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.incr.len(), 1);
+        registry.set_file_rules("b.ts", file_rules(7));
+        assert!(registry.try_incremental(&cfg).is_some());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+
+        // Unsafe again, then removed: a blocker that is gone blocks nothing.
+        registry.set_file_rules("b.ts", vec![glyph_user(8)]);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(!Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+        registry.remove_file("b.ts");
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(registry.incr.len(), 1);
+    }
+
+    #[test]
+    fn a_nan_constant_keeps_its_file_on_the_splice_path() {
+        let tokens = |extra: usize| {
+            let mut rules = vec![
+                constant("xnan", serde_json::json!({"__jsnum": "NaN"})),
+                constant("xgap", serde_json::json!(4)),
+                rule("xn", ".xn{order:var(--xnan)}", 3000.0),
+            ];
+            rules.extend((0..extra).map(|i| {
+                rule(
+                    &format!("xextra{i}"),
+                    &format!(".xextra{i}{{top:{i}px}}"),
+                    3000.0,
+                )
+            }));
+            rules
+        };
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("tokens.ts", tokens(0));
+        registry.set_file_rules("a.ts", file_rules(1));
+        for cfg in &configs() {
+            assert!(registry.emit(cfg).unwrap().contains("order:NaN"));
+        }
+        for extra in 1..4 {
+            registry.set_file_rules("tokens.ts", tokens(extra));
+            assert_spliced(&mut registry, "edit beside a NaN constant");
+        }
+    }
+
+    #[test]
+    fn a_state_no_emit_asks_for_is_dropped_once_its_backlog_outgrows_the_registry() {
+        let [active, idle, _] = configs();
+        let mut registry = RuleRegistry::new();
+        for i in 0..4 {
+            registry.set_file_rules(&format!("f{i}.ts"), file_rules(i));
+        }
+        registry.emit(&active).unwrap();
+        registry.emit(&idle).unwrap();
+        assert_eq!(registry.incr.len(), 2);
+
+        // Files come and go; only one config is ever emitted.
+        let mut dropped_at = None;
+        for step in 0..4 * MAX_IDLE_DIRTY {
+            let path = format!("tmp{step}.ts");
+            registry.set_file_rules(&path, file_rules(step));
+            assert!(registry.try_incremental(&active).is_some());
+            registry.remove_file(&path);
+            assert!(registry.try_incremental(&active).is_some());
+            let backlog = registry.file_count().max(MAX_IDLE_DIRTY);
+            assert!(registry.incr.iter().all(|s| s.dirty.len() <= backlog));
+            if registry.incr.len() == 1 {
+                dropped_at.get_or_insert(step);
+            }
+        }
+        assert_eq!(dropped_at, Some(MAX_IDLE_DIRTY));
+        assert!(registry.incr.iter().all(|state| state.cfg == active));
+
+        // The dropped config is rebuilt when it is asked for again.
+        assert_eq!(registry.emit(&idle), assemble(&registry.all_rules(), &idle));
+        assert_eq!(registry.incr.len(), 2);
+        registry.set_file_rules("f0.ts", file_rules(9));
+        for cfg in [&active, &idle] {
+            let spliced = registry.try_incremental(cfg).expect("the splice path");
+            assert_eq!(Ok(spliced), assemble(&registry.all_rules(), cfg));
+        }
     }
 
     #[test]
