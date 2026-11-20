@@ -149,7 +149,13 @@ const LAZY_STUB = `class DevRuntime {
 
 function lazyRuntime() {
   const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
-  const page = { console: { debug() {}, error() {} }, __ojStartHmr: {}, setTimeout, Date };
+  const page = {
+    console: { debug() {}, error() {}, warn() {} },
+    __ojStartHmr: { send: () => true },
+    setTimeout,
+    clearTimeout,
+    Date,
+  };
   page.globalThis = page;
   vm.createContext(page);
   vm.runInContext(`${LAZY_STUB}\n${source}`, page);
@@ -221,8 +227,42 @@ test("a module compiled after a hot update waits for the page to have applied it
   const waited = runtime.ojPatched(2).then(() => (applied = runtime.hmr.lastSeq));
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(applied, false, "it did not wait for update 2");
+  // Woken by the updates as they are taken in, not by a timer of its own.
+  runtime.hmr.lastSeq = 1;
+  runtime.hmr.wake();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(applied, false, "update 1 is not update 2");
   runtime.hmr.lastSeq = 2;
+  runtime.hmr.wake();
   assert.equal(await waited, 2);
   // Nothing sent: nothing to wait for.
   await lazyRuntime().ojPatched(0);
+});
+
+test("a page that is about to reload, or that the update never reaches, does not hold the import", async () => {
+  const reloading = lazyRuntime();
+  const waited = reloading.ojPatched(5);
+  reloading.hmr.requestReload("a sequence gap");
+  await waited;
+
+  // The bound, on a clock the test turns.
+  const warned = [];
+  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '""');
+  const timers = [];
+  const page = {
+    console: { debug() {}, error() {}, warn: (m) => warned.push(m) },
+    __ojStartHmr: { send: () => true },
+    setTimeout: (fn, ms, arg) => timers.push(() => fn(arg)),
+    clearTimeout() {},
+    Date,
+  };
+  page.globalThis = page;
+  vm.createContext(page);
+  vm.runInContext(`${LAZY_STUB}\n${source}`, page);
+  const late = page.__rolldown_runtime__.ojPatched(3);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(timers.length, 1);
+  timers[0]();
+  await late;
+  assert.match(warned[0], /hot update 3 did not reach this page/);
 });

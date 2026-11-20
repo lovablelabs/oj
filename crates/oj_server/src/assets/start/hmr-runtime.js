@@ -113,6 +113,12 @@ class OjHmrClient {
     this.lastSeq = 0;
     this.reloadPending = false;
     this.firstInvalidatedBy = undefined;
+    // Waiting for an update to be taken in (`OjDevRuntime.ojPatched`).
+    this.heard = [];
+  }
+
+  wake() {
+    for (const resolve of this.heard.splice(0)) resolve();
   }
 
   async notify(event, data) {
@@ -251,6 +257,7 @@ class OjHmrClient {
         this.lastSeq = seq;
         for (const id of ids) changedIds.add(id);
       }
+      this.wake();
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
       const next = this.compute([...changedIds]);
@@ -328,6 +335,7 @@ class OjHmrClient {
   requestReload(reason) {
     if (this.reloadPending) return;
     this.reloadPending = true;
+    this.wake();
     console.debug(`[oj] full reload needed: ${reason}`);
     if (!__ojBus.send || !__ojBus.send({ type: "oj:reload-needed", reason })) location.reload();
   }
@@ -409,9 +417,22 @@ class OjDevRuntime extends DevRuntime {
   // no update at all, and reloads when it is back.
   async ojPatched(seq) {
     const hmr = this.hmr;
-    const deadline = Date.now() + 10000;
-    while (hmr.lastSeq < seq && !hmr.reloadPending && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    if (hmr.lastSeq < seq && !hmr.reloadPending) {
+      // Woken as the page takes updates in (not by a timer of its own: a
+      // hidden tab's timers are slowed), up to a bound.
+      let timer;
+      const late = new Promise((resolve) => (timer = setTimeout(resolve, 10000, "late")));
+      for (;;) {
+        const heard = new Promise((resolve) => hmr.heard.push(resolve));
+        if (hmr.lastSeq >= seq || hmr.reloadPending) break;
+        if ((await Promise.race([heard, late])) === "late") {
+          console.warn(
+            `[oj] hot update ${seq} did not reach this page in time; running the imported module without it`,
+          );
+          break;
+        }
+      }
+      clearTimeout(timer);
     }
     await hmr.queue;
   }

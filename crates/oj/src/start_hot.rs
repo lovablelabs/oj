@@ -64,8 +64,10 @@ pub(crate) struct HotUpdates {
     /// lock a release drains under, so a frame is never stranded by a flush
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
-    /// Each page's last patch sent (see [`HotUpdates::sent_seq`]).
+    /// Each connected page's last patch sent (see [`HotUpdates::sent_seq`]).
     sent_seq: Mutex<std::collections::HashMap<String, u32>>,
+    /// Pages a patch was made for while they had no socket open.
+    unheard: Mutex<std::collections::HashSet<String>>,
     /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
     holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
@@ -81,6 +83,7 @@ impl HotUpdates {
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
             sent_seq: Mutex::default(),
+            unheard: Mutex::default(),
             holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
             changes: std::sync::atomic::AtomicU64::new(0),
@@ -158,20 +161,27 @@ impl HotUpdates {
         }
     }
 
-    /// Notes the patch a frame on its way to the pages carries.
+    /// Notes the patch a frame on its way to the pages carries, for a page
+    /// whose socket is open (a page that left, or never connected, has
+    /// nothing to apply it with).
     fn sent(&self, frame: &Frame) {
         if let (Some(client), Some(seq)) = (&frame.client, frame.seq) {
-            self.sent_seq
+            if let Some(last) = self
+                .sent_seq
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(client.clone(), seq);
+                .get_mut(client)
+            {
+                *last = (*last).max(seq);
+            }
         }
     }
 
     /// The last patch sent to the page `client`, by its number in the
-    /// page's sequence (0: none). A module compiled for the page now was
-    /// compiled against it, so the page must have applied it before it runs
-    /// the module; a patch the gate still holds is not counted.
+    /// page's sequence (0: none, or no socket). A module compiled for the
+    /// page now was compiled against it, so the page must have applied it
+    /// before it runs the module; a patch the gate still holds is not
+    /// counted.
     pub(crate) fn sent_seq(&self, client: &str) -> u32 {
         self.sent_seq
             .lock()
@@ -181,9 +191,28 @@ impl HotUpdates {
             .unwrap_or(0)
     }
 
+    /// The page `client` opened its socket. Whether a patch was made for it
+    /// before that (the bundler knew it from an `import()` it made first):
+    /// that patch went to no socket, so the page is behind it.
+    pub(crate) fn connected(&self, client: &str) -> bool {
+        self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(client.to_string())
+            .or_insert(0);
+        self.unheard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client)
+    }
+
     /// The page `client` is gone.
     pub(crate) fn forget(&self, client: &str) {
         self.sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(client);
+        self.unheard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(client);
@@ -270,6 +299,18 @@ impl HotUpdates {
         let filename = patch.filename.as_str();
         if filename.contains('/') {
             return;
+        }
+        // For a page with no socket open: nothing will carry it there.
+        if !self
+            .sent_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&patch.client)
+        {
+            self.unheard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(patch.client.clone());
         }
         // Vite's payloadDeliveredAck: the page reports the patch once its
         // factories registered, never on the response alone. The trailing
@@ -382,6 +423,54 @@ mod tests {
             changed_ids: vec!["src/a.tsx".into()],
             code: "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});".into(),
         }
+    }
+
+    // The number a module compiled for a page must wait for is the last
+    // patch that went to the page's socket: not one the gate still holds,
+    // not one made for a page with no socket, never a lower one.
+    #[tokio::test]
+    async fn the_last_patch_sent_counts_what_reached_a_connected_page() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hot = HotUpdates::new("");
+        let held = Arc::new(AtomicBool::new(false));
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        // No socket yet: the patch is made (the bundler knew the page from
+        // an import), reaches nobody, and is not waited for.
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        assert_eq!(hot.sent_seq("c1"), 0);
+        // The socket opens: the page is behind that patch.
+        assert!(
+            hot.connected("c1"),
+            "a patch was made before the socket opened"
+        );
+        assert!(!hot.connected("c1"), "said once");
+        assert!(!hot.connected("c2"));
+
+        hot.accept(&patch("c1", "hmr_patch_1.js", 2));
+        assert_eq!(hot.sent_seq("c1"), 2);
+        // Held by the gate: not sent, not counted, until the flush.
+        held.store(true, Ordering::SeqCst);
+        hot.accept(&patch("c1", "hmr_patch_2.js", 3));
+        assert_eq!(hot.sent_seq("c1"), 2);
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(hot.sent_seq("c1"), 3);
+        // Never a lower number.
+        hot.accept(&patch("c1", "hmr_patch_3.js", 2));
+        assert_eq!(hot.sent_seq("c1"), 3);
+
+        // A page that left: a patch still parked for it is released to
+        // nobody and leaves nothing behind.
+        held.store(true, Ordering::SeqCst);
+        hot.accept(&patch("c1", "hmr_patch_4.js", 4));
+        hot.forget("c1");
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(hot.sent_seq("c1"), 0);
+        assert!(!hot.connected("c1"), "forgotten with its unheard patches");
     }
 
     #[tokio::test]

@@ -913,19 +913,32 @@ async fn an_import_that_failed_to_compile_is_asked_for_again() {
         "the overlay does not show the broken file: {:?}",
         page.eval::<String>(overlay).await
     );
-    // The import of the broken module rejects with the module's own error,
-    // or waits for a bundle that builds: never an error about the bundle.
-    load_note(&page).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let during = page.eval::<String>(NOTE_SHOWN).await;
-    assert!(
-        during == "none" || (during.starts_with("failed: ") && during.contains("note.ts")),
-        "the import of a module that does not compile: {during:?}\n{}",
-        dev.output()
+    // The import of the broken module rejects at once with the module's
+    // own error, as a request for a module that does not transform does
+    // under Vite.
+    let proxy = proxy_of(&dev, "src/lib/note.ts");
+    let outcome = format!(
+        "Promise.race([globalThis.__rolldown_runtime__.requestLazy('src/lib/note.ts', {proxy:?}).then(() => 'resolved', (e) => 'rejected: ' + e.message), new Promise((r) => setTimeout(r, 8000, 'pending'))])"
     );
-    // A module the broken file has nothing to do with is not failed for it
-    // (it loads, at once or once the bundle builds again).
+    let rejected = |outcome: &str| outcome.starts_with("rejected: ") && outcome.contains("note.ts");
+    let first = page.eval::<String>(&outcome).await;
+    assert!(
+        rejected(&first),
+        "the import of a module that does not compile: {first}"
+    );
+    load_note(&page).await;
+    assert!(
+        page.poll(&format!("{NOTE_SHOWN}.startsWith('failed: ')"), WAIT)
+            .await,
+        "the app's own import: {:?}",
+        page.eval::<String>(NOTE_SHOWN).await
+    );
+    // A module the broken file has nothing to do with is not failed for
+    // it: its import waits for a bundle that builds (the bundler compiles
+    // nothing while a module of the graph is broken).
     go_to_about(&page).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
 
     write(&root, NOTE, "export const note = \"note fixed\";\n");
     notes_once_current(&page, &dev, "note fixed").await;
@@ -1325,10 +1338,10 @@ async fn a_lazy_module_does_not_run_ahead_of_the_update_it_was_compiled_against(
 }
 
 /// A request for a module costs the dev server no build, whatever it asks
-/// for, and a page with no socket open is answered at once with the module
-/// alone (not everything it imports).
+/// for, and a page with no socket open is answered with the module alone
+/// (not everything it imports).
 #[test]
-fn a_request_for_a_module_starts_no_build_and_does_not_wait_for_a_socket() {
+fn a_request_for_a_module_starts_no_build_and_answers_a_page_with_no_socket() {
     let Some(app) = lazy_app(
         "lazy-import-request",
         "export const EVENTS = [\"a\", \"b\"];\n",
@@ -1340,14 +1353,10 @@ fn a_request_for_a_module_starts_no_build_and_does_not_wait_for_a_socket() {
     let builds = |dev: &Server| dev.output().matches("client bundling").count();
     let built = builds(&dev);
 
-    let started = std::time::Instant::now();
     let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
     assert_eq!(status, 200, "{body}");
-    assert!(
-        started.elapsed() < Duration::from_millis(900),
-        "the answer waited {:?} for a socket",
-        started.elapsed()
-    );
+    let (status, _) = dev.request("POST", &lazy_url(&proxy, "no-socket"), &[]);
+    assert_eq!(status, 405, "only a GET is answered");
     assert!(
         body.contains("note v1") && body.len() < 4096,
         "the module with what the entry already holds: {} bytes",
@@ -1727,7 +1736,7 @@ fn a_rebundle_ends_while_pages_keep_importing() {
         "src/routes/extra.tsx",
         "import { createFileRoute } from \"@tanstack/react-router\";\n\nexport const Route = createFileRoute(\"/extra\")({\n  component: () => <p id=\"extra\">extra</p>,\n});\n",
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WAIT;
     let rebuilt = loop {
         if dev.output().contains("oj start: rebuilt") {
             break true;
@@ -1750,4 +1759,98 @@ fn a_rebundle_ends_while_pages_keep_importing() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// The bundle does not build at all (a module is broken, and a full build
+/// was asked for: here a file the bundle does not know is added), so the
+/// bundler compiles nothing. An import of the broken module still rejects
+/// at once with that module's own error; one of another module waits for a
+/// bundle that builds, and gets its module then.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_of_the_module_a_failed_build_is_about_rejects_with_its_error() {
+    let Some(app) = lazy_app(
+        "lazy-import-no-build",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+    let proxy = proxy_of(&dev, "src/lib/note.ts");
+    let outcome = format!(
+        "Promise.race([globalThis.__rolldown_runtime__.requestLazy('src/lib/note.ts', {proxy:?}).then(() => 'resolved', (e) => 'rejected: ' + e.message), new Promise((r) => setTimeout(r, 8000, 'pending'))])"
+    );
+    let rejected = |outcome: &str| outcome.starts_with("rejected: ") && outcome.contains("note.ts");
+
+    write(&root, NOTE, "export const note = \"broken;\n");
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !dev.output().contains("client bundle failed") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the broken edit never failed the bundle\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A file the bundle does not know is added: the dev server asks the
+    // bundler for a full build, which fails on the broken module, and the
+    // bundler compiles nothing from then on: an unrelated module's request
+    // waits.
+    write(
+        &root,
+        "src/lib/unrelated-new-file.ts",
+        "export const fresh = 1;\n",
+    );
+    let about_proxy = proxy_of(&dev, "src/routes/about.tsx?tsr-split=component");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let waits = std::process::Command::new("curl")
+            .args(["-s", "-o", "/dev/null", "-m", "1"])
+            .arg(dev.url(&lazy_url(&about_proxy, "probe")))
+            .status()
+            // curl's exit code for a request that timed out.
+            .is_ok_and(|status| status.code() == Some(28));
+        if waits {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the bundler kept answering with the file broken\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let again = page.eval::<String>(&outcome).await;
+    assert!(
+        rejected(&again) && !again.contains("last full build failed"),
+        "the import with no bundle that builds: {again}"
+    );
+
+    // The other module's import, made now, is answered once the bundle
+    // builds again.
+    go_to_about(&page).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        page.eval::<String>(SHOWN).await,
+        "",
+        "the route loaded with no bundle"
+    );
+    write(&root, NOTE, "export const note = \"note fixed\";\n");
+    shows_despite_overlay(&page, &dev, "2").await;
+    notes_once_current(&page, &dev, "note fixed").await;
+    let said: Vec<String> = page
+        .console()
+        .into_iter()
+        .chain(page.errors())
+        .filter(|line| line.contains("last full build failed"))
+        .collect();
+    assert!(
+        said.is_empty(),
+        "an import failed for the bundle's state: {said:?}"
+    );
+    page.close().await;
 }

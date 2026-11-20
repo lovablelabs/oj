@@ -852,3 +852,32 @@ test("a stylesheet link added for a hot update carries the document's nonce", as
   // A tag without a nonce (no policy) gives none.
   assert.deepEqual(await linked({ [OWN]: {} }), {});
 });
+
+test("an import() answered for another run's page reloads it through the behind guard: once per stamp", () => {
+  const storage = new Map();
+  const reloads = (stamp) => {
+    const { bus, log } = loadPage({ stamp, storage });
+    const reloaded = bus.reloadBehind();
+    return [reloaded, reloadsIn(log)];
+  };
+  assert.deepEqual(reloads('"1f-4"'), [true, 1]);
+  // The reload served the same document again (a cache): it stops there.
+  assert.deepEqual(reloads('"1f-4"'), [false, 0]);
+  assert.deepEqual(reloads('"20-0"'), [true, 1]);
+  // The socket's own behind frame shares the guard.
+  const { open, receive, log } = loadPage({ stamp: '"20-0"', storage });
+  open();
+  log.length = 0;
+  return receive({ type: "oj:behind" }).then(() => assert.equal(reloadsIn(log), 0));
+});
+
+test("an uncaught failed import of a hot update or of the answer to an import() is no chunk gone from the server", async () => {
+  for (const url of [
+    "http://localhost/@oj-start/hmr/lazy?id=%2Fapp%2Fsrc%2Fa.ts%3Frolldown-lazy%3D1&clientId=c1&n=1",
+    "http://localhost/@oj-start/hmr/hmr_patch_3.js",
+  ]) {
+    const page = loadPage({ stamp: '"1f-4"' });
+    await page.rejected(new TypeError(`Failed to fetch dynamically imported module: ${url}`));
+    assert.equal(reloadsIn(page.log), 0, url);
+  }
+});

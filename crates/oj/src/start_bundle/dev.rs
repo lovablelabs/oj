@@ -52,10 +52,11 @@ pub(crate) enum LazyAnswer {
     Restored(String),
     /// No module of a hot bundle goes by that id.
     Unknown,
-    /// Nothing can be compiled now: the bundle's last build failed (an edit
-    /// that does not compile, whatever module it is in), or no engine runs.
+    /// The engine did not compile the module: for an error that may be the
+    /// module's own or another's (an edit that does not compile, whatever
+    /// module it is in, fails every compile), or because no engine runs.
     Unavailable(BundleError),
-    /// The module itself does not compile.
+    /// The module cannot be answered, and waiting changes nothing.
     Failed(BundleError),
 }
 
@@ -305,7 +306,10 @@ impl DevBundler {
     /// A page announced its runtime id: the engine addresses its patches.
     /// `another_run`: its document was served by another run of the dev
     /// server.
-    pub(crate) fn page_connected(&self, id: &str, another_run: bool) {
+    ///
+    /// Whether the page is behind a hot update already: one made for it
+    /// before its socket opened (see [`HotUpdates::connected`]).
+    pub(crate) fn page_connected(&self, id: &str, another_run: bool) -> bool {
         let mut pages = self
             .clients
             .lock()
@@ -315,12 +319,14 @@ impl DevBundler {
         }
         let first = pages.connect(id);
         if !first {
-            return;
+            return false;
         }
+        let behind = self.hot.connected(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.register_client(id).await });
         }
+        behind
     }
 
     pub(crate) fn page_gone(&self, id: &str) {
@@ -419,10 +425,12 @@ impl DevBundler {
                 let err = BundleError::from_diagnostics(&errs.into_vec());
                 if err.message.contains("Lazy entry module not found") {
                     LazyAnswer::Unknown
-                } else if engine.is_closed() || err.message.contains("the last full build failed") {
-                    LazyAnswer::Unavailable(err)
                 } else {
-                    LazyAnswer::Failed(err)
+                    // The engine's error is not always the module's own:
+                    // with a broken module anywhere in the graph it fails
+                    // every compile with that module's error, and after a
+                    // failed full build with "the last full build failed".
+                    LazyAnswer::Unavailable(err)
                 }
             }
         }
@@ -476,6 +484,7 @@ impl DevBundler {
         if pages.is_open(id) {
             return;
         }
+        self.hot.forget(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.remove_client(&id).await });
