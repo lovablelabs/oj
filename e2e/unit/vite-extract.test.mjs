@@ -604,6 +604,18 @@ test("the Start router options keep the app's footer after Start's block", () =>
   });
 });
 
+test("a Start router option that is not data is left out, without a throw", () => {
+  const cyclic = { file: "root.tsx" };
+  cyclic.children = [cyclic];
+  const out = startRouterOptions({
+    quoteStyle: "double",
+    virtualRouteConfig: cyclic,
+    customScaffolding: { routeTemplate: 1n },
+    routeFilePrefix: () => "r-",
+  });
+  assert.deepEqual(out, { quoteStyle: "double" });
+});
+
 test("a Start footer without a declare-module entry gives the app no footer", () => {
   const out = startRouterOptions({ routeTreeFileFooter: () => ["// a block of another shape", "// app footer"] });
   assert.equal(out.routeTreeFileFooter, undefined);

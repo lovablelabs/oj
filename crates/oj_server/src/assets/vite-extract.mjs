@@ -435,7 +435,14 @@ function startRouterOptions(c) {
     const v = c[k];
     // A token RegExp in the schema's JSON form, which createTokenRegex reads alike.
     if (v instanceof RegExp) options[k] = { regex: v.source, flags: v.flags };
-    else if (v !== undefined) options[k] = v;
+    else if (v !== undefined) {
+      // Recorded as the data it is; a value that is none (the schema allows
+      // none) is left out, never a throw inside Start's own generator run.
+      try {
+        const data = JSON.parse(JSON.stringify(v));
+        if (data !== undefined) options[k] = data;
+      } catch {}
+    }
   }
   // Start's footer (route-tree-footer.js) is its declare-module block, then
   // the app's own `routeTreeFileFooter`: the app's part is kept.
@@ -444,10 +451,10 @@ function startRouterOptions(c) {
     if (Array.isArray(footer)) {
       // A footer whose block cannot be told apart keeps none of it: oj writes the block.
       const block = footer.findIndex((l) => /^declare module /m.test(l));
-      if (block >= 0) options.routeTreeFileFooter = footer.slice(block + 1);
+      if (block >= 0) options.routeTreeFileFooter = footer.slice(block + 1).filter((l) => typeof l === "string");
     }
   } catch {}
-  return JSON.parse(JSON.stringify(options));
+  return options;
 }
 
 const absDeps = (deps) => (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
