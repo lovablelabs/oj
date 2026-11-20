@@ -7,8 +7,7 @@ Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
 `src/dev_engine.rs`:
 
 - `DevEngine::compile_lazy_entry` queues its rebuild only when rolldown's own
-  lazy compilation is on (`experimental.devMode.lazy`), or when the engine's
-  last task errored.
+  lazy compilation is on (`experimental.devMode.lazy`).
 
 Upstream queues a rebuild after every lazy compile. With rolldown's lazy
 compilation, a module behind an `import()` stays out of the graph until a
@@ -23,11 +22,11 @@ the same output again, and the next `import()` or edit waited for it (about
 the page and the assets it emitted are handled before that point and are
 unchanged.
 
-The rebuild stays after a task that errored. A module that task could not
-load (a syntax error mid-edit) is not in the graph's cache, so a compile made
-once the file is fixed, before the engine has handled the fix itself, loads
-it: that compile does change the graph, and the rebuild also ends the errored
-state before the fix's own update is computed.
+One case is left to the host. A module the engine's last task could not load
+(a syntax error mid-edit) is not in the graph's cache, so a compile made once
+the file is fixed, before the engine has handled the fix itself, would load
+it and change the graph with no update made for it. oj asks for no compile
+while `DevEngine::get_bundle_state` reports `last_build_errored`.
 
 `oj.patch` is the whole difference from the published 1.3.2 sources
 (`diff -ru` of `src/`); everything else under `src/` is verbatim. Not
@@ -52,7 +51,7 @@ paths keep working unchanged (the crate is versioned with the oj workspace;
 the upstream base stays rolldown_dev 1.3.2):
 
 ```toml
-rolldown_dev = { package = "oj_rolldown_dev", version = "0.4" }
+rolldown_dev = { package = "oj_rolldown_dev", version = "0.4.17" }
 ```
 
 Unless you need this change, depend on upstream `rolldown_dev` instead.

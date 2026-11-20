@@ -2,9 +2,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import vm from "node:vm";
-import { asset } from "./harness.mjs";
+import { asset, repo } from "./harness.mjs";
 
 // hmr-runtime.js as rolldown inlines it: after its DevRuntime (stubbed here,
 // a store with no HMR decisions over a fixed module graph) in a page's global
@@ -358,3 +360,145 @@ test("a taken chunk leaves the held modules' factories, graph rows and stamps as
   runtime.registerFactory("src/util.ts", () => "a later patch", 10);
   assert.equal(runtime.factoryStamps.get("src/util.ts"), 10);
 });
+
+// rolldown's own DevRuntime (the file its hmr plugin inlines ahead of
+// hmr-runtime.js), from the cargo registry at the version Cargo.lock pins:
+// what `requestLazy` does with a factory already in the page is rolldown's.
+function rolldownRuntimeFile() {
+  const lock = readFileSync(join(repo, "Cargo.lock"), "utf8");
+  const version = /name = "rolldown_plugin_hmr"\nversion = "([^"]+)"/.exec(lock)?.[1];
+  const home = process.env.CARGO_HOME || join(homedir(), ".cargo");
+  const src = join(home, "registry", "src");
+  for (const index of existsSync(src) ? readdirSync(src) : []) {
+    const file = join(src, index, `rolldown_plugin_hmr-${version}`, "src/runtime/runtime-extra-dev-common.js");
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+
+function loadRealRuntime(file) {
+  const common = readFileSync(file, "utf8").replaceAll("export class", "class");
+  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8")
+    .replaceAll("__OJ_DEV_BASE__", '""')
+    .replaceAll("import(/* @vite-ignore */", "__import(");
+  const log = [];
+  const urls = new Map();
+  const page = {
+    log,
+    console: { debug() {}, warn() {}, error: (...m) => log.push("error " + m.join(" ")) },
+    location: { reload: () => log.push("location.reload") },
+    setTimeout,
+    clearTimeout,
+    queueMicrotask,
+    __toESM: (x) => x,
+    __toCommonJS: (x) => x,
+    __exportAll: () => {},
+    __reExport: () => {},
+    __ojStartHmr: { send: (msg) => (log.push(msg), true), post: (msg) => log.push(msg) },
+    __import: async (url) => {
+      const key = [...urls.keys()].find((k) => url.startsWith(k));
+      if (!key) throw new TypeError("Failed to fetch dynamically imported module: " + url);
+      log.push("fetch " + key);
+      return urls.get(key)();
+    },
+  };
+  page.globalThis = page;
+  vm.createContext(page);
+  vm.runInContext(`${common}\n${source}`, page);
+  return { runtime: page.__rolldown_runtime__, log, urls };
+}
+
+const realRuntime = rolldownRuntimeFile();
+
+// A page on a route that reads `label`; `about` (behind an import(), never
+// run here) reads it too. The patch for an edit of `label` carries `about`
+// as it is then. `about` is then edited alone, and imported.
+function editedAfterItsImport({ runtime, urls }, ran) {
+  runtime.registerGraph({
+    ids: ["index", "label", "about", "root"],
+    localCount: 4,
+    edges: [[1], [], [1], [0]],
+    dynamicEdges: { 3: [2] },
+  });
+  runtime.registerModule("root");
+  runtime.registerModule("index");
+  runtime.registerModule("label", { exports: { v: 1 } });
+  runtime.createModuleHotContext("index").accept();
+  urls.set("/patch-1", () => {
+    runtime.registerGraph({
+      ids: ["about", "index", "label"],
+      localCount: 3,
+      edges: [[2], [2], []],
+      stamps: { 0: 1, 1: 1, 2: 1 },
+    });
+    runtime.registerFactory(
+      "about",
+      (id) => (runtime.registerModule(id, { exports: { about: "v1" } }), ran.push("about v1")),
+      1,
+    );
+    runtime.registerFactory(
+      "index",
+      (id) => (runtime.registerModule(id), runtime.createModuleHotContext(id).accept()),
+      1,
+    );
+    runtime.registerFactory("label", (id) => runtime.registerModule(id, { exports: { v: 2 } }), 1);
+  });
+  const about2 = () => {
+    runtime.registerGraph({ ids: ["about", "label"], localCount: 1, edges: [[1]], stamps: { 0: 2 } });
+    runtime.registerFactory(
+      "about",
+      (id) => (runtime.registerModule(id, { exports: { about: "v2" } }), ran.push("about v2")),
+      2,
+    );
+  };
+  return about2;
+}
+
+test(
+  "a module edited after a patch carried its old code is imported as edited (rolldown's runtime)",
+  { skip: realRuntime || process.env.CI ? false : "rolldown_plugin_hmr is not in the cargo registry" },
+  async () => {
+    assert.ok(realRuntime, "rolldown_plugin_hmr's runtime file is in the cargo registry");
+    const page = loadRealRuntime(realRuntime);
+    const { runtime, urls, log } = page;
+    const ran = [];
+    const about2 = editedAfterItsImport(page, ran);
+    urls.set("/patch-2", about2);
+    runtime.ojApply({ url: "/patch-1", seq: 1, changedIds: ["label"] });
+    await runtime.hmr.queue;
+    runtime.ojApply({ url: "/patch-2", seq: 2, changedIds: ["about"] });
+    await runtime.hmr.queue;
+    assert.deepEqual(ran, [], "nothing ran the module the page has not imported");
+    await runtime.requestLazy("about", "/abs/about?rolldown-lazy=1");
+    assert.deepEqual(ran, ["about v2"]);
+    assert.ok(
+      !log.includes("location.reload") && !log.some((l) => l?.type === "oj:reload-needed"),
+      JSON.stringify(log),
+    );
+  },
+);
+
+test(
+  "a patch for a module the page has not run that cannot be fetched leaves the module to be asked for (rolldown's runtime)",
+  { skip: realRuntime || process.env.CI ? false : "rolldown_plugin_hmr is not in the cargo registry" },
+  async () => {
+    assert.ok(realRuntime, "rolldown_plugin_hmr's runtime file is in the cargo registry");
+    const page = loadRealRuntime(realRuntime);
+    const { runtime, urls, log } = page;
+    const ran = [];
+    const about2 = editedAfterItsImport(page, ran);
+    // The second patch is gone; the server answers the import with the module as it is.
+    urls.set("/@oj-start/hmr/lazy", about2);
+    runtime.ojApply({ url: "/patch-1", seq: 1, changedIds: ["label"] });
+    await runtime.hmr.queue;
+    runtime.ojApply({ url: "/patch-2", seq: 2, changedIds: ["about"] });
+    await runtime.hmr.queue;
+    await runtime.requestLazy("about", "/abs/about?rolldown-lazy=1");
+    assert.deepEqual(ran, ["about v2"]);
+    assert.ok(log.includes("fetch /@oj-start/hmr/lazy"), JSON.stringify(log));
+    assert.ok(
+      !log.includes("location.reload") && !log.some((l) => l?.type === "oj:reload-needed"),
+      JSON.stringify(log),
+    );
+  },
+);

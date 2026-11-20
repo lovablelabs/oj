@@ -551,8 +551,10 @@ async fn a_lazy_route_preloaded_after_its_update_shows_it_at_the_click() {
          a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); a.focus(); return true; })()",
     )
     .await;
+    // The preload ran the route's component module (from the update the
+    // page took, which carried it, or from the server).
     page.wait_for(
-        "performance.getEntriesByType('resource').some((e) => e.name.includes('/@oj-start/hmr/lazy') && decodeURIComponent(e.name).includes('about.tsx'))",
+        "[...globalThis.__rolldown_runtime__.moduleCache.keys()].some((id) => id.includes('about.tsx?tsr-split=component'))",
         WAIT,
     )
     .await;
@@ -1077,6 +1079,55 @@ async fn an_open_page_first_imports_a_hot_updated_module_as_it_is_now() {
     page.close().await;
 }
 
+/// A module behind an `import()` in a click handler, not loaded yet, imports
+/// a module the page runs. That module is edited (the page's hot update
+/// carries the unloaded importer too), then the unloaded module alone (an
+/// update the page has no use for), then the page imports it: it gets the
+/// module as edited, as a page under Vite does (the change stops at a module
+/// no page loaded, and the import is a request answered with current code).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_edited_after_a_module_it_imports_is_imported_as_edited() {
+    let Some(app) = lazy_app("lazy-import-after-dep", "export const EVENTS = [\"a\"];\n") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(&root, INDEX, INDEX_READS);
+    let note = |v: &str| {
+        format!("import {{ EVENTS }} from \"./event\";\nexport const note = \"note {v}:\" + EVENTS.join(\"\");\n")
+    };
+    write(&root, NOTE, &note("v1"));
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+
+    let before = hot_updates(&dev);
+    write(&root, EVENT, "export const EVENTS = [\"b\"];\n");
+    hot_updated(&dev, before).await;
+    assert!(
+        page.poll("document.querySelector('#home')?.textContent === 'b'", WAIT)
+            .await,
+        "the home route did not take the edit of the module it reads\n{}",
+        dev.output()
+    );
+    let before = hot_updates(&dev);
+    write(&root, NOTE, &note("v2"));
+    hot_updated(&dev, before).await;
+    load_note(&page).await;
+    notes(&page, &dev, "note v2:b").await;
+
+    // And once more, now that the page runs it.
+    let before = hot_updates(&dev);
+    write(&root, NOTE, &note("v3"));
+    hot_updated(&dev, before).await;
+    load_note(&page).await;
+    notes(&page, &dev, "note v3:b").await;
+    kept(&page, &dev).await;
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    page.close().await;
+}
+
 /// Plain `oj dev`, a file-routed app: the router's code splitter moves a
 /// route's component into `route.tsx?tsr-split=component`. A page open on
 /// the home route has not loaded it; a module only that component imports is
@@ -1209,6 +1260,84 @@ async fn an_import_that_failed_to_compile_is_asked_for_again() {
         "an import failed for the bundle's state: {said:?}"
     );
     kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// A module the page runs does not compile (a syntax error mid-edit) while
+/// imports of modules the page has not loaded wait for the bundle to build
+/// again. The fix is saved: whichever reads it first, an import that was
+/// waiting or the bundler's own watcher, the page gets the fixed module, as
+/// a page under Vite is hot-updated with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fix_saved_while_imports_wait_on_a_broken_build_reaches_the_page() {
+    let Some(app) = lazy_app("lazy-import-fix-race", "export const EVENTS = [\"a\"];\n") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(&root, INDEX, INDEX_READS);
+    let dev = Server::oj_dev(&root);
+    let page = open_home(&dev).await;
+    let proxy = proxy_of(&dev, "src/lib/note.ts");
+    let port = dev.port;
+
+    for round in 0..4 {
+        write(&root, EVENT, "export const EVENTS = [\"broken;\n");
+        let failed = dev.output().matches("client bundle failed").count();
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while dev.output().matches("client bundle failed").count() == failed {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the broken edit never failed the bundle\n{}",
+                dev.output()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Imports of a module the error is not about, from pages of their
+        // own: each waits, asking the bundler again and again.
+        let waiting: Vec<_> = (0..24)
+            .map(|n| {
+                let proxy = proxy.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(n * 6));
+                    let _ = std::process::Command::new("curl")
+                        .args(["-s", "-o", "/dev/null", "-m", "20"])
+                        .arg(format!(
+                            "http://127.0.0.1:{port}{}",
+                            lazy_url(&proxy, &format!("waiting-{round}-{n}"))
+                        ))
+                        .status();
+                })
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let fixed = format!("fixed{round}");
+        write(
+            &root,
+            EVENT,
+            &format!("export const EVENTS = [\"{fixed}\"];\n"),
+        );
+        assert!(
+            page.poll(
+                &format!("document.querySelector('#home')?.textContent === '{fixed}'"),
+                Duration::from_secs(20)
+            )
+            .await,
+            "round {round}: the page never ran the fixed module: shows {:?}\n{}",
+            page.eval::<String>("document.querySelector('#home')?.textContent ?? ''")
+                .await,
+            dev.output()
+                .lines()
+                .filter(|l| l.contains("oj start:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        for thread in waiting {
+            let _ = thread.join();
+        }
+    }
     page.close().await;
 }
 

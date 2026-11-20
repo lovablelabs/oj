@@ -397,6 +397,24 @@ impl DevBundler {
         // Not while a bundle is being made: a run in progress is waited
         // for, and one that starts waits for this compile.
         let _no_run = self.session.lock().await;
+        // Nothing is compiled while the engine's last build failed. A
+        // module that build could not load is loaded by the next thing
+        // that scans the graph; if that were this compile, right after the
+        // file is fixed and before the engine's watcher reports it, the
+        // fixed module would join the graph with no update made for it, and
+        // the engine's own update would then find nothing changed: a page
+        // running the module would keep its code from before, told that
+        // the build is fine again. The engine's update takes the fix, as
+        // Vite's does (hmr.ts handleHMRUpdate), and imports wait for it.
+        let errored = on_rolldown(&self.start.rolldown, engine.get_bundle_state())
+            .await
+            .map(|state| state.last_build_errored)
+            .unwrap_or(false);
+        if errored {
+            return LazyAnswer::Unavailable(BundleError::from_message(
+                "the client bundle does not build: a module of it has an error",
+            ));
+        }
         // Known to the engine before it compiles for it: what the page
         // already holds is left out of the answer. (The page's socket
         // registers it too; a request can come first.)

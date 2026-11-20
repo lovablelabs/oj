@@ -261,18 +261,30 @@ class OjHmrClient {
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
       const next = this.compute([...changedIds]);
-      if (!next) continue;
-      if (next.reload) return this.requestReload(next.reload);
-      update = next;
-      const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
-      for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
-      if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
-      if (this.beforeApply() === "reload") return;
-      for (const { url } of frames) {
+      if (next?.reload) return this.requestReload(next.reload);
+      if (next) {
+        update = next;
+        const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
+        for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
+        if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+        if (this.beforeApply() === "reload") return;
+      }
+      // A patch nothing here runs yet is imported all the same: it holds
+      // the changed modules as they are now, and an earlier patch may have
+      // left this page their code from before (the bundler sends a changed
+      // module's importers along, loaded or not). Left with that, a later
+      // `import()` of one would run it without asking the server. Under
+      // Vite the change stops at a module no page loaded (hmr.ts
+      // propagateUpdate) and its `import()` is a request, answered with
+      // the module as it is then.
+      for (const { url, changedIds: ids } of frames) {
         try {
           await import(/* @vite-ignore */ url);
         } catch {
-          return this.requestReload(`failed to import hmr patch ${url}`);
+          if (next) return this.requestReload(`failed to import hmr patch ${url}`);
+          // Nothing to re-run, so nothing to reload for: without the
+          // patch, the changed modules are asked for when first imported.
+          for (const id of ids) if (!this.runtime.isExecuted(id)) this.runtime.factories?.delete(id);
         }
       }
     }

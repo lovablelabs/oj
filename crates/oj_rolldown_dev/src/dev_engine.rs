@@ -448,12 +448,10 @@ impl DevEngine {
       // oj: only rolldown's own lazy compilation leaves a route out of the graph until it
       // is first asked for. With it off, the host's plugin declared the lazy boundary and
       // the modules behind it were built with the rest, so the compile merged nothing new
-      // and loaded no new file: there is nothing for a rebuild to bring in line. The one
-      // exception is a compile that follows a task that errored: a module that task could
-      // not load is loaded by this compile, as it is on disk now.
-      if bundler.lazy_compilation_context.is_some()
-        || self.dev_context.last_task_errored.load(std::sync::atomic::Ordering::Relaxed)
-      {
+      // and loaded no new file: there is nothing for a rebuild to bring in line. (A compile
+      // after a task that errored could load a module that task could not; the host asks
+      // for none while `get_bundle_state` says the last build errored.)
+      if bundler.lazy_compilation_context.is_some() {
         self.notify_module_changed(proxy_module_id, Arc::clone(bundler.watch_files()));
       }
     }
