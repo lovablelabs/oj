@@ -731,7 +731,7 @@ async fn a_package_json_created_beside_an_importer_takes_effect_on_its_next_requ
 }
 
 /// Standard base64, as an inline source map is encoded.
-fn base64_decode(text: &str) -> Vec<u8> {
+pub(crate) fn base64_decode(text: &str) -> Vec<u8> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let (mut out, mut bits, mut have) = (Vec::new(), 0u32, 0);
     for byte in text.bytes().take_while(|b| *b != b'=') {

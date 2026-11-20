@@ -20,20 +20,22 @@ mod scan;
 pub mod server_fns;
 mod sourcemap;
 pub mod ssr;
+mod stylex;
 pub mod tsconfig;
 
 pub(crate) use compile::detect_refresh_registrations;
 pub use compile::{
-    compile, compile_module, compile_module_with_maps, transform_for_bundle, CompileError,
-    CompileOptions, CompileOutput, GlobPaths, HotAccept, ImportRewriter, JsxConfig,
-    COMPILE_STACK_SIZE,
+    compile, compile_module, compile_module_with_input_maps, compile_module_with_maps,
+    transform_for_bundle, CompileError, CompileOptions, CompileOutput, GlobPaths, HotAccept,
+    ImportRewriter, JsxConfig, COMPILE_STACK_SIZE,
 };
 pub(crate) use env::defines_for;
 pub use env::{ImportMetaEnv, RuntimeDefines};
 pub(crate) use rewrite::rewrite_module_specifiers_pub;
 pub use scan::{exports, imports, rewrite_specifiers, specifier_edits, SpecifierEdits};
 pub(crate) use scan::{scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
-pub use sourcemap::{line_map_json, map_json_to_data_url};
+pub use sourcemap::{line_map_json, map_json_to_data_url, InputMap};
+pub use stylex::{compile_stylex_module, InteropPass, StylexModuleError};
 
 /// A string literal's value as text for analysis (specifiers, export names,
 /// keys): oxc 0.155 stores it as WTF-8, and a value with a lone surrogate,

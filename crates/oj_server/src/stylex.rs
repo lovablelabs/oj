@@ -177,27 +177,19 @@ pub(crate) fn notify_clients(plugin: &StylexPlugin, tx: broadcast::Sender<String
 /// What the plugin's transform made of a module ahead of the app's plugins.
 pub(crate) struct PreTransformed {
     pub code: String,
-    pub map: Option<String>,
+    /// The transform's positions, when asked for and the module changed.
+    pub map: Option<oj_stylex::api::SourceMappings>,
     pub rules: Vec<StylexRule>,
 }
 
-impl PreTransformed {
-    /// A module the transform left as it was: no rules.
-    pub(crate) fn unchanged(code: String) -> Self {
-        Self {
-            code,
-            map: None,
-            rules: Vec::new(),
-        }
-    }
-}
-
 /// The plugin's transform where Vite runs it, before the app plugins'
-/// (`enforce: 'pre'`): `None` when the plugin passes over `id`.
+/// (`enforce: 'pre'`): `None` when the plugin passes over `id`. `want_map`:
+/// whether a compile will fold the transform's positions into its own map.
 pub(crate) fn pre_transform(
     state: &ServerState,
     id: &str,
     source: &str,
+    want_map: bool,
 ) -> Result<Option<PreTransformed>, String> {
     let Some(plugin) = &state.stylex else {
         return Ok(None);
@@ -206,18 +198,20 @@ pub(crate) fn pre_transform(
         return Ok(None);
     }
     let file = Path::new(id.split('?').next().unwrap_or(id));
-    Ok(Some(match plugin.transform_source(file, source)? {
-        Some(out) => PreTransformed {
-            code: out.code,
-            map: out.map,
-            rules: out.rules,
+    Ok(Some(
+        match plugin.transform_source_mapped(file, source, want_map)? {
+            Some(out) => PreTransformed {
+                code: out.code,
+                map: out.mappings,
+                rules: out.rules,
+            },
+            None => PreTransformed {
+                code: source.to_string(),
+                map: None,
+                rules: Vec::new(),
+            },
         },
-        None => PreTransformed {
-            code: source.to_string(),
-            map: None,
-            rules: Vec::new(),
-        },
-    }))
+    ))
 }
 
 /// Stores a served module's rules under its id (see [`module_id`]).

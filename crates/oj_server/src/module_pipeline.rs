@@ -171,7 +171,8 @@ pub(crate) async fn ensure_module_as(
         // Vite's StyleX pass (`enforce: 'pre'`) runs before the server-fn
         // rewrite, so the stub keeps the module's rules, which its SSR compile
         // records under the same id.
-        if let Some(pre) = crate::stylex::pre_transform(state, &hook_id(file, url), &source)? {
+        if let Some(pre) = crate::stylex::pre_transform(state, &hook_id(file, url), &source, false)?
+        {
             module.stylex_rules = pre.rules;
         }
         let module = Arc::new(module);
@@ -180,19 +181,37 @@ pub(crate) async fn ensure_module_as(
     }
 
     // The StyleX plugin is `enforce: 'pre'`: it compiles the module's own
-    // source, ahead of the app's transforms and oj's CJS-interop rewrite (off
-    // the async workers: a large module's compile is real work).
-    let (source, stylex_map, stylex_rules) = match &state.stylex {
-        Some(plugin) if plugin.handles(&transform_id, &source) => {
+    // source, ahead of the app's transforms and oj's CJS-interop rewrite.
+    // Where neither an app plugin nor a hook stands between that and oj's
+    // compile, the compile job runs it (see `stylex_runs_in_compile`).
+    let stylex = state
+        .stylex
+        .as_ref()
+        .filter(|plugin| plugin.handles(&transform_id, &source));
+    let stylex_in_compile = stylex.filter(|_| {
+        !is_dep && !is_preprocessor(url) && stylex_runs_in_compile(state, file, &transform_id)
+    });
+    let (source, stylex_map, stylex_rules) = match stylex {
+        // Off the async workers: a large module's compile is real work.
+        Some(_) if stylex_in_compile.is_none() => {
             let (st, id) = (Arc::clone(state), transform_id.clone());
-            let pre = tokio::task::spawn_blocking(move || {
-                crate::stylex::pre_transform(&st, &id, &source).map(|pre| {
-                    pre.unwrap_or_else(|| crate::stylex::PreTransformed::unchanged(source))
+            // A dependency's compile folds no input map.
+            let want_map = !is_dep;
+            tokio::task::spawn_blocking(move || {
+                let pre = crate::stylex::pre_transform(&st, &id, &source, want_map)?;
+                Ok::<_, String>(match pre {
+                    Some(pre) => {
+                        let map = pre.map.map(|mappings| StylexMap {
+                            mappings,
+                            original: source,
+                        });
+                        (pre.code, map, Some(pre.rules))
+                    }
+                    None => (source, None, Some(Vec::new())),
                 })
             })
             .await
-            .map_err(|e| format!("StyleX compile task failed: {e}"))??;
-            (pre.code, pre.map, Some(pre.rules))
+            .map_err(|e| format!("StyleX compile task failed: {e}"))??
         }
         _ => (source, None, None),
     };
@@ -200,11 +219,15 @@ pub(crate) async fn ensure_module_as(
     // vite:css makes of it, and its "post" ones what vite:css-post serves
     // (css_serve). Any other module goes through the whole chain.
     let phase = |slot| is_stylesheet.then_some(slot);
-    let mut transformed =
-        plugin_transform_phase(state, file, &transform_id, source, is_dep, phase("pre")).await?;
-    if let Some(map) = stylex_map {
-        transformed.maps.insert(0, map);
-    }
+    let mut transformed = if stylex_in_compile.is_some() {
+        // The chain's own log for a module its gate passes over.
+        if state.plugins.is_some() && state.plugins_have_transform && plugins::hook_gate_debug() {
+            eprintln!("oj: hook gate skipped transform for {transform_id}");
+        }
+        Transformed::untouched(source)
+    } else {
+        plugin_transform_phase(state, file, &transform_id, source, is_dep, phase("pre")).await?
+    };
     let mut css = CssState::default();
     // PostCSS parses a SugarSS sheet itself: its module names hash that text.
     if sidecar::is_sugarss(url) {
@@ -315,6 +338,8 @@ pub(crate) async fn ensure_module_as(
         verbatim_module_syntax,
         importer_format,
         css,
+        stylex: stylex_in_compile.cloned(),
+        stylex_map,
         plugin_maps: transformed.maps,
         dep_map,
         pre_resolved,
@@ -768,6 +793,49 @@ pub(crate) struct Transformed {
     maps: Vec<String>,
 }
 
+impl Transformed {
+    /// What the plugins' transforms make of a module none of them takes.
+    fn untouched(code: String) -> Self {
+        Self {
+            code,
+            watch_files: Vec::new(),
+            maps: Vec::new(),
+        }
+    }
+}
+
+/// The StyleX transform's positions, with the source they point into.
+struct StylexMap {
+    mappings: oj_stylex::api::SourceMappings,
+    original: String,
+}
+
+/// Whether the compile job can run the StyleX transform of the app module
+/// `file` itself (`oj_compiler::compile_stylex_module`), parsing it once,
+/// and serve what running the transform ahead of the plugin chain does: so
+/// only where nothing but oj's own compile reads the transform's output.
+///
+/// - No app plugin's `transform` takes the id, whatever its code (the filter
+///   gate reads the code StyleX wrote; an id no filter takes passes over
+///   every code). Decided here, once, off the hook plan as it stands: the
+///   chain is not asked again for this compile.
+/// - No `resolveId` hook is offered the module's bare imports, which are
+///   read off the transform's output too.
+/// - The module compiles under its own path and language, the one StyleX
+///   names it by.
+fn stylex_runs_in_compile(state: &ServerState, file: &Path, transform_id: &str) -> bool {
+    let transform_passes = match &state.plugins {
+        Some(host) if state.plugins_have_transform => !host.hook_may_want_transform(transform_id),
+        _ => true,
+    };
+    let resolve_passes = state.plugins.is_none()
+        || (!state.plugins_have_resolve_id
+            && state.pre_resolve_id_res.as_ref().is_some_and(Vec::is_empty));
+    let own_path = Path::new(transform_id.split('?').next().unwrap_or(transform_id)) == file
+        && oxc_span::SourceType::from_path(file).is_ok();
+    transform_passes && resolve_passes && own_path
+}
+
 pub(crate) async fn plugin_transform(
     state: &ServerState,
     file: &Path,
@@ -789,11 +857,6 @@ pub(crate) async fn plugin_transform_phase(
     is_dep: bool,
     phase: Option<&str>,
 ) -> Result<Transformed, String> {
-    let untouched = |code| Transformed {
-        code,
-        watch_files: Vec::new(),
-        maps: Vec::new(),
-    };
     let dep_wants_transform = is_dep
         && (state.optimize_view.is_excluded(file)
             || state
@@ -802,13 +865,13 @@ pub(crate) async fn plugin_transform_phase(
                 .any(|re| re.is_match(&source)));
     let host = match &state.plugins {
         Some(host) if state.plugins_have_transform && (!is_dep || dep_wants_transform) => host,
-        _ => return Ok(untouched(source)),
+        _ => return Ok(Transformed::untouched(source)),
     };
     if !host.hook_wants_transform(transform_id, &source) {
         if plugins::hook_gate_debug() {
             eprintln!("oj: hook gate skipped transform for {transform_id}");
         }
-        return Ok(untouched(source));
+        return Ok(Transformed::untouched(source));
     }
     let transformed = match phase {
         Some(phase) => host.transform_phase(&source, transform_id, phase).await,
@@ -1218,6 +1281,12 @@ struct CompileJob {
     verbatim_module_syntax: bool,
     importer_format: oj_compiler::interop::ImporterFormat,
     css: CssState,
+    /// The StyleX plugin, when this compile runs its transform (`source` is
+    /// then the module's own); see [`stylex_runs_in_compile`].
+    stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The StyleX transform's map when it ran ahead of the plugin chain: the
+    /// first of the input maps.
+    stylex_map: Option<StylexMap>,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
     /// Bare specifiers a `pre` plugin's resolveId claimed, to its answers.
@@ -1278,17 +1347,20 @@ impl CompileJob {
             public_non_asset: RefCell::new(None),
             interop_urls: RefCell::default(),
         };
+        let compile_error = |err: oj_compiler::CompileError| format!("compile error:\n{err}");
         let output = if self.is_dep {
-            self.compile_dep(&rw)
+            self.compile_dep(&rw).map_err(compile_error)
         } else {
-            self.compile_app(&rw)
-        }
-        .map_err(|err| format!("compile error:\n{err}"))?;
+            self.compile_app(&rw).map_err(|err| match err {
+                oj_compiler::StylexModuleError::Stylex(message) => message,
+                oj_compiler::StylexModuleError::Compile(err) => compile_error(err),
+            })
+        }?;
         if let Some(spec) = rw.public_non_asset.borrow().as_ref() {
             return Err(crate::rewrite::public_non_asset_import_error(
                 &self.state.root,
                 &self.file,
-                &self.source,
+                &self.imports_source(),
                 spec,
             ));
         }
@@ -1296,7 +1368,7 @@ impl CompileJob {
             return Err(unresolved_import_error(
                 &self.state.root,
                 &self.file,
-                &self.source,
+                &self.imports_source(),
                 spec,
             ));
         }
@@ -1384,19 +1456,29 @@ impl CompileJob {
         }
     }
 
+    /// The text an import error quotes: the module as the plugin chain left
+    /// it, which is the StyleX transform's output when this compile ran it.
+    fn imports_source(&self) -> std::borrow::Cow<'_, str> {
+        let transformed = self.stylex.as_ref().and_then(|stylex| {
+            stylex
+                .transform_source_mapped(&self.file, &self.source, false)
+                .ok()
+                .flatten()
+        });
+        match transformed {
+            Some(out) => out.code.into(),
+            None => self.source.as_str().into(),
+        }
+    }
+
     fn compile_app(
         &self,
         rw: &ImportRewrite<'_>,
-    ) -> Result<oj_compiler::CompileOutput, oj_compiler::CompileError> {
-        let interopped = oj_compiler::interop::rewrite_cjs_interop_logged(
-            &self.source,
-            &self.file,
-            self.importer_format,
-            &self.later_transforms(),
-            &|spec: &str| rw.may_need_interop(spec),
-            &|spec: &str| rw.cjs_interop_url(spec),
-            &mut warn_interop_once,
-        );
+    ) -> Result<oj_compiler::CompileOutput, oj_compiler::StylexModuleError> {
+        let later = self.later_transforms();
+        let may_need_interop = |spec: &str| rw.may_need_interop(spec);
+        let interop = |spec: &str| rw.cjs_interop_url(spec);
+        let mut rewrite = |spec: &str| rw.rewrite(spec, &self.state.resolver);
         let mut opts = dev_compile_opts(&self.state);
         if self.is_svelte {
             opts.refresh = false;
@@ -1405,15 +1487,50 @@ impl CompileJob {
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
         opts.verbatim_module_syntax = Some(self.verbatim_module_syntax);
-        // StyleX ran ahead of the app's plugins (see ensure_module_as).
+        // StyleX runs ahead of the app's plugins (see ensure_module_as), or
+        // as this compile's first step below.
         opts.stylex = None;
-        oj_compiler::compile_module_with_maps(
+        if let Some(stylex) = &self.stylex {
+            return oj_compiler::compile_stylex_module(
+                &self.file,
+                &self.source,
+                &opts,
+                stylex,
+                oj_compiler::InteropPass {
+                    format: self.importer_format,
+                    later: &later,
+                    may_need_interop: &may_need_interop,
+                    interop: &interop,
+                    warn: &mut warn_interop_once,
+                },
+                &mut rewrite,
+            );
+        }
+        let interopped = oj_compiler::interop::rewrite_cjs_interop_logged(
+            &self.source,
+            &self.file,
+            self.importer_format,
+            &later,
+            &may_need_interop,
+            &interop,
+            &mut warn_interop_once,
+        );
+        let stylex_map = self.stylex_map.as_ref().map(|map| {
+            oj_compiler::InputMap::Parsed(map.mappings.to_sourcemap(Some(&map.original)))
+        });
+        let plugin_maps = self
+            .plugin_maps
+            .iter()
+            .map(|map| oj_compiler::InputMap::Json(map));
+        let input_maps: Vec<oj_compiler::InputMap> =
+            stylex_map.into_iter().chain(plugin_maps).collect();
+        Ok(oj_compiler::compile_module_with_input_maps(
             &self.file,
             interopped.as_deref().unwrap_or(&self.source),
             &opts,
-            Some(&mut |spec: &str| rw.rewrite(spec, &self.state.resolver)),
-            &self.plugin_maps,
-        )
+            Some(&mut rewrite),
+            &input_maps,
+        )?)
     }
 }
 

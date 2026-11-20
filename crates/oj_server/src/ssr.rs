@@ -958,7 +958,8 @@ pub(crate) async fn ssr_transform_source(
     // StyleX ahead of the app's transforms, as the client path runs it.
     let pre_stylex = match &host {
         Some(host) if host.hook_wants_transform(id, &source) => {
-            crate::stylex::pre_transform(state, id, &source).map_err(SsrModuleError::Failed)?
+            crate::stylex::pre_transform(state, id, &source, false)
+                .map_err(SsrModuleError::Failed)?
         }
         _ => None,
     };
@@ -1022,7 +1023,7 @@ fn compile_ssr(
     // derives its hashes from the file: it runs on the real id, as the
     // client's compile does.
     let (source, stylex_rules) = match stylex_rules {
-        None if from_plugin => match crate::stylex::pre_transform(state, id, &source)
+        None if from_plugin => match crate::stylex::pre_transform(state, id, &source, false)
             .map_err(SsrModuleError::Failed)?
         {
             Some(pre) => (pre.code, Some(pre.rules)),

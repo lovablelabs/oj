@@ -45,6 +45,33 @@ pub enum MapMode {
     WithContent,
 }
 
+/// A splice compile's generated-to-original positions: its sourcemap before
+/// any serialization.
+#[derive(Debug)]
+pub struct SourceMappings {
+    filename: String,
+    tokens: Box<[oxc_sourcemap::Token]>,
+}
+
+impl SourceMappings {
+    /// The v3 sourcemap over these positions, inlining `source_text` (the
+    /// original) when given.
+    pub fn to_sourcemap<'a>(
+        &'a self,
+        source_text: Option<&'a str>,
+    ) -> oxc_sourcemap::SourceMap<'a> {
+        oxc_sourcemap::SourceMap::new(
+            Some(self.filename.as_str().into()),
+            Vec::new(),
+            None,
+            vec![self.filename.as_str().into()],
+            vec![source_text.map(Into::into)],
+            self.tokens.clone(),
+            None,
+        )
+    }
+}
+
 pub fn might_contain_stylex(source: &str, options: &ResolvedOptions) -> bool {
     options.pre_gate().scan(source).is_some()
 }
@@ -95,27 +122,79 @@ pub fn transform_source_in_with_map(
     fs: &dyn FsProvider,
     map_mode: MapMode,
 ) -> Result<Option<SourceCompileResult>, StylexError> {
-    let want_map = map_mode != MapMode::Off;
+    let want_mappings = map_mode != MapMode::Off;
+    let Some((mut result, mappings)) =
+        transform_source_with_mappings(allocator, ctx, options, fs, want_mappings)?
+    else {
+        return Ok(None);
+    };
+    result.map = mappings.map(|mappings| {
+        mappings
+            .to_sourcemap((map_mode == MapMode::WithContent).then_some(ctx.source_text))
+            .to_json_string()
+    });
+    Ok(Some(result))
+}
+
+/// [`transform_source_in`] with the splice positions left unserialized
+/// (`SourceCompileResult::map` stays `None`): a consumer that composes maps
+/// reads them without a JSON round trip.
+pub fn transform_source_with_mappings(
+    allocator: &Allocator,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+    want_mappings: bool,
+) -> Result<Option<(SourceCompileResult, Option<SourceMappings>)>, StylexError> {
     let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
         return Ok(None);
     };
-    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
     let program = {
         let _t = crate::timings::start(crate::timings::Stage::Parse);
-        parse_program(allocator, ctx.source_text, &filename)?
+        parse_program(allocator, ctx.source_text, &ctx.filename.to_string_lossy())?
     };
-    let Some(imports) = scan_unless_dormant(&program, sx_hit, options)? else {
-        return Ok(Some(SourceCompileResult {
-            code: ctx.source_text.to_string(),
-            map: None,
-            rules: Vec::new(),
-            modified: false,
-            create_objects: Vec::new(),
-        }));
+    splice_parsed(&program, sx_hit, ctx, options, fs, want_mappings).map(Some)
+}
+
+/// [`transform_source_with_mappings`] over the caller's parse: `program` must
+/// be what [`parse_program`] makes of `ctx.source_text`.
+pub fn transform_parsed_source(
+    program: &Program<'_>,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+    want_mappings: bool,
+) -> Result<Option<(SourceCompileResult, Option<SourceMappings>)>, StylexError> {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
+        return Ok(None);
     };
-    let filename_for_map = want_map.then(|| filename.clone());
+    splice_parsed(program, sx_hit, ctx, options, fs, want_mappings).map(Some)
+}
+
+fn splice_parsed(
+    program: &Program<'_>,
+    sx_hit: bool,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+    want_mappings: bool,
+) -> Result<(SourceCompileResult, Option<SourceMappings>), StylexError> {
+    let Some(imports) = scan_unless_dormant(program, sx_hit, options)? else {
+        return Ok((
+            SourceCompileResult {
+                code: ctx.source_text.to_string(),
+                map: None,
+                rules: Vec::new(),
+                modified: false,
+                create_objects: Vec::new(),
+            },
+            None,
+        ));
+    };
+    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
+    let filename_for_map = want_mappings.then(|| filename.clone());
     let mut state = CompileState::build_with_imports(
-        &program,
+        program,
         options,
         Some(filename),
         ctx.cwd.to_string_lossy().replace('\\', "/"),
@@ -124,28 +203,34 @@ pub fn transform_source_in_with_map(
     let out = {
         let _t = crate::timings::start(crate::timings::Stage::Transform);
         transform_module(
-            &program,
+            program,
             ctx.source_text,
             &mut state,
             fs,
             Emit::Splice,
-            want_map,
+            want_mappings,
         )?
     };
-    let map = out.splice_map.as_ref().map(|m| {
-        render_sourcemap(
-            m,
-            filename_for_map.as_deref().unwrap_or_default(),
-            (map_mode == MapMode::WithContent).then_some(ctx.source_text),
-        )
+    let mappings = out.splice_map.as_ref().map(|map| SourceMappings {
+        filename: filename_for_map.unwrap_or_default(),
+        tokens: map
+            .tokens
+            .iter()
+            .map(|&(dst_line, dst_col, src_line, src_col)| {
+                oxc_sourcemap::Token::new(dst_line, dst_col, src_line, src_col, Some(0), None)
+            })
+            .collect(),
     });
-    Ok(Some(SourceCompileResult {
-        code: out.code,
-        map,
-        rules: state.rules,
-        modified: out.modified,
-        create_objects: out.create_objects,
-    }))
+    Ok((
+        SourceCompileResult {
+            code: out.code,
+            map: None,
+            rules: state.rules,
+            modified: out.modified,
+            create_objects: out.create_objects,
+        },
+        mappings,
+    ))
 }
 
 /// [`transform_source`] that also returns the fs-dependency log the cache
@@ -342,32 +427,6 @@ fn scan_unless_dormant(
     let _t = crate::timings::start(crate::timings::Stage::ImportScan);
     let imports = scan_imports(program, options)?;
     Ok((options.rewrite_aliases || sx_hit || !imports.is_dormant()).then_some(imports))
-}
-
-/// Serializes splice positions as a v3 sourcemap, inlining the original when
-/// `source_text` is given.
-fn render_sourcemap(
-    map: &crate::transform::js_out::SpliceMap,
-    filename: &str,
-    source_text: Option<&str>,
-) -> String {
-    let tokens: Vec<oxc_sourcemap::Token> = map
-        .tokens
-        .iter()
-        .map(|&(dst_line, dst_col, src_line, src_col)| {
-            oxc_sourcemap::Token::new(dst_line, dst_col, src_line, src_col, Some(0), None)
-        })
-        .collect();
-    oxc_sourcemap::SourceMap::new(
-        Some(filename.into()),
-        Vec::new(),
-        None,
-        vec![filename.into()],
-        vec![source_text.map(Into::into)],
-        tokens.into_boxed_slice(),
-        None,
-    )
-    .to_json_string()
 }
 
 // The oracle parses every file with the typescript+jsx plugins regardless of

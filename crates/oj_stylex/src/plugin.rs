@@ -11,9 +11,12 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use serde_json::{Map, Value, json};
 
-use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
+use crate::api::{
+    FileContext, MapMode, SourceCompileResult, SourceMappings, transform_parsed_source,
+    transform_program, transform_source_in_with_map, transform_source_with_mappings,
+};
 use crate::assemble::{AssembleConfig, RuleRegistry};
-use crate::errors::ErrorCode;
+use crate::errors::{ErrorCode, StylexError};
 use crate::fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
@@ -162,6 +165,28 @@ pub struct SourceOutput {
     pub code: String,
     pub map: Option<String>,
     pub rules: Vec<StylexRule>,
+}
+
+/// [`SourceOutput`] with the map as the positions it would serialize.
+pub struct MappedOutput {
+    pub code: String,
+    pub mappings: Option<SourceMappings>,
+    pub rules: Vec<StylexRule>,
+}
+
+impl MappedOutput {
+    fn from_compile(
+        out: Result<Option<(SourceCompileResult, Option<SourceMappings>)>, StylexError>,
+    ) -> Result<Option<Self>, String> {
+        let out = out.map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        Ok(out
+            .filter(|(result, _)| result.modified)
+            .map(|(result, mappings)| Self {
+                code: result.code,
+                mappings,
+                rules: result.rules,
+            }))
+    }
 }
 
 impl StylexPlugin {
@@ -355,6 +380,21 @@ impl StylexPlugin {
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
     }
 
+    /// [`Self::transform_program`] answering as the string-level transform
+    /// does: `None` when the module has no StyleX to compile.
+    pub fn compile_program<'a>(
+        &self,
+        allocator: &'a Allocator,
+        program: &mut Program<'a>,
+        file: &Path,
+        source: &str,
+    ) -> Result<Option<Vec<StylexRule>>, String> {
+        let ctx = self.context(file, source);
+        transform_program(allocator, program, &ctx, &self.options, &self.fs.session())
+            .map(|out| out.modified.then_some(out.rules))
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
     /// The string-level transform bundlers run.
     pub fn transform_source(
         &self,
@@ -376,6 +416,47 @@ impl StylexPlugin {
             map: o.map,
             rules: o.rules,
         }))
+    }
+
+    /// [`Self::transform_source`] with its positions left unserialized, and
+    /// only when `want_mappings`: what a compile that folds them into its own
+    /// map, or serves none, asks for.
+    pub fn transform_source_mapped(
+        &self,
+        file: &Path,
+        source: &str,
+        want_mappings: bool,
+    ) -> Result<Option<MappedOutput>, String> {
+        let ctx = self.context(file, source);
+        let allocator = Allocator::default();
+        let out = transform_source_with_mappings(
+            &allocator,
+            &ctx,
+            &self.options,
+            &self.fs.session(),
+            want_mappings,
+        );
+        MappedOutput::from_compile(out)
+    }
+
+    /// [`Self::transform_source_mapped`] over the caller's parse of `source`
+    /// (as TSX, the grammar this plugin reads every module in).
+    pub fn transform_parsed(
+        &self,
+        program: &Program<'_>,
+        file: &Path,
+        source: &str,
+        want_mappings: bool,
+    ) -> Result<Option<MappedOutput>, String> {
+        let ctx = self.context(file, source);
+        let out = transform_parsed_source(
+            program,
+            &ctx,
+            &self.options,
+            &self.fs.session(),
+            want_mappings,
+        );
+        MappedOutput::from_compile(out)
     }
 
     /// Records a module's rules (none removes it); whether the sheet changed.

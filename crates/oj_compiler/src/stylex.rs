@@ -1,0 +1,537 @@
+//! A dev module the StyleX plugin compiles ahead of oj's own transforms, with
+//! no other plugin's transform between the two.
+
+use std::borrow::Cow;
+use std::path::Path;
+
+use oj_stylex::plugin::StylexPlugin;
+use oxc_allocator::Allocator;
+use oxc_ast::ast::Program;
+use oxc_parser::Parser;
+use oxc_span::SourceType;
+
+use crate::compile::{compile_text, emit, CompileError, CompileOptions, CompileOutput};
+use crate::interop::{
+    imports_may_need_interop, may_rewrite, rewrite_cjs_interop_logged, ImporterFormat,
+    InteropTarget, LaterTransforms,
+};
+use crate::sourcemap::InputMap;
+use crate::ImportRewriter;
+
+/// The inputs of the CJS interop rewrite (see [`rewrite_cjs_interop_logged`]).
+pub struct InteropPass<'a> {
+    pub format: ImporterFormat,
+    pub later: &'a LaterTransforms,
+    pub may_need_interop: &'a dyn Fn(&str) -> bool,
+    pub interop: &'a dyn Fn(&str) -> Option<InteropTarget>,
+    pub warn: &'a mut dyn FnMut(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StylexModuleError {
+    /// The plugin's transform failed: its own message.
+    #[error("{0}")]
+    Stylex(String),
+    #[error(transparent)]
+    Compile(#[from] CompileError),
+}
+
+/// Compiles a module the StyleX plugin handles as three steps in turn do:
+/// the plugin's transform of `source_text`, the CJS interop rewrite of what
+/// it wrote, and the compile of that with the plugin's map as its input map
+/// (`opts.stylex` is not read).
+///
+/// A TypeScript module none of whose imports may need interop takes them in
+/// one parse instead: the plugin compiles the program in place and the
+/// compile carries on from it. The module it emits is the steps' own, with
+/// one difference: its positions (the source map, the `lineNumber` and
+/// `columnNumber` of a dev JSX element) are read off `source_text` itself,
+/// where the steps read them off the plugin's output and fold the map back.
+/// Whatever the one parse cannot answer for (another language, a diagnostic,
+/// an import that may need interop, any error) goes through the steps, so an
+/// error is always theirs.
+pub fn compile_stylex_module(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    stylex: &StylexPlugin,
+    interop: InteropPass<'_>,
+    rewriter: &mut ImportRewriter,
+) -> Result<CompileOutput, StylexModuleError> {
+    let allocator = Allocator::default();
+    let module = Module {
+        allocator: &allocator,
+        path,
+        source_text,
+        opts,
+        stylex,
+    };
+    let mut parsed = module.parse();
+    let fused =
+        parsed.take_if(|(program, _)| !may_rewrite(program, source_text, interop.may_need_interop));
+    if let Some((program, source_type)) = fused {
+        let output = module.in_one_pass(program, source_type, interop.may_need_interop, rewriter);
+        if let Some(output) = output {
+            return Ok(output);
+        }
+    }
+    module.in_steps(
+        parsed.as_ref().map(|(program, _)| program),
+        interop,
+        rewriter,
+    )
+}
+
+struct Module<'a> {
+    allocator: &'a Allocator,
+    path: &'a Path,
+    source_text: &'a str,
+    opts: &'a CompileOptions,
+    stylex: &'a StylexPlugin,
+}
+
+impl<'a> Module<'a> {
+    /// One parse both the plugin and the compile can read, with the language
+    /// the compile takes the path for; `None` when no parse serves both.
+    ///
+    /// The plugin reads every module as TSX. That is the compile's own parse
+    /// of a `.tsx` file, and of a `.ts` file holding no JSX: the two grammars
+    /// part only at a `<` that opens an expression, where TSX takes an
+    /// element, and a source naming no closing tag (`</`, `/>`) that parses
+    /// as TSX holds none. The compile takes no module with a diagnostic, and
+    /// reads a file with no module syntax as a script, which the plugin's
+    /// output is no longer once it imports its runtime: only what parses as
+    /// a module is one either way.
+    fn parse(&self) -> Option<(Program<'a>, SourceType)> {
+        let source_type = SourceType::from_path(self.path)
+            .ok()
+            .filter(|t| t.is_typescript() && !t.is_typescript_definition() && t.is_unambiguous())?;
+        let markup_free = || !self.source_text.contains("</") && !self.source_text.contains("/>");
+        if !source_type.is_jsx() && !markup_free() {
+            return None;
+        }
+        let parsed =
+            Parser::new(self.allocator, self.source_text, source_type.with_jsx(true)).parse();
+        let shared = !parsed.fatal_error
+            && parsed.diagnostics.is_empty()
+            && parsed.program.source_type.is_module();
+        shared.then_some((parsed.program, source_type))
+    }
+
+    fn in_one_pass(
+        &self,
+        mut program: Program<'a>,
+        source_type: SourceType,
+        may_need_interop: &dyn Fn(&str) -> bool,
+        rewriter: &mut ImportRewriter,
+    ) -> Option<CompileOutput> {
+        let rules = self
+            .stylex
+            .compile_program(self.allocator, &mut program, self.path, self.source_text)
+            .ok()?;
+        // The plugin adds static imports only (its runtime's), so the dynamic
+        // ones stand as they were checked.
+        if rules.is_some() && imports_may_need_interop(&program, may_need_interop) {
+            return None;
+        }
+        program.source_type = program.source_type.with_standard(!source_type.is_jsx());
+        let mut output = emit(
+            self.allocator,
+            self.path,
+            self.source_text,
+            self.opts,
+            &mut program,
+            Some(rewriter),
+            &[],
+        )
+        .ok()?;
+        output.stylex_rules = rules.unwrap_or_default();
+        Some(output)
+    }
+
+    /// `parsed`: the module's parse, when [`Self::parse`] made one the plugin
+    /// has not touched.
+    fn in_steps(
+        &self,
+        parsed: Option<&Program<'_>>,
+        interop: InteropPass<'_>,
+        rewriter: &mut ImportRewriter,
+    ) -> Result<CompileOutput, StylexModuleError> {
+        let (path, source_text) = (self.path, self.source_text);
+        let want_mappings = self.opts.sourcemap;
+        let compiled = match parsed {
+            Some(program) => {
+                self.stylex
+                    .transform_parsed(program, path, source_text, want_mappings)
+            }
+            None => self
+                .stylex
+                .transform_source_mapped(path, source_text, want_mappings),
+        }
+        .map_err(StylexModuleError::Stylex)?;
+        let (code, mappings, rules) = match compiled {
+            Some(out) => (Cow::Owned(out.code), out.mappings, out.rules),
+            None => (Cow::Borrowed(source_text), None, Vec::new()),
+        };
+        let interopped = rewrite_cjs_interop_logged(
+            &code,
+            path,
+            interop.format,
+            interop.later,
+            interop.may_need_interop,
+            interop.interop,
+            interop.warn,
+        );
+        let input_maps: Vec<InputMap> = mappings
+            .iter()
+            .map(|mappings| InputMap::Parsed(mappings.to_sourcemap(Some(source_text))))
+            .collect();
+        let mut output = compile_text(
+            path,
+            interopped.as_deref().unwrap_or(&code),
+            self.opts,
+            Some(rewriter),
+            &input_maps,
+            None,
+        )?;
+        output.stylex_rules = rules;
+        Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile_module_with_maps;
+    use crate::interop::InteropKind;
+
+    const CARD: &str = r#"import * as stylex from '@stylexjs/stylex';
+import type { ReactNode } from 'react';
+
+// Styles for the card.
+const styles = stylex.create({
+  // the root
+  root: {
+    color: 'red', /* inline */
+    backgroundColor: { default: 'white', ':hover': 'blue' },
+  },
+  title: {
+    fontWeight: 700,
+  },
+});
+
+const fade = stylex.keyframes({
+  from: { opacity: 0 },
+  to: { opacity: 1 },
+});
+
+/** A card. */
+export function Card({ title, children }: { title: string; children?: ReactNode }) {
+  // spread
+  return (
+    <section {...stylex.props(styles.root)}>
+      <h2 {...stylex.props(styles.title)} style={{ animationName: fade }}>{title}</h2>
+      {children}
+    </section>
+  );
+}
+"#;
+
+    const COUNTER: &str = r#"import * as stylex from '@stylexjs/stylex';
+import { useState } from 'react';
+
+const styles = stylex.create({
+  count: {
+    color: 'red',
+    fontWeight: 700,
+  },
+});
+
+export function Counter() {
+  const [n, setN] = useState(0);
+  return <button {...stylex.props(styles.count)} onClick={() => setN(n + 1)}>{n}</button>;
+}
+"#;
+
+    fn plugin() -> StylexPlugin {
+        StylexPlugin::new(&serde_json::json!({}), Path::new("/app"), true, true).unwrap()
+    }
+
+    fn opts() -> CompileOptions {
+        let mut opts = CompileOptions::dev();
+        opts.class_field_set_semantics = Some(false);
+        opts.verbatim_module_syntax = Some(false);
+        opts
+    }
+
+    fn needs_interop(spec: &str) -> bool {
+        spec == "react"
+    }
+
+    fn interop(spec: &str) -> Option<InteropTarget> {
+        needs_interop(spec).then(|| InteropTarget::new("/deps/react.js", InteropKind::PreBundle))
+    }
+
+    fn served(spec: &str) -> Option<String> {
+        Some(format!("/served/{spec}"))
+    }
+
+    fn compile(path: &str, source: &str) -> Result<CompileOutput, String> {
+        compile_stylex_module(
+            Path::new(path),
+            source,
+            &opts(),
+            &plugin(),
+            InteropPass {
+                format: ImporterFormat::ESM,
+                later: &LaterTransforms::default(),
+                may_need_interop: &needs_interop,
+                interop: &interop,
+                warn: &mut |_| {},
+            },
+            &mut served,
+        )
+        .map_err(|err| match err {
+            StylexModuleError::Stylex(message) => format!("stylex: {message}"),
+            StylexModuleError::Compile(err) => format!("compile: {err}"),
+        })
+    }
+
+    /// The three steps over strings, as the dev server ran them before the
+    /// compile took the plugin's transform: the plugin's own serialized map
+    /// is the compile's input map.
+    fn steps(path: &str, source: &str) -> Result<CompileOutput, String> {
+        let path = Path::new(path);
+        let pre = plugin()
+            .transform_source(path, source)
+            .map_err(|message| format!("stylex: {message}"))?;
+        let (code, maps, rules) = match pre {
+            Some(out) => (out.code, out.map.into_iter().collect(), out.rules),
+            None => (source.to_string(), Vec::new(), Vec::new()),
+        };
+        let interopped = rewrite_cjs_interop_logged(
+            &code,
+            path,
+            ImporterFormat::ESM,
+            &LaterTransforms::default(),
+            &needs_interop,
+            &interop,
+            &mut |_| {},
+        );
+        let mut output = compile_module_with_maps(
+            path,
+            interopped.as_deref().unwrap_or(&code),
+            &opts(),
+            Some(&mut served),
+            &maps,
+        )
+        .map_err(|err| format!("compile: {err}"))?;
+        output.stylex_rules = rules;
+        Ok(output)
+    }
+
+    /// `code` without the positions a dev JSX element carries.
+    fn without_jsx_positions(code: &str) -> String {
+        let mut out = String::with_capacity(code.len());
+        let mut rest = code;
+        while let Some(at) = ["lineNumber: ", "columnNumber: "]
+            .iter()
+            .filter_map(|key| rest.find(key).map(|at| at + key.len()))
+            .min()
+        {
+            out.push_str(&rest[..at]);
+            rest = rest[at..].trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        out + rest
+    }
+
+    fn rules(output: &CompileOutput) -> Vec<String> {
+        output
+            .stylex_rules
+            .iter()
+            .map(|rule| format!("{rule:?}"))
+            .collect()
+    }
+
+    fn assert_same_module(one: &CompileOutput, steps: &CompileOutput) {
+        assert_eq!(
+            without_jsx_positions(&one.code),
+            without_jsx_positions(&steps.code)
+        );
+        assert_eq!(rules(one), rules(steps));
+        assert_eq!(one.imports, steps.imports);
+        assert_eq!(one.dynamic_imports, steps.dynamic_imports);
+        assert_eq!(one.import_bindings, steps.import_bindings);
+        assert_eq!(one.is_refresh_boundary, steps.is_refresh_boundary);
+        assert_eq!(one.hot_accept, steps.hot_accept);
+    }
+
+    #[test]
+    fn one_parse_emits_the_module_the_steps_emit() {
+        let one = compile("/app/src/Card.tsx", CARD).unwrap();
+        let steps = steps("/app/src/Card.tsx", CARD).unwrap();
+        assert_same_module(&one, &steps);
+        assert!(!one.stylex_rules.is_empty());
+        assert!(!one.code.contains("stylex.create"), "{}", one.code);
+
+        // Its positions are the source's own: the `<section>` on its line
+        // there, which the plugin's output (the create call folded onto one
+        // line) puts higher up.
+        let line = 1 + CARD.lines().position(|l| l.contains("<section")).unwrap();
+        assert!(
+            one.code.contains(&format!("lineNumber: {line},")),
+            "{}",
+            one.code
+        );
+        assert!(!steps.code.contains(&format!("lineNumber: {line},")));
+        let map =
+            oxc_sourcemap::SourceMap::from_json_string(one.map_json.as_deref().unwrap()).unwrap();
+        assert_eq!(map.get_source(0), Some("/app/src/Card.tsx"));
+        assert_eq!(map.get_source_content(0), Some(CARD));
+    }
+
+    #[test]
+    fn one_parse_serves_the_other_shapes_the_steps_do() {
+        for (path, source) in [
+            (
+                "/app/src/styles.ts",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 export const styles = stylex.create({\n  row: { display: 'flex' },\n});\n\
+                 export const first = <T,>(items: T[]): T | undefined => items[0];\n\
+                 export type Row = keyof typeof styles;\n",
+            ),
+            (
+                "/app/src/Plain.tsx",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 export const Plain = () => <div />;\n",
+            ),
+            (
+                "/app/src/Lazy.tsx",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 const s = stylex.create({\n  a: { color: 'red' },\n});\n\
+                 export const load = () => import('./lazy');\n\
+                 export const A = () => <i {...stylex.props(s.a)} />;\n\
+                 if (import.meta.hot) import.meta.hot.accept();\n",
+            ),
+        ] {
+            let one = compile(path, source).unwrap();
+            let steps = steps(path, source).unwrap();
+            assert_same_module(&one, &steps);
+        }
+    }
+
+    #[test]
+    fn a_module_whose_imports_need_interop_goes_through_the_steps() {
+        for (path, source) in [
+            ("/app/src/Counter.tsx", COUNTER.to_string()),
+            (
+                "/app/src/Lazy.tsx",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 const s = stylex.create({\n  a: { color: 'red' },\n});\n\
+                 export const load = () => import ( 'react' );\n\
+                 export const A = () => <i {...stylex.props(s.a)} />;\n"
+                    .to_string(),
+            ),
+            (
+                "/app/src/again.ts",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 export const s = stylex.create({\n  a: { color: 'red' },\n});\n\
+                 export { useState } from 'react';\n"
+                    .to_string(),
+            ),
+            (
+                "/app/src/Card.jsx",
+                CARD.replace(": { title: string; children?: ReactNode }", "")
+                    .replace("import type { ReactNode } from 'react';\n", ""),
+            ),
+        ] {
+            let module = compile(path, &source).unwrap();
+            let steps = steps(path, &source).unwrap();
+            assert_eq!(module.code, steps.code);
+            assert_eq!(module.map_json, steps.map_json);
+            assert!(module.map_json.is_some());
+            assert_eq!(rules(&module), rules(&steps));
+            assert_eq!(module.imports, steps.imports);
+        }
+        let counter = compile("/app/src/Counter.tsx", COUNTER).unwrap();
+        assert!(counter.code.contains("__ojcjs0"), "{}", counter.code);
+    }
+
+    #[test]
+    fn a_type_import_of_a_dep_that_needs_interop_keeps_the_one_parse() {
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, CARD, SourceType::tsx()).parse();
+        assert!(!may_rewrite(&parsed.program, CARD, &needs_interop));
+        let parsed = Parser::new(&allocator, COUNTER, SourceType::tsx()).parse();
+        assert!(may_rewrite(&parsed.program, COUNTER, &needs_interop));
+    }
+
+    #[test]
+    fn errors_are_the_steps_own() {
+        for (path, source) in [
+            // The plugin's: a value it cannot evaluate.
+            (
+                "/app/src/Bad.tsx",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 const s = stylex.create({ a: { color: window.color } });\n\
+                 export const A = () => <i {...stylex.props(s.a)} />;\n",
+            ),
+            // The plugin's: no TSX (a type assertion).
+            (
+                "/app/src/cast.ts",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 export const s = stylex.create({ a: { color: 'red' } });\n\
+                 export const n = <number>(s as unknown);\n",
+            ),
+            // The compile's, past the plugin's transform.
+            (
+                "/app/src/Twice.tsx",
+                "import * as stylex from '@stylexjs/stylex';\n\
+                 const s = stylex.create({\n  a: { color: 'red' },\n});\n\
+                 const twice = 1;\n\
+                 const twice = 2;\n\
+                 export const A = () => <i {...stylex.props(s.a)} />;\n",
+            ),
+        ] {
+            let module = compile(path, source).unwrap_err();
+            let steps = steps(path, source).unwrap_err();
+            assert_eq!(module, steps);
+        }
+        let twice = compile(
+            "/app/src/Twice.tsx",
+            "import * as stylex from '@stylexjs/stylex';\n\
+             const twice = 1;\n\
+             const twice = 2;\n",
+        )
+        .unwrap_err();
+        assert!(twice.starts_with("compile: parse error in "), "{twice}");
+        let bad = compile(
+            "/app/src/Bad.tsx",
+            "import * as stylex from '@stylexjs/stylex';\n\
+             const s = stylex.create({ a: { color: window.color } });\n",
+        )
+        .unwrap_err();
+        assert!(bad.starts_with("stylex: @stylexjs/unplugin: "), "{bad}");
+    }
+
+    #[test]
+    fn the_plugin_and_the_compile_read_typescript_alike() {
+        // What `Module::parse` rests on: the plugin's TSX is the compile's
+        // own language for a `.tsx` path, and for a `.ts` one but for JSX.
+        let same_grammar = |a: SourceType, b: SourceType| {
+            a.is_typescript() == b.is_typescript()
+                && a.is_typescript_definition() == b.is_typescript_definition()
+                && a.is_jsx() == b.is_jsx()
+                && a.module_kind() == b.module_kind()
+        };
+        let tsx = SourceType::from_path("a.tsx").unwrap();
+        assert!(same_grammar(tsx, SourceType::tsx()));
+        let ts = SourceType::from_path("a.ts").unwrap();
+        assert!(!ts.is_jsx());
+        assert!(same_grammar(ts.with_jsx(true), SourceType::tsx()));
+        for other in ["a.js", "a.jsx", "a.mts", "a.cts", "a.d.ts"] {
+            let other = SourceType::from_path(other).unwrap();
+            assert!(!same_grammar(other.with_jsx(true), SourceType::tsx()));
+        }
+    }
+}

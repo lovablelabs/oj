@@ -73,7 +73,7 @@ async fn compile_plugin_source(
     let compiled = tokio::task::spawn_blocking(move || {
         // Recorded even when the plugin passes over the module: one that
         // dropped its StyleX imports drops the rules its last load recorded.
-        let (source, rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
+        let (source, rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source, false)? {
             Some(pre) => (pre.code, pre.rules),
             None => (source, Vec::new()),
         };

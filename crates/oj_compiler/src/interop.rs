@@ -275,6 +275,85 @@ pub fn rewrite_cjs_interop_logged(
     Some(result)
 }
 
+/// Whether [`rewrite_cjs_interop_logged`] could rewrite, or ask its `interop`
+/// about, a module whose parse is `program`: one with a value import, a
+/// re-export or a literal dynamic import of a specifier that may need
+/// interop. Where none may, the rewrite leaves the module as it is and
+/// resolves and registers nothing, so skipping it changes nothing.
+pub(crate) fn may_rewrite(
+    program: &oxc_ast::ast::Program,
+    source: &str,
+    may_need_interop: &dyn Fn(&str) -> bool,
+) -> bool {
+    if imports_may_need_interop(program, may_need_interop) {
+        return true;
+    }
+    if !names_import_call(source) {
+        return false;
+    }
+    struct DynamicImports<'f> {
+        may_need_interop: &'f dyn Fn(&str) -> bool,
+        found: bool,
+    }
+    impl<'a> Visit<'a> for DynamicImports<'_> {
+        fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+            self.found = self.found
+                || literal_specifier(&it.source).is_some_and(|spec| (self.may_need_interop)(&spec));
+            if !self.found {
+                walk::walk_import_expression(self, it);
+            }
+        }
+    }
+    let mut imports = DynamicImports {
+        may_need_interop,
+        found: false,
+    };
+    imports.visit_program(program);
+    imports.found
+}
+
+/// The static half of [`may_rewrite`]: the module's value imports and
+/// re-exports.
+pub(crate) fn imports_may_need_interop(
+    program: &oxc_ast::ast::Program,
+    may_need_interop: &dyn Fn(&str) -> bool,
+) -> bool {
+    program.body.iter().any(|stmt| {
+        let (is_type, source) = match stmt {
+            Statement::ImportDeclaration(decl) => (decl.import_kind.is_type(), &decl.source),
+            Statement::ExportFromDeclaration(decl) => (decl.export_kind.is_type(), &decl.source),
+            Statement::ExportAllDeclaration(decl) => (decl.export_kind.is_type(), &decl.source),
+            _ => return false,
+        };
+        !is_type && may_need_interop(crate::lit_str(source.value))
+    })
+}
+
+/// Whether `source` holds `import` followed by `(`, whitespace and comments
+/// between them aside: every dynamic import does.
+fn names_import_call(source: &str) -> bool {
+    const KEYWORD: &str = "import";
+    memchr::memmem::find_iter(source.as_bytes(), KEYWORD).any(|at| {
+        let next = skip_trivia(source, at + KEYWORD.len(), false);
+        source.as_bytes().get(next) == Some(&b'(')
+    })
+}
+
+/// A dynamic import's specifier when it is a literal. A template literal
+/// without a substitution is one to Vite (importAnalysis.ts,
+/// `templateLiteralRE`).
+fn literal_specifier(source: &Expression) -> Option<String> {
+    match source {
+        Expression::StringLiteral(lit) => Some(crate::lit_str(lit.value).to_string()),
+        Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
+            .quasis
+            .first()
+            .and_then(|q| q.value.cooked)
+            .map(|cooked| crate::lit_str(cooked).to_string()),
+        _ => None,
+    }
+}
+
 /// The JSX pragmas of a module, as oxc's transform reads them
 /// (oxc_transformer 0.158, `jsx/comments.rs`: `update_options_with_comments`
 /// over the comments `Transformer::build_with_scoping` hands it): from the
@@ -923,18 +1002,7 @@ struct DynamicImportInterop<'i> {
 
 impl<'a> Visit<'a> for DynamicImportInterop<'_> {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
-        // A template literal without a substitution is a literal to Vite
-        // (importAnalysis.ts, `templateLiteralRE`).
-        let spec = match &it.source {
-            Expression::StringLiteral(lit) => Some(crate::lit_str(lit.value).to_string()),
-            Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
-                .quasis
-                .first()
-                .and_then(|q| q.value.cooked)
-                .map(|cooked| crate::lit_str(cooked).to_string()),
-            _ => None,
-        };
-        let target = spec.and_then(|spec: String| (self.interop)(&spec));
+        let target = literal_specifier(&it.source).and_then(|spec| (self.interop)(&spec));
         // Vite rewrites only the URL of a builtin's dynamic import.
         if let Some(target) = target
             .as_ref()
