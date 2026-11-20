@@ -266,6 +266,33 @@ struct Project {
     tokens: Tokens,
 }
 
+impl Project {
+    fn rules_of(&self, path: &str) -> &[StylexRule] {
+        let at = self
+            .files
+            .binary_search_by(|(p, _)| p.as_str().cmp(path))
+            .expect("a project file");
+        &self.files[at].1
+    }
+
+    // The first constant that is a plain value (not an at-rule, a number or
+    // a reference to another variable): its token file and position there.
+    fn value_constant(&self) -> Option<(&str, usize)> {
+        let is_plain_value = |rule: &StylexRule| {
+            rule.const_key.is_some()
+                && rule
+                    .const_val
+                    .as_deref()
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.starts_with('@') && !value.contains("var("))
+        };
+        self.token_paths.iter().find_map(|path| {
+            let at = self.rules_of(path).iter().position(is_plain_value)?;
+            Some((path.as_str(), at))
+        })
+    }
+}
+
 // `dup` percent of a component's rules come from a shared pool of common
 // atomic rules, the rest are its own.
 fn project(rule_count: usize, const_count: usize, dup: usize, seed: u64) -> Project {
@@ -434,16 +461,56 @@ impl Bench {
         css
     }
 
-    fn run(&self, project: &Project) {
-        let by_path = |path: &str| -> Vec<StylexRule> {
-            let at = project
-                .files
-                .binary_search_by(|(p, _)| p.as_str().cmp(path))
-                .expect("a project file");
-            project.files[at].1.clone()
-        };
-        let extra = |n: usize| plain(&format!("xedit{n}"), format!(".xedit{n}{{color:red}}"), 3e3);
+    // One sample: `change` the registry, then emit. A change the registry
+    // sees nothing new in is answered from its cache, so a run that left the
+    // generation where it was would time no assembly at all.
+    fn timed(
+        &self,
+        scenario: &str,
+        samples: &mut Samples,
+        registry: &mut RuleRegistry,
+        change: impl FnOnce(&mut RuleRegistry),
+    ) -> String {
+        let generation = registry.generation();
+        let css = samples.time(|| {
+            change(registry);
+            registry.emit(&self.cfg).expect("emit")
+        });
+        assert!(
+            registry.generation() > generation,
+            "{scenario}: a timed run left the registry unchanged"
+        );
+        css
+    }
 
+    // `runs` edits over `paths`, visited `stride` apart: an even run adds a
+    // rule to its file, the odd run after it takes that rule out of the same
+    // file again, so every run is an edit the registry has to assemble.
+    fn edit_and_revert(
+        &self,
+        scenario: &str,
+        registry: &mut RuleRegistry,
+        project: &Project,
+        runs: usize,
+        paths: &[String],
+        stride: usize,
+    ) -> Samples {
+        let mut samples = Samples::default();
+        for run in 0..runs {
+            let path = &paths[(run / 2 * stride) % paths.len()];
+            let mut rules = project.rules_of(path).to_vec();
+            if run % 2 == 0 {
+                let class = format!("xedit{run}");
+                rules.push(plain(&class, format!(".{class}{{color:red}}"), 3e3));
+            }
+            self.timed(scenario, &mut samples, registry, |registry| {
+                registry.set_file_rules(path, rules)
+            });
+        }
+        samples
+    }
+
+    fn run(&self, project: &Project) {
         if self.wants("oneshot") {
             let all: Vec<StylexRule> = project
                 .files
@@ -473,36 +540,19 @@ impl Bench {
         let components = &project.component_paths;
 
         if self.wants("edit") {
-            let mut samples = Samples::default();
-            for run in 0..self.runs.max(21) {
-                let path = &components[(run * 7919) % components.len()];
-                let mut rules = by_path(path);
-                if run % 2 == 0 {
-                    rules.push(extra(run));
-                }
-                samples.time(|| {
-                    registry.set_file_rules(path, rules);
-                    registry.emit(&self.cfg).expect("emit")
-                });
-            }
+            let runs = self.runs.max(21);
+            let samples =
+                self.edit_and_revert("edit", &mut registry, project, runs, components, 7919);
             let css = self.check("edit", &mut registry);
             self.report("edit", &samples, &css);
         }
 
         if self.wants("edit_tokens") && self.consts > 0 {
-            // A token file changes a variable group; its constants stay put.
-            let mut samples = Samples::default();
-            for run in 0..self.runs.max(21) {
-                let path = &project.token_paths[run % project.token_paths.len()];
-                let mut rules = by_path(path);
-                if run % 2 == 0 {
-                    rules.push(extra(run));
-                }
-                samples.time(|| {
-                    registry.set_file_rules(path, rules);
-                    registry.emit(&self.cfg).expect("emit")
-                });
-            }
+            // A token file changes around its constants, which stay put.
+            let runs = self.runs.max(21);
+            let paths = &project.token_paths;
+            let samples =
+                self.edit_and_revert("edit_tokens", &mut registry, project, runs, paths, 1);
             let css = self.check("edit_tokens", &mut registry);
             self.report("edit_tokens", &samples, &css);
         }
@@ -510,7 +560,7 @@ impl Bench {
         if self.wants("add_file") || self.wants("remove_file") {
             let mut rng = Rng(0x9e3779b97f4a7c15);
             let (mut added, mut removed) = (Samples::default(), Samples::default());
-            let (mut added_css, mut removed_css) = (String::new(), String::new());
+            let mut added_css = String::new();
             for run in 0..self.runs {
                 // Sorts between existing component files.
                 let after = &components[(run * 7919 + 13) % components.len()];
@@ -518,44 +568,44 @@ impl Bench {
                 let rules: Vec<StylexRule> = (0..25)
                     .map(|_| component_rule(&mut rng, &project.tokens))
                     .collect();
-                added.time(|| {
-                    registry.set_file_rules(&path, rules);
-                    registry.emit(&self.cfg).expect("emit")
+                self.timed("add_file", &mut added, &mut registry, |registry| {
+                    registry.set_file_rules(&path, rules)
                 });
                 if run + 1 == self.runs {
                     added_css = self.check("add_file", &mut registry);
                 }
-                removed.time(|| {
+                self.timed("remove_file", &mut removed, &mut registry, |registry| {
                     registry.remove_file(&path);
-                    registry.emit(&self.cfg).expect("emit")
                 });
             }
-            if self.runs > 0 {
-                removed_css = self.check("remove_file", &mut registry);
-            }
+            let removed_css = self.check("remove_file", &mut registry);
             self.report("add_file", &added, &added_css);
             self.report("remove_file", &removed, &removed_css);
         }
 
         if self.wants("const_change") && self.consts > 0 {
-            // One constant's value changes: every rule may read it.
-            let path = &project.token_paths[0];
-            let base = by_path(path);
-            let at = base
-                .iter()
-                .position(|r| r.const_key.is_some())
-                .expect("a constant");
-            let mut samples = Samples::default();
-            for run in 0..self.runs {
-                let mut rules = base.clone();
-                rules[at].const_val = Some(Box::new(serde_json::json!(format!("{}px", run + 1))));
-                samples.time(|| {
-                    registry.set_file_rules(path, rules);
-                    registry.emit(&self.cfg).expect("emit")
-                });
+            // One value constant's value changes: every rule may read it.
+            match project.value_constant() {
+                Some((path, at)) => {
+                    let base = project.rules_of(path);
+                    let mut samples = Samples::default();
+                    for run in 0..self.runs {
+                        // A length no generated constant has, new on every run.
+                        let value = format!("{}px", 1000 + run);
+                        let mut rules = base.to_vec();
+                        rules[at].const_val = Some(Box::new(serde_json::json!(value)));
+                        self.timed("const_change", &mut samples, &mut registry, |registry| {
+                            registry.set_file_rules(path, rules)
+                        });
+                    }
+                    let css = self.check("const_change", &mut registry);
+                    self.report("const_change", &samples, &css);
+                }
+                None => eprintln!(
+                    "assemble_bench: const_change skipped: no plain value constant among {} consts",
+                    self.consts
+                ),
             }
-            let css = self.check("const_change", &mut registry);
-            self.report("const_change", &samples, &css);
         }
 
         if self.wants("fallback_edit") {
@@ -567,18 +617,14 @@ impl Bench {
                 vec![plain("xinf", ".xinf{color:red}".into(), f64::INFINITY)],
             );
             registry.emit(&self.cfg).expect("warm-up emit");
-            let mut samples = Samples::default();
-            for run in 0..self.runs {
-                let path = &components[(run * 7919) % components.len()];
-                let mut rules = by_path(path);
-                if run % 2 == 0 {
-                    rules.push(extra(run));
-                }
-                samples.time(|| {
-                    registry.set_file_rules(path, rules);
-                    registry.emit(&self.cfg).expect("emit")
-                });
-            }
+            let samples = self.edit_and_revert(
+                "fallback_edit",
+                &mut registry,
+                project,
+                self.runs,
+                components,
+                7919,
+            );
             let css = self.check("fallback_edit", &mut registry);
             self.report("fallback_edit", &samples, &css);
         }
@@ -624,6 +670,17 @@ fn main() {
             println!("{}", rule.to_metadata_tuple());
         }
         return;
+    }
+    // No rules leaves no component file to edit, no runs no sample to report.
+    if bench.rules == 0 || bench.runs == 0 {
+        eprintln!("assemble_bench: --rules and --runs must both be at least 1");
+        std::process::exit(2);
+    }
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "assemble_bench: warning: built with debug assertions, where every emit also \
+             cross-checks itself against the one-shot assembly; time a --release build"
+        );
     }
     bench.run(&project);
 }
