@@ -131,8 +131,19 @@ fn has_explicit_nullish_fallback(expr: &Expression<'_>) -> bool {
 pub enum ClassPart {
     /// String-literal chunk (class name plus trailing space when not last).
     Lit(String),
-    /// `<expr> != null ? "<lit>" : <expr>` — expr printed from its span.
+    /// `<expr> != null ? "<lit>" : ""` — expr printed from its span.
     Guarded { lit: String, expr: Span },
+}
+
+/// A conditional prop holding one class, emitted as its own array element:
+/// `<expr> !== undefined && { <key>: <expr> != null ? "<lit>" : "", $$css: <tag> }`.
+/// An argument left `undefined` then contributes no key at all, so it cannot
+/// reset the property in a later merge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuardedProp {
+    pub key: String,
+    pub lit: String,
+    pub expr: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,13 +154,15 @@ pub struct InlineVar {
     pub expr: Span,
 }
 
-/// Compiled arrow: `(params) => [staticObj?, conditionalObj?, vars]` (bare vars
-/// when both partitions empty); `$$css` keys carry `css_tag`.
+/// Compiled arrow: `(params) => [staticObj?, ...guardedObjs, conditionalObj?, vars]`
+/// (bare vars when every partition is empty); `$$css` keys carry `css_tag`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicCompiled {
     pub params: Vec<String>,
     /// key → string-literal segments; empty vec prints/evaluates as "".
     pub static_props: Vec<(String, Vec<String>)>,
+    pub guarded_props: Vec<GuardedProp>,
+    /// Conditional props joining several classes; they share one object.
     pub conditional_props: Vec<(String, Vec<ClassPart>)>,
     pub css_tag: EvalValue,
     pub inline_vars: Vec<InlineVar>,
@@ -159,7 +172,9 @@ impl DynamicCompiled {
     /// False only for namespaces with no compiled props: the arrow returns the
     /// bare vars object and the `$$css` tag is dropped entirely (upstream).
     pub fn has_container(&self) -> bool {
-        !self.static_props.is_empty() || !self.conditional_props.is_empty()
+        !self.static_props.is_empty()
+            || !self.guarded_props.is_empty()
+            || !self.conditional_props.is_empty()
     }
 }
 
@@ -195,6 +210,7 @@ pub fn compile_dynamic_namespace(
 
     let mut css_tag = EvalValue::Bool(true);
     let mut static_props: Vec<(String, Vec<String>)> = Vec::new();
+    let mut guarded_props: Vec<GuardedProp> = Vec::new();
     let mut conditional_props: Vec<(String, Vec<ClassPart>)> = Vec::new();
 
     for (key, value) in compiled_ns.entries() {
@@ -258,6 +274,12 @@ pub fn compile_dynamic_namespace(
                 })
                 .collect();
             static_props.push((key.to_string(), segments));
+        } else if let [ClassPart::Guarded { lit, expr }] = parts.as_slice() {
+            guarded_props.push(GuardedProp {
+                key: key.to_string(),
+                lit: lit.clone(),
+                expr: *expr,
+            });
         } else {
             conditional_props.push((key.to_string(), parts));
         }
@@ -266,6 +288,7 @@ pub fn compile_dynamic_namespace(
     DynamicCompiled {
         params: fn_def.params.clone(),
         static_props,
+        guarded_props,
         conditional_props,
         css_tag,
         inline_vars: fn_def

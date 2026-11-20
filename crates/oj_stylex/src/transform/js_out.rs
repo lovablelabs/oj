@@ -449,6 +449,19 @@ pub fn print_dynamic_arrow(
             None => print_static_chunk(compiled),
         });
     }
+    let guarded_class = |lit: &str, expr: Span| -> String {
+        let src = expr_text(expr);
+        format!("(({src}) != null ? {} : \"\")", js_string_literal(lit))
+    };
+    for guarded in &compiled.guarded_props {
+        let src = expr_text(guarded.expr);
+        let mut item = format!("({src}) !== undefined && {{");
+        write_key(&mut item, &guarded.key);
+        item.push_str(": ");
+        item.push_str(&guarded_class(&guarded.lit, guarded.expr));
+        item.push_str(&format!(", $$css: {css_tag}}}"));
+        items.push(item);
+    }
     if !compiled.conditional_props.is_empty() {
         let mut obj = String::from("{");
         for (key, parts) in &compiled.conditional_props {
@@ -458,10 +471,7 @@ pub fn print_dynamic_arrow(
                 .iter()
                 .map(|part| match part {
                     ClassPart::Lit(lit) => js_string_literal(lit),
-                    ClassPart::Guarded { lit, expr } => {
-                        let src = expr_text(*expr);
-                        format!("(({src}) != null ? {} : ({src}))", js_string_literal(lit))
-                    }
+                    ClassPart::Guarded { lit, expr } => guarded_class(lit, *expr),
                 })
                 .collect();
             if rendered.is_empty() {

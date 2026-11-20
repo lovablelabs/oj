@@ -22,7 +22,7 @@ use oxc_ast::ast::{
 use oxc_ast::builder::AstBuilder;
 use oxc_ast_visit::{Visit, VisitMut, walk, walk_mut};
 use oxc_span::{GetSpan, Span};
-use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
+use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 
 use crate::errors::{ErrorCode, StylexError};
 use crate::eval::value::{EvalValue, JsObjectMap};
@@ -434,6 +434,12 @@ impl<'a> Synth<'a> {
         ))
     }
 
+    /// `(({subject}) != null ? {lit} : "")`
+    fn guarded_class(&self, lit: &str, subject: Expression<'a>) -> Expression<'a> {
+        let test = self.binary(BinaryOperator::Inequality, self.paren(subject), self.null());
+        self.paren(self.cond(test, self.string(lit), self.string("")))
+    }
+
     /// Mirrors js_out::print_dynamic_arrow; `resolve` clones the original
     /// expression at a recorded span (pre-mutation, like the splice printer).
     fn dynamic_arrow(
@@ -502,6 +508,33 @@ impl<'a> Synth<'a> {
                 None => self.static_chunk(compiled),
             });
         }
+        // parity: the guarded and conditional chunks' $$css key is an identifier.
+        let css_tag_prop = || {
+            self.prop(
+                PropertyKey::new_static_identifier(self.span, self.s("$$css"), &self.b),
+                self.value(&compiled.css_tag),
+            )
+        };
+        for guarded in &compiled.guarded_props {
+            // ({src}) !== undefined && {key: <guarded class>, $$css: <tag>}
+            let test = self.binary(
+                BinaryOperator::StrictInequality,
+                self.paren(resolve(guarded.expr)?),
+                self.ident("undefined"),
+            );
+            let class = self.guarded_class(&guarded.lit, resolve(guarded.expr)?);
+            let object = self.object(vec![
+                self.prop(self.prop_key(&guarded.key), class),
+                css_tag_prop(),
+            ]);
+            items.push(Expression::new_logical_expression(
+                self.span,
+                test,
+                LogicalOperator::And,
+                object,
+                &self.b,
+            ));
+        }
         if !compiled.conditional_props.is_empty() {
             let mut props: Vec<ObjectPropertyKind<'a>> = Vec::new();
             for (key, parts) in &compiled.conditional_props {
@@ -510,17 +543,7 @@ impl<'a> Synth<'a> {
                     rendered.push(match part {
                         ClassPart::Lit(lit) => self.string(lit),
                         ClassPart::Guarded { lit, expr } => {
-                            // (({src}) != null ? {lit} : ({src}))
-                            let test = self.binary(
-                                BinaryOperator::Inequality,
-                                self.paren(resolve(*expr)?),
-                                self.null(),
-                            );
-                            self.paren(self.cond(
-                                test,
-                                self.string(lit),
-                                self.paren(resolve(*expr)?),
-                            ))
+                            self.guarded_class(lit, resolve(*expr)?)
                         }
                     });
                 }
@@ -533,11 +556,7 @@ impl<'a> Synth<'a> {
                 };
                 props.push(self.prop(self.prop_key(key), value));
             }
-            // parity: the conditional chunk's $$css key is an identifier.
-            props.push(self.prop(
-                PropertyKey::new_static_identifier(self.span, self.s("$$css"), &self.b),
-                self.value(&compiled.css_tag),
-            ));
+            props.push(css_tag_prop());
             items.push(self.object(props));
         }
         items.push(vars_obj);
@@ -1193,6 +1212,9 @@ pub fn apply_plan<'a>(
         for entry in dynamic {
             for var in &entry.compiled.inline_vars {
                 wanted.insert(key(var.expr));
+            }
+            for guarded in &entry.compiled.guarded_props {
+                wanted.insert(key(guarded.expr));
             }
             for (_, parts) in &entry.compiled.conditional_props {
                 for part in parts {
