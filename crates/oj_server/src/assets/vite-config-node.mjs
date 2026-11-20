@@ -124,6 +124,8 @@ export async function recordStartImportProtection(root) {
         // versions whose import protection it was written against.
         version: typeof version === "string" ? version : null,
         srcDirectory: typeof seen.srcDirectory === "string" ? seen.srcDirectory : "src",
+        routerEntry: typeof seen.router?.entry === "string" ? seen.router.entry : null,
+        startEntry: typeof seen.start?.entry === "string" ? seen.start.entry : null,
         enabled: ip.enabled !== false,
         devBehavior: behavior,
         mockAccess: ip.mockAccess ?? "error",

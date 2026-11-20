@@ -692,7 +692,7 @@ impl StartHost {
     /// protection, on the server side. A marker import is its marker module.
     /// A denied import fails with the violation where Start's plugin, an
     /// `enforce: "pre"` resolveId hook, would have seen it: a specifier the
-    /// `pre` hooks get (see `reaches_pre_resolve`). Any other resolves as
+    /// `pre` hooks get (see `SsrBridge::pre_hooks_see`). Any other resolves as
     /// before, and a denied file it names loads as its mock (`load_id`).
     async fn resolve_inner(
         &self,
@@ -710,7 +710,7 @@ impl StartHost {
         if let Some(id) = import_protection::resolve_virtual(spec) {
             return own(id);
         }
-        let enforced = oj_server::reaches_pre_resolve(spec);
+        let enforced = self.bridge.pre_hooks_see(&from, spec);
         // The wording a throwing resolveId hook fails an import with.
         let denied = |message: String| {
             format!(

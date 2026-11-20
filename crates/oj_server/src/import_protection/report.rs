@@ -423,8 +423,7 @@ fn imports(program: &Program<'_>) -> Imports {
                 if decl.import_kind.is_type() || all_types {
                     continue;
                 }
-                out.sources
-                    .push((text(&decl.source), decl.source.span.start));
+                out.sources.push((text(&decl.source), inside(&decl.source)));
                 let symbols = specifiers
                     .iter()
                     .filter_map(|s| match s {
@@ -445,13 +444,11 @@ fn imports(program: &Program<'_>) -> Imports {
                 let all_types = !decl.specifiers.is_empty()
                     && decl.specifiers.iter().all(|s| s.export_kind.is_type());
                 if !decl.export_kind.is_type() && !all_types {
-                    out.sources
-                        .push((text(&decl.source), decl.source.span.start));
+                    out.sources.push((text(&decl.source), inside(&decl.source)));
                 }
             }
             Statement::ExportAllDeclaration(decl) if !decl.export_kind.is_type() => {
-                out.sources
-                    .push((text(&decl.source), decl.source.span.start));
+                out.sources.push((text(&decl.source), inside(&decl.source)));
             }
             _ => {}
         }
@@ -467,7 +464,7 @@ struct DynamicImports<'s>(&'s mut Vec<(String, u32)>);
 impl<'a> Visit<'a> for DynamicImports<'_> {
     fn visit_import_expression(&mut self, it: &oxc_ast::ast::ImportExpression<'a>) {
         if let Expression::StringLiteral(source) = &it.source {
-            self.0.push((text(source), source.span.start));
+            self.0.push((text(source), inside(source)));
         }
         oxc_ast_visit::walk::walk_import_expression(self, it);
     }
@@ -600,6 +597,12 @@ fn loc_at(code: &str, offset: u32) -> Loc {
         line: before.matches('\n').count() + 1,
         column: before[line_start..].encode_utf16().count() + 1,
     }
+}
+
+/// Where an import's specifier starts, inside its quotes: Start's
+/// `getStringLiteralValueStart`.
+fn inside(source: &oxc_ast::ast::StringLiteral<'_>) -> u32 {
+    source.span.start + 1
 }
 
 /// The names a module exports, `default` aside, sorted. Start's

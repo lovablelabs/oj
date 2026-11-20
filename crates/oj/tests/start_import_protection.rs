@@ -131,10 +131,7 @@ fn client_has(root: &Path, needle: &str) -> bool {
 
 fn assert_denied(text: &str, lines: &[&str]) {
     for line in lines {
-        assert!(
-            text.contains(line),
-            "the build output lacks {line:?}:\n{text}"
-        );
+        assert!(text.contains(line), "the output lacks {line:?}:\n{text}");
     }
 }
 
@@ -2239,6 +2236,9 @@ async fn dev_hydrates_every_shape_of_the_functions_module_with_a_handler_only_se
 /// of the plugin host.
 const ERRORS: &str = "importProtection: { behavior: \"error\" }";
 
+/// Start's import protection among the plugins the plugin host lists.
+const STARTS_PLUGIN: &str = "tanstack-start-core:import-protection[";
+
 /// The same behavior with an `onViolation` callback, which only Start's own
 /// plugin can call: the plugin host runs it. The callback denies nothing.
 const HOSTED: &str = "importProtection: { behavior: \"error\", onViolation: () => {} }";
@@ -2297,7 +2297,7 @@ fn dev_violations(name: &str, files: &[(&str, String)]) -> Option<(String, Strin
     };
     let native = said(name, ERRORS)?;
     let hosted = said(&format!("{name}-hosted"), HOSTED)?;
-    let plugin = "tanstack-start-core:import-protection[";
+    let plugin = STARTS_PLUGIN;
     assert!(
         !native.contains(plugin),
         "the plugin host ran Start's import protection:\n{native}"
@@ -2323,8 +2323,7 @@ fn dev_denies_a_server_only_file_itself_as_starts_plugin_does() {
             "Import: \"../server/secret.server\"",
             "Resolved: src/server/secret.server.ts",
             "(import \"../server/secret.server\")",
-            // The use, at its own column in the source.
-            ">",
+            // The code around the use.
             "{secret()}",
         ],
     );
@@ -2418,6 +2417,11 @@ async fn dev_checking_imports_itself_serves_the_page_once_the_import_is_gone() {
         "the import was not denied:\n{}",
         dev.output()
     );
+    assert!(
+        !dev.output().contains(STARTS_PLUGIN),
+        "the plugin host ran Start's import protection:\n{}",
+        dev.output()
+    );
     std::fs::write(app.0.join("src/routes/about.tsx"), clean).unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
     let (hydrated, _, _, errors) = visit(&dev).await;
@@ -2476,6 +2480,12 @@ fn dev_mocks_a_client_only_file_the_server_render_imports_by_a_relative_path() {
         };
         let dev = Server::oj_dev(&app.0);
         let (status, body) = dev.request("GET", "/about", &[]);
+        assert_eq!(
+            dev.output().contains(STARTS_PLUGIN),
+            options == HOSTED,
+            "{name}: the wrong side checked the imports:\n{}",
+            dev.output()
+        );
         assert_eq!(status, 200, "{name}: {body}\n{}", dev.output());
         assert!(
             body.contains("[import-protection mock]"),

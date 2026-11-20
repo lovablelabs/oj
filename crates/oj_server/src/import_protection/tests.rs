@@ -117,8 +117,8 @@ fn a_denied_file_reads_as_starts_message() {
   Resolved: src/server/secret.ts
 
   Trace:
-    1. src/router.tsx:3:27 (entry) (import "./routeTree.gen")
-    2. src/routeTree.gen.ts:1:43 (import "./routes/index")
+    1. src/router.tsx:3:28 (entry) (import "./routeTree.gen")
+    2. src/routeTree.gen.ts:1:44 (import "./routes/index")
     3. src/routes/index.tsx:6:12 (import "../server/secret")
 
   Code:
@@ -165,7 +165,7 @@ fn a_denied_specifier_is_reported_before_it_resolves() {
         panic!("{before:?}");
     };
     assert!(
-        message.contains("  Denied by specifier pattern: server-only\n  Importer: src/a.ts:1:8\n  Import: \"server-only\"\n\n  Trace:"),
+        message.contains("  Denied by specifier pattern: server-only\n  Importer: src/a.ts:1:9\n  Import: \"server-only\"\n\n  Trace:"),
         "{message}"
     );
     // The server may import it.
@@ -207,7 +207,7 @@ fn a_marked_module_is_denied_to_the_other_side() {
     else {
         panic!("the client took a server-only marker");
     };
-    assert!(own.contains("  Importer: src/db.ts:1:8\n"), "{own}");
+    assert!(own.contains("  Importer: src/db.ts:1:9\n"), "{own}");
 }
 
 #[test]
@@ -331,6 +331,8 @@ fn only_what_rust_reads_as_start_does_runs_natively() {
     assert!(ImportProtection::native(dir.path(), None).is_none());
     // A plugin core this was not checked against.
     assert!(!native(&|o| o["version"] = "1.169.6".into()));
+    assert!(!native(&|o| o["version"] = "1.171.33".into()));
+    assert!(native(&|o| o["version"] = "1.171.34".into()));
     assert!(!native(&|o| o["version"] = "1.173.0".into()));
     assert!(!native(&|o| o["version"] = Value::Null));
     assert!(native(&|o| o["version"] = "1.172.0".into()));
@@ -403,4 +405,46 @@ fn a_glob_picomatch_reads_another_way_stays_with_starts_plugin() {
         assert!(Pattern::from_text(glob).is_none(), "{glob}");
     }
     assert!(Pattern::from_text("**/*.{server,client}.*").is_some());
+}
+
+#[test]
+fn a_trace_starts_at_the_router_a_route_imports_back() {
+    let app = app(&[
+        ("src/router.tsx", ROUTER),
+        ("src/routeTree.gen.ts", ROUTE_TREE),
+        (
+            "src/routes/index.tsx",
+            "import { getRouter } from \"../router\";\nimport { secret } from \"../server/secret\";\nsecret(getRouter);\n",
+        ),
+        ("src/server/secret.ts", "export const secret = () => 1;\n"),
+    ]);
+    for (from, source, to) in [
+        ("src/router.tsx", "./routeTree.gen", "src/routeTree.gen.ts"),
+        (
+            "src/routeTree.gen.ts",
+            "./routes/index",
+            "src/routes/index.tsx",
+        ),
+        ("src/routes/index.tsx", "../router", "src/router.tsx"),
+    ] {
+        app.import(Side::Client, from, source, to).unwrap();
+    }
+    let message = app
+        .import(
+            Side::Client,
+            "src/routes/index.tsx",
+            "../server/secret",
+            "src/server/secret.ts",
+        )
+        .unwrap_err();
+    assert!(message.contains("1. src/router.tsx"), "{message}");
+    assert!(message.contains("3. src/routes/index.tsx"), "{message}");
+}
+
+#[test]
+fn a_pattern_ending_in_a_globstar_matches_its_prefix_as_picomatch_does() {
+    let pattern = Pattern::from_text("drizzle-orm/**").unwrap();
+    assert!(pattern.is_match("drizzle-orm"));
+    assert!(pattern.is_match("drizzle-orm/pg-core"));
+    assert!(!pattern.is_match("drizzle-orm-extra"));
 }

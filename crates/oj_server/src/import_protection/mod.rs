@@ -63,6 +63,8 @@ enum Pattern {
     Glob {
         text: String,
         glob: GlobMatcher,
+        /// For `x/**`, `x` itself, which picomatch matches too.
+        prefix: Option<GlobMatcher>,
     },
     Regex {
         text: String,
@@ -95,16 +97,30 @@ impl Pattern {
         if !reads_as_picomatch(text) {
             return None;
         }
+        let glob = GlobMatcher::plugin_id_filter(text)?;
+        // A matcher of a glob that did not build matches everything.
+        glob.bases().next()?;
+        let prefix = match text.strip_suffix("/**") {
+            Some(prefix) if !prefix.is_empty() => {
+                let glob = GlobMatcher::plugin_id_filter(prefix)?;
+                glob.bases().next()?;
+                Some(glob)
+            }
+            _ => None,
+        };
         Some(Pattern::Glob {
             text: text.to_string(),
-            glob: GlobMatcher::plugin_id_filter(text)?,
+            glob,
+            prefix,
         })
     }
 
     fn is_match(&self, value: &str) -> bool {
         match self {
             Pattern::Literal(text) => text == value,
-            Pattern::Glob { glob, .. } => glob.is_match(value),
+            Pattern::Glob { glob, prefix, .. } => {
+                glob.is_match(value) || prefix.as_ref().is_some_and(|p| p.is_match(value))
+            }
             Pattern::Regex { regex, .. } => regex.is_match(value),
         }
     }
@@ -291,12 +307,11 @@ impl ImportProtection {
             "off" => MockAccess::Off,
             _ => return None,
         };
-        let src_dir = normalize(
-            &root
-                .join(o.get("srcDirectory").and_then(Value::as_str)?)
-                .to_string_lossy(),
-        );
         let root = normalize(&root.to_string_lossy());
+        let src_dir = normalize(&format!(
+            "{root}/{}",
+            o.get("srcDirectory").and_then(Value::as_str)?
+        ));
         // A list the app set replaces the default one, except the client's
         // denied specifiers, which add to Start's own.
         let list = |side: &str, key: &str, default: &[&str]| -> Option<Vec<Pattern>> {
@@ -324,6 +339,17 @@ impl ImportProtection {
             files: list("server", "files", &["**/*.client.*"])?,
             exclude_files: list("server", "excludeFiles", &["**/node_modules/**"])?,
         };
+        // Start's registerEntries: the router and the start file root a
+        // trace on both sides, whatever imports them.
+        let mut state = State::default();
+        for (key, default) in [("routerEntry", "router"), ("startEntry", "start")] {
+            let name = o.get(key).and_then(Value::as_str).unwrap_or(default);
+            if let Some(file) = entry_file(&src_dir, name) {
+                for graph in &mut state.graphs {
+                    graph.entries.insert(file.clone());
+                }
+            }
+        }
         Some(Arc::new(ImportProtection {
             root,
             src_dir,
@@ -336,7 +362,7 @@ impl ImportProtection {
                 .and_then(Value::as_u64)
                 .map_or(20, |n| n as usize),
             mock_access,
-            state: Mutex::default(),
+            state: Mutex::new(state),
         }))
     }
 
@@ -513,6 +539,19 @@ impl ImportProtection {
         }
         normalize(&format!("{}/{id}", self.root))
     }
+}
+
+/// Start's `resolveEntry`: the file `name` is in `src_dir`, as written or
+/// with one of the extensions Start tries.
+fn entry_file(src_dir: &str, name: &str) -> Option<String> {
+    let base = normalize(&Path::new(src_dir).join(name).to_string_lossy());
+    std::iter::once(base.clone())
+        .chain(
+            [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"]
+                .iter()
+                .map(|ext| format!("{base}{ext}")),
+        )
+        .find(|file| Path::new(file).is_file())
 }
 
 /// Whether `file` is JavaScript or TypeScript: what Start's self-denial

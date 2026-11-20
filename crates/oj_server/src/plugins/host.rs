@@ -2136,12 +2136,6 @@ impl PluginHost {
         Ok(worker)
     }
 
-    /// Another Vite environment on this host's plugin instances (Vite's
-    /// createServer gives every environment a container over the one plugin
-    /// array): `name`'s, with the framework plugins oj reimplements left out
-    /// when `leave_out`, its `this.resolve` ending in a bundle's own
-    /// resolution when `bundle`. One of the host's own environment is that
-    /// environment (one buildStart). A respawned engine reopens it.
     /// Start's import protection, when oj checks imports itself in place of
     /// the plugins this host left out. Every container of the host shares
     /// it, as Start's plugin shares its state across environments.
@@ -2160,6 +2154,12 @@ impl PluginHost {
         let _ = self.core.import_protection.set(import_protection);
     }
 
+    /// Another Vite environment on this host's plugin instances (Vite's
+    /// createServer gives every environment a container over the one plugin
+    /// array): `name`'s, with the framework plugins oj reimplements left out
+    /// when `leave_out`, its `this.resolve` ending in a bundle's own
+    /// resolution when `bundle`. One of the host's own environment is that
+    /// environment (one buildStart). A respawned engine reopens it.
     pub async fn open_environment_container(
         &self,
         name: &str,
