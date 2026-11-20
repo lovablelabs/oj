@@ -303,6 +303,19 @@ fn an_at_prefixed_path_renders_under_ssr_dev() {
         status == 200 && body.contains("ssr-path:/@my-plugin-runtime"),
         "/@my-plugin-runtime as a page: {status}\n{body}"
     );
+    // A request that is neither a page nor a script (`curl`, a `fetch()`,
+    // no `Accept`) is rendered too once the dev server has nothing there.
+    let fetched = [
+        ("accept", "*/*".to_string()),
+        ("sec-fetch-dest", "empty".to_string()),
+    ];
+    for headers in [&[("accept", "*/*".to_string())][..], &fetched[..], &[][..]] {
+        let (status, body) = dev.request("GET", "/@someone", headers);
+        assert!(
+            status == 200 && body.contains("ssr-path:/@someone"),
+            "GET /@someone {headers:?}: {status}\n{body}"
+        );
+    }
     // The default allowed hosts render; a host the dev server does not
     // allow gets no render (Vite's hostValidationMiddleware runs first).
     for host in ["localhost", "127.0.0.1"] {

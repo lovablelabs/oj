@@ -173,8 +173,9 @@ enum Route {
         json: bool,
     },
     Pass,
-    /// A page request to one of oj's `/@` urls, rendered when oj has nothing
-    /// there (`/@id/posts`), as Vite's internal middlewares hand a miss on.
+    /// A request under `/@` the dev server is asked first (a page request to
+    /// one of oj's urls, `curl /@someone`), rendered when it has nothing
+    /// there, as Vite's internal middlewares hand a miss on.
     PassOrDocument,
 }
 
@@ -276,14 +277,25 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
         return Route::Pass;
     }
     let is_loader = req.headers().contains_key("oj-loader");
-    // A module request to a `/@` url is the dev server's: Vite's transform
-    // middleware serves it before the app's handler.
+    // Any other request to a `/@` url is the dev server's first, as Vite's
+    // transform middleware tries it before the app's handler (a plugin's
+    // `/@my-plugin-runtime`). What it misses is rendered, as Vite hands its
+    // miss on (`curl /@someone`, a `fetch()`), but for a script request,
+    // which gets no page.
     if path.starts_with("/@")
         && !is_loader
         && matches!(*req.method(), Method::GET | Method::HEAD)
         && !oj_server::is_page_request(req.headers())
     {
-        return Route::Pass;
+        let script = req
+            .headers()
+            .get("sec-fetch-dest")
+            .is_some_and(|d| d.as_bytes() == b"script");
+        return if script {
+            Route::Pass
+        } else {
+            Route::PassOrDocument
+        };
     }
     match *req.method() {
         Method::GET if is_loader => Route::Loader,
@@ -529,6 +541,22 @@ mod tests {
             assert!(
                 matches!(classified(path, Some("script")), Route::Pass),
                 "a module request under /@ is the dev server's: {path}"
+            );
+            // Neither a page nor a script (`curl`, a `fetch()`): the dev
+            // server first, the render on its miss.
+            for dest in ["empty", "worker"] {
+                assert!(
+                    matches!(classified(path, Some(dest)), Route::PassOrDocument),
+                    "{path} as {dest}"
+                );
+            }
+            let plain = axum::http::Request::get(path)
+                .header("accept", "*/*")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                matches!(classify(&plain, &prefixes), Route::PassOrDocument),
+                "{path} with Accept: */*"
             );
         }
         for hmr in ["/@hmr", "/hmr"] {
