@@ -60,16 +60,96 @@ function packageDir(fromDir, name) {
   }
 }
 
+// The @tanstack/start-plugin-core the app's Start framework package runs.
+function startPluginCoreDir(root) {
+  for (const framework of ["@tanstack/react-start", "@tanstack/solid-start", "@tanstack/vue-start"]) {
+    const dir = packageDir(root, framework);
+    if (dir) return packageDir(dir, "@tanstack/start-plugin-core");
+  }
+  return null;
+}
+
+// A pattern of Start's import protection as Rust reads it: a string as
+// `{ text }`, a RegExp as `{ source, flags }`, anything else as `{ other }`.
+function importProtectionPattern(p) {
+  if (typeof p === "string") return { text: p };
+  if (p instanceof RegExp) return { source: p.source, flags: p.flags };
+  return { other: true };
+}
+const importProtectionPatterns = (list) => (Array.isArray(list) ? list.map(importProtectionPattern) : null);
+const importProtectionRules = (rules) => ({
+  specifiers: importProtectionPatterns(rules?.specifiers),
+  files: importProtectionPatterns(rules?.files),
+  excludeFiles: importProtectionPatterns(rules?.excludeFiles),
+});
+
+/** Records the options `tanstackStart()` is validated with while the app's
+ *  config resolves: Start parses them once, through the options schema its
+ *  plugin core exports, so the schema's own run is where they pass. Returns
+ *  `read`, the import protection options and `srcDirectory` in the shape
+ *  Rust reads (null when Start parsed nothing, or its schema is not the one
+ *  this reads), and `restore`. */
+export async function recordStartImportProtection(root) {
+  const none = { read: () => null, restore() {} };
+  const dir = startPluginCoreDir(root);
+  if (!dir) return none;
+  let internals;
+  let version;
+  try {
+    version = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version;
+    const schema = await import(pathToFileURL(join(dir, "dist/esm/schema.js")).href);
+    internals = schema.tanstackStartOptionsObjectSchema?._zod;
+  } catch {
+    return none;
+  }
+  const run = internals?.run;
+  if (typeof run !== "function") return none;
+  let seen = null;
+  try {
+    internals.run = function (payload, ...rest) {
+      const options = payload?.value;
+      if (options && typeof options === "object") seen = options;
+      return run.call(this, payload, ...rest);
+    };
+  } catch {
+    return none;
+  }
+  return {
+    read() {
+      if (!seen) return null;
+      const ip = seen.importProtection ?? {};
+      const behavior = typeof ip.behavior === "string" ? ip.behavior : (ip.behavior?.dev ?? "mock");
+      return {
+        // The plugin core these options are for: Rust stands in for the
+        // versions whose import protection it was written against.
+        version: typeof version === "string" ? version : null,
+        srcDirectory: typeof seen.srcDirectory === "string" ? seen.srcDirectory : "src",
+        routerEntry: typeof seen.router?.entry === "string" ? seen.router.entry : null,
+        startEntry: typeof seen.start?.entry === "string" ? seen.start.entry : null,
+        enabled: ip.enabled !== false,
+        devBehavior: behavior,
+        mockAccess: ip.mockAccess ?? "error",
+        onViolation: typeof ip.onViolation === "function",
+        include: importProtectionPatterns(ip.include) ?? [],
+        exclude: importProtectionPatterns(ip.exclude) ?? [],
+        ignoreImporters: importProtectionPatterns(ip.ignoreImporters) ?? [],
+        client: importProtectionRules(ip.client),
+        server: importProtectionRules(ip.server),
+        maxTraceDepth: typeof ip.maxTraceDepth === "number" ? ip.maxTraceDepth : null,
+      };
+    },
+    restore() {
+      internals.run = run;
+    },
+  };
+}
+
 /** The router generator's `Generator` class Start's router plugin runs,
  *  resolved the way Start's own packages resolve it (so it is the same module
  *  instance), or null for an app without Start. */
 export async function startRouterGenerator(root) {
-  let dir = null;
-  for (const framework of ["@tanstack/react-start", "@tanstack/solid-start", "@tanstack/vue-start"]) {
-    dir = packageDir(root, framework);
-    if (dir) break;
-  }
-  for (const name of ["@tanstack/start-plugin-core", "@tanstack/router-plugin", "@tanstack/router-generator"]) {
+  let dir = startPluginCoreDir(root);
+  for (const name of ["@tanstack/router-plugin", "@tanstack/router-generator"]) {
     dir = dir && packageDir(dir, name);
   }
   if (!dir) return null;

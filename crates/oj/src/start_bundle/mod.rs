@@ -22,6 +22,7 @@ pub(crate) mod facts;
 pub(crate) mod host;
 pub(crate) mod hosts;
 pub(crate) mod hot;
+pub(crate) mod import_protection;
 pub(crate) mod inputs;
 pub(crate) mod lazy;
 pub(crate) mod prod;

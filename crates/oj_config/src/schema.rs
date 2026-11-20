@@ -70,6 +70,11 @@ pub struct OjConfig {
     /// `start_route_tree`.
     #[serde(skip)]
     pub vite_start_router: Option<crate::StartRouterPaths>,
+    /// The import protection options `tanstackStart()` was validated with,
+    /// from extraction (not a config key), in the shape
+    /// `recordStartImportProtection` writes.
+    #[serde(skip)]
+    pub vite_start_import_protection: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

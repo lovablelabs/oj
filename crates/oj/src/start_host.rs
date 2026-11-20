@@ -34,6 +34,7 @@ use oj_js::HostModuleType;
 use oj_js::HostResolved;
 use oj_js::JsEngine;
 use oj_js::ModuleHost;
+use oj_server::import_protection::{self, Before, ImportProtection, Side};
 use oj_server::SsrBridge;
 use oj_server::StartResolution;
 
@@ -570,6 +571,20 @@ fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
     ]
 }
 
+/// The file a resolution names, for import protection: the module id behind
+/// a URL this host minted, or the file an external `file:` URL points at.
+fn resolved_file(resolved: &HostResolved) -> Option<String> {
+    match resolved {
+        HostResolved::Url(url) => versioned_id(url),
+        HostResolved::External(spec) => {
+            let url = url::Url::parse(spec)
+                .ok()
+                .filter(|u| u.scheme() == "file")?;
+            Some(url.to_file_path().ok()?.to_string_lossy().into_owned())
+        }
+    }
+}
+
 pub struct StartHost {
     bridge: SsrBridge,
     root: PathBuf,
@@ -636,6 +651,22 @@ impl StartHost {
             .await;
     }
 
+    /// Start's import protection, where oj checks imports itself: the one
+    /// the dev server's plugin host carries, which the client bundle shares.
+    async fn import_protection(&self) -> Option<Arc<ImportProtection>> {
+        self.bridge.plugin_host().await?.import_protection()
+    }
+
+    /// Import protection forgets what it learned about each changed file,
+    /// ahead of the modules being read again.
+    async fn forget_imports(&self, changed: &[PathBuf]) {
+        if let Some(ip) = self.import_protection().await {
+            for file in changed {
+                ip.changed(Side::Server, &file.to_string_lossy());
+            }
+        }
+    }
+
     fn alias_target(&self, spec: &str) -> Option<&Path> {
         self.aliases
             .iter()
@@ -657,7 +688,53 @@ impl StartHost {
         HostResolved::Url(self.graph.edge_specifier(id, importer))
     }
 
+    /// [`resolve_unchecked`](Self::resolve_unchecked) under Start's import
+    /// protection, on the server side. A marker import is its marker module.
+    /// A denied import fails with the violation where Start's plugin, an
+    /// `enforce: "pre"` resolveId hook, would have seen it: a specifier the
+    /// `pre` hooks get (see `SsrBridge::pre_hooks_see`). Any other resolves as
+    /// before, and a denied file it names loads as its mock (`load_id`).
     async fn resolve_inner(
+        &self,
+        importer: &str,
+        spec: &str,
+    ) -> Result<Option<HostResolved>, String> {
+        let Some(ip) = self.import_protection().await else {
+            return self.resolve_unchecked(importer, spec).await;
+        };
+        let from = importer_id(importer);
+        let own = |id: String| {
+            let id = id.trim_start_matches('\0').to_string();
+            Ok(Some(self.module_url(&id, from.clone())))
+        };
+        if let Some(id) = import_protection::resolve_virtual(spec) {
+            return own(id);
+        }
+        let enforced = self.bridge.pre_hooks_see(&from, spec);
+        // The wording a throwing resolveId hook fails an import with.
+        let denied = |message: String| {
+            format!(
+                "resolveId of {spec} from {from} failed: Error: [plugin:tanstack-start-core:import-protection] {message}"
+            )
+        };
+        match ip.before_resolve(Side::Server, &from, spec) {
+            Before::Virtual(id) => own(id),
+            Before::Denied(message) if enforced => Err(denied(message)),
+            Before::Pass | Before::Denied(_) => self.resolve_unchecked(importer, spec).await,
+            Before::Check => {
+                let resolved = self.resolve_unchecked(importer, spec).await?;
+                if let Some(file) = resolved.as_ref().and_then(resolved_file) {
+                    let checked = ip.after_resolve(Side::Server, &from, spec, &file);
+                    if enforced {
+                        checked.map_err(denied)?;
+                    }
+                }
+                Ok(resolved)
+            }
+        }
+    }
+
+    async fn resolve_unchecked(
         &self,
         importer: &str,
         spec: &str,
@@ -1006,6 +1083,20 @@ impl StartHost {
         if let Some(spec) = id.strip_prefix(STUB_PREFIX) {
             let _ = spec;
             return Ok(js("export default {};".into()));
+        }
+        if let Some(ip) = self.import_protection().await {
+            if let Some(code) = import_protection::load_virtual(&format!("\0{id}")) {
+                return Ok(js(code));
+            }
+            // A file denied to the server that an importer outside import
+            // protection reached: its mock, as Start's self-denial serves.
+            let file = id.split('?').next().unwrap_or(id);
+            if ip.denies(Side::Server, file) {
+                let code = std::fs::read_to_string(file).unwrap_or_default();
+                if let Some(mock) = ip.self_denial(Side::Server, file, &code) {
+                    return Ok(js(mock));
+                }
+            }
         }
 
         let (clean, query) = match id.split_once('?') {
@@ -1633,6 +1724,7 @@ impl StartEngine {
     /// moved (a glob's importer re-expanding for a member created or deleted
     /// beside it); the entry's own bump covers a batch with none.
     pub async fn reload(&self, changed: &[PathBuf]) {
+        self.host.forget_imports(changed).await;
         if changed.is_empty() {
             self.host.graph().invalidate();
         } else {
@@ -1659,6 +1751,7 @@ impl StartEngine {
     /// reloads the browser then). A record that went stale behind the
     /// watcher's back is still re-imported.
     pub async fn revalidate_for(&self, changed: &[PathBuf]) -> bool {
+        self.host.forget_imports(changed).await;
         let (dropped, hit) = self.host.graph().invalidate_for(changed);
         if dropped > 0 {
             self.host.graph().bump(&self.entry_id);

@@ -12,6 +12,15 @@
 //! its use logged in the page, and a page opened once the import is gone
 //! hydrates.
 //!
+//! Under `importProtection.behavior: "error"` the dev server checks imports
+//! itself (`oj_server::import_protection`) and the plugin host leaves Start's
+//! plugins out: the violations it logs are the ones Start's plugin logs for
+//! the same app, a handler-only import passes, and a page serves again once
+//! its denied import is gone. The server render denies a `*.client.*` file
+//! reached through an alias and mocks one imported by a relative path, as it
+//! does with Start's plugin. An app whose documents a worker renders keeps
+//! Start's plugin, which denies that render's imports.
+//!
 //! The app is the Start fixture (see `start_app`). The browser half skips
 //! without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
 
@@ -26,7 +35,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use browser::Page;
-use start_app::{app, Server};
+use start_app::{app, cloudflare_app, Server};
 
 const SECRET: &str = "export const secret = () => \"server-secret\";\n";
 
@@ -66,20 +75,24 @@ const USES_SECRET: &str = "const extra = <p id=\"secret\">{secret()}</p>;";
 /// `tanstackStart({ ... })`.
 fn app_with(name: &str, files: &[(&str, String)], options: Option<&str>) -> Option<start_app::App> {
     let app = app(name)?;
+    write_app(&app.0, files, options);
+    Some(app)
+}
+
+fn write_app(root: &Path, files: &[(&str, String)], options: Option<&str>) {
     for (rel, body) in files {
-        let path = app.0.join(rel);
+        let path = root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
     if let Some(options) = options {
-        let config = app.0.join("vite.config.ts");
+        let config = root.join("vite.config.ts");
         let source = std::fs::read_to_string(&config).unwrap();
         let call = "tanstackStart({ server: { entry: \"ssr-entry\" } })";
         assert!(source.contains(call), "{source}");
         let with = format!("tanstackStart({{ server: {{ entry: \"ssr-entry\" }}, {options} }})");
         std::fs::write(&config, source.replacen(call, &with, 1)).unwrap();
     }
-    Some(app)
 }
 
 /// `oj build`: whether it succeeded, and its output.
@@ -118,10 +131,7 @@ fn client_has(root: &Path, needle: &str) -> bool {
 
 fn assert_denied(text: &str, lines: &[&str]) {
     for line in lines {
-        assert!(
-            text.contains(line),
-            "the build output lacks {line:?}:\n{text}"
-        );
+        assert!(text.contains(line), "the output lacks {line:?}:\n{text}");
     }
 }
 
@@ -2219,4 +2229,334 @@ async fn dev_hydrates_every_shape_of_the_functions_module_with_a_handler_only_se
         )
         .await;
     }
+}
+
+/// `importProtection.behavior: "error"`: a dev server oj checks the imports
+/// of itself (`oj_server::import_protection`), with Start's plugin left out
+/// of the plugin host.
+const ERRORS: &str = "importProtection: { behavior: \"error\" }";
+
+/// Start's import protection among the plugins the plugin host lists.
+const STARTS_PLUGIN: &str = "tanstack-start-core:import-protection[";
+
+/// The same behavior with an `onViolation` callback, which only Start's own
+/// plugin can call: the plugin host runs it. The callback denies nothing.
+const HOSTED: &str = "importProtection: { behavior: \"error\", onViolation: () => {} }";
+
+fn server_only_use() -> [(&'static str, String); 2] {
+    [
+        ("src/server/secret.server.ts", SECRET.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { secret } from \"../server/secret.server\";",
+                USES_SECRET,
+            ),
+        ),
+    ]
+}
+
+/// What a violation in `output` names: Start's message without its
+/// locations (the hosted plugin maps them through a line map, column 1).
+fn violation(output: &str) -> Vec<String> {
+    let from = output
+        .find("[import-protection] Import denied")
+        .unwrap_or_else(|| panic!("no violation in:\n{output}"));
+    output[from..]
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with("Code:"))
+        .filter(|line| !line.is_empty() && !line.starts_with("Importer:"))
+        .map(|line| {
+            // A trace step: `1. src/a.tsx:3:27 (entry) (import "./b")`.
+            match line.split_once(' ') {
+                Some((n, rest)) if n.ends_with('.') && n.len() <= 3 => {
+                    let (file, tail) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let file = file.split(':').next().unwrap_or(file);
+                    format!("{n} {file} {tail}")
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// The violation the dev server over `files` logs, natively and hosted.
+fn dev_violations(name: &str, files: &[(&str, String)]) -> Option<(String, String)> {
+    let said = |name: &str, options: &str| {
+        let app = app_with(name, files, Some(options))?;
+        let dev = Server::oj_dev(&app.0);
+        // The client bundle is the boot's; the page asks for it either way.
+        let _ = dev.request("GET", "/about", &[]);
+        assert!(
+            dev.logs("Suggestions:"),
+            "no violation was logged:\n{}",
+            dev.output()
+        );
+        Some(dev.output())
+    };
+    let native = said(name, ERRORS)?;
+    let hosted = said(&format!("{name}-hosted"), HOSTED)?;
+    let plugin = STARTS_PLUGIN;
+    assert!(
+        !native.contains(plugin),
+        "the plugin host ran Start's import protection:\n{native}"
+    );
+    assert!(
+        hosted.contains(plugin),
+        "the hosted run left Start's import protection out:\n{hosted}"
+    );
+    Some((native, hosted))
+}
+
+#[test]
+fn dev_denies_a_server_only_file_itself_as_starts_plugin_does() {
+    let Some((native, hosted)) = dev_violations("ip-native-file", &server_only_use()) else {
+        return;
+    };
+    assert_eq!(violation(&native), violation(&hosted), "{native}\n{hosted}");
+    assert_denied(
+        &native,
+        &[
+            "[import-protection] Import denied in client environment",
+            "Denied by file pattern: **/*.server.*",
+            "Import: \"../server/secret.server\"",
+            "Resolved: src/server/secret.server.ts",
+            "(import \"../server/secret.server\")",
+            // The code around the use.
+            "{secret()}",
+        ],
+    );
+}
+
+#[test]
+fn dev_denies_a_server_only_marked_module_itself_as_starts_plugin_does() {
+    let files = [
+        (
+            "src/lib/secret.ts",
+            format!("import \"@tanstack/react-start/server-only\";\n{SECRET}"),
+        ),
+        (
+            "src/routes/about.tsx",
+            about("import { secret } from \"../lib/secret\";", USES_SECRET),
+        ),
+    ];
+    let Some((native, hosted)) = dev_violations("ip-native-marker", &files) else {
+        return;
+    };
+    assert_eq!(violation(&native), violation(&hosted), "{native}\n{hosted}");
+    assert_denied(
+        &native,
+        &[
+            "Denied by marker: module is restricted to the opposite environment",
+            "Import: \"@tanstack/react-start/server-only\"",
+        ],
+    );
+}
+
+#[test]
+fn dev_denies_the_start_server_entry_itself_as_starts_plugin_does() {
+    let files = [(
+        "src/routes/about.tsx",
+        about(
+            "import { getRequest } from \"@tanstack/react-start/server\";",
+            "const extra = <p>{String(getRequest)}</p>;",
+        ),
+    )];
+    let Some((native, hosted)) = dev_violations("ip-native-specifier", &files) else {
+        return;
+    };
+    assert_eq!(violation(&native), violation(&hosted), "{native}\n{hosted}");
+    assert_denied(
+        &native,
+        &["Denied by specifier pattern: @tanstack/react-start/server"],
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_checking_imports_itself_passes_a_handler_only_server_import() {
+    let Some(app) = app_with("ip-native-handler", &handler_only_files(), Some(ERRORS)) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let (hydrated, _, console, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.output()
+            .contains("tanstack-start-core:import-protection["),
+        "the plugin host ran Start's import protection:\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "a handler-only import was flagged:\n{}",
+        dev.output()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_checking_imports_itself_serves_the_page_once_the_import_is_gone() {
+    let clean = about("", "const extra = null;");
+    let Some(app) = app_with("ip-native-recover", &server_only_use(), Some(ERRORS)) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let _ = dev.request("GET", "/about", &[]);
+    assert!(
+        dev.logs("Denied by file pattern: **/*.server.*"),
+        "the import was not denied:\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.output().contains(STARTS_PLUGIN),
+        "the plugin host ran Start's import protection:\n{}",
+        dev.output()
+    );
+    std::fs::write(app.0.join("src/routes/about.tsx"), clean).unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (hydrated, _, _, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate once the import was gone: {errors:?}\n{}",
+        dev.output()
+    );
+}
+
+/// The about route rendering a `*.client.*` file's export, which `import`
+/// names: denied to the server render.
+fn client_only_use(import: &str) -> [(&'static str, String); 2] {
+    [
+        (
+            "src/lib/widget.client.ts",
+            "export const widget = () => \"client-widget\";\n".to_string(),
+        ),
+        (
+            "src/routes/about.tsx",
+            about(
+                &format!("import {{ widget }} from \"{import}\";"),
+                "const extra = <p id=\"widget\">{String(widget)}</p>;",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn dev_denies_a_client_only_file_the_server_render_reaches_through_an_alias() {
+    let files = client_only_use("@app/lib/widget.client");
+    let Some((native, hosted)) = dev_violations("ip-native-server-alias", &files) else {
+        return;
+    };
+    for output in [&native, &hosted] {
+        assert_denied(
+            output,
+            &[
+                "[import-protection] Import denied in server environment",
+                "Denied by file pattern: **/*.client.*",
+                "src/lib/widget.client.ts",
+            ],
+        );
+    }
+}
+
+#[test]
+fn dev_mocks_a_client_only_file_the_server_render_imports_by_a_relative_path() {
+    let files = client_only_use("../lib/widget.client");
+    for (name, options) in [
+        ("ip-native-server-relative", ERRORS),
+        ("ip-native-server-relative-hosted", HOSTED),
+    ] {
+        let Some(app) = app_with(name, &files, Some(options)) else {
+            return;
+        };
+        let dev = Server::oj_dev(&app.0);
+        let (status, body) = dev.request("GET", "/about", &[]);
+        assert_eq!(
+            dev.output().contains(STARTS_PLUGIN),
+            options == HOSTED,
+            "{name}: the wrong side checked the imports:\n{}",
+            dev.output()
+        );
+        assert_eq!(status, 200, "{name}: {body}\n{}", dev.output());
+        assert!(
+            body.contains("[import-protection mock]"),
+            "{name}: the server render used the file itself:\n{body}"
+        );
+        assert!(
+            !dev.output().contains("Import denied in server environment"),
+            "{name}: the relative import was denied:\n{}",
+            dev.output()
+        );
+    }
+}
+
+#[test]
+fn dev_leaves_import_protection_to_starts_plugin_where_a_worker_renders_the_documents() {
+    let Some(cf) = cloudflare_app("ip-native-worker") else {
+        return;
+    };
+    let root = &cf.app.0;
+    write_app(
+        root,
+        &client_only_use("@app/lib/widget.client"),
+        Some(ERRORS),
+    );
+    std::fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{"name":"oj-start-fixture","main":"@tanstack/react-start/server-entry","compatibility_date":"2025-09-01","compatibility_flags":["nodejs_compat"]}"#,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let with = config
+        .replacen(
+            "import { defineConfig } from \"vite\";",
+            "import { defineConfig } from \"vite\";\nimport { cloudflare } from \"@cloudflare/vite-plugin\";",
+            1,
+        )
+        .replacen(
+            "    tanstackStart(",
+            "    cloudflare({ viteEnvironment: { name: \"ssr\" } }),\n    tanstackStart(",
+            1,
+        );
+    assert!(with.contains("cloudflare("), "{config}");
+    std::fs::write(root.join("vite.config.ts"), with).unwrap();
+    let dev = Server::oj_dev_with(
+        root,
+        &[
+            ("WRANGLER_SEND_METRICS", "false"),
+            ("CI", "1"),
+            ("NO_COLOR", "1"),
+        ],
+    );
+    let _ = dev.request("GET", "/about", &[]);
+    assert!(
+        dev.logs("a custom dev environment is declared"),
+        "no runner environment:\n{}",
+        dev.output()
+    );
+    assert!(
+        dev.output()
+            .contains("tanstack-start-core:import-protection["),
+        "the plugin host left Start's import protection out:\n{}",
+        dev.output()
+    );
+    // The worker's own render of the route, which only Start's plugin sees.
+    assert!(
+        (0..12).any(|_| dev.logs("Denied by file pattern: **/*.client.*")),
+        "the import was not denied:\n{}",
+        dev.output()
+    );
+    assert_denied(
+        &dev.output(),
+        &["[import-protection] Import denied in server environment"],
+    );
 }

@@ -1685,6 +1685,7 @@ fn merge_adopts_only_unset_fields() {
         stylex: None,
         editor_hmr_gate: false,
         start_router: None,
+        start_import_protection: None,
         resolve_error: None,
     };
     merge_vite_values(&mut config, v);
@@ -1746,6 +1747,7 @@ fn merge_never_overrides_config() {
         stylex: None,
         editor_hmr_gate: false,
         start_router: None,
+        start_import_protection: None,
         resolve_error: None,
     };
     merge_vite_values(&mut config, v);

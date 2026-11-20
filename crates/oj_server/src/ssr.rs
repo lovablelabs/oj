@@ -95,6 +95,15 @@ impl SsrBridge {
         style_slot(slots, code, "post").await
     }
 
+    /// Whether an `enforce: "pre"` resolveId hook sees `spec` as `importer`
+    /// wrote it, ahead of the ssr resolver.
+    pub fn pre_hooks_see(&self, importer: &str, spec: &str) -> bool {
+        reaches_pre_resolve(spec) && {
+            let native = plain_resolution(&self.state, importer, spec);
+            !externalized_ahead_of_plugins(&self.state, importer, spec, native.as_ref())
+        }
+    }
+
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
         ssr_resolve_inner(&self.state, importer, spec).await
     }
@@ -207,6 +216,40 @@ enum RawResolution {
     Bare,
 }
 
+/// Whether the ssr `pre` resolveId hooks may see `spec` ahead of the
+/// resolver: a bare import, or one with a query. A throw from one of them
+/// fails the import; any other specifier resolves without them.
+fn reaches_pre_resolve(spec: &str) -> bool {
+    is_bare_specifier(spec) || (spec.contains('?') && !spec.starts_with('\0'))
+}
+
+/// Whether Vite externalizes the import ahead of any plugin
+/// (shouldExternalize): `importer` is an externalized dependency, whose own
+/// imports Vite never analyzes, or `spec` names one.
+/// `native` is [`plain_resolution`]'s answer for the import.
+fn externalized_ahead_of_plugins(
+    state: &ServerState,
+    importer: &str,
+    spec: &str,
+    native: Option<&PathBuf>,
+) -> bool {
+    let importer_pkg = oj_config::SsrExternals::package_of_path(importer);
+    if importer_pkg.is_some_and(|pkg| state.ssr_externals.is_external_pkg(pkg)) {
+        return true;
+    }
+    native.is_some_and(|p| {
+        !matches_alias(&state.alias_finds, spec)
+            && ssr_externalizes(&state.ssr_externals, spec, &p.to_string_lossy())
+    })
+}
+
+/// Vite's createIsConfiguredAsExternal decides with tryNodeResolve: no alias
+/// (checked apart) and no tsconfig `paths`.
+fn plain_resolution(state: &ServerState, importer: &str, spec: &str) -> Option<PathBuf> {
+    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+    state.ssr_resolver.resolve_plain(importer_dir, spec).ok()
+}
+
 /// The ssr plugin host's `pre` resolveId hooks for a bare import, then the
 /// ssr resolver, then the host's `resolveId`, then a bare specifier passthrough.
 /// A relative or root specifier with a query reaches the `pre` hooks too: an
@@ -220,7 +263,7 @@ async fn ssr_resolve_raw(
     if crate::stylex::virtual_module(state, spec).is_some() {
         return Ok(RawResolution::PluginId(spec.to_string()));
     }
-    if is_bare_specifier(spec) || (spec.contains('?') && !spec.starts_with('\0')) {
+    if reaches_pre_resolve(spec) {
         if let Some(claimed) = ssr_pre_resolve(state, importer, spec).await? {
             return Ok(claimed);
         }
@@ -267,21 +310,8 @@ async fn ssr_pre_resolve(
     importer: &str,
     spec: &str,
 ) -> Result<Option<RawResolution>, String> {
-    // Vite externalizes before any plugin resolves (shouldExternalize), and
-    // never analyzes an externalized dependency's own imports.
-    let importer_pkg = oj_config::SsrExternals::package_of_path(importer);
-    if importer_pkg.is_some_and(|pkg| state.ssr_externals.is_external_pkg(pkg)) {
-        return Ok(None);
-    }
-    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
-    // Vite's createIsConfiguredAsExternal decides with tryNodeResolve: no
-    // alias (checked apart) and no tsconfig `paths`.
-    let native = state.ssr_resolver.resolve_plain(importer_dir, spec).ok();
-    let externalized = |p: &PathBuf| {
-        !matches_alias(&state.alias_finds, spec)
-            && ssr_externalizes(&state.ssr_externals, spec, &p.to_string_lossy())
-    };
-    if native.as_ref().is_some_and(externalized) {
+    let native = plain_resolution(state, importer, spec);
+    if externalized_ahead_of_plugins(state, importer, spec, native.as_ref()) {
         return Ok(None);
     }
     let Some(host) = ssr_plugin_host(state).await else {
