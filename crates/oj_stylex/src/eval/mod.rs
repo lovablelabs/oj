@@ -433,7 +433,7 @@ pub struct FunctionRegistry {
 }
 
 fn when_object() -> JsValue {
-    let mut obj = JsObj::default();
+    let mut obj = JsObj::with_capacity(WHEN_MEMBERS.len());
     for (name, callable) in WHEN_MEMBERS {
         obj.insert(
             name.to_string(),
@@ -1817,23 +1817,70 @@ pub fn evaluate_stylex_create_arg<'a>(
             }
             continue;
         }
-        match evaluator.eval_entry(&prop.value)? {
-            EvalOutcome::Value(v) => {
-                if !key_spans.iter().any(|(k, _)| *k == key) {
-                    key_spans.push((key.clone(), prop.span.start));
+        let value = match literal_namespace(&prop.value) {
+            Some(map) => {
+                evaluator.seen.clear();
+                EvalValue::Obj(Arc::new(map))
+            }
+            None => match evaluator.eval_entry(&prop.value)? {
+                EvalOutcome::Value(v) => evaluator.consume(v),
+                EvalOutcome::NonStatic(deopt) => {
+                    return Err(StylexError::new(ErrorCode::NonStaticValue, deopt.reason));
                 }
-                namespaces.insert(key, evaluator.consume(v));
-            }
-            EvalOutcome::NonStatic(deopt) => {
-                return Err(StylexError::new(ErrorCode::NonStaticValue, deopt.reason));
-            }
+            },
+        };
+        if !key_spans.iter().any(|(k, _)| *k == key) {
+            key_spans.push((key.clone(), prop.span.start));
         }
+        namespaces.insert(key, value);
     }
     Ok(EvaluatedCreateArg {
         namespaces,
         key_spans,
         fns,
     })
+}
+
+/// Nesting the literal shortcut follows; far inside the evaluator's own
+/// recursion limit, so deeper objects keep reporting through it.
+const LITERAL_NAMESPACE_DEPTH: u32 = 16;
+
+/// A namespace written entirely as literals (static keys over string, number,
+/// boolean, null and nested such objects) is its own evaluation result: the
+/// map the evaluator would build, without the intermediate value tree. `None`
+/// hands anything else to the evaluator, which also owns every diagnostic.
+fn literal_namespace(value: &Expression<'_>) -> Option<JsObjectMap> {
+    let Expression::ObjectExpression(object) = value else {
+        return None;
+    };
+    let _t = crate::timings::start(crate::timings::Stage::Eval);
+    literal_object(object, 0)
+}
+
+fn literal_object(object: &ObjectExpression<'_>, depth: u32) -> Option<JsObjectMap> {
+    let mut map = JsObjectMap::with_capacity(object.properties.len());
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(prop) = property else {
+            return None;
+        };
+        if prop.method || prop.computed || prop.kind != PropertyKind::Init {
+            return None;
+        }
+        let value = match &prop.value {
+            Expression::StringLiteral(lit) => EvalValue::Str(lit.value.as_str()?.to_owned()),
+            Expression::NumericLiteral(lit) => EvalValue::Num(lit.value),
+            Expression::BooleanLiteral(lit) => EvalValue::Bool(lit.value),
+            Expression::NullLiteral(_) => EvalValue::Null,
+            Expression::ObjectExpression(inner) if depth < LITERAL_NAMESPACE_DEPTH => {
+                EvalValue::Obj(Arc::new(literal_object(inner, depth + 1)?))
+            }
+            _ => return None,
+        };
+        // A repeated key keeps its first position and takes the last value,
+        // as the evaluator's object does.
+        map.insert(static_property_key(&prop.key)?, value);
+    }
+    Some(map)
 }
 
 // parity: `return evaluate(path, …)` over the whole create argument.
@@ -2005,7 +2052,7 @@ fn collect_member_chain<'a, 'b>(
 
 fn static_property_key(key: &PropertyKey<'_>) -> Option<String> {
     match key {
-        PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+        PropertyKey::StaticIdentifier(id) => Some(id.name.as_str().to_owned()),
         PropertyKey::StringLiteral(lit) => Some(crate::jsrt::lit_text(lit.value).into_owned()),
         PropertyKey::NumericLiteral(lit) => Some(js_number_to_string(lit.value)),
         _ => None,
