@@ -1555,8 +1555,8 @@
   },
   "expect": {
    "decl_prop": "content",
-   "class_name": "xg73sis",
-   "value": "\"\"abc\""
+   "class_name": "x1syln29",
+   "value": "\"\\\"abc\""
   }
  },
  {
@@ -1802,8 +1802,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x1z09mvf",
-   "value": "translateX(0px) translateY(0)"
+   "class_name": "x1qnwtyu",
+   "value": "translateX(0px) translateY(0px)"
   }
  },
  {
@@ -1814,8 +1814,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x22e6n3",
-   "value": "translateX(0px)translateY(0)"
+   "class_name": "xmw42zx",
+   "value": "translateX(0px)translateY(0px)"
   }
  },
  {
@@ -1826,8 +1826,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x1x2b8gf",
-   "value": "translateX(0px) translateY(0) translateZ(0px)"
+   "class_name": "x17syzoa",
+   "value": "translateX(0px) translateY(0px) translateZ(0px)"
   }
  },
  {
@@ -2447,6 +2447,7950 @@
    "decl_prop": "opacity",
    "class_name": "x12qu3lw",
    "decl_body": "opacity:.5;opacity:1"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"abc"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1bp2ijb",
+   "value": "\"\\\"abc\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'abc"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1gc117j",
+   "value": "\"'abc\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'abc"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x14rdwmk",
+   "value": "\"'abc\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "abc\"def"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xbaz5zl",
+   "value": "\"abc\\\"def\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "abc\"def"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x7d1ur9",
+   "value": "\"abc\\\"def\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\"b\"c"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x31hp0y",
+   "value": "\"a\\\"b\\\"c\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\"b\"c"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x8frevy",
+   "value": "\"a\\\"b\\\"c\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" \"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x34ngw4",
+   "value": "\"a\" \"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" \"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xl9fgap",
+   "value": "\"a\" \"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" attr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xgouyiv",
+   "value": "\"a\" attr(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" attr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1xbgf3g",
+   "value": "\"a\" attr(x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" counter(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1k5e1ps",
+   "value": "\"a\" counter(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" counter(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xu2bujl",
+   "value": "\"a\" counter(x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" none"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xm4h5k0",
+   "value": "\"a\" none"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1s70yh",
+   "value": "\"a\" none"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" foo"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x452vt1",
+   "value": "\"\\\"a\\\" foo\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" foo"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x19bdjpa",
+   "value": "\"\\\"a\\\" foo\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'a'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1q5pd7i",
+   "value": "'a'"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'a'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xonr689",
+   "value": "'a'"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'a' \"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1vs6hw5",
+   "value": "'a' \"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'a' \"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1xa2dou",
+   "value": "'a' \"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\", \"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1svdjka",
+   "value": "\"a\", \"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\", \"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x19thlni",
+   "value": "\"a\", \"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" / \"alt\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1an1b5r",
+   "value": "\"a\" / \"alt\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" / \"alt\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xpr659p",
+   "value": "\"a\" / \"alt\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\"b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x206bxy",
+   "value": "\"a\\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\"b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1c76id6",
+   "value": "\"a\\\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1e693fg",
+   "value": "\"a\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x11slk51",
+   "value": "\"a\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1e693fg",
+   "value": "\"a\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x11slk51",
+   "value": "\"a\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xczr9fi",
+   "value": "\"a\\\\\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xzwnlas",
+   "value": "\"a\\\\\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "line1\nline2"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1azoymv",
+   "value": "\"line1\\A line2\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "line1\nline2"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x9791ci",
+   "value": "\"line1\\A line2\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\r\nb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xav2517",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\r\nb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x10mtj9a",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\rb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xav2517",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\rb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x10mtj9a",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\fb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xav2517",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\fb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x10mtj9a",
+   "value": "\"a\\A b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\nb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1y6ay7q",
+   "value": "\"a\\\nb\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\nb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1voao7r",
+   "value": "\"a\\\nb\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\r\nb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xhfg7yj",
+   "value": "\"a\\\r\nb\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\r\nb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x14ih26l",
+   "value": "\"a\\\r\nb\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\rb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x10zxcul",
+   "value": "\"a\\\rb\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\rb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1nokbr0",
+   "value": "\"a\\\rb\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" foo("
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x13pei9o",
+   "value": "\"\\\"a\\\" foo(\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" foo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1542nkv",
+   "value": "\"\\\"a\\\" foo(\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" calc(1px)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xjr4gxw",
+   "value": "\"a\" calc(1px)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" calc(1px)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x15xh62p",
+   "value": "\"a\" calc(1px)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote \"a\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xjd72re",
+   "value": "open-quote \"a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "open-quote \"a\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x7bj4rl",
+   "value": "open-quote \"a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2qp82x",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1qpfo9d",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1jzkr6r",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "''"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14obwa1",
+   "value": "''"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "''"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1nz1d3y",
+   "value": "''"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" \"b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xdq74ym",
+   "value": "\"\\\"a\\\" \\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" \"b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x6zkn1c",
+   "value": "\"\\\"a\\\" \\\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "/* c */ \"a\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xw34ju3",
+   "value": "\"/* c */ \\\"a\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "/* c */ \"a\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1hrzrgk",
+   "value": "\"/* c */ \\\"a\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" U+0041"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1addnk3",
+   "value": "\"\\\"a\\\" U+0041\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" U+0041"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1ljvdpp",
+   "value": "\"\\\"a\\\" U+0041\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'it's'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1qw5gro",
+   "value": "\"'it's'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'it's'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1y25m4u",
+   "value": "\"'it's'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "it's"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x3rh7gd",
+   "value": "\"it's\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "it's"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x66a0en",
+   "value": "\"it's\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a 'b' c"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1d9daua",
+   "value": "\"a 'b' c\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a 'b' c"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xe7zo6o",
+   "value": "\"a 'b' c\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" !important"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xti1b6m",
+   "value": "\"\\\"a\\\" !important\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" !important"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1nbw93e",
+   "value": "\"\\\"a\\\" !important\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "  \"a\"  "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x16319ns",
+   "value": "\"a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "  \"a\"  "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqx7xgx",
+   "value": "\"a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "→"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xcnbfqu",
+   "value": "\"→\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "→"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1arbp62",
+   "value": "\"→\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"é\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1titr4e",
+   "value": "\"é\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"é\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xowvjhb",
+   "value": "\"é\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\2192"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1tsq0vb",
+   "value": "\"\\2192\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\2192"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xfcqqv5",
+   "value": "\"\\2192\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "😀"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1dn5982",
+   "value": "\"😀\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x12msuw0",
+   "value": "\"😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\😀"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1j6iotl",
+   "value": "\"\\😀\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xq0dtto",
+   "value": "\"\\😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xo1ib1f",
+   "value": "\"a b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1f85k0p",
+   "value": "\"a b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\"\n\"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xy0lxjd",
+   "value": "\"a\"\n\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\"\n\"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1d4sqas",
+   "value": "\"a\"\n\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "none \"a\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x15wgb49",
+   "value": "none \"a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "none \"a\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1oechvk",
+   "value": "none \"a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "NONE"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1cr6ut8",
+   "value": "\"NONE\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "NONE"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x13xvkug",
+   "value": "\"NONE\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" NONE"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1l8a64p",
+   "value": "\"\\\"a\\\" NONE\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" NONE"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xth1pjv",
+   "value": "\"\\\"a\\\" NONE\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\tb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xzyihgq",
+   "value": "\"a\tb\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\tb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xrhparx",
+   "value": "\"a\tb\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\\\"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x206bxy",
+   "value": "\"a\\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\\\"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1c76id6",
+   "value": "\"a\\\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xiqlvom",
+   "value": "\"\\\"a\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x17ofc7r",
+   "value": "\"\\\"a\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'a\\'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ccpspv",
+   "value": "\"'a\\'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'a\\'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x5kjreu",
+   "value": "\"'a\\'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(\"a\")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xmg7hme",
+   "value": "\"foo(\\\"a\\\")\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "foo(\"a\")"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1vel3ar",
+   "value": "\"foo(\\\"a\\\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(\"a\") \"b\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xyursdx",
+   "value": "foo(\"a\") \"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "foo(\"a\") \"b\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xj5e3an",
+   "value": "foo(\"a\") \"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\";"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1luu2rq",
+   "value": "\"\\\"a\\\";\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\";"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xt64v6e",
+   "value": "\"\\\"a\\\";\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\"b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x10bjixj",
+   "value": "\"\\\"a\\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\"b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x18lan4t",
+   "value": "\"\\\"a\\\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1eau1zt",
+   "value": "\"a\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xbpnxbv",
+   "value": "\"a\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2qp82x",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1qpfo9d",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"\\\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xpld5up",
+   "value": "\"\\\"\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"\\\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1byfocx",
+   "value": "\"\\\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1jzkr6r",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "x\\A y"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ivl18l",
+   "value": "\"x\\A y\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "x\\A y"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x15eunvq",
+   "value": "\"x\\A y\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xngn9jy",
+   "value": "\"\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x64aeen",
+   "value": "\"\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xngn9jy",
+   "value": "\"\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x64aeen",
+   "value": "\"\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\\"b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1cduqbb",
+   "value": "\"a\\\\\\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "a\\\\\"b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1akc3a4",
+   "value": "\"a\\\\\\\"b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "("
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1vw3g57",
+   "value": "\"(\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1e57sjh",
+   "value": "\"(\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x170vudn",
+   "value": "\")\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ")"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1m96f4m",
+   "value": "\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" )"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1crqzo2",
+   "value": "\"\\\"a\\\" )\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" )"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1f9ljvs",
+   "value": "\"\\\"a\\\" )\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "counter(x) \"a"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x130rhwv",
+   "value": "counter(x) \"a"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "counter(x) \"a"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1hzsd8y",
+   "value": "counter(x) \"a"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "var(--x"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xj922v9",
+   "value": "var(--x"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "var(--x"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xffhvxu",
+   "value": "var(--x"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" var(--x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ayxztu",
+   "value": "\"a\" var(--x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" var(--x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x18bdjjl",
+   "value": "\"a\" var(--x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "inherit \"a\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1w7ye2u",
+   "value": "inherit \"a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "inherit \"a\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1ithqpq",
+   "value": "inherit \"a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" inherit"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x4ae2v7",
+   "value": "\"a\" inherit"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"a\" inherit"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x169mqrx",
+   "value": "\"a\" inherit"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url( a  b.png )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xl3ro4a",
+   "value": "url(a  b.png)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(\"a  b.png\")"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x19eo9q3",
+   "value": "url(\"a  b.png\")"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url( \"a.png\" )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1jxmf9i",
+   "value": "url(\"a.png\")"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(0.5px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1pbmhe2",
+   "value": "url(0.5px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(1000ms)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1iyqn8i",
+   "value": "url(1000ms)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(0px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xrd8063",
+   "value": "url(0px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "URL(0.5.png)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xx4ealk",
+   "value": "URL(0.5.png)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "Url( a , b )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xz3v6ws",
+   "value": "Url(a , b)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "image-set(url(0.5x.png) 1x, url(a) 2x)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x19jt0ac",
+   "value": "image-set(url(0.5x.png) 1x,url(a) 2x)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(data:image/svg+xml;charset=utf-8,<svg width=\"0.5px\"/>)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1bh6xwi",
+   "value": "url(data:image/svg+xml;charset=utf-8,<svg width=\"0.5px\"/>)"
+  }
+ },
+ {
+  "property": "background",
+  "input": {
+   "kind": "string",
+   "value": "url(a) 0px 0.5px"
+  },
+  "expect": {
+   "decl_prop": "background",
+   "class_name": "xgzlaru",
+   "value": "url(a) 0 .5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(0px + url(0px))"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ki6ooi",
+   "value": "calc(0px + url(0px))"
+  }
+ },
+ {
+  "property": "cursor",
+  "input": {
+   "kind": "string",
+   "value": "url(cursor.cur) 0 0, auto"
+  },
+  "expect": {
+   "decl_prop": "cursor",
+   "class_name": "xhzfimk",
+   "value": "url(cursor.cur) 0 0,auto"
+  }
+ },
+ {
+  "property": "maskImage",
+  "input": {
+   "kind": "string",
+   "value": "url(#mask)"
+  },
+  "expect": {
+   "decl_prop": "mask-image",
+   "class_name": "x14rsahy",
+   "value": "url(#mask)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(\"0.5px  0px\", 1000ms)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1xlrfzr",
+   "value": "url(\"0.5px  0px\", 1000ms)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url('a' ,  'b')"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xq1eitz",
+   "value": "url('a' ,  'b')"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(a.png), url( b.png )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1w6tqkn",
+   "value": "url(a.png),url(b.png)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(a.png) , linear-gradient( 0deg , red 0px , blue 0.5% )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1dksd69",
+   "value": "url(a.png),linear-gradient(0deg,red 0px,blue .5%)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "src(  \"0.5.png\"  )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xol9bhi",
+   "value": "src(\"0.5.png\")"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(url(0.5px))"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1c4ns1a",
+   "value": "url(url(0.5px))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "foo(url( 0.5px ) 0.5px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x6rezal",
+   "value": "foo(url(0.5px) .5px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url()"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x12fx53u",
+   "value": "url()"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1jdvdy3",
+   "value": "url(0px) 0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "URL( \"a b\" 0.50px )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x17xle4",
+   "value": "URL(\"a b\" 0.50px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(\"a\") 0px calc(0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xk0adwn",
+   "value": "url(\"a\") 0 calc(0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x17aine8",
+   "value": "calc(0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "min(0px, calc(0px + 1px)) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xqs0sq1",
+   "value": "min(0px,calc(0px + 1px)) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(calc(0px) + 0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xwfyp7e",
+   "value": "calc(calc(0px) + 0px) 0"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translate(0px) scale(0) 0px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1lkz5i5",
+   "value": "translate(0px) scale(0) 0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0PX"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "rotate",
+  "input": {
+   "kind": "string",
+   "value": "0DEG"
+  },
+  "expect": {
+   "decl_prop": "rotate",
+   "class_name": "x1gcftaf",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0Ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mq3mr6",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0S"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mq3mr6",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "gridTemplateColumns",
+  "input": {
+   "kind": "string",
+   "value": "0FR 1fr"
+  },
+  "expect": {
+   "decl_prop": "grid-template-columns",
+   "class_name": "xkxvfks",
+   "value": "0fr 1fr"
+  }
+ },
+ {
+  "property": "rotate",
+  "input": {
+   "kind": "string",
+   "value": "0Turn"
+  },
+  "expect": {
+   "decl_prop": "rotate",
+   "class_name": "x1gcftaf",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "rotate",
+  "input": {
+   "kind": "string",
+   "value": "0GRAD"
+  },
+  "expect": {
+   "decl_prop": "rotate",
+   "class_name": "x1gcftaf",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "rotate",
+  "input": {
+   "kind": "string",
+   "value": "0RAD"
+  },
+  "expect": {
+   "decl_prop": "rotate",
+   "class_name": "x1gcftaf",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0REM"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(0PX)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xupfemx",
+   "value": "calc(0PX)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "clamp(0px, 0PX, 0Px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1qropdy",
+   "value": "clamp(0px,0PX,0Px)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "var(--x, 0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x105qb72",
+   "value": "var(--x,0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px calc(0px) 0px calc(calc(0px)) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xn7uo8",
+   "value": "0 calc(0px) 0 calc(calc(0px)) 0"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "rotate(0DEG)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x7p49u4",
+   "value": "rotate(0deg)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "+0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1lx9cm8",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0e0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1lx9cm8",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translateY(0px) rotate(0deg)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1z0kzt",
+   "value": "translateY(0px) rotate(0deg)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px calc(0px + 0px)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1r6igv7",
+   "value": "0 calc(0px + 0px)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0MS"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mq3mr6",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.5PX"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1y2v38l",
+   "value": ".5PX"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(1px) calc(0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x6q5c0i",
+   "value": "calc(1px) calc(0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(calc(1px) + 0px)0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x12srrw0",
+   "value": "calc(calc(1px) + 0px)0px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(0px),0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x6k5lab",
+   "value": "calc(0px),0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "a(b(0px) 0px) 0px c(0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x10r15d2",
+   "value": "a(b(0px) 0px) 0 c(0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "a(b(c(0px))) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x18tno00",
+   "value": "a(b(c(0px))) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "a(b(c(0px)) 0px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xyyz9uy",
+   "value": "a(b(c(0px)) 0px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "a(b(0px)c(0px))0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xwqyihg",
+   "value": "a(b(0px)c(0px))0px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0Q"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0px calc(0px)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xuosu8o",
+   "value": "0px calc(0px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0PX !important"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1tqll6a",
+   "value": "0!important"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translate(0%, 0PX) rotate(0TURN)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1g79q6o",
+   "value": "translate(0%,0PX) rotate(0deg)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px a() 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xmrgen6",
+   "value": "0 a() 0"
+  }
+ },
+ {
+  "property": "fontSizeAdjust",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "x1759t0k",
+   "value": ".5"
+  }
+ },
+ {
+  "property": "fontSizeAdjust",
+  "input": {
+   "kind": "number",
+   "value": "1"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "x90aiot",
+   "value": "1"
+  }
+ },
+ {
+  "property": "fontSizeAdjust",
+  "input": {
+   "kind": "number",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "x1n6o8w3",
+   "value": "0"
+  }
+ },
+ {
+  "property": "fontSizeAdjust",
+  "input": {
+   "kind": "string",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "x1759t0k",
+   "value": ".5"
+  }
+ },
+ {
+  "property": "fontSizeAdjust",
+  "input": {
+   "kind": "string",
+   "value": "ex-height 0.5"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "xdff8az",
+   "value": "ex-height .5"
+  }
+ },
+ {
+  "property": "font-size-adjust",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "font-size-adjust",
+   "class_name": "xg49bn4",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "fontSize",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "font-size",
+   "class_name": "x17349m2",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1s7w61s",
+   "value": "\"0.5px\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "number",
+   "value": "2"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1nwgmuk",
+   "value": "\"2px\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"nonefoo(y)nonenone\r,"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xvsxtbo",
+   "value": "\"\\\"nonefoo(y)nonenone\\A ,\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "open-quote\f )a'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1wng8kq",
+   "value": "\"open-quote\\A  )a'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": " \n\r;\r't'\r"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xyz7n9d",
+   "value": "\";\\A 't'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")foo(y)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x3ql70t",
+   "value": "\")foo(y)\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\r\n\r\"😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xlapzch",
+   "value": "\"\\\"😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\n\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2qp82x",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\é'\rattr(x)a"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x98me1y",
+   "value": "\\é'\rattr(x)a"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "bopen-quote/énoneb😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1wgo3rs",
+   "value": "\"bopen-quote/énoneb😀\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ",\f attr(x)foo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x126ufr0",
+   "value": ",\f attr(x)foo("
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "afoo(\\A"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1xk9kz8",
+   "value": "\"afoo(\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'t'attr(x)none\"\"s\"\r\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x10cdn60",
+   "value": "'t'attr(x)none\"\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\n;\\A"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xfphpqm",
+   "value": "\";\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(x))\n)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x19bojnd",
+   "value": "attr(x))\n)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "'\r\nbattr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x11m0our",
+   "value": "'\r\nbattr(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ")attr(x)b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x13fg377",
+   "value": ")attr(x)b"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": " "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1jzkr6r",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"ab\\a😀"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1qp78i2",
+   "value": "\"\\\"s\\\"ab\\a😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " \"s\"open-quotea;'t' "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xipyj7a",
+   "value": "\"\\\"s\\\"open-quotea;'t'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\Afoo(\r\nopen-quotenone😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xhsvn8e",
+   "value": "\"\\Afoo(\\A open-quotenone😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo("
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1pwjmj3",
+   "value": "\"foo(\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1qpfo9d",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(y)\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1lxfew3",
+   "value": "\"foo(y)\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote))noneé\r\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xh99za0",
+   "value": "\"open-quote))noneé\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1205383",
+   "value": "\"\\b\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\n a"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqx7xgx",
+   "value": "\"a\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "foo(\"\\a😀'é"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1inum40",
+   "value": "\"foo(\\\"\\a😀'é\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"bxnone"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1f3emu3",
+   "value": "\"\\\"s\\\"bxnone\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"/open-quote\"s\")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xxk24g2",
+   "value": "\"\\\"/open-quote\\\"s\\\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "/open-quotenone"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xnhhdlo",
+   "value": "\"/open-quotenone\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x170vudn",
+   "value": "\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " attr(x)\"nonefoo(attr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x31q0x0",
+   "value": "attr(x)\"nonefoo(attr(x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "énone/;"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ykopbz",
+   "value": "\"énone/;\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "none'\"\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xbwzajs",
+   "value": "\"none'\\\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(\r\n't'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xrentyo",
+   "value": "\"foo(\\A 't'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ")foo(y)\r\n\"foo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x10fq1rg",
+   "value": "\")foo(y)\\A \\\"foo(\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "a"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqx7xgx",
+   "value": "\"a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xd0j7do",
+   "value": "attr(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ";;\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xxub351",
+   "value": "\";;\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\r\r\\A "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1168mcv",
+   "value": "\"\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote/'t',none\"s\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ca357r",
+   "value": "open-quote/'t',none\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)\"\\A\"s\"foo(y)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x10gicha",
+   "value": "attr(x)\"\\A\"s\"foo(y)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\\"s\" ,\n'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x15jfdh2",
+   "value": "\"\\\"s\\\" ,\\A '\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "b'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xa9bcmt",
+   "value": "\"b'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " '\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1fbfov2",
+   "value": "\"'\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "b\\none\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1m78zi3",
+   "value": "\"b\\none\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\fa\r\nfoo(\"s\"\r\n't'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2sgb07",
+   "value": "\"a\\A foo(\\\"s\\\"\\A 't'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "foo(y) \nfoo(y)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xri58mp",
+   "value": "\"foo(y) \\A foo(y)\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\foo(foo(y)\\"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ukkk6u",
+   "value": "\"\\foo(foo(y)\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": " \r\n \r"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1jzkr6r",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)\\;\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2cnvoi",
+   "value": "attr(x)\\;\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "x ,attr(x)\\A\")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xatqins",
+   "value": "x ,attr(x)\\A\")"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(y)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1nhb6uo",
+   "value": "\"foo(y)\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'t'attr(x),;open-quote"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xn8u276",
+   "value": "'t'attr(x),;open-quote"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"x\"\"'t'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x3npaaq",
+   "value": "\"\\\"x\\\"\\\"'t'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)\"open-quote)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xn2palt",
+   "value": "attr(x)\"open-quote)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "foo(b\rfoo(y)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x17pu4w3",
+   "value": "\"foo(b\\A foo(y)\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\rfoo(y)foo(\rba"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqilipd",
+   "value": "\"foo(y)foo(\\A ba\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "é"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1titr4e",
+   "value": "\"é\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "aé;/\n't'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1okb83u",
+   "value": "\"aé;/\\A 't'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"\fa"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xk3xkd",
+   "value": "\"\\\"\\A a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "é\r\n  éfoo(y)x"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xifszo3",
+   "value": "\"é\\A   éfoo(y)x\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "',none"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2rw8ox",
+   "value": "\"',none\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": " battr(x);\"s\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1ygnx4t",
+   "value": "battr(x);\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")\r /"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1fksnh3",
+   "value": "\")\\A  /\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "é\"aattr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xm8dkr4",
+   "value": "é\"aattr(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'\"foo(y),\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xjxiecr",
+   "value": "\"'\\\"foo(y),\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"attr(x)\"s\"none"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1w6rcir",
+   "value": "\"attr(x)\"s\"none"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "éx\\A"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1mcvpq0",
+   "value": "\"éx\\A\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"'\"s\"open-quote\"b"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1sze25o",
+   "value": "\"\\\"s\\\"'\\\"s\\\"open-quote\\\"b\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ",open-quote,;\"s\"b'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xq1rs11",
+   "value": "\",open-quote,;\\\"s\\\"b'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a'foo(y)\r"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1gcx8t4",
+   "value": "\"a'foo(y)\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ")"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1m96f4m",
+   "value": "\")\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": " \f;none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xxtgyp6",
+   "value": "\";none\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\ffoo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xv03rds",
+   "value": "\"foo(\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "x)\fa;;b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x8m9upj",
+   "value": "\"x)\\A a;;b\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'t')'t'foo(y)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xldpuf7",
+   "value": "\"'t')'t'foo(y)\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\\\"'attr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x12p1h13",
+   "value": "\\\"'attr(x)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "b;\"s\"😀't'foo(y)none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1gtah7p",
+   "value": "\"b;\\\"s\\\"😀't'foo(y)none\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ") "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x170vudn",
+   "value": "\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\rx"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1qj0nkt",
+   "value": "\"x\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " \""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x2qp82x",
+   "value": "\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote😀\r;\n'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xqnnac",
+   "value": "\"open-quote😀\\A ;\\A '\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "x)\n/\\none\r"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1pc24cn",
+   "value": "\"x)\\A /\\none\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)'\"'t'\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xgkoykx",
+   "value": "attr(x)'\"'t'\\"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\A\f"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xg4x9o8",
+   "value": "\"\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)\r\n\r\n'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1xfcjth",
+   "value": "attr(x)\r\n\r\n'"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ",foo(y)foo(y)\\Aa't'open-quote"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xmb1lli",
+   "value": "\",foo(y)foo(y)\\Aa't'open-quote\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\"\\aattr(x)'t'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xffdjiw",
+   "value": "\"\\aattr(x)'t'"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "bb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xxmvk1m",
+   "value": "\"bb\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"'t'\\A\r\n\n\f"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xwonidd",
+   "value": "\"\\\"'t'\\A\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)foo(a\"\r"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xgf85e6",
+   "value": "attr(x)foo(a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\f éé\r"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xuxqotq",
+   "value": "\"éé\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ";éb😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xj8j1py",
+   "value": "\";éb😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo('t'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x7s74yh",
+   "value": "\"foo('t'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)\"foo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1pvda7u",
+   "value": "attr(x)\"foo("
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ",)'t'\\ /"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xx7rljs",
+   "value": "\",)'t'\\ /\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"s\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xmd3yb4",
+   "value": "\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "/')\\A \r"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1e38o3o",
+   "value": "\"/')\\A\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\"'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1o7itum",
+   "value": "\"\\\"'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "/\\\n\r/none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1wta1dd",
+   "value": "\"/\\\n\\A /none\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\nb😀xopen-quote)attr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x59ipql",
+   "value": "b😀xopen-quote)attr(x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "/"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1y9b9se",
+   "value": "\"/\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ",,\ropen-quote\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1tubk0k",
+   "value": "\",,\\A open-quote\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xotbtl1",
+   "value": "\"'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "/\r\nx\"\n\\A"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xex0toz",
+   "value": "\"/\\A x\\\"\\A \\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\n😀/b"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x17q1smm",
+   "value": "\"😀/b\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "/none\n😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1xaeibs",
+   "value": "\"/none\\A 😀\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "open-quoteattr(x))b;"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1n3zm2",
+   "value": "open-quoteattr(x))b;"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": " ,\r\n\r\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1q0qqkm",
+   "value": "\",\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "xx😀\né\\A\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1kq8a26",
+   "value": "\"xx😀\\A é\\A\\\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "none\\A\ré"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1tgviah",
+   "value": "\"none\\A\\A é\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\ra\n\f\" "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xq4km38",
+   "value": "\"a\\A \\A \\\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)bfoo(y)none foo("
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xxxwsc9",
+   "value": "attr(x)bfoo(y)none foo("
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ")\"x\\x\f't'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1yxw0af",
+   "value": "\")\\\"x\\x\\A 't'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "aéfoo(y)x;\r\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xl4hodh",
+   "value": "\"aéfoo(y)x;\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\\"\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1byfocx",
+   "value": "\"\\\"\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "x"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1qj0nkt",
+   "value": "\"x\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ",/open-quote'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x60iwqh",
+   "value": "\",/open-quote'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ";\na)é"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xxhdenh",
+   "value": "\";\\A a)é\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ";\fa"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xgwxszu",
+   "value": "\";\\A a\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"/\n,bfoo(y) "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x12no4n6",
+   "value": "\"s\"/\n,bfoo(y)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "😀\n'é"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1mxhwaw",
+   "value": "\"😀\\A 'é\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "nonefoo(\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1j1ipu4",
+   "value": "\"nonefoo(\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "foo(a\"s\"\r\n,'open-quote"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xfpj6jj",
+   "value": "\"foo(a\\\"s\\\"\\A ,'open-quote\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\f"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1jzkr6r",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\f)\r\n\r\n\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x16zd0d7",
+   "value": "\")\\A \\A \\\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqpzs7g",
+   "value": "none"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ") /'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1mzt35q",
+   "value": "\") /'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\nattr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xd0j7do",
+   "value": "attr(x)"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'t'\r\nx"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1r6s9hk",
+   "value": "\"'t'\\A x\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1srcmh0",
+   "value": "\"'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "bé \""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x82tbcw",
+   "value": "\"bé \\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "  \\A"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1168mcv",
+   "value": "\"\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "foo(\\foo(y)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x6dfth4",
+   "value": "\"foo(\\foo(y)\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": " ;b'foo("
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xgzo5xe",
+   "value": "\";b'foo(\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\nopen-quote\"s\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xrkngj0",
+   "value": "open-quote\"s\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": " \"'t'\"s\"b😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xmp4ycw",
+   "value": "\"\\\"'t'\\\"s\\\"b😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\A't'\\Afoo(\")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1q0zmhi",
+   "value": "\"\\A't'\\Afoo(\\\")\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")\\A\"s\"none"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xkf7e3n",
+   "value": "\")\\A\\\"s\\\"none\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ";\"s\"\"😀\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xcx3cnq",
+   "value": "\";\\\"s\\\"\\\"😀\\\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\\A\\A\"s\"\" '\f"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1wr2drf",
+   "value": "\"\\A\\A\\\"s\\\"\\\" '\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1s1quwq",
+   "value": "\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\n\\\\Aattr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xbnzm7f",
+   "value": "\\\\Aattr(x)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": ";"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1tnhz0z",
+   "value": "\";\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "x\r\\Aéx\\ "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xoqtjfz",
+   "value": "\"x\\A \\Aéx\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x8n1tai",
+   "value": "\"\\\"'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "open-quote \\A;"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xvzulwt",
+   "value": "\"open-quote \\A;\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"none\r\n)b😀"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xbsdrn4",
+   "value": "\"\\\"none\\A )b😀\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"a"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1l07g04",
+   "value": "\"\\\"s\\\"a\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\rbopen-quote\f"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1li27n3",
+   "value": "\"bopen-quote\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\fattr(x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xd0j7do",
+   "value": "attr(x)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\r;\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xu07whn",
+   "value": "\";\\\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\rfoo(y)\"\"s\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1h6fprj",
+   "value": "\"foo(y)\\\"\\\"s\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\r\nx) "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x14cr2ow",
+   "value": "\"x)\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "open-quotenone\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1m69xe5",
+   "value": "\"open-quotenone\\\\\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'\"\"open-quote"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1ojb83t",
+   "value": "\"'\\\"\\\"open-quote\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ")\" \n,\r\r\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1p6h3eq",
+   "value": "\")\\\" \\A ,\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'\réx/"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x12gq95m",
+   "value": "\"'\\A éx/\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "b/,"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1lj86oe",
+   "value": "\"b/,\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\A;b'foo(\f"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1627fy8",
+   "value": "\"\\A;b'foo(\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\open-quote\r\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xgyqm2g",
+   "value": "\"\\open-quote\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "😀x\r\né"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1odfp2z",
+   "value": "\"😀x\\A é\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ";foo(\r\n;"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1wazh2t",
+   "value": "\";foo(\\A ;\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'t'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1gq3pv7",
+   "value": "'t'"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "b\ropen-quote\";"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xskzugf",
+   "value": "\"b\\A open-quote\\\";\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "é\n'\r\n)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1q4a7cy",
+   "value": "\"é\\A '\\A )\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ",foo( "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x186x3tg",
+   "value": "\",foo(\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\\A'é😀't'\r\n"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1mtidff",
+   "value": "\"\\A'é😀't'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a't',😀xopen-quote"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xc15msb",
+   "value": "\"a't',😀xopen-quote\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'t'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1wn5ysa",
+   "value": "'t'"
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "éb 't'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xz43aq",
+   "value": "\"éb 't'\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1eolyiq",
+   "value": "attr(x)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\r/,a't''\"s\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xjngi2j",
+   "value": "\"/,a't''\\\"s\\\"\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\\a't'b't' é"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x9fpa6p",
+   "value": "\"\\a't'b't' é\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\rnone\\"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xxcy99l",
+   "value": "\"none\\\\\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "attr(x)"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1eolyiq",
+   "value": "attr(x)"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "foo(foo(y)b't'\r"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x15c1371",
+   "value": "\"foo(foo(y)b't'\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\n)\\A \ffoo(open-quote"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xbc5rsp",
+   "value": "\")\\A \\A foo(open-quote\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "a"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x16319ns",
+   "value": "\"a\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\r\n\nx😀\"\\A"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x5lxa0l",
+   "value": "\"x😀\\\"\\A\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r\n\ffoo(')"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xwsvsch",
+   "value": "\"foo(')\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "bfoo("
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x13r6nge",
+   "value": "\"bfoo(\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"é "
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1f377oh",
+   "value": "\"\\\"é\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "éb\"s\"open-quotea"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xqspo94",
+   "value": "\"éb\\\"s\\\"open-quotea\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\",\n\f\rb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1q9c5yv",
+   "value": "\"\\\",\\A \\A \\A b\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "\\A\"none"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1ncc7xe",
+   "value": "\"\\A\\\"none\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "'t'\"'"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xmv2imf",
+   "value": "\"'t'\\\"'\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ";'t'éb"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xlozfe7",
+   "value": "\";'t'éb\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": ")foo(\n"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xnrnq29",
+   "value": "\")foo(\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"\r\né//"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xeb9qc9",
+   "value": "\"\\\"\\A é//\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "x\";\\A;\r\nnone"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xcayrp9",
+   "value": "\"x\\\";\\A;\\A none\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"s\"\"s\"\"s\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xzqn8p3",
+   "value": "\"s\"\"s\"\"s\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\r"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "open-quote"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1x1shvx",
+   "value": "open-quote"
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "nonefoo(,"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x8bktfn",
+   "value": "\"nonefoo(,\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "foo(y) 😀/bnone\f"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xs23fcb",
+   "value": "\"foo(y) 😀/bnone\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "open-quote\"\\😀;"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xgw33gc",
+   "value": "\"open-quote\\\"\\😀;\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\f\r\n ;foo(é"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xcy5g7w",
+   "value": "\";foo(é\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\fb"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1f4ncvy",
+   "value": "\"b\""
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px / url( image-set( URL( 10ms 10ms 0.0px ),url(  0PX 00.50em 0PX),0%) )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x194rgo9",
+   "value": "1px / url(image-set( URL( 10ms 10ms 0.0px),url(0PX 00.50em 0PX),0 )"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "calc( 0.0px / 0.5px ), 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xwimicv",
+   "value": "calc(0px / .5px),.5em"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0px  url(  URL(  0 0fr ) URL(\"s  t\" url( 0.5px) calc(  0)) 0 translate(  0%translate(  10ms )) )  10ms"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1vcncu",
+   "value": "0px url(URL(  0 0fr) URL(\"s  t\" url( 0.5px) calc(  0)) 0 translate(0%translate(.01s)) ) .01s"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\"0.5px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x10wc7se",
+   "value": "\"s  t\".5px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(url( 1px)0DEG00.50em0),calc(  1px,0S)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xvn41e2",
+   "value": "calc(url(1px)0DEG00.50em0),calc(1px,0s)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x15rtdus",
+   "value": "\"s  t\""
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0.5px  0.0px  calc(0.0px , url( 0fr , 0fr , min( auto / 0DEG / 1px )) , 500MS)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x5oo0sn",
+   "value": ".5px 0px calc(0px,url(0fr , 0fr , min( auto / 0DEG / 1px)),500MS)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0% 0PX"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x789r2s",
+   "value": "0% 0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "00.50em"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x19e0wwn",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0DEG"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1fnq2u9",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "image-set(  image-set( 500MS), calc(  Url( 0S0DEG ) , var(--x) , translate(  0% 00.50em)), 00.50em )0DEG"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x3lihd7",
+   "value": "image-set(image-set(500MS),calc(Url(0S0DEG),var(--x),translate(0% .5em)),.5em)0deg"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "Url( 0 , 00.50em) Url( 0  image-set( 10ms  0px  url( 0fr  auto  0px)  0deg)  0deg )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x10wm88t",
+   "value": "Url(0 , 00.50em) Url(0  image-set( 10ms  0px  url( 0fr  auto  0px)  0deg)  0deg)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0S , 0 , URL(URL( 0px, calc(  00.50em / 0 ), url(0deg / 0.0px / 0DEG / 0fr ), 0fr ), 500MS)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x25ol2w",
+   "value": "0s,0,URL(URL( 0px, calc(  00.50em / 0 ), url(0deg / 0.0px / 0DEG / 0fr ), 0fr ), 500MS)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "00.50em calc(  image-set( auto , 0fr),Url(  Url(  0DEG ) , calc( 0,auto,0px ) , 1px , var(--x) ),00.50em,1px ) \"s  t\" url(  0S / 00.50em / URL(Url( 0PXauto0DEG )0px))"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1xxle7y",
+   "value": ".5em calc(image-set(auto,0fr),Url(Url(  0DEG ) , calc( 0,auto,0px ) , 1px , var(--x)),.5em,1px) \"s  t\" url(0S / 00.50em / URL(Url( 0PXauto0DEG)0px))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0% 0.0px 0S"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xqyesiz",
+   "value": "0% 0px 0s"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "calc(Url(  0px , 0PX)url(calc(0.0px ) , Url( 0.5px  0PX  500MS ) , var(--x) )URL( var(--x) )0PX), auto, 1px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x16ys2cd",
+   "value": "calc(Url(0px , 0PX)url(calc(0.0px),Url(0.5px  0PX  500MS),var(--x))URL(var(--x))0PX),auto,1px"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0PX , 0DEG , var(--x) , 500MS"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xmjgdmi",
+   "value": "0PX,0DEG,var(--x),500MS"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "URL(0deg 0PX URL(  var(--x) ) ) url(  image-set(  0.0px)translate(  0PX,min( 0.5px0DEG0DEG0.0px ),0DEG) ) auto calc(  image-set( 1px , 0DEG , Url(  auto\"s  t\"0fr) , 10ms) , 0PX , 10ms , 0DEG )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x110q31c",
+   "value": "URL(0deg 0PX URL(  var(--x) )) url(image-set(  0.0px)translate(0PX,min(.5px0DEG0DEG0.0px),0deg) ) auto calc(image-set(1px,0deg,Url(auto\"s  t\"0fr),.01s),0PX,.01s,0deg)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "image-set(  0fr, 0.5px)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xlce8u",
+   "value": "image-set(0fr,.5px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0fr , 0DEG"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xetiw9",
+   "value": "0fr,0deg"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0PX"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1b3ljli",
+   "value": "0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0 0.0px min( 0S  1px  \"s  t\") 0%"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xiuvaxm",
+   "value": "0 0px min(0S 1px \"s  t\") 0%"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0.0px 0PX 0.0px image-set( 1px 1px 0PX min(  0PX  0.5px ))"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1k01oy1",
+   "value": "0px 0PX 0px image-set(1px 1px 0PX min(0PX .5px))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0S , Url(0.5px )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1694qia",
+   "value": "0s,Url(0.5px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "url( url(min( 0deg 0 0 )) 0S 0px 0.5px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1k28o9g",
+   "value": "url(url(min( 0deg 0 0)) 0s 0 .5px)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "min( 0S)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x10vcybi",
+   "value": "min(0S)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "500MS 1px 10ms 0DEG"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1lw6nq1",
+   "value": "500MS 1px .01s 0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)10msURL( auto,0fr,0S)auto"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xilzr74",
+   "value": "var(--x)10msURL(auto,0fr,0s)auto"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\"  0.0px  calc( calc(  0DEG,0S,0PX) , 0 )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1n6zoxs",
+   "value": "\"s  t\" 0px calc(calc(0deg,0s,0PX),0)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "min( 0px , 0DEG , 0px , 00.50em)  1px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x13csvr8",
+   "value": "min(0px,0DEG,0px,.5em) 1px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "auto"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1bpp3o7",
+   "value": "auto"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xegb1ct",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "Url( 0.5px  image-set(URL( 500MS,0.5px ) )) calc(  0.0px,auto,0deg,0% )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1byd0mt",
+   "value": "Url(0.5px  image-set(URL( 500MS,0.5px ) )) calc(0px,auto,0deg,0%)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0deg / url(calc( Url( 0 / 0px / 0% )) ) / Url(  0% )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1l56y5l",
+   "value": "0deg / url(calc( Url( 0 / 0px / 0%)) ) / Url(0%)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0fr"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1c1bk4",
+   "value": "0fr"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "500MS"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xnxn3gy",
+   "value": "500MS"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "url(0deg calc(  translate(  auto )) 0px)autoautotranslate(  0DEG \"s  t\" translate(0S , Url(var(--x) / 0.5px) , 500MS) URL(  auto , calc(1px , 0deg) , 0deg) )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x5omm1w",
+   "value": "url(0deg calc(  translate(  auto)) 0px)autoautotranslate(0deg \"s  t\" translate(0s,Url(var(--x) / 0.5px),500MS) URL(auto , calc(1px , 0deg) , 0deg))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0S  0.5px  0fr"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1pi5xob",
+   "value": "0s .5px 0fr"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0DEG translate(  Url(  var(--x) / var(--x) / var(--x))  0px ) 0DEG translate(  10ms )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1rov5xx",
+   "value": "0deg translate(Url(var(--x) / var(--x) / var(--x)) 0px) 0deg translate(.01s)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0deg URL(10ms,00.50em,0.5px,image-set( 0deg,\"s  t\",0%,0PX ) ) 0 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xz1sgmg",
+   "value": "0deg URL(10ms,00.50em,0.5px,image-set( 0deg,\"s  t\",0%,0PX )) 0 .5em"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "500MS / 0DEG / 10ms / 0DEG"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x6td30t",
+   "value": "500MS / 0deg / .01s / 0deg"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0DEG , translate( 00.50emvar(--x)) , 0deg , Url(0,0,00.50em)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x3fzps1",
+   "value": "0DEG,translate(00.50emvar(--x)),0deg,Url(0,0,00.50em)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "500MS, 0S"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x14yjde4",
+   "value": "500MS,0s"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px auto 0PX"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1of717v",
+   "value": "0 auto 0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0.0px,auto,0S,0S"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xnn2432",
+   "value": "0px,auto,0s,0s"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0fr  min( translate(calc( 0%500MS ),500MS) )  URL(1px 0fr translate( URL( 00.50em ) calc( 0px  00.50em  0deg  0PX )) )  Url(  auto )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1f2e3a9",
+   "value": "0fr min(translate(calc(0%500MS),500MS)) URL(1px 0fr translate( URL( 00.50em ) calc( 0px  00.50em  0deg  0PX ))) Url(auto)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0.5px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xirhraf",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0DEG,min( Url(  00.50em) , 500MS , image-set(  00.50em  1px) ),0S"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xuukggp",
+   "value": "0deg,min(Url(00.50em),500MS,image-set(.5em 1px)),0s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)0.0pximage-set( 0.5px500MS0.5pxtranslate( translate( \"s  t\",\"s  t\",0DEG)))00.50em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1gd52rb",
+   "value": "var(--x)0.0pximage-set(0.5px500MS0.5pxtranslate(translate(\"s  t\",\"s  t\",0deg))).5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0S0deg0"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px / Url(  500MS ) / URL(  URL( 0deg ) / 0.0px ) / Url(0  00.50em)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1we5vr1",
+   "value": "1px / Url(500MS)  / URL(URL( 0deg ) / 0.0px)  / Url(0  00.50em)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1ipb7h2",
+   "value": "\"s  t\""
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "1px  500MS"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xglnw8c",
+   "value": "1px 500MS"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0PX , min( 00.50em min(  url(  0DEG / 0S / 00.50em ) , calc( 0S 0.5px 500MS 500MS)) 0fr ) , 0% , 1px"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1k9gccs",
+   "value": "0,min(.5em min(url(0DEG / 0S / 00.50em),calc(0s .5px 500MS 500MS)) 0fr),0%,1px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0S 0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x190yl7z",
+   "value": "0s 0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "calc(  0.5px,min(calc( var(--x), auto, \"s  t\" ), min(00.50em10ms0DEGvar(--x))) ) / calc(  translate( min(0% ) ) ) / 0PX"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1ys583u",
+   "value": "calc(.5px,min(calc(var(--x),auto,\"s  t\"),min(00.50em10ms0DEGvar(--x))))  / calc(translate(min(0%)))  / 0PX"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0deg 1px Url(auto )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1ua69sy",
+   "value": "0deg 1px Url(auto)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "calc(translate(  500MS ) , 0deg , image-set( 0px) )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1rxlc6o",
+   "value": "calc(translate(500MS),0deg,image-set(0px))"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translate(  min(  0.5px,0deg,500MS,500MS) calc(  10ms 0) )  0.5px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x5zxkhe",
+   "value": "translate(min(.5px,0deg,500MS,500MS) calc(.01s 0)) .5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.0px  Url( 0.0px, auto)  calc(0deg URL(Url(  0.5px , 0DEG , 0% , \"s  t\") ) 500MS )  url( 10ms , 0.0px , 500MS , 0.5px )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x5a932o",
+   "value": "0px Url(0.0px, auto) calc(0deg URL(Url(  0.5px , 0DEG , 0% , \"s  t\")) 500MS) url(10ms , 0.0px , 500MS , 0.5px)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0PX  0  500MS"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1wpm3pb",
+   "value": "0 0 500MS"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "auto  min( 0S, 0px, Url(  00.50em , URL(auto 0S auto ) , 500MS , 0.5px ), calc( 0% , 1px , calc( 0.5px ) , translate(  auto , 500MS , auto , \"s  t\" ) ))"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xvoynv2",
+   "value": "auto min(0S,0px,Url(00.50em , URL(auto 0S auto ) , 500MS , 0.5px),calc(0%,1px,calc(.5px),translate(auto,500MS,auto,\"s  t\")))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0fr / URL( Url(  url(  500MS 0fr \"s  t\" 0.5px) / translate(  0DEG ) / calc(  500MS 0%) / calc(  \"s  t\", 0, 0.5px )), 0deg, min(0S 0.5px url(  0fr 00.50em) 0), 0.0px) / \"s  t\" / URL( 0fr0degmin( auto translate( \"s  t\" 0fr 0.0px auto ) 0% 0.0px) )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1f1icep",
+   "value": "0fr / URL(Url(  url(  500MS 0fr \"s  t\" 0.5px) / translate(  0DEG ) / calc(  500MS 0%) / calc(  \"s  t\", 0, 0.5px )), 0deg, min(0S 0.5px url(  0fr 00.50em) 0), 0.0px)  / \"s  t\"  / URL(0fr0degmin( auto translate( \"s  t\" 0fr 0.0px auto ) 0% 0.0px))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "image-set(0deg / 0% / translate( 0%) / 10ms),0deg,0.5px,image-set(00.50em)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1np6lht",
+   "value": "image-set(0deg / 0% / translate(0%) / .01s),0deg,.5px,image-set(.5em)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "1pxauto0px0PX"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x17xjcdh",
+   "value": "1pxauto0px0PX"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0px, url(translate( 0deg , 0fr , 0deg ),0.0px,auto), Url(0fr1px0px\"s  t\" ), url(  var(--x) )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mkogg",
+   "value": "0,url(translate( 0deg , 0fr , 0deg),0px,auto),Url(0fr1px0px\"s  t\"),url(var(--x) )"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "url(0image-set(0,10ms,0,00.50em )auto ) / auto"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1490e43",
+   "value": "url(0image-set(0,10ms,0,00.50em)auto ) / auto"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0PX, url(var(--x), 0fr, 0 ), 10ms, 0.5px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xkflq6d",
+   "value": "0PX,url(var(--x),0fr,0 ),.01s,.5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "URL( url(  URL( 0deg,500MS,0.0px,0S )10ms0px ))"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ta2291",
+   "value": "URL(url(  URL( 0deg,500MS,0.0px,0S )10ms0px))"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(auto 0% 0.0px url(0.0px0S0.5pxurl( 0% ))) / auto / 0DEG / 0%"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xy82gpu",
+   "value": "url(auto 0% 0.0px url(0.0px0S0.5pxurl( 0%))) / auto / 0deg / 0%"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)  image-set(  calc(  0fr / 0.5px / url(  00.50em , 00.50em ) ))  0deg  0S"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1mk3ary",
+   "value": "var(--x) image-set(calc(0fr / .5px / url(00.50em , 00.50em))) 0deg 0s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0px, 0"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xh0pqlp",
+   "value": "0,0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0Svar(--x)var(--x)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1metuxu",
+   "value": "0Svar(--x)var(--x)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "10ms  var(--x)  image-set(1px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x14bpj1c",
+   "value": ".01s var(--x) image-set(1px)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0.0px,0PX"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xssa3hh",
+   "value": "0px,0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "URL( Url(  url(500MS / 0% / 0) , 0% ) 0 image-set(0fr, 10ms, Url(0.0px 0PX ), auto ) translate(  00.50em ) ) url( image-set( 0PX  calc( 0.0px / var(--x) / 0 ) ), 00.50em, 0) 0fr 0.5px"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x95dbsl",
+   "value": "URL(Url(  url(500MS / 0% / 0) , 0% ) 0 image-set(0fr, 10ms, Url(0.0px 0PX ), auto ) translate(  00.50em )) url(image-set( 0PX  calc( 0.0px / var(--x)  / 0 ) ),.5em,0 0fr .5px"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0DEG0DEG0S0px"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1p6kkr5",
+   "value": "0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0PX , min( url( 0.5px 0PX image-set(  0px1px0.0px) 10ms) / 0deg ) , 0px"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x11hrutq",
+   "value": "0,min(url(0.5px 0PX image-set(  0px1px0.0px) .01s)  / 0deg ),0"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0% 0.0px url( 0PX ) 0%"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x49h08a",
+   "value": "0% 0px url(0PX) 0%"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0%,translate( calc(  \"s  t\" 0.5px url(  0fr , var(--x) ) )\"s  t\")"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x69aeum",
+   "value": "0%,translate(calc(\"s  t\" .5px url(0fr , var(--x)))\"s  t\")"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translate( url(  translate( 0deg , 0 , auto , 0S) )  00.50em)0fr0%"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1h23wfd",
+   "value": "translate(url(translate( 0deg , 0 , auto , 0S)) .5em)0fr0%"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "Url( 0.0px)  auto"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xp2jx70",
+   "value": "Url(0.0px) auto"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0px , translate(url(  0S)) , 0DEG"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1k2mnx5",
+   "value": "0,translate(url(0S)),0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0DEG 0% 0.5px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xajh555",
+   "value": "0deg 0% .5px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0.5px translate(  min(0S,0%,min(0 , 0fr , 0px , \"s  t\"),image-set( 0 )))"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xo1ya4o",
+   "value": ".5px translate(min(0s,0%,min(0,0fr,0px,\"s  t\"),image-set(0)))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "image-set(url(  0px , 0 ) \"s  t\" 0deg 0deg ) url(  0.5px / 0PX / var(--x) / \"s  t\" )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xf7bvr6",
+   "value": "image-set(url(0px , 0) \"s  t\" 0deg 0deg) url(0.5px / 0PX / var(--x)  / \"s  t\" )"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.0px, url( \"s  t\" , 0DEG , 0%), url( 0.0px, 500MS), Url(  url(  URL( 0deg, auto, 1px, 1px) image-set(0deg , 0DEG , 0.5px , 1px ) translate(  var(--x)00PX1px) URL(  var(--x)  0  0deg  500MS ))  500MS  10ms  0px )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x8cmzcx",
+   "value": "0px,url(\"s  t\" , 0DEG , 0%),url(0.0px, 500MS),Url(url(  URL( 0deg, auto, 1px, 1px) image-set(0deg , 0DEG , 0.5px , 1px ) translate(  var(--x)00PX1px) URL(  var(--x)  0  0deg  500MS )) 500MS .01s 0 )"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(  0deg  0  0deg  0px ), 0px, translate(  URL(0% 1px calc(\"s  t\"var(--x)0deg))0pxUrl( URL(  0DEG / \"s  t\" / 0px / 0DEG ) )Url( 0.0px 0 ) )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xv61u6b",
+   "value": "calc(0deg 0 0deg 0px),0,translate(URL(0% 1px calc(\"s  t\"var(--x)0deg))0pxUrl(URL(0DEG / \"s  t\" / 0px / 0DEG))Url(0.0px 0))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "Url( 0px min(translate(auto 0DEG)) 0PX 0) 0% 0DEG url(  0.0px, 0deg )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xu4fcya",
+   "value": "Url(0px min(translate(auto 0DEG)) 0PX 0) 0% 0deg url(0.0px, 0deg)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "var(--x) / 0S"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x101pgwx",
+   "value": "var(--x)  / 0s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0S calc(  00.50em) 0fr"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x10oz0kn",
+   "value": "0s calc(.5em) 0fr"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0fr,image-set(  0% 10ms 0S )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x8fupgr",
+   "value": "0fr,image-set(0% .01s 0s)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "min( Url(translate(0S ) )min(  image-set(\"s  t\" )) )  0  0S"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x16xdepc",
+   "value": "min(Url(translate(0S ))min(image-set(\"s  t\"))) 0 0S"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "500MS / 0deg / 500MS"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x3yr99q",
+   "value": "500MS / 0deg / 500MS"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "url(\"s  t\" , 0% , 0DEG) 1px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1mjsaks",
+   "value": "url(\"s  t\" , 0% , 0DEG) 1px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "Url(Url(0DEG ) ) / url(  image-set(url(0fr, 0.0px, 0DEG, 0 ),calc( 00.50em ),calc(  0 0.5px 0 0.0px )))"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x50a4sw",
+   "value": "Url(Url(0DEG ))  / url(image-set(url(0fr, 0.0px, 0DEG, 0),calc(.5em),calc(0 .5px 0 0px)))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "10ms0.5px0deg"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x327rpo",
+   "value": "10ms0.5px0deg"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0px , auto , min( 00.50em  min(  \"s  t\" , 0 , 0.0px )  0px  10ms) , 500MS"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xk1y4mw",
+   "value": "0,auto,min(.5em min(\"s  t\",0,0px) 0px .01s),500MS"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "url( 0px / Url( 00.50em0PXUrl(  var(--x) , auto , 1px , 0fr)00.50em ) / 0deg ) 500MS"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1d501q",
+   "value": "url(0px / Url( 00.50em0PXUrl(  var(--x),auto,1px,0 ) / 0deg ) 500MS"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "1px,0fr,auto,0.5px"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x14b3myb",
+   "value": "1px,0fr,auto,.5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\" calc(  calc( 0% )  0.5px  10ms ) url(0S, 0)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xo2s946",
+   "value": "\"s  t\" calc(calc(0%) .5px .01s) url(0S, 0)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "url( auto )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xxqrb4x",
+   "value": "url(auto)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0px,URL(0.5px0pxtranslate(  0.0px translate( 10ms / 00.50em ) 10ms auto ))"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x13975fx",
+   "value": "0,URL(0.5px0pxtranslate(  0.0px translate( 10ms / 00.50em ) 10ms auto ))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(0 ) , 0.0px , URL(10ms 0 auto) , Url( image-set(translate(  \"s  t\"500MS0.0px) ),auto,calc( var(--x)translate(0deg , auto , 00.50em )0.0px ) )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xehil4w",
+   "value": "url(0),0px,URL(10ms 0 auto),Url(image-set(translate(  \"s  t\"500MS0.0px) ),auto,calc( var(--x)translate(0deg , auto , 00.50em )0.0px ))"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0 0.5px 0px"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x3jpdxf",
+   "value": "0 .5px 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "URL( 0px\"s  t\"image-set(  0% 0PX calc( auto) 500MS) ) 0DEG 500MS 500MS"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x3cv7t2",
+   "value": "URL(0px\"s  t\"image-set(  0% 0PX calc( auto) 500MS)) 0deg 500MS 500MS"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "URL( URL(0% , 0DEG , calc(0PX000.50em )) 0.0px 0fr )1px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1os5m3p",
+   "value": "URL(URL(0% , 0DEG , calc(0PX000.50em )) 0.0px 0fr)1px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "00.50em"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1sscd6g",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "auto0deg"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x7wuveq",
+   "value": "auto0deg"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0.0px 0deg"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xnr3avw",
+   "value": "0px 0deg"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0,1px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1cxu3wt",
+   "value": "0,1px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "min( 0.0px,0DEG )  0.0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x6uwswt",
+   "value": "min(0px,0deg) 0px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\", 10ms"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1qlc18b",
+   "value": "\"s  t\",.01s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(calc(  url(10ms / auto ) )  0.0px  0DEG)"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xndtv7b",
+   "value": "url(calc(  url(10ms / auto) ) 0px 0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "URL(0.5px) 0"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1eojto0",
+   "value": "URL(0.5px) 0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0PX url(translate(  0PX  calc(  0% 0% 0DEG 0DEG)  min(  0.5px ) ) / calc( url(  0S / 10ms / 0DEG) ) / 0% ) min( 0) 0fr"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1m76qsr",
+   "value": "0PX url(translate(  0PX  calc(  0% 0% 0DEG 0DEG) min(.5px) )  / calc(url(0S / 10ms / 0DEG))  / 0% ) min(0) 0fr"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "url(  500MS0degcalc( 0DEGmin(0 )image-set( 0S 0fr )) ) , image-set( calc( 0.0px0.5px0px ),image-set(  min( \"s  t\"  var(--x))  calc( 500MS 0.5px 0% 0DEG))) , URL( 0S,0DEG) , URL(  URL(var(--x)  url( 0px0fr)  0fr  URL( var(--x))) )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xfzrqr",
+   "value": "url(500MS0degcalc( 0DEGmin(0)image-set(0s 0fr)) ),image-set(calc(0px0.5px0px),image-set(min(\"s  t\" var(--x)) calc(500MS .5px 0% 0deg))),URL(0S,0DEG),URL(URL(var(--x)  url( 0px0fr)  0fr  URL( var(--x))))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "translate( 0S 0DEG 0fr Url( 0DEG, Url( auto 0% 0% 0deg), 1px, calc( 0DEG,0%,10ms ) ) ) / 0deg / url(  image-set(0fr  0px  translate(  1px 0fr) ) 0.0px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xi9v8z3",
+   "value": "translate(0s 0deg 0fr Url(0DEG, Url( auto 0% 0% 0deg), 1px, calc( 0DEG,0%,10ms )))  / 0deg  / url(image-set(0fr  0px  translate(  1px 0fr) ) 0px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "translate(  auto 1px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x199y6te",
+   "value": "translate(auto 1px)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\",0DEG"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1jgas72",
+   "value": "\"s  t\",0deg"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0PX / min( 0pximage-set( 0.5px ) )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xb8xrvt",
+   "value": "0 / min(0pximage-set(.5px))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "translate(  min(  0frURL( 00.50em  \"s  t\"  0px  0fr)500MS ), Url(  Url(\"s  t\" 0px var(--x) ) / 1px / 0fr / 00.50em ) ), 0.5px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1upqv09",
+   "value": "translate(min(0frURL(.5em \"s  t\" 0px 0fr)500MS),Url(Url(\"s  t\" 0px var(--x) ) / 1px / 0fr / 00.50em)),.5px"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "Url(  0.0px0PXurl( calc( 0DEG,0deg ), 0DEG, 0deg )), 0PX, min(  0.5px,1px,00.50em ), 0"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xq69vbt",
+   "value": "Url(0.0px0PXurl( calc( 0DEG,0deg ), 0DEG, 0deg )),0PX,min(.5px,1px,.5em),0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "image-set( Url(0PX, 0px ))  10ms  Url(  0.5pxautovar(--x))  10ms"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1aiacsj",
+   "value": "image-set(Url(0PX, 0px)) .01s Url(0.5pxautovar(--x)) .01s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "URL(0px 0deg )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1i5ovlj",
+   "value": "URL(0px 0deg)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "image-set( min(  1px , 0px) / min(  0PX0deg) / Url(  10ms, translate(  0deg), 0fr, 0) / \"s  t\")  var(--x)  url( URL(  0 / url(  var(--x) / 0 / 0deg ) / image-set(  0.0px0deg ) ))  Url( calc( image-set(  var(--x) / 0deg / 0 / 0%) ),1px,min(  0DEG  auto  0DEG ) )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1c9hfvm",
+   "value": "image-set(min(1px,0px) / min(0PX0deg) / Url(10ms, translate(  0deg), 0fr, 0) / \"s  t\") var(--x) url(URL(  0 / url(  var(--x)  / 0  / 0deg )  / image-set(0px0deg) )) Url(calc( image-set(  var(--x) / 0deg / 0 / 0%) ),1px,min(  0DEG  auto  0DEG ))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0.5px / translate( 0px 0PX auto) / image-set(min(0fr 0DEG 0PX)10ms ) / 10ms"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x9diyrt",
+   "value": ".5px / translate(0px 0PX auto)  / image-set(min(0fr 0DEG 0PX).01s)  / .01s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "URL( 0DEG, 0.0px, calc(calc( 0S  \"s  t\"  0PX  10ms ) ), 0DEG )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1g1kmvc",
+   "value": "URL(0DEG, 0.0px, calc(calc( 0S  \"s  t\"  0PX  10ms ) ), 0DEG)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.5pxURL(  min(  00.50em,calc(  0PX , 0% , 0fr , 0px),auto,0fr ) translate(0% Url( 00.50em, 0.5px, 0.5px, 0.5px )) Url( 1px 0DEG 00.50em ))500MS"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x73y6oz",
+   "value": "0.5pxURL(min(.5em,calc(0PX,0%,0fr,0px),auto,0fr) translate(0% Url(00.50em, 0.5px, 0.5px, 0.5px)) Url(1px 0DEG 00.50em))500MS"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "translate( 1px, 0S) 1px 1px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1d3cnj",
+   "value": "translate(1px,0s) 1px 1px"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0% , translate( translate(  0S,URL( auto / var(--x) ),\"s  t\" ))"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x19kfl5w",
+   "value": "0%,translate(translate(0s,URL(auto / var(--x)),\"s  t\"))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0px, var(--x), min(URL(auto , translate(0deg1px10ms ) , calc(10ms, 0S, 0DEG ) , 00.50em ) 0 ), url(  translate(image-set(  0.5px , 0 , 0PX) / 0deg / image-set(0px )) / Url( image-set(  0S 0deg \"s  t\" )  image-set(  auto)  0px ) / 0% / 0%)"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x8qwccd",
+   "value": "0px,var(--x),min(URL(auto , translate(0deg1px10ms ) , calc(10ms, 0S, 0DEG ) , 00.50em) 0),url(translate(image-set(  0.5px , 0 , 0PX)  / 0deg  / image-set(0px))  / Url(image-set(  0S 0deg \"s  t\" )  image-set(  auto)  0px)  / 0%  / 0%)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "url(translate(  translate(  1px , 0fr , 1px , 500MS) ) ), 0.0px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xvaudar",
+   "value": "url(translate(  translate(  1px , 0fr , 1px , 500MS) ) ),0px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "image-set( 0.0px calc( 00.50em min( 00.50em,0deg,\"s  t\",0deg )) 0.0px)0%"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1kau54f",
+   "value": "image-set(0px calc(.5em min(.5em,0deg,\"s  t\",0deg)) 0px)0%"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0,10ms,var(--x),URL(  calc( 10ms url(0px, 0S, \"s  t\") min(  0px )))"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1ogktet",
+   "value": "0,.01s,var(--x),URL(calc( 10ms url(0px, 0S, \"s  t\") min(  0px )))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "translate( min( 1px / 0S / 0S),0PX,URL( \"s  t\" ))  \"s  t\"  0.0px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x8mhy9",
+   "value": "translate(min(1px / 0S / 0S),0PX,URL(\"s  t\")) \"s  t\" 0px"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "URL(0PX,0DEG,calc(  00.50em),0%) 0% 0%"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1s4jzk0",
+   "value": "URL(0PX,0DEG,calc(  00.50em),0%) 0% 0%"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(0%  URL(0 , \"s  t\" , calc( 500MS  0S  0px  0PX ) )  var(--x) ) image-set(\"s  t\" , 1px , var(--x) , 0deg ) auto calc(  0S0S00.50em0S )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1lepeq1",
+   "value": "calc(0% URL(0 , \"s  t\" , calc( 500MS  0S  0px  0PX )) var(--x)) image-set(\"s  t\",1px,var(--x),0deg) auto calc(0S0S00.50em0S)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "1px image-set(  1px / 0.0px / Url(  calc(500MS00.50em0fr ) 0deg ) / 10ms )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1a9ycij",
+   "value": "1px image-set(1px / 0px / Url(calc(500MS00.50em0fr ) 0deg) / .01s)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0 0.5px 10ms url(0S  500MS  min( 0.0px )  0deg )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xgfjw7l",
+   "value": "0 .5px .01s url(0S  500MS  min( 0.0px) 0deg )"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "00.50em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xoden9",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "calc(  translate(  auto 0S calc( 500MS0.0px ) 1px) 0DEG 00.50em 0S) , Url( url(0deg / Url(  0PX  0%) ) , URL(  translate(  500MS  0.0px )  min(  var(--x) / 0fr / 0DEG )  0DEG  URL(  10ms  0DEG  auto  00.50em ) ) ) , 00.50em , translate(var(--x) )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1sgbv4t",
+   "value": "calc(translate(auto 0s calc(500MS0.0px) 1px) 0deg .5em 0s),Url(url(0deg / Url(  0PX  0%)),URL(translate(  500MS  0.0px )  min(  var(--x) / 0fr / 0DEG )  0DEG  URL(  10ms  0DEG  auto  00.50em )) ),.5em,translate(var(--x))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0 1px \"s  t\" 0"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1hxn9ij",
+   "value": "0 1px \"s  t\" 0"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0  0.0px  Url( min( var(--x), var(--x), 0DEG, 0))  0fr"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x5xao72",
+   "value": "0 0px Url(min( var(--x), var(--x), 0DEG, 0)) 0fr"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "10ms"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1uy5oxm",
+   "value": ".01s"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1ghz6dp",
+   "value": "0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(\"s  t\" , Url(  var(--x) min(00.50em 0DEG ) calc( 0DEG  auto  00.50em  10ms ) 0fr) , 0S , url(  translate( 0DEG, 00.50em ) ) ) 0fr"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1pmp4xb",
+   "value": "calc(\"s  t\",Url(var(--x) min(00.50em 0DEG ) calc( 0DEG  auto  00.50em  10ms ) 0fr),0s,url(translate( 0DEG, 00.50em)) ) 0fr"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0DEG / var(--x) / url(  translate(  url(0fr,10ms,10ms ) ) 0 0.5px) / calc(  Url(0fr  calc( 0PX 0.5px 0deg 0PX )  0.0px) )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1p1rxjl",
+   "value": "0deg / var(--x)  / url(translate(  url(0fr,10ms,10ms) ) 0 .5px)  / calc(Url(0fr  calc( 0PX 0.5px 0deg 0PX )  0.0px))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0%"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1na0qup",
+   "value": "0%"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "var(--x) 0.0px translate(  URL(  00.50em translate( 1px auto auto) ) 0PX )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1scjkje",
+   "value": "var(--x) 0px translate(URL(00.50em translate( 1px auto auto)) 0PX)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "auto"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x14atkfc",
+   "value": "auto"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\" url( 0PX / 00.50em / 0S / 1px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ur57xz",
+   "value": "\"s  t\" url(0PX / 00.50em / 0S / 1px)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "10ms URL(0fr / 0S / \"s  t\" / 0PX ) 500MS 0%"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xkzo7vx",
+   "value": ".01s URL(0fr / 0S / \"s  t\" / 0PX) 500MS 0%"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "auto 0px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x5td0cj",
+   "value": "auto 0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0fr,0.0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x19lckay",
+   "value": "0fr,0px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "00.50em  image-set( \"s  t\",calc(  0PX , 0fr ) )  min(0.0px calc(  URL(  var(--x) 10ms)) 0.0px)  10ms"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xglpgjs",
+   "value": ".5em image-set(\"s  t\",calc(0PX,0fr)) min(0px calc(URL(var(--x) 10ms)) 0px) .01s"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "image-set(var(--x)calc(  0 0PX calc(\"s  t\", 500MS, 0fr ) )) , 1px , auto , url(  auto, translate(0.5px ), 0%)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xzj02wc",
+   "value": "image-set(var(--x)calc(0 0PX calc(\"s  t\",500MS,0fr))),1px,auto,url(auto, translate(0.5px),0"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.5px , var(--x) , 0DEG"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x14t1tu0",
+   "value": ".5px,var(--x),0deg"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "image-set(0DEG,00.50em )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xj9ynic",
+   "value": "image-set(0DEG,.5em)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "1px, 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xtn8zqm",
+   "value": "1px,.5em"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0fr 0% 500MS 0.0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x8si824",
+   "value": "0fr 0% 500MS 0px"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "image-set( 0.0px min( 0.0px  0  0.5px) )10ms0DEG0deg"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x12tpjfm",
+   "value": "image-set(0px min(0px 0 .5px))10ms0DEG0deg"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "auto image-set(  00.50em  Url(  min(0DEG , var(--x) , 10ms ) 0.5px)  translate(00.50em0% ) ) auto"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xzvvpor",
+   "value": "auto image-set(.5em Url(min(0DEG , var(--x) , 10ms ) 0.5px) translate(.5em0%)) auto"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0 / url(  Url( calc(0px , 0px , 0 , 1px ) , 0S),0fr) / 0.5px"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xr0y466",
+   "value": "0 / url(Url( calc(0px , 0px , 0 , 1px),0,0 / .5px"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0.0px  0.0px"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x13a86nh",
+   "value": "0px 0px"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "translate(\"s  t\" / 0PX ), URL(  00.50em, 10ms, calc( min(0DEG  \"s  t\" )0deg), auto )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xrtzxc0",
+   "value": "translate(\"s  t\" / 0PX),URL(00.50em, 10ms, calc( min(0DEG  \"s  t\" )0deg), auto)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0DEG"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x10m89ls",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc(image-set( auto )translate( auto / auto))min( url( url(00.5px0deg0S), var(--x)) / 1px)Url(  0deg,image-set(  image-set(  0S) / 0PX / 1px),500MS )\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x8a5ss1",
+   "value": "calc(image-set(auto)translate(auto / auto))min(url(url(00.5px0deg0S),var(--x))  / 1px)Url(0deg,image-set(image-set(0s) / 0PX / 1px),500MS)\"s  t\""
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "auto 0px 10ms 0fr"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1ru5gw",
+   "value": "auto 0 .01s 0fr"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1ipdvls",
+   "value": "\"s  t\""
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "calc( 0PX ), 500MS, Url(  0DEG ), calc( auto)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1gsmrqz",
+   "value": "calc(0PX),500MS,Url(0DEG),calc(auto)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0%, 0%, URL(0fr / 0px / 0DEG / calc(  url( 10ms 0fr 0DEG 0S ) )), min(0,calc( Url(  00.50em ) ),0DEG,image-set(0fr \"s  t\" 0deg) )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xzidui3",
+   "value": "0%,0%,URL(0fr / 0px / 0DEG / calc(  url( 10ms 0fr 0DEG 0S ) )),min(0,calc(Url(00.50em)),0DEG,image-set(0fr \"s  t\" 0deg))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\" 0% 0deg"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xqsh860",
+   "value": "\"s  t\" 0% 0deg"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.5px  00.50em  0  0DEG"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x14141iv",
+   "value": ".5px .5em 0 0deg"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "auto , 0deg , 0S"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1g7mw46",
+   "value": "auto,0deg,0S"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "image-set(  0DEG translate(1px0.0px) 0S 0S)  0%  0DEG"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x9xnze",
+   "value": "image-set(0deg translate(1px0.0px) 0s 0s) 0% 0deg"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc( translate(  1px 0.5px) , calc( \"s  t\" / 0% / image-set( 00px0PXauto) / \"s  t\") ) 0 translate( min(  0px image-set( 0PX) 0DEG image-set(  0.5px  0fr  10ms )) / 500MS / 0.5px) 00.50em"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xpxzgng",
+   "value": "calc(translate(1px .5px),calc(\"s  t\" / 0% / image-set(0px0PXauto) / \"s  t\")) 0 translate(min(0px image-set(0PX) 0deg image-set(.5px 0fr .01s)) / 500MS / .5px) .5em"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px10ms"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1ghz6dp",
+   "value": "0"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "auto , Url(  500MS )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1vs9f3b",
+   "value": "auto,Url(500MS)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "calc(0% / translate( 0DEG,0DEG ) / \"s  t\" / calc(00.50em0DEG ) ),0fr,translate(  image-set(  Url(0deg) / min(0PX,0.5px,500MS) / translate( 00.50em / 00.50em / 0.0px) / 0fr ), 0PX, 500MS )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xvmeokc",
+   "value": "calc(0% / translate(0deg,0deg) / \"s  t\" / calc(.5em0DEG)),0fr,translate(image-set(Url(0deg) / min(0PX,.5px,500MS) / translate(.5em / .5em / 0px) / 0fr),0PX,500MS)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0px,0S,URL(0fr,0,0PX,0.0px )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x16qlctf",
+   "value": "0,0s,URL(0fr,0,0PX,0.0px)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "calc(translate( Url( 0.5px / 500MS / 1px / 10ms ))), 0fr, 0S, min( 0px)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1729uh8",
+   "value": "calc(translate(Url(0.5px / 500MS / 1px / 10ms))),0fr,0s,min(0px)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "translate(0PX 500MS) calc(0deg,0% ) 0deg 0deg"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1a4w0qw",
+   "value": "translate(0PX 500MS) calc(0deg,0%) 0deg 0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0px, 0%"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbi9mzu",
+   "value": "0,0%"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\" 10ms translate( 500MS )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xwh36hi",
+   "value": "\"s  t\" .01s translate(500MS)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "10ms , URL(Url(  var(--x) 0fr Url(  0px  0deg  0%  0.5px ))) , var(--x) , 0S"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1o006jb",
+   "value": ".01s,URL(Url(  var(--x) 0fr Url(  0px  0deg  0%  0.5px ))),var(--x),0s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(0PX ),URL( 500MS calc( 1px\"s  t\"0.5px) Url(  0S, 0%) image-set( min( auto  auto  0DEG )  Url(var(--x),\"s  t\" )))"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xfoxx3k",
+   "value": "url(0PX),URL(500MS calc( 1px\"s  t\"0.5px) Url(  0S, 0%) image-set( min( auto  auto  0DEG )  Url(var(--x),\"s  t\" )))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "image-set( min(0S)  0%) auto Url(  translate(  translate(  500MS) , 00.50em) / calc(0PX ) ) 500MS"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1b52s1h",
+   "value": "image-set(min(0s) 0%) auto Url(translate(  translate(  500MS) , 00.50em) / calc(0PX )) 500MS"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0deg Url(image-set( calc(0% , 00.50em ) \"s  t\" 0px var(--x) ) ) 0DEG 0%"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x11965kl",
+   "value": "0deg Url(image-set( calc(0% , 00.50em ) \"s  t\" 0px var(--x) )) 0deg 0%"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0.5px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1emhpib",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0px, 00.50em"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x1f123ej",
+   "value": "0px,.5em"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "URL(  image-set( calc(  1px))  10ms)  URL(translate(url(  0  1px  0DEG )  var(--x) ))"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xf16ti1",
+   "value": "URL(image-set( calc(  1px))  10ms) URL(translate(url(  0  1px  0DEG )  var(--x) ))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1ghz6dp",
+   "value": "0"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "calc( calc( min( 0.0px  10ms) 0 min(  0.0px , 0.0px , \"s  t\" , 0.0px) url(0.5px 00.50em \"s  t\" 500MS )) / calc(  image-set( 500MS auto 10ms) , 1px) )0fr\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1k4ceuu",
+   "value": "calc(calc(min(0px .01s) 0 min(0px,0px,\"s  t\",0px) url(0.5px 00.50em \"s  t\" 500MS)) / calc(image-set(500MS auto .01s),1px))0fr\"s  t\""
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(  URL(  URL( 0%, 0PX)  URL(  0.0px) ) ) 10ms min(min(calc(  0DEG) , 500MS) , 0.0px , 10ms)"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1odo0n7",
+   "value": "url(URL(  URL( 0%, 0PX) URL(0.0px) ) ) .01s min(min(calc(0deg),500MS),0px,.01s)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "image-set(  0.5px / min(  url(  00.50em,\"s  t\"),0fr,0S ) / image-set(  calc(  0deg  00.50em  0px), 0DEG, 0DEG) / 500MS )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xhwjk80",
+   "value": "image-set(.5px / min(url(00.50em,\"s  t\"),0fr,0S) / image-set(calc(0deg .5em 0px),0DEG,0DEG) / 500MS)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x18dl7g5",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0px , auto"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xej1v8b",
+   "value": "0,auto"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(  min(image-set(0.5px1px)  0deg ) / URL(00.50em , 0DEG , 0DEG , 0.5px )) auto 0S URL(Url(Url(\"s  t\" )translate(1px  500MS  00.50em  var(--x))) 0S)"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xqz65p4",
+   "value": "url(min(image-set(0.5px1px) 0deg ) / URL(00.50em , 0DEG , 0DEG , 0.5px)) auto 0s URL(Url(Url(\"s  t\" )translate(1px  500MS  00.50em  var(--x))) 0S)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "500MS , 0DEG , 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1e3r8lq",
+   "value": "500MS,0deg,.5em"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "calc( URL( auto , var(--x))) / calc( min( url( 0%),translate(0DEG  \"s  t\" ),URL(  0DEG 1px 0% 0S)) ) / 1px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xls7ac3",
+   "value": "calc(URL(auto , var(--x)))  / calc(min(url(0%),translate(0deg \"s  t\"),URL(0DEG 1px 0% 0S)))  / 1px"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "min(10ms )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1ujoitt",
+   "value": "min(.01s)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(0fr,translate( 00.50em min( 0PX  10ms  0fr  auto) 0fr),auto) 0 image-set(  url( 0fr0.5px ) \"s  t\" auto ) 0.5px"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xtflye9",
+   "value": "url(0fr,translate( 00.50em min( 0PX  10ms  0fr  auto) 0,auto) 0 image-set(url(0fr0.5px) \"s  t\" auto) .5px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0S / URL( calc( 0fr, 500MS, 0deg, 00.50em ) / 0.5px / 0.0px / 00.50em ) / 0.5px / url(calc(calc(  var(--x),0.0px ) ) url(  0PX , translate( \"s  t\" / 0 / 0PX / 0.5px ) , image-set(  0PX , 0PX ) , 0fr))"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xqeuoto",
+   "value": "0s / URL(calc( 0fr, 500MS, 0deg, 00.50em ) / 0.5px / 0.0px / 00.50em)  / .5px  / url(calc(calc(  var(--x),0px ) ) url(0PX , translate( \"s  t\" / 0 / 0PX / 0.5px),image-set(0PX,0PX),0"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "min(\"s  t\" / 0deg / \"s  t\" ), calc(0.5pxtranslate( 0DEGimage-set(  0fr / 0DEG)image-set(var(--x) 0% 0px)) ), 0.0px, var(--x)"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1vj4bdc",
+   "value": "min(\"s  t\" / 0deg / \"s  t\"),calc(0.5pxtranslate(0DEGimage-set(0fr / 0deg)image-set(var(--x) 0% 0px))),0px,var(--x)"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0PX"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xixcict",
+   "value": "0PX"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "url( 0fr , var(--x) ), min(URL(\"s  t\"0.0px )), 0.5px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x137id86",
+   "value": "url(0fr , var(--x) ),min(URL(\"s  t\"0.0px)),.5px"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "var(--x),auto"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xera0ya",
+   "value": "var(--x),auto"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "url(  var(--x), 0fr, 0)  0fr  0  url( calc(var(--x) 0.5px url( 00px0.0px ) ) 0DEG calc(  image-set(  0DEG  0%) translate( \"s  t\") min( 0.5px 500MS 00.50em ) image-set( 0%)))"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1spf6be",
+   "value": "url(var(--x),0fr,0 0fr 0 url(calc(var(--x) .5px url(00px0.0px) ) 0deg calc(image-set(0deg 0%) translate(\"s  t\") min(.5px 500MS .5em) image-set(0%)))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "10ms 00.50em auto"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xdfvzl1",
+   "value": ".01s .5em auto"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0.0px  url(  image-set( 500MS 0.0px min( 0 / 0 / 0.0px ) ) Url( Url(  0PX), translate(500MS ), 1px, 0PX) 0.0px )  var(--x)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xgj84ej",
+   "value": "0px url(image-set( 500MS 0.0px min( 0 / 0 / 0.0px) ) Url(Url(  0PX), translate(500MS ), 1px, 0PX) 0px ) var(--x)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "url(translate( 500MS 0.0px 0fr ) / calc(1px 0.0px 0.0px image-set(00.50em)) ),Url(0px min(  1px / min(0fr ) / 00.50em) 0DEG calc(  0fr ))"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xshyrra",
+   "value": "url(translate( 500MS 0.0px 0fr) / calc(1px 0px 0px image-set(.5em)) ),Url(0px min(  1px / min(0fr ) / 00.50em) 0DEG calc(  0fr ))"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0S , 0.5px , 0.5px"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "x2ij95o",
+   "value": "0S,.5px,.5px"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0 , 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1u4ad82",
+   "value": "0,.5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0S , 0 , 0% , 0S"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x74794i",
+   "value": "0s,0,0%,0s"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "url(0deg var(--x) URL(  0PX, 00.50em, 0S) URL(10ms auto )) 10ms 0PX url(  url(0px )image-set(  0pxURL( 0.5px )10ms0% )0deg10ms )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x15gou4",
+   "value": "url(0deg var(--x) URL(0PX, 00.50em, 0S) URL(10ms auto)) .01s 0 url(url(0px)image-set(0pxURL(.5px)10ms0%)0deg10ms )"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "image-set(0Stranslate(  0% / image-set(00.50em ) )calc(  \"s  t\"translate( 0px , var(--x))))translate(  image-set(  0px , 1px , \"s  t\" , min( 00.50em\"s  t\"500MS00.50em ) ) )min(  url(min(0PX 0DEG var(--x) auto)  0deg  url(0fr , 0PX )  translate( 0%  var(--x) )) , 500MS )url(0S 00.50em)"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x15zm6y8",
+   "value": "image-set(0Stranslate(0% / image-set(.5em))calc(\"s  t\"translate(0px,var(--x))))translate(image-set(0px,1px,\"s  t\",min(.5em\"s  t\"500MS00.50em)))min(url(min(0PX 0DEG var(--x) auto) 0deg url(0fr , 0PX) translate(0% var(--x))),500MS )url(0s .5em)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "image-set( 500MS0%image-set(0deg)0 )  image-set(0fr Url(1px ) min(  min(0fr,0S,00.50em)0DEG0.0px0.0px) \"s  t\")  url(  0deg )  url(  0 0deg)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x5a4228",
+   "value": "image-set(500MS0%image-set(0deg)0) image-set(0fr Url(1px) min(min(0fr,0s,.5em)0DEG0.0px0.0px) \"s  t\") url(0deg) url(0 0deg)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "Url(translate(  0.0px,0DEG,0DEG,00.50em),00.50em) / 00.50em / 0 / 10ms"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1jp1xmu",
+   "value": "Url(translate(  0.0px,0DEG,0DEG,00.50em),00.50em)  / .5em  / 0  / .01s"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "URL(0deg Url( 0DEG0% ) calc( 0px , 00.50em , calc( 500MS0px ) ) \"s  t\" ) translate( min(URL(00.50em 1px 0S 0.0px ) ) 500MS 0px min(  0deg  0 ))"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x11sv7ek",
+   "value": "URL(0deg Url( 0DEG0% ) calc( 0px , 00.50em , calc( 500MS0px ) ) \"s  t\") translate(min(URL(00.50em 1px 0S 0.0px)) 500MS 0px min(0deg 0))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "translate(  URL(00.0px), 0DEG )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x94sgbk",
+   "value": "translate(URL(00.0px),0deg)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "url( 0.0px )0frtranslate(translate(  0PX , 0% , \"s  t\" , calc( 0%) )  0  auto  0DEG)0deg"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xwk1g39",
+   "value": "url(0.0px)0frtranslate(translate(0PX,0%,\"s  t\",calc(0%)) 0 auto 0deg)0deg"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0fr,Url(  min(0.0px , 0% , min( auto  500MS  var(--x)  \"s  t\") , 0px ) calc(  0DEGurl(  0.5px / 0.0px / 00.50em)500MS)),Url(0px, 0S, image-set(  0.0px500MS0fr0DEG ), calc( 0.5px500MS)),Url(  auto,500MS)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1imhuqw",
+   "value": "0fr,Url(min(0.0px , 0% , min( auto  500MS  var(--x)  \"s  t\") , 0px ) calc(  0DEGurl(  0.5px / 0.0px / 00.50em)500MS)),Url(0px, 0S, image-set(  0.0px500MS0fr0DEG ), calc( 0.5px500MS)),Url(auto,500MS)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xd2kkiw",
+   "value": "var(--x)"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "min( auto) / translate(  0fr / 1px ) / 0fr"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1gprvz6",
+   "value": "min(auto)  / translate(0fr / 1px)  / 0fr"
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0% , URL( 0px) , Url(  0px,0px )"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xcsfc6p",
+   "value": "0%,URL(0px),Url(0px,0px)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0%"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x109ruvj",
+   "value": "0%"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0DEG, min(  calc(image-set(  500MS,500MS )  Url(  0px, auto, \"s  t\", 0PX )  0.0px  10ms ) , 0px , 0DEG ), 0PX, url( Url(  0), var(--x), 1px )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xgqxvg8",
+   "value": "0deg,min(calc(image-set(500MS,500MS) Url(0px, auto, \"s  t\", 0PX) 0px .01s),0px,0deg),0,url(Url(  0),var(--x),1px )"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "URL(00.50em),calc(  URL(Url( \"s  t\", 10ms )10mstranslate( var(--x),1px ) )0fr )"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xvmkzy8",
+   "value": "URL(00.50em),calc(URL(Url( \"s  t\", 10ms )10mstranslate( var(--x),1px ))0fr)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "Url(  image-set(  500MS ), 0.0px, 0S) 0S"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xow7csz",
+   "value": "Url(image-set(  500MS ), 0.0px, 0S) 0s"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\" min(  0 ) 0DEG 10ms"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1g5ceb7",
+   "value": "\"s  t\" min(0) 0deg .01s"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "Url( 0fr / 0S / Url(  500MS))"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1iv9okv",
+   "value": "Url(0fr / 0S / Url(  500MS))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "auto 0S"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1m1w3m4",
+   "value": "auto 0s"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "calc( url(  translate( 0PX 500MS ) , URL( 00.50em / 0S / 00.50em / var(--x) ) , var(--x)))"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x1vfty8t",
+   "value": "calc(url(translate( 0PX 500MS),URL(00.50em / 0S / 00.50em / var(--x)),var(--x)))"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(  var(--x) url(  00.50em / url(1px0deg1px)))"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xxzkz7u",
+   "value": "calc(var(--x) url(00.50em / url(1px0deg1px)))"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "translate(url(  0deg url(0DEG 0S 0deg) 0deg )),image-set( Url(  500MStranslate(  0px500MS00.50em)url( 0DEG,\"s  t\",auto,auto))),URL( translate(0deg , 0% , auto ) / 0DEG / 0px / min(  image-set( 1px000.50em)\"s  t\"translate( 0DEG0.0px0.0px )))"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1c8lms0",
+   "value": "translate(url(0deg url(0DEG 0S 0deg) 0deg)),image-set(Url(500MStranslate(  0px500MS00.50em)url( 0DEG,\"s  t\",auto,auto))),URL(translate(0deg , 0% , auto ) / 0DEG / 0px / min(  image-set( 1px000.50em)\"s  t\"translate( 0DEG0.0px0.0px )))"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.5px  0.0px  calc(calc( URL( 1px0S ) / \"s  t\" / url(  \"s  t\"  0.0px  00.50em  auto ) / 0PX ),image-set(image-set( 0PX / 0PX / 0.0px) 0px 0) )"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1ei1awx",
+   "value": ".5px 0px calc(calc(URL(1px0S) / \"s  t\" / url(\"s  t\"  0.0px  00.50em  auto) / 0PX),image-set(image-set(0PX / 0PX / 0px) 0px 0))"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "1px Url(  url(var(--x)0PXimage-set( autoautoauto) ), image-set( var(--x) 1px ) ) 0S 10ms"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x74v2sz",
+   "value": "1px Url(url(var(--x)0PXimage-set( autoautoauto)),image-set(var(--x) 1px) ) 0s .01s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"s  t\",URL( translate( URL( 500MS , 0S )var(--x)500MS) ),\"s  t\""
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1fmh24q",
+   "value": "\"s  t\",URL(translate( URL( 500MS , 0S )var(--x)500MS)),\"s  t\""
+  }
+ },
+ {
+  "property": "--custom",
+  "input": {
+   "kind": "string",
+   "value": "0%"
+  },
+  "expect": {
+   "decl_prop": "--custom",
+   "class_name": "xnrgrd",
+   "value": "0%"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0.0px URL( var(--x)) 00.50em"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1ev2s6j",
+   "value": "0px URL(var(--x)) .5em"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0fr, URL(var(--x) , 10ms , 0PX), calc( url(0PX,0.0px,10ms,Url(0fr auto auto ) )), auto"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xm6c94z",
+   "value": "0fr,URL(var(--x) , 10ms , 0PX),calc(url(0PX,0.0px,10ms,Url(0fr auto auto))),auto"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "URL( 0.5px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbjwj1o",
+   "value": "URL(0.5px)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "0deg  0S  min( 0deg , 0S )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xj9y7nh",
+   "value": "0deg 0s min(0deg,0s)"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0DEG"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xilq40m",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "xc5im4m",
+   "value": "var(--x)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "0DEGtranslate(0.5px, 0fr, calc(  min(0% ) , url( 0 / 10ms / var(--x)) ) )\"s  t\"0"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x13u2uoc",
+   "value": "0DEGtranslate(.5px,0fr,calc(min(0%),url(0 / 10ms / var(--x))) )\"s  t\"0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "URL(url(  0.0px translate( var(--x),0deg) )0PX1px0.0px), var(--x)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbs4d05",
+   "value": "URL(url(  0.0px translate( var(--x),0deg) )0PX1px0.0px),var(--x)"
   }
  }
 ]
