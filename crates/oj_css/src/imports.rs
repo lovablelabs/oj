@@ -77,7 +77,7 @@ impl Inliner<'_, '_> {
             };
             let statement = &at[..IMPORT.len() + import.len];
             rest = &at[statement.len()..];
-            let target = resolve_css_import_with(&import.spec, dir, self.resolve)
+            let target = resolve_css_import_with(&import.spec, dir, self.resolve)?
                 .filter(|t| !self.stack.contains(t));
             let Some(target) = target else {
                 out.push_str(statement);
@@ -339,77 +339,155 @@ impl PlainImport {
 /// postcss-import's order: relative to the importer, then a node_modules
 /// package (its `style` / `main` entry, or a file inside it); `~` accepted.
 pub fn resolve_css_import(spec: &str, dir: &Path) -> Option<PathBuf> {
-    resolve_css_import_with(spec, dir, &CssResolve::default())
+    // No dedupe list, so nothing here can fail.
+    resolve_css_import_with(spec, dir, &CssResolve::default()).unwrap_or(None)
 }
 
 /// `resolve_css_import` after Vite's alias and root-absolute steps. A path
 /// alias resolves there, a package alias continues as a bare specifier; `/x`
 /// is the public file, else a file under the root, else a real absolute path.
+/// An error where the root's copy of a `resolve.dedupe` package rejects the
+/// import (its `exports` hide it): the importer's own copy is not an answer
+/// then, so a caller reports it instead of reading the import as unresolved.
 pub fn resolve_css_import_with(
     spec: &str,
     dir: &Path,
     resolve: &CssResolve<'_>,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, String> {
     let spec = strip_query(spec);
     let aliased = resolve.alias_spec(spec);
     let spec = match &aliased {
-        Some(a) if Path::new(a).is_absolute() => return first_css_file(Path::new(a)),
+        Some(a) if Path::new(a).is_absolute() => return Ok(first_css_file(Path::new(a))),
         Some(a) => a.as_str(),
         None if spec.starts_with('/') => {
-            return resolve
+            return Ok(resolve
                 .public_file(spec)
                 .or_else(|| resolve.root_path(spec).and_then(|p| first_css_file(&p)))
-                .or_else(|| first_css_file(Path::new(spec)));
+                .or_else(|| first_css_file(Path::new(spec))));
         }
         None => spec,
     };
     let spec = spec.strip_prefix('~').unwrap_or(spec);
     if spec.is_empty() {
-        return None;
+        return Ok(None);
     }
     if let Some(local) = first_css_file(&dir.join(spec)) {
-        return Some(local);
+        return Ok(Some(local));
     }
     if spec.starts_with("./") || spec.starts_with("../") {
-        return None;
+        return Ok(None);
     }
-    let (pkg, rest) = split_package_specifier(spec)?;
+    // Vite's CSS resolvers apply the environment's dedupe. Where the root's
+    // copy has no such file the importer's own lookup answers, as in Vite:
+    // its resolve plugin tries a bare import from the root, and one not found
+    // there goes on to the lookup from the importer (rolldown's
+    // vite_resolve_plugin.rs: resolve_bare_import, then resolve_raw).
+    if let Some(root) = resolve.dedupe_root(spec) {
+        let from_root = package_css_file(spec, root, resolve.production).map_err(|e| {
+            format!(
+                "cannot resolve @import \"{spec}\" from the root's copy of \"{}\" (resolve.dedupe): {e}",
+                oj_resolver::package_name(spec)
+            )
+        })?;
+        if from_root.is_some() {
+            return Ok(from_root);
+        }
+    }
+    Ok(package_css_file(spec, dir, resolve.production).unwrap_or(None))
+}
+
+/// A bare `spec` from the `node_modules` above `dir`; an error where the
+/// package's `exports` reject it.
+fn package_css_file(spec: &str, dir: &Path, production: bool) -> Result<Option<PathBuf>, String> {
+    let Some((pkg, rest)) = split_package_specifier(spec) else {
+        return Ok(None);
+    };
     for nm in node_modules_load_paths(dir) {
         let pkg_dir = nm.join(pkg);
         if !pkg_dir.is_dir() {
             continue;
         }
         if read_package_json(&pkg_dir).is_some_and(|json| json.get("exports").is_some()) {
-            return exports_css_entry(spec, dir, resolve.production);
+            return exports_css_entry(spec, dir, production);
         }
         if rest.is_empty() {
-            return package_css_entry(&pkg_dir);
+            return Ok(package_css_entry(&pkg_dir));
         }
         if let Some(file) = first_css_file(&pkg_dir.join(rest)) {
-            return Some(file);
+            return Ok(Some(file));
         }
     }
-    None
+    Ok(None)
 }
 
 /// A package with `exports` resolves through them alone, with Vite's CSS
 /// resolver conditions (`style`, the mode, `import`, `default`).
-fn exports_css_entry(spec: &str, dir: &Path, production: bool) -> Option<PathBuf> {
+fn exports_css_entry(spec: &str, dir: &Path, production: bool) -> Result<Option<PathBuf>, String> {
+    exports_entry(spec, dir, production, &["style"], &[".css"], false)
+}
+
+/// A bare `spec` from `dir` through its package's `exports`, with Vite's sass
+/// resolver options: the `sass` and `style` conditions and fields, a
+/// directory's index, and a `_partial` where the name as written finds nothing.
+pub(crate) fn exports_sass_entry(
+    spec: &str,
+    dir: &Path,
+    production: bool,
+) -> Result<Option<PathBuf>, String> {
+    let exts = [".scss", ".sass", ".css"];
+    let lookup = |spec: &str| exports_entry(spec, dir, production, &["sass", "style"], &exts, true);
+    let written = lookup(spec);
+    if let Ok(Some(_)) = written {
+        return written;
+    }
+    // Vite retries any miss with the prefix, an import `exports` reject included.
+    let partial = spec.rsplit_once('/').and_then(|(path, name)| {
+        (!name.is_empty() && split_package_specifier(path).is_some())
+            .then(|| lookup(&format!("{path}/_{name}")).ok().flatten())
+            .flatten()
+    });
+    match partial {
+        Some(file) => Ok(Some(file)),
+        None => written,
+    }
+}
+
+/// `spec` from `dir` with `kinds` as the leading conditions and main fields;
+/// None where nothing is found, an error where the package rejects the import.
+fn exports_entry(
+    spec: &str,
+    dir: &Path,
+    production: bool,
+    kinds: &[&str],
+    extensions: &[&str],
+    index: bool,
+) -> Result<Option<PathBuf>, String> {
     let mode = if production {
         "production"
     } else {
         "development"
     };
     let resolver = oxc_resolver::Resolver::new(oxc_resolver::ResolveOptions {
-        condition_names: ["style", mode, "import", "default"]
+        condition_names: kinds
+            .iter()
+            .copied()
+            .chain([mode, "import", "default"])
             .map(String::from)
-            .to_vec(),
-        extensions: vec![".css".to_string()],
-        main_fields: vec!["style".to_string()],
-        main_files: Vec::new(),
+            .collect(),
+        extensions: extensions.iter().map(|e| e.to_string()).collect(),
+        main_fields: kinds.iter().map(|k| k.to_string()).collect(),
+        main_files: if index {
+            vec!["index".to_string()]
+        } else {
+            Vec::new()
+        },
         ..oxc_resolver::ResolveOptions::default()
     });
-    resolver.resolve(dir, spec).ok().map(|r| r.into_path_buf())
+    match resolver.resolve(dir, spec) {
+        Ok(r) => Ok(Some(r.into_path_buf())),
+        Err(oxc_resolver::ResolveError::NotFound(_)) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// A bare package import: the `style` / `main` entry when it is CSS, else
@@ -443,7 +521,7 @@ fn css_file_candidates(base: &Path) -> Vec<PathBuf> {
 }
 
 /// `@scope/name/rest` -> (`@scope/name`, `rest`); `name/rest` -> (`name`, `rest`).
-fn split_package_specifier(spec: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_package_specifier(spec: &str) -> Option<(&str, &str)> {
     let name_end = if spec.starts_with('@') {
         let scope = spec.find('/')?;
         spec[scope + 1..]
@@ -634,24 +712,24 @@ mod tests {
         };
         let dir = base.join("src/ui");
         assert_eq!(
-            resolve_css_import_with("@/vars.css", &dir, &r),
+            resolve_css_import_with("@/vars.css", &dir, &r).unwrap(),
             Some(base.join("src/vars.css"))
         );
         assert_eq!(
-            resolve_css_import_with("@/vars", &dir, &r),
+            resolve_css_import_with("@/vars", &dir, &r).unwrap(),
             Some(base.join("src/vars.css")),
             "extension probed"
         );
         assert_eq!(
-            resolve_css_import_with("/src/vars.css", &dir, &r),
+            resolve_css_import_with("/src/vars.css", &dir, &r).unwrap(),
             Some(base.join("src/vars.css"))
         );
         assert_eq!(
-            resolve_css_import_with("/vendor.css", &dir, &r),
+            resolve_css_import_with("/vendor.css", &dir, &r).unwrap(),
             Some(base.join("public/vendor.css")),
             "public dir wins"
         );
-        assert_eq!(resolve_css_import_with("/nope.css", &dir, &r), None);
+        assert_eq!(resolve_css_import_with("/nope.css", &dir, &r), Ok(None));
         // Without a root the same specs stay unresolved (kept as written).
         assert_eq!(resolve_css_import("@/vars.css", &dir), None);
         assert_eq!(resolve_css_import("/src/vars.css", &dir), None);
@@ -770,6 +848,55 @@ mod tests {
     }
 
     #[test]
+    fn a_deduped_import_inside_a_dependency_takes_the_root_copy() {
+        let base = scratch("dedupe");
+        let consumer = base.join("node_modules/consumer");
+        for (dir, marker) in [
+            (base.join("node_modules/shared"), "root"),
+            (consumer.join("node_modules/shared"), "nested"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("package.json"), r#"{"name":"shared"}"#).unwrap();
+            std::fs::write(dir.join("s.css"), format!(".{marker} {{}}\n")).unwrap();
+        }
+        std::fs::write(consumer.join("node_modules/shared/only.css"), ".only {}\n").unwrap();
+        let dedupe = vec!["shared".to_string()];
+        let deduped = CssResolve {
+            root: Some(&base),
+            dedupe: &dedupe,
+            ..CssResolve::default()
+        };
+        let plain = CssResolve {
+            root: Some(&base),
+            ..CssResolve::default()
+        };
+        let r = |spec: &str, resolve: &CssResolve<'_>| {
+            resolve_css_import_with(spec, &consumer, resolve)
+                .unwrap()
+                .map(|p| p.strip_prefix(&base).unwrap().to_path_buf())
+        };
+        let nested = Path::new("node_modules/consumer/node_modules/shared");
+        assert_eq!(
+            r("shared/s.css", &deduped),
+            Some(PathBuf::from("node_modules/shared/s.css"))
+        );
+        assert_eq!(r("shared/s.css", &plain), Some(nested.join("s.css")));
+        assert_eq!(
+            r("shared/only.css", &deduped),
+            Some(nested.join("only.css")),
+            "a file the root's copy lacks falls back to the importer's"
+        );
+        std::fs::write(
+            base.join("node_modules/shared/package.json"),
+            r#"{"name":"shared","exports":{".":"./index.css"}}"#,
+        )
+        .unwrap();
+        let err = resolve_css_import_with("shared/s.css", &consumer, &deduped).unwrap_err();
+        assert!(err.contains("root's copy of \"shared\""), "{err}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn package_exports_resolve_with_vite_css_conditions() {
         let base = scratch("exports");
         let pkg = base.join("node_modules/ui-kit");
@@ -793,7 +920,9 @@ mod tests {
             ..CssResolve::default()
         };
         let r = |spec: &str, resolve: &CssResolve<'_>| {
-            resolve_css_import_with(spec, &base, resolve).map(|p| p.canonicalize().unwrap())
+            resolve_css_import_with(spec, &base, resolve)
+                .unwrap()
+                .map(|p| p.canonicalize().unwrap())
         };
         let dist = pkg.join("dist").canonicalize().unwrap();
         assert_eq!(

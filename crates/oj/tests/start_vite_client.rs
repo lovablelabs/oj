@@ -298,6 +298,64 @@ async fn server_headers_reach_vites_client_under_start() {
     }
 }
 
+// Vite's transform middleware answers `/@vite/client` to a script, `no-cache`
+// (`send`), and never to a page navigation: that request is the app's, which
+// renders what it renders for any path it has no route for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_visit_to_vites_client_is_the_apps() {
+    let Some(app) = app("vite-client-page-visit") else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let header = |headers: &[(String, String)], name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+
+    let (status, headers, body) = dev.fetch(
+        "GET",
+        "/@vite/client",
+        &[("Sec-Fetch-Dest", "script".to_string())],
+    );
+    let body = String::from_utf8_lossy(&body).into_owned();
+    assert_eq!(status, 200, "{body}\n{}", dev.output());
+    assert_eq!(header(&headers, "content-type"), "text/javascript");
+    assert_eq!(header(&headers, "cache-control"), "no-cache");
+    assert!(body.contains("export * from \"/@oj/client.js\";"), "{body}");
+
+    let (_, unknown, _) = dev.fetch(
+        "GET",
+        "/no-such-page",
+        &[
+            ("Sec-Fetch-Dest", "document".to_string()),
+            ("Accept", "text/html".to_string()),
+        ],
+    );
+    let (status, headers, body) = dev.fetch(
+        "GET",
+        "/@vite/client",
+        &[
+            ("Sec-Fetch-Dest", "document".to_string()),
+            ("Accept", "text/html".to_string()),
+        ],
+    );
+    let body = String::from_utf8_lossy(&body).into_owned();
+    assert!(
+        header(&headers, "content-type").starts_with("text/html"),
+        "status {status}, {headers:?}\n{body}"
+    );
+    assert_eq!(
+        header(&headers, "content-type"),
+        header(&unknown, "content-type"),
+        "the answer of a path the app has no route for"
+    );
+    assert!(!body.contains("export * from"), "{body}");
+    assert!(body.contains("<html"), "{body}");
+}
+
 // `/@vite/client` evaluated while the document still parses (an async script
 // ahead of a slow parser-blocking one) cannot see the live-reload tag yet: a
 // Start document keeps its one Start socket, a harness page gets oj's client

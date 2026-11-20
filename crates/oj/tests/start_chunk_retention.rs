@@ -9,8 +9,13 @@
 //! document was built with instead of a 404 and a blank page.
 //!
 //! The app is the Start fixture (see `start_app`) with a route that imports a
-//! module lazily, so the module gets a chunk of its own. The browser test
-//! skips without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
+//! module lazily, so the module gets a chunk of its own, under a dev server
+//! whose bundle takes no hot updates (every edit reloads its pages): there
+//! the entry imports that chunk by name. A bundle that takes hot updates
+//! asks the dev server for the module behind an `import()` by id instead
+//! (see `start_hot_lazy_import`), and only the chunks it imports statically
+//! go by name. The browser test skips without Chrome, unless
+//! `OJ_REQUIRE_BROWSER` is set.
 
 #[path = "../../oj_server/tests/dev/browser.rs"]
 #[allow(dead_code)]
@@ -88,12 +93,47 @@ fn write_note(root: &Path, text: &str) {
     std::fs::write(root.join(LAZY_NOTE), note(text)).unwrap();
 }
 
-/// The name of the note's chunk, as the served entry imports it.
-fn note_chunk(entry: &str) -> Option<String> {
-    let at = entry.find("lazy-note-")?;
-    let rest = &entry[at..];
-    let end = rest.find(".js")? + ".js".len();
-    Some(rest[..end].to_string())
+/// The editor's gate reloading the pages on every edit: no hot updates.
+const RELOADS: &[(&str, &str)] = &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")];
+
+/// With hot updates on, as `oj dev` runs by default.
+const HOT: &[(&str, &str)] = &[];
+
+/// Each dev server's app, by its port.
+static ROOTS: Mutex<Vec<(u16, std::path::PathBuf)>> = Mutex::new(Vec::new());
+
+/// `oj dev` on `root` with `env`, its app noted for [`note_chunk`].
+fn boot(root: &Path, env: &[(&str, &str)]) -> Server {
+    let dev = Server::oj_dev_with(root, env);
+    ROOTS.lock().unwrap().push((dev.port, root.to_path_buf()));
+    dev
+}
+
+/// The name of the note's chunk in the current bundle: as the served entry
+/// imports it, where the entry imports chunks by name; with hot updates on
+/// the entry asks for the module by id, and the chunk is the one of the
+/// bundle's index that holds the note (it is served by name all the same).
+fn note_chunk(server: &Server, entry: &str) -> Option<String> {
+    if let Some(at) = entry.find("lazy-note-") {
+        let rest = &entry[at..];
+        let end = rest.find(".js")? + ".js".len();
+        return Some(rest[..end].to_string());
+    }
+    let root = ROOTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(port, _)| *port == server.port)
+        .map(|(_, root)| root.clone())?;
+    let index = std::fs::read_to_string(root.join(".oj-cache/v1/start/client-chunks.json")).ok()?;
+    let index: serde_json::Value = serde_json::from_str(&index).ok()?;
+    index["files"].as_array()?.iter().find_map(|file| {
+        let name = file["name"].as_str()?;
+        let holds = name.starts_with("lazy-note-")
+            && std::fs::read_to_string(root.join(".oj-cache/v1/start/client-chunks").join(name))
+                .is_ok_and(|code| code.contains("const note = "));
+        holds.then(|| name.to_string())
+    })
 }
 
 fn entry(server: &Server) -> String {
@@ -105,10 +145,21 @@ fn entry(server: &Server) -> String {
 /// The note chunk's name once the entry imports one other than `not`.
 fn wait_for_note_chunk(server: &Server, not: Option<&str>) -> String {
     let deadline = Instant::now() + Duration::from_secs(60);
+    // The same name over a few looks: the dev server takes a bundle in
+    // right after its files are written, and asking it for a name it does
+    // not serve yet would be a request for a chunk that is gone.
+    let mut seen: Option<(String, u32)> = None;
     loop {
-        if let Some(name) = note_chunk(&entry(server)) {
+        if let Some(name) = note_chunk(server, &entry(server)) {
             if Some(name.as_str()) != not {
-                return name;
+                let looks = match &seen {
+                    Some((last, looks)) if *last == name => looks + 1,
+                    _ => 1,
+                };
+                if looks >= 6 {
+                    return name;
+                }
+                seen = Some((name, looks));
             }
         }
         assert!(
@@ -122,11 +173,14 @@ fn wait_for_note_chunk(server: &Server, not: Option<&str>) -> String {
 
 /// The fixture with the lazily imported note, its dev server, and the note
 /// chunk's first name and content.
-fn started(name: &str) -> Option<(start_app::App, Server, String, String)> {
-    let app = app(name)?;
+fn started(name: &str, env: &[(&str, &str)]) -> Option<(start_app::App, Server, String, String)> {
+    let app = app(&format!(
+        "{name}{}",
+        if env.is_empty() { "-hot" } else { "" }
+    ))?;
     std::fs::write(app.0.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(&app.0, "lazy-note-one");
-    let dev = Server::oj_dev(&app.0);
+    let dev = boot(&app.0, env);
     let first = wait_for_note_chunk(&dev, None);
     let (status, body) = dev.request("GET", &format!("/@oj-start/{first}"), &[]);
     assert!(
@@ -202,13 +256,22 @@ impl PageSocket {
 
 #[test]
 fn a_rebundle_keeps_serving_the_chunks_of_the_bundle_before_it() {
-    let Some(app) = app("chunk-retention") else {
+    rebundle_keeps_the_chunks_before_it("chunk-retention", RELOADS);
+}
+
+#[test]
+fn a_rebundle_after_a_hot_update_keeps_serving_the_chunks_before_it() {
+    rebundle_keeps_the_chunks_before_it("chunk-retention-hot", HOT);
+}
+
+fn rebundle_keeps_the_chunks_before_it(name: &str, env: &[(&str, &str)]) {
+    let Some(app) = app(name) else {
         return;
     };
     let root = &app.0;
     std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
     write_note(root, "lazy-note-one");
-    let dev = Server::oj_dev(root);
+    let dev = boot(root, env);
 
     let old = wait_for_note_chunk(&dev, None);
     let (status, old_body) = dev.request("GET", &format!("/@oj-start/{old}"), &[]);
@@ -250,7 +313,16 @@ fn a_rebundle_keeps_serving_the_chunks_of_the_bundle_before_it() {
 // way: the error goes to the overlay, not to the modules already loaded.
 #[test]
 fn a_failed_rebundle_keeps_every_served_chunk() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-failed") else {
+    failed_rebundle_keeps_every_chunk(RELOADS);
+}
+
+#[test]
+fn a_failed_rebundle_after_hot_updates_keeps_every_served_chunk() {
+    failed_rebundle_keeps_every_chunk(HOT);
+}
+
+fn failed_rebundle_keeps_every_chunk(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-failed", env) else {
         return;
     };
     let root = &app.0;
@@ -309,7 +381,16 @@ fn a_failed_rebundle_keeps_every_served_chunk() {
 // that is served tells the pages nothing.
 #[test]
 fn a_chunk_of_the_bundle_eight_rebundles_back_is_still_served() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-window") else {
+    chunk_eight_rebundles_back_is_served(RELOADS);
+}
+
+#[test]
+fn a_chunk_from_eight_hot_updates_back_is_still_served() {
+    chunk_eight_rebundles_back_is_served(HOT);
+}
+
+fn chunk_eight_rebundles_back_is_served(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-window", env) else {
         return;
     };
     let root = &app.0;
@@ -494,7 +575,16 @@ fn remove_files_with(dir: &Path, content: &[u8]) -> usize {
 // the pages, not a server fault.
 #[test]
 fn a_retained_chunk_whose_file_was_swept_is_not_found_and_the_pages_are_told() {
-    let Some((app, dev, first, first_body)) = started("chunk-retention-swept") else {
+    swept_chunk_is_not_found(RELOADS);
+}
+
+#[test]
+fn a_swept_chunk_is_not_found_and_the_pages_are_told_with_hot_updates_on() {
+    swept_chunk_is_not_found(HOT);
+}
+
+fn swept_chunk_is_not_found(env: &[(&str, &str)]) {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-swept", env) else {
         return;
     };
     let root = &app.0;
@@ -511,4 +601,188 @@ fn a_retained_chunk_whose_file_was_swept_is_not_found_and_the_pages_are_told() {
     assert!(page.told_gone(&first), "{:?}", page.frames.lock().unwrap());
     // The current bundle's chunk is untouched.
     assert_eq!(chunk(&dev, &second).0, 200);
+    // A page request for a name that was never a chunk is the app's, and no
+    // page hears of it; a module request for one still is told.
+    let page_req = [("accept", "text/html".to_string())];
+    dev.request("GET", "/@oj-start/never-a-chunk-page", &page_req);
+    let (status, _) = chunk(&dev, "never-a-chunk.js");
+    assert_eq!(status, 404);
+    assert!(page.told_gone("never-a-chunk.js"));
+    let frames = page.frames.lock().unwrap().clone();
+    assert!(
+        !frames.iter().any(|f| f.contains("never-a-chunk-page")),
+        "a page request told the pages a chunk is gone: {frames:?}"
+    );
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, value)| value.as_str())
+}
+
+// With hot updates on, a page that takes a change as a hot update is not
+// reloaded for it, so it can ask for a chunk long after the bundle that
+// named it, and the dev server's
+// answer for the name can change (a 404 once the name is dropped, which is
+// how the page learns it is too old). A browser told to keep the chunk for
+// good never asks. So a chunk is revalidated: `no-cache` with its ETag, and
+// a 304 for the ETag sent back, as Vite's dev server answers for every
+// module (server/send.ts). The chunk of the bundle before the current one
+// is served the same way.
+#[test]
+fn with_hot_updates_a_chunk_is_revalidated_not_cached_for_good() {
+    let Some((app, dev, first, first_body)) = started("chunk-retention-revalidate", &[]) else {
+        return;
+    };
+    let check = |name: &str, body: &str| {
+        let path = format!("/@oj-start/{name}");
+        let (status, headers, served) = dev.fetch("GET", &path, &[]);
+        assert_eq!(status, 200, "{name}\n{}", dev.output());
+        assert_eq!(String::from_utf8_lossy(&served), body, "{name}");
+        assert_eq!(
+            header(&headers, "cache-control"),
+            Some("no-cache"),
+            "{name} with hot updates on: {headers:?}"
+        );
+        let etag = header(&headers, "etag")
+            .unwrap_or_else(|| panic!("{name} has no ETag: {headers:?}"))
+            .to_string();
+        let (status, headers, served) = dev.fetch("GET", &path, &[("If-None-Match", etag.clone())]);
+        assert_eq!(status, 304, "{name} revalidated with {etag}: {headers:?}");
+        assert!(served.is_empty(), "a 304 has no body");
+        assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+        assert_eq!(header(&headers, "etag"), Some(etag.as_str()));
+        let (status, _, served) = dev.fetch(
+            "GET",
+            &path,
+            &[("If-None-Match", "W/\"other\"".to_string())],
+        );
+        assert_eq!(status, 200, "{name} asked for with another ETag");
+        assert_eq!(String::from_utf8_lossy(&served), body, "{name}");
+    };
+    check(&first, &first_body);
+
+    write_note(&app.0, "lazy-note-two");
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    let (_, second_body) = chunk(&dev, &second);
+    check(&first, &first_body);
+    check(&second, &second_body);
+}
+
+// Without hot updates (the editor's gate with full reloads) a change
+// reloads the pages onto the new names once the gate lets the reload
+// through, and a page still on an old entry is consistent with the old
+// chunks in its cache, so a name is fetched once and kept.
+#[test]
+fn without_hot_updates_a_chunk_is_cached_for_good() {
+    let Some(app) = app("chunk-retention-immutable") else {
+        return;
+    };
+    std::fs::write(app.0.join("src/routes/about.tsx"), ABOUT).unwrap();
+    write_note(&app.0, "lazy-note-one");
+    let dev = Server::oj_dev_with(
+        &app.0,
+        &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")],
+    );
+    let name = wait_for_note_chunk(&dev, None);
+    let (status, headers, _) = dev.fetch("GET", &format!("/@oj-start/{name}"), &[]);
+    assert_eq!(status, 200, "{name}\n{}", dev.output());
+    assert_eq!(
+        header(&headers, "cache-control"),
+        Some("max-age=31536000, immutable"),
+        "{name} without hot updates: {headers:?}"
+    );
+    assert!(header(&headers, "etag").is_some(), "{headers:?}");
+    // The entry has a fixed name, and is revalidated in both modes.
+    let (_, headers, _) = dev.fetch("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+}
+
+/// The note as a module that takes its own hot updates, so an edit to it
+/// reloads no page, and says which text last ran in the page (`__note`).
+fn accepting_note(text: &str) -> String {
+    format!(
+        "export const note = {text:?};\nglobalThis.__note = note;\nif (import.meta.hot) import.meta.hot.accept();\n"
+    )
+}
+
+// A page has the note's chunk loaded by its name, answered with the chunk.
+// The note is edited (a hot update; the page does not reload), and the
+// first name's file goes from the cache. A request for the first name is
+// then answered 404, and the server tells every open page the chunk is
+// gone. The page asked for that name too, but got it: it has nothing
+// broken, and must stay as it is, where it used to reload (and lose its
+// state) for a request that was not its own. (With hot updates on, a page's
+// own `import()` asks for the module by id, so the request by name is made
+// here by hand, in the page and then from outside it.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_running_a_chunk_is_not_reloaded_when_another_request_finds_it_gone() {
+    let Some(app) = app("chunk-retention-other-page") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    std::fs::write(root.join("src/routes/about.tsx"), ABOUT).unwrap();
+    std::fs::write(root.join("src/routes/index.tsx"), INDEX).unwrap();
+    std::fs::write(root.join(LAZY_NOTE), accepting_note("lazy-note-one")).unwrap();
+    let dev = boot(&root, HOT);
+    let first = wait_for_note_chunk(&dev, None);
+    let (status, first_body) = chunk(&dev, &first);
+    assert_eq!(status, 200, "{first_body}\n{}", dev.output());
+
+    let note = "document.querySelector('#note')?.textContent";
+    let loaded = Page::open(&dev.url("/about")).await;
+    loaded
+        .wait_for(&format!("{note} === 'lazy-note-one'"), WAIT)
+        .await;
+    loaded.eval::<bool>("(window.__mark = 'kept', true)").await;
+    // The chunk by its name, answered: on the page's resource timeline.
+    loaded
+        .eval::<bool>(&format!(
+            "(import('/@oj-start/{first}').then(() => (window.__byName = true)), true)"
+        ))
+        .await;
+    loaded.wait_for("window.__byName === true", WAIT).await;
+
+    std::fs::write(root.join(LAZY_NOTE), accepting_note("lazy-note-two")).unwrap();
+    let second = wait_for_note_chunk(&dev, Some(&first));
+    assert_ne!(second, first);
+    // The hot update is out, and applied where the module runs, before the
+    // chunk goes.
+    loaded
+        .wait_for("globalThis.__note === 'lazy-note-two'", WAIT)
+        .await;
+    assert!(
+        loaded.eval::<bool>("window.__mark === 'kept'").await,
+        "the hot update reloaded the page\n{}",
+        dev.output()
+    );
+    let removed = remove_files_with(&root.join(".oj-cache"), first_body.as_bytes());
+    assert!(removed > 0, "the first chunk's file was not in the cache");
+
+    // A request for the first name, gone: every open page is told.
+    let (status, body) = chunk(&dev, &first);
+    assert_eq!(status, 404, "{body}\n{}", dev.output());
+
+    // The frame's last look at the page's requests is 1.3 s after it.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        loaded.eval::<bool>("window.__mark === 'kept'").await,
+        "the page that has the chunk loaded reloaded for a request that was not its own: {:?}\n{}",
+        loaded.console(),
+        dev.output()
+    );
+    assert!(
+        !loaded
+            .console()
+            .iter()
+            .any(|line| line.contains("gone from the dev server")),
+        "{:?}",
+        loaded.console()
+    );
+    loaded.close().await;
 }

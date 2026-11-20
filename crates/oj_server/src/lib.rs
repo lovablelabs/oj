@@ -76,11 +76,75 @@ const HMR_WS_PATH: &str = "/__ws";
 const HMR_FLUSH_PATH: &str = "/__hmr_flush";
 const HMR_GATE_PATH: &str = "/__hmr_gate";
 
-/// The `/__` paths the dev server itself serves. Everything else under `/__`
-/// is the app's, as in Vite, which reserves no such prefix: a framework route
-/// or a plugin middleware page (`/__component/preview/X`) must reach them.
+/// The `/@` urls under which oj serves its own modules and endpoints (the
+/// Start dev host's `/@oj-start/` included).
+const DEV_SERVER_AT_PREFIXES: &[&str] = &[
+    "/@id/",
+    "/@oj/",
+    "/@oj-deps/",
+    deps::OPTIONAL_PEER_PREFIX,
+    "/@oj-start/",
+    "/@presolve/",
+    "/@virtual/",
+];
+/// oj's own single-path `/@` urls, and Vite's `/@vite/client`, which oj
+/// answers with its own client.
+const DEV_SERVER_AT_PATHS: &[&str] = &[
+    "/@vite/client",
+    "/@vite/env",
+    "/@react-refresh",
+    "/@oj-empty",
+    "/@ssr-resolve",
+    "/@ssr-module",
+];
+
+/// The paths the dev server tries first: its `/__` endpoints and its `/@`
+/// urls. Everything else, and a miss among these, is the app's.
 pub fn is_dev_server_path(path: &str) -> bool {
     matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
+        || DEV_SERVER_AT_PATHS.contains(&path)
+        || DEV_SERVER_AT_PREFIXES.iter().any(|p| path.starts_with(p))
+        || fs_url_path(path).is_some()
+}
+
+/// [`is_dev_server_path`], less a page navigation to one of Vite's urls, which
+/// Vite's transform middleware never answers; oj's own endpoints answer all.
+pub fn is_dev_server_request(path: &str, headers: &HeaderMap) -> bool {
+    is_dev_server_path(path) && !(is_vite_url(path) && is_document_fetch(headers))
+}
+
+/// The urls only Vite's transform middleware serves (`isInternalRequest`,
+/// plugin-react's `/@react-refresh`).
+fn is_vite_url(path: &str) -> bool {
+    matches!(path, "/@vite/client" | "/@vite/env" | "/@react-refresh") || path.starts_with("/@id/")
+}
+
+/// A request for a page: a navigation or one that asks for html. Only such a
+/// request a `/@` url misses goes on to a framework's render.
+pub fn is_page_request(headers: &HeaderMap) -> bool {
+    is_document_fetch(headers)
+        || headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|a| a.contains("text/html"))
+}
+
+/// Vite's `documentFetchDests`: a request the browser makes for a page.
+pub fn is_document_fetch(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|d| matches!(d, "document" | "iframe" | "frame" | "fencedframe"))
+}
+
+/// The absolute path an `/@fs` url names: `/@fs/abs`, or `/@fsC:/abs` for a
+/// Windows drive.
+pub(crate) fn fs_url_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/@fs")?;
+    let drive = rest.as_bytes();
+    (rest.starts_with('/')
+        || (drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':'))
+        .then_some(rest)
 }
 mod dev_html;
 mod html;
@@ -1389,7 +1453,7 @@ pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver 
         oj_resolver::ResolveSettings {
             conditions: oj_config::resolve_conditions(config, "client"),
             alias: oj_config::resolve_alias(config, "client"),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, "client"),
             extensions: oj_config::resolve_extensions(config),
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
@@ -1563,7 +1627,7 @@ fn optimized_deps(
             entries,
             build_inputs: oj_config::build_inputs(config),
             build_out_dir: oj_config::build_out_dir(config),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, "client"),
             alias: oj_config::resolve_alias(config, "client"),
             force: oj_config::optimize_deps_force(config),
             bundler_options: oj_config::optimize_deps_bundler_options(config),
@@ -1700,7 +1764,11 @@ fn build_router(
             .route(
                 "/@vite/client",
                 get(|State(state): State<Arc<ServerState>>| async move {
-                    js(state.oj_paths.vite_client_js.clone())
+                    // Vite's `send` answers its client `no-cache`.
+                    (
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        js(state.oj_paths.vite_client_js.clone()),
+                    )
                 }),
             )
             .route(
@@ -1734,6 +1802,10 @@ fn build_router(
             .route(HMR_WS_PATH, get(ws_upgrade))
             .route(HMR_FLUSH_PATH, post(hmr_flush))
             .route(HMR_GATE_PATH, get(hmr_gate_status))
+            .route_layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                page_navigation_middleware,
+            ))
             .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
@@ -2241,6 +2313,7 @@ impl DevServer {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
             alias: oj_config::resolve_alias(&config, "client"),
+            dedupe: oj_config::environment_dedupe(&config, "client"),
             // Dev lowers to build.cssTarget too (Vite's lightningcss options
             // are resolved once from it); dev output is never minified.
             targets: oj_config::build_css_targets(&config),

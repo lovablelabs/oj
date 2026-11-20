@@ -561,14 +561,14 @@ pub(crate) fn plugin_claims(state: &ServerState, file: &Path, url: &str) -> bool
         .is_some_and(|host| host.hook_claims_module(&hook_id(file, url)))
 }
 
-/// [`plugin_claims`] for a served url under the root (`/src/a.mdx?q`); an
-/// `/@`-prefixed or `/@fs/` url is never a plugin-claimed file.
+/// [`plugin_claims`] for a served url under the root (`/src/a.mdx?q`); oj's
+/// own urls (`/@fs/`, `/@id/`) are never a plugin-claimed file.
 pub(crate) fn plugin_claims_url(state: &ServerState, url: &str) -> bool {
     let path = url.split('?').next().unwrap_or(url);
     let Some(rel) = path.strip_prefix('/') else {
         return false;
     };
-    if path.starts_with("/@") {
+    if crate::is_dev_server_path(path) {
         return false;
     }
     plugin_claims(state, &state.root.join(rel), url)

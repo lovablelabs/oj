@@ -276,3 +276,79 @@ async fn a_bare_vite_client_import_resolves() {
         "{main}"
     );
 }
+
+// Vite's transform middleware answers `/@vite/client` to a script and never
+// to a page navigation, which gets the page any other path gets; its `send`
+// marks the client `no-cache`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_visit_to_vites_client_gets_the_page_not_the_client() {
+    let app = public_page_app("<!doctype html><html><body></body></html>");
+    let server = app.serve().await;
+    let fetch = |dest: &'static str| {
+        let req = axum::http::Request::get("/@vite/client")
+            .header("sec-fetch-dest", dest)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        server.request(req)
+    };
+    let script = fetch("script").await;
+    assert_eq!(script.status, 200);
+    assert_eq!(
+        script.body,
+        "import \"/@vite/env\";\nexport * from \"/@oj/client.js\";\n"
+    );
+    assert_eq!(
+        script.headers.get("content-type").unwrap(),
+        "text/javascript"
+    );
+    assert_eq!(script.headers.get("cache-control").unwrap(), "no-cache");
+
+    let page = fetch("document").await;
+    assert_eq!(page.status, 200, "{}", page.body);
+    let kind = page.headers.get("content-type").unwrap().to_str().unwrap();
+    assert!(kind.starts_with("text/html"), "{kind}");
+    assert!(page.body.contains("/src/main.js"), "{}", page.body);
+}
+
+// The "pending" mark Start's page client leaves outlives the parse it was made
+// in. A copy of the client that evaluates after the document has parsed has
+// no DOMContentLoaded left to wait for: it decides at once, and on a page
+// without Start's live-reload tag that means it connects.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_mark_met_after_the_parse_is_decided_at_once() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = public_page_app(
+        r#"<!doctype html><html><head><script>
+window.__sockets = [];
+const Native = window.WebSocket;
+window.WebSocket = class extends Native {
+  constructor(url, protocols) { super(url, protocols); window.__sockets.push(String(url)); }
+};
+globalThis.__ojPageClient = "pending";
+window.addEventListener("load", () => {
+  window.__stateAtImport = document.readyState;
+  import("/@oj/client.js").then(() => { window.__clientLoaded = true; });
+});
+</script></head><body></body></html>"#,
+    );
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let page = Page::open(&format!(
+        "http://127.0.0.1:{}/page.html",
+        listening.addr.port()
+    ))
+    .await;
+    let loaded = page.poll("window.__clientLoaded === true", WAIT).await;
+    assert!(loaded, "the client never loaded: {:?}", page.errors());
+    let connected = page
+        .poll("window.__sockets.length === 1", Duration::from_secs(5))
+        .await;
+    let seen: serde_json::Value = page
+        .eval("[window.__stateAtImport, window.__sockets.length]")
+        .await;
+    page.close().await;
+    assert!(connected, "state at import and sockets: {seen}");
+    assert_eq!(seen, serde_json::json!(["complete", 1]));
+}

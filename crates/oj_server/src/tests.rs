@@ -1264,6 +1264,20 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
 }
 
 #[test]
+fn an_updated_module_in_an_at_named_root_folder_is_stamped() {
+    // `<root>/@x/a.js` is served at `/@x/a.js`, a url like any other: its
+    // importer names its new version after an edit, as Vite's does.
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/@x/a.js", 5),
+        "/@x/a.js?t=5"
+    );
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/@id/virtual:x.js", 5),
+        "/@id/virtual:x.js"
+    );
+}
+
+#[test]
 fn proxy_regex_contexts_match_path_and_query_like_vite() {
     let entries: Vec<(String, oj_config::ProxyEntry)> = [
         ("/api", "http://a"),
@@ -1709,7 +1723,7 @@ fn spa_navigation_falls_back_only_for_routes() {
     assert!(is_spa_navigation("report.v2", &html));
     assert!(!is_spa_navigation("missing.png", &empty));
     assert!(!is_spa_navigation("assets/app.js", &empty));
-    assert!(!is_spa_navigation("@vite/client", &html));
+    assert!(is_spa_navigation("@vite/client", &html));
     assert!(!is_spa_navigation("src/does-not-exist.tsx", &html));
     assert!(!is_spa_navigation("node_modules/react/missing.js", &html));
 }
@@ -2691,6 +2705,23 @@ fn a_define_reading_import_meta_env_gets_the_env_object_first() {
     assert!(js.contains(r#"{"__DEV__": import.meta.env.DEV}"#), "{js}");
 }
 
+// Only a value that reads `import.meta.env` needs it: a string literal whose
+// text names it reads nothing (Vite's lexer finds no `import.meta` in it),
+// nor does a key, which is a property name in the module.
+#[test]
+fn a_define_that_only_names_import_meta_env_gets_no_env_object() {
+    let cfg: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "define": { "__NOTE__": "\"see import.meta.env.DEV\"", "import.meta.env": "{}" } }"#,
+    )
+    .unwrap();
+    let js = vite_env_module(&cfg, "{\"DEV\":true}");
+    assert!(js.starts_with("const context"), "{js}");
+    assert!(
+        js.contains(r#""__NOTE__": "see import.meta.env.DEV""#),
+        "{js}"
+    );
+}
+
 // A function `assetsInlineLimit` decides first; when it returns nothing the
 // default 4096 bytes apply, not a configured number, and an environment's own
 // number is its limit (Vite's shouldInline on environment.config.build). A
@@ -2912,6 +2943,11 @@ fn preload_hints_name_the_exact_import_url() {
     assert_eq!(
         preload_href(Path::new("/app"), "/src/assets/hero.png", &entries, false),
         "/src/assets/hero.png?url"
+    );
+    // A root folder named `@x` holds assets like any other.
+    assert_eq!(
+        preload_href(Path::new("/app"), "/@x/hero.png", &entries, false),
+        "/@x/hero.png?url"
     );
     assert_eq!(
         preload_href(Path::new("/app"), "/src/logo.svg", &entries, false),
@@ -3225,4 +3261,98 @@ fn the_hmr_clock_is_strictly_increasing_across_threads() {
     all.dedup();
     assert_eq!(all.len(), count, "no stamp is handed out twice");
     assert!(all[0] >= before, "a stamp is never behind the clock");
+}
+
+/// Every `/@` url a dev server route or handler answers is the dev server's;
+/// any other `/@` path (a route param like `/@someone`) is the app's, as Vite
+/// reserves only its own `/@` urls.
+#[test]
+fn dev_server_paths_are_the_urls_oj_serves() {
+    for own in [
+        "/@oj/client.js",
+        "/@oj/refresh-runtime.js",
+        "/@oj/refresh-preamble.js",
+        "/@oj/routes.js",
+        runtime_env::MODULE_PATH,
+        runtime_env::CONTROL_PATH,
+        "/@oj/debug/gc",
+        "/@oj/diagnostics",
+        "/@oj/typecheck",
+        "/@oj/server-fn.js",
+        "/@oj/lingui-macro-shim.js",
+        "/@oj/tanstack/routes.json",
+        "/@vite/client",
+        "/@vite/env",
+        "/@react-refresh",
+        "/@ssr-resolve",
+        "/@ssr-module",
+        "/@oj-deps/react.js",
+        "/@oj-empty",
+        "/@oj-optional-peer/6e6f6465",
+        "/@virtual/routes",
+        "/@presolve/6e6f6465",
+        "/@id/__x00__virtual:x",
+        "/@fs/repo/packages/ui/src/index.ts",
+        "/@fsC:/repo/packages/ui/src/index.ts",
+        "/@oj-start/hmr",
+        "/@oj-start/fs/app/src/a.css",
+        "/@oj-start/client-entry.js",
+        HMR_WS_PATH,
+        HMR_FLUSH_PATH,
+        HMR_GATE_PATH,
+    ] {
+        assert!(is_dev_server_path(own), "{own} is oj's");
+    }
+    for app in [
+        "/@someone",
+        "/@someone/posts",
+        "/@fsomeone",
+        "/@idle",
+        "/@oj",
+        "/@ojfan/posts",
+        "/@react-refresh/x",
+        "/@vite",
+        "/__component/preview/Badge",
+        "/someone",
+    ] {
+        assert!(!is_dev_server_path(app), "{app} is the app's");
+    }
+}
+
+#[test]
+fn a_page_navigation_to_a_vite_url_is_not_the_dev_servers() {
+    let dest = |d: &str| {
+        let mut h = HeaderMap::new();
+        h.insert("sec-fetch-dest", d.parse().unwrap());
+        h
+    };
+    for page in ["document", "iframe", "frame", "fencedframe"] {
+        for vite in [
+            "/@id/posts",
+            "/@vite/client",
+            "/@vite/env",
+            "/@react-refresh",
+        ] {
+            assert!(
+                !is_dev_server_request(vite, &dest(page)),
+                "{vite} as {page}"
+            );
+        }
+    }
+    // A module request, or none named, is the dev server's first.
+    for d in ["script", "empty", "worker", "style"] {
+        assert!(is_dev_server_request("/@id/posts", &dest(d)), "{d}");
+    }
+    assert!(is_dev_server_request("/@vite/env", &HeaderMap::new()));
+    // oj's own endpoints, `/@fs/` files and `/__` endpoints answer a page too.
+    for own in [
+        "/@oj/client.js",
+        "/@oj/diagnostics",
+        "/@oj-start/hmr",
+        "/@oj-deps/react.js",
+        "/@fs/etc/passwd",
+        HMR_GATE_PATH,
+    ] {
+        assert!(is_dev_server_request(own, &dest("document")), "{own}");
+    }
 }

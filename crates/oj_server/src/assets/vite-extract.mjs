@@ -6,7 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode, esmEntry, startRouterGenerator } from "./vite-config-node.mjs";
+import { asNode, esmEntry, pluginContextMeta, startRouterGenerator } from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
@@ -938,6 +938,7 @@ async function loadConfig() {
   if (vitePath) {
     try {
       const vite = await import(pathToFileURL(vitePath).href);
+      configHookContext.meta = pluginContextMeta(vite);
       // Vite evaluates the config file ONCE: resolveConfig itself calls
       // loadConfigFromFile and merges the inline config over the file's
       // (node.js resolveConfig: `config = mergeConfig(loadResult.config,
@@ -1415,6 +1416,16 @@ function extractEsbuild(es) {
   return Object.keys(out).length ? out : null;
 }
 
+// An environment's resolved `resolve.dedupe`, whole: the top-level list, the
+// config file's `environments.<name>.resolve.dedupe` and what plugins'
+// `configEnvironment` hooks add (TanStack Start's React and router, for the
+// client and for ssr). The merge drops what the environment already lists.
+function extractEnvironmentDedupe(c, name) {
+  const list = c.environments?.[name]?.resolve?.dedupe;
+  const own = Array.isArray(list) ? list.filter((x) => typeof x === "string") : [];
+  return own.length ? own : null;
+}
+
 // `ssr.noExternal`/`external` entries: strings and globs pass through, RegExps
 // become `{ regex }`, `true` stays `true`.
 function extractSsr(ssr, ssrEnvironment) {
@@ -1495,9 +1506,10 @@ const skipsConfigHook = (p) => {
   return isReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
 };
 
-// Vite's BasicMinimalPluginContext surface, enough for a config hook to speak.
+// Vite's BasicMinimalPluginContext surface, enough for a config hook to speak;
+// the meta is the app's Vite's once loadConfig imported it, as the host's is.
 const configHookContext = {
-  meta: { rollupVersion: "4.0.0", watchMode: false },
+  meta: pluginContextMeta(null),
   debug() {},
   info() {},
   warn(m) {
@@ -1843,6 +1855,7 @@ export {
   extractOptimizeDeps,
   extractProxy,
   extractResolve,
+  extractEnvironmentDedupe,
   extractSsr,
   mergeConfigLite,
   warnUnsupported,
@@ -2109,6 +2122,10 @@ async function extractValues(input) {
           }),
         ),
         dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
+        // Each environment's own resolved list: oj's top-level list can differ
+        // from Vite's (the config file's wins), so nothing is subtracted here.
+        clientDedupe: extractEnvironmentDedupe(c, "client"),
+        ssrDedupe: extractEnvironmentDedupe(c, "ssr"),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
         oxc: extractOxc(c.oxc),

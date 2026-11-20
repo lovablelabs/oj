@@ -139,9 +139,10 @@ struct StartState {
     /// Edits changed the bundle's inputs while no page loaded it, and no
     /// rebundle ran for them; the next runner document brings it current.
     bundle_deferred: std::sync::atomic::AtomicBool,
-    /// True while the deferred bundle is building: a runner document waits
-    /// for it rather than handing out the empty one.
-    deferred_build: tokio::sync::watch::Sender<bool>,
+    /// How many runs documents wait for (the deferred bundle building, the
+    /// boot's rebuild of what moved under the boot bundle): a runner document
+    /// waits for none to be left rather than handing out a stale bundle.
+    deferred_build: tokio::sync::watch::Sender<usize>,
     /// The coalescing rebundle worker's queue (at most one pending run) and
     /// its wake.
     rebundles: Arc<std::sync::Mutex<Option<PendingRebundle>>>,
@@ -685,9 +686,17 @@ pub async fn start_dev(
         built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
     ));
     if let Some(gate) = built.hmr_gate.clone() {
+        let holder = gate.clone();
         bundler
             .hot
             .set_gate(Arc::new(move || gate.reload_is_held()));
+        // The files the watcher below would rebuild for, as it holds them.
+        bundler.hot.set_holder(Arc::new(move |files| {
+            let paths = changed_files(files);
+            if !paths.is_empty() {
+                holder.hold_reload(&paths);
+            }
+        }));
     }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
@@ -743,7 +752,7 @@ pub async fn start_dev(
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
         bundle_deferred: std::sync::atomic::AtomicBool::new(defer_bundle),
-        deferred_build: tokio::sync::watch::channel(false).0,
+        deferred_build: tokio::sync::watch::channel(0).0,
         rebundles: Arc::new(std::sync::Mutex::new(None)),
         rebundle_wake: Arc::new(tokio::sync::Notify::new()),
         ssr: built.ssr.clone(),
@@ -815,7 +824,44 @@ pub async fn start_dev(
             }
         });
     }
-    spawn_start_watcher(root.clone(), cache.clone(), Arc::clone(&state), watch_rx);
+    // Scanned once the watcher covers the root: a save before is moved, one
+    // after reaches the watcher. Documents wait for the scan's rebuild.
+    built.watcher_ready().await;
+    oj_server::boot_phase("watcher ready, boot scan next");
+    let boot = {
+        let (state, cache) = (Arc::clone(&state), cache.clone());
+        tokio::task::spawn_blocking(move || {
+            boot_scan_delay_for_tests();
+            // A save made while the server starts is the boot's to pick up
+            // (the scan below, or the build that read it), not an edit the
+            // editor will flush: no page has loaded anything yet. The dev
+            // server's watcher and the bundler's engine, both watching by
+            // now, hold such a save as they report it, and with no flush to
+            // come it stayed held until the gate's cap, an `import()` of the
+            // file waiting with it.
+            if let Some(gate) = &state.gate {
+                gate.cover_writes_so_far();
+            }
+            boot_changes(&state, &cache)
+        })
+        .await?
+    };
+    let boot = (!boot.0.is_empty() || !boot.1.is_empty()).then(|| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        hold_documents(&state.deferred_build, rx);
+        BootBatch {
+            moved: boot.0,
+            added: boot.1,
+            done: tx,
+        }
+    });
+    spawn_start_watcher(
+        root.clone(),
+        cache.clone(),
+        Arc::clone(&state),
+        watch_rx,
+        boot,
+    );
     // Once the serve info says oj's runner renders the documents (no worker
     // environment does, or the host never announced), their pages load the
     // Start bundle: build a deferred one then, as Vite's bundled dev builds
@@ -883,7 +929,7 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
         return;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
-    state.deferred_build.send_replace(true);
+    hold_documents(&state.deferred_build, rx);
     state.flush_timing.rebundle_wanted();
     {
         let mut slot = state
@@ -895,10 +941,19 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
         run.done.push(tx);
     }
     state.rebundle_wake.notify_one();
-    let state = Arc::clone(state);
+}
+
+/// Runner documents wait (`ensure_bundle_current`) until `done` fires or is
+/// dropped.
+fn hold_documents(
+    holds: &tokio::sync::watch::Sender<usize>,
+    done: tokio::sync::oneshot::Receiver<()>,
+) {
+    holds.send_modify(|n| *n += 1);
+    let holds = holds.clone();
     tokio::spawn(async move {
-        let _ = rx.await;
-        state.deferred_build.send_replace(false);
+        let _ = done.await;
+        holds.send_modify(|n| *n -= 1);
     });
 }
 
@@ -913,7 +968,7 @@ async fn ensure_bundle_current(state: &Arc<StartState>) {
     let mut building = state.deferred_build.subscribe();
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        building.wait_for(|b| !*b),
+        building.wait_for(|n| *n == 0),
     )
     .await;
 }
@@ -1199,6 +1254,48 @@ fn tag_end(tag: &[u8]) -> Option<usize> {
     None
 }
 
+/// The Start watcher's first batch: what moved under the boot bundle before
+/// the watcher was up (`boot_changes`), and the sender documents wait on.
+struct BootBatch {
+    moved: std::collections::HashSet<PathBuf>,
+    added: std::collections::HashSet<PathBuf>,
+    done: tokio::sync::oneshot::Sender<()>,
+}
+
+/// The contents each file of the boot batch had when the batch was queued
+/// (none: no file), which the boot's rebuild then read. An event the watcher
+/// had queued for one of them reports those same contents.
+#[derive(Default)]
+struct BootCovered(std::collections::HashMap<PathBuf, Option<blake3::Hash>>);
+
+impl BootCovered {
+    fn of(paths: &std::collections::HashSet<PathBuf>) -> Self {
+        Self(
+            paths
+                .iter()
+                .map(|p| (p.clone(), Self::contents(p)))
+                .collect(),
+        )
+    }
+
+    fn contents(path: &Path) -> Option<blake3::Hash> {
+        std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
+    }
+
+    /// Takes out of `paths`, a batch of watcher events, the files that are
+    /// still as the boot batch had them. A file is asked about once: its
+    /// next event is a save of its own, whatever it wrote.
+    fn drop_covered(&mut self, paths: &mut std::collections::HashSet<PathBuf>) {
+        if self.0.is_empty() {
+            return;
+        }
+        paths.retain(|p| match self.0.remove(p) {
+            Some(at_boot) => Self::contents(p) != at_boot,
+            None => true,
+        });
+    }
+}
+
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
 /// rebundle worker. Batches landing while a rebundle is in flight merge into
 /// the single pending run (paths union), so at most one run ever queues.
@@ -1324,11 +1421,11 @@ fn added_to_glob(
     closure: &std::collections::HashSet<PathBuf>,
     p: &Path,
 ) -> bool {
-    if scopes.is_empty() || !p.is_file() {
+    if scopes.is_empty() || closure.contains(p) || !p.is_file() {
         return false;
     }
     let real = std::fs::canonicalize(p).ok();
-    if closure.contains(p) || real.as_ref().is_some_and(|r| closure.contains(r)) {
+    if real.as_ref().is_some_and(|r| closure.contains(r)) {
         return false;
     }
     let matched = |p: &Path| {
@@ -1435,6 +1532,45 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .flat_map(oj_compiler::glob::GlobCall::files)
         .filter(|f| !left_out(f))
         .collect()
+}
+
+/// Tests stretch the moment between the watcher's start and the boot scan
+/// (`OJ_BOOT_SCAN_DELAY_MS`), where a save is both in the scan and an event
+/// queued for the watcher.
+fn boot_scan_delay_for_tests() {
+    if let Some(delay) = std::env::var("OJ_BOOT_SCAN_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+}
+
+/// What changed under the boot bundle before the watcher covered the root:
+/// its files saved since it read them (or its restore verified them), and
+/// the files its globs match today that it never read, as the restore's own
+/// glob check finds them.
+fn boot_changes(
+    state: &StartState,
+    cache: &Path,
+) -> (
+    std::collections::HashSet<PathBuf>,
+    std::collections::HashSet<PathBuf>,
+) {
+    let moved = state.bundler.moved_inputs().into_iter().collect();
+    let inputs = state.bundler.input_files();
+    if inputs.is_empty() {
+        return (moved, Default::default());
+    }
+    let scopes = state
+        .client_glob_scopes
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let added = restorable_glob_members(&cache.join("glob-scopes.json"), cache)
+        .into_iter()
+        .filter(|f| added_to_glob(&scopes, &inputs, f))
+        .collect();
+    (moved, added)
 }
 
 /// Whether the client bundle hot-updates, given the editor's gate (`Some`
@@ -1547,6 +1683,7 @@ fn spawn_start_watcher(
     cache: PathBuf,
     state: Arc<StartState>,
     rx: std::sync::mpsc::Receiver<notify::Event>,
+    mut boot: Option<BootBatch>,
 ) {
     let rt = tokio::runtime::Handle::current();
     let pending = Arc::clone(&state.rebundles);
@@ -1599,31 +1736,53 @@ fn spawn_start_watcher(
         // not changes: the client rebundle reads every source file, which
         // otherwise looked like an edit of every source file and rebuilt again.
         let mut changes = oj_server::ContentChanges::new();
-        // Scanned on this thread, so boot never waits on it: events queue on
-        // the feed meanwhile. A file created while it runs can read as known,
-        // a race chokidar's own initial scan has too.
-        let mut known = KnownFiles(oj_server::watched_files(&watch_root));
-        state.flush_timing.watcher_armed();
+        // Scanned once the boot batch is queued; events queue on the feed
+        // meanwhile (a file created during it can read as known, as in chokidar).
+        let mut known: Option<KnownFiles> = None;
+        // The boot batch's files as they were when it was queued.
+        let mut covered = BootCovered::default();
         loop {
+            if boot.is_none() && known.is_none() {
+                known = Some(KnownFiles(oj_server::watched_files(&watch_root)));
+                state.flush_timing.watcher_armed();
+            }
             let mut created: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            // The boot's revalidation asks whether this thread is caught up
-            // with its feed (`FlushTiming::watcher_caught_up`): idle while
-            // waiting on an empty one, not from the first event in hand.
-            let first = match rx.try_recv() {
-                Ok(ev) => Ok(ev),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    state.flush_timing.watcher_idle(true);
-                    rx.recv()
+            // What moved under the boot bundle before the watcher was up
+            // reached no event: it is the first batch, or the client would
+            // keep the bundle from before it while the server renders it.
+            let mut boot_done = None;
+            let first_batch = boot.take().map(|b| {
+                created.extend(b.added.iter().cloned());
+                boot_done = Some(b.done);
+                let paths: std::collections::HashSet<PathBuf> =
+                    b.moved.into_iter().chain(b.added).collect();
+                covered = BootCovered::of(&paths);
+                paths
+            });
+            let at_boot = first_batch.is_some();
+            let mut paths: std::collections::HashSet<PathBuf> = if let Some(paths) = first_batch {
+                paths
+            } else {
+                // The boot's revalidation asks whether this thread is caught
+                // up with its feed (`FlushTiming::watcher_caught_up`): idle
+                // while waiting on an empty one, not from the first event in
+                // hand.
+                let first = match rx.try_recv() {
+                    Ok(ev) => Ok(ev),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        state.flush_timing.watcher_idle(true);
+                        rx.recv()
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                };
+                state.flush_timing.watcher_idle(false);
+                match first {
+                    Ok(ev) => {
+                        created.extend(known.as_mut().map(|k| k.adds(&ev)).unwrap_or_default());
+                        changes.changed_paths(&ev).into_iter().collect()
+                    }
+                    Err(_) => break,
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-            };
-            state.flush_timing.watcher_idle(false);
-            let mut paths: std::collections::HashSet<PathBuf> = match first {
-                Ok(ev) => {
-                    created.extend(known.adds(&ev));
-                    changes.changed_paths(&ev).into_iter().collect()
-                }
-                Err(_) => break,
             };
             // A request can arrive milliseconds after a save: invalidate the
             // worker environments on the first raw event, before the settle
@@ -1637,17 +1796,26 @@ fn spawn_start_watcher(
             // matched, and the dedup means the settled send alone can read
             // as a miss for a change this early send already carried.
             let early_invalidate = spawn_mw_invalidate(&rt, &state, &paths, &created);
-            loop {
-                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(ev) => {
-                        created.extend(known.adds(&ev));
-                        paths.extend(changes.changed_paths(&ev));
+            // The boot batch is queued at once; later events are the next one's.
+            if let Some(known) = known.as_mut() {
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(ev) => {
+                            created.extend(known.adds(&ev));
+                            paths.extend(changes.changed_paths(&ev));
+                        }
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
                     }
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => return,
                 }
+                known.forget_gone(&paths);
+                // A save made after the watcher started and before the boot
+                // scan is in the boot batch and is an event queued here: the
+                // boot's rebuild read it, so it is no change to build or
+                // reload for again. Vite's watcher, created with
+                // `ignoreInitial`, has no such second report of a file.
+                covered.drop_covered(&mut paths);
             }
-            known.forget_gone(&paths);
             if paths.is_empty() {
                 continue;
             }
@@ -1671,7 +1839,9 @@ fn spawn_start_watcher(
             // rebuild end would wait out the cap for a flush that already
             // happened, serving the previous bundle for minutes.
             state.flush_timing.watcher_change();
-            if let Some(gate) = &state.gate {
+            // Writes from before this process are owed no editor flush: the
+            // boot batch is not held for one.
+            if let Some(gate) = state.gate.as_ref().filter(|_| !at_boot) {
                 let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
                 gate.hold_reload(&batch_paths);
             }
@@ -1728,6 +1898,7 @@ fn spawn_start_watcher(
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
                 run.batch = batch;
+                run.done.extend(boot_done.take());
             }
             wake.notify_one();
         }
@@ -1950,15 +2121,29 @@ async fn rebundle_worker(
                     .bundle_ok
                     .store(failure.is_none(), std::sync::atomic::Ordering::SeqCst);
                 let frame = failure.as_deref().map(|reason| {
-                    client_error_frame(&cache).unwrap_or_else(|| bundler_failure_frame(reason))
+                    build_error_frame(
+                        client_error_frame(&cache).unwrap_or_else(|| bundler_failure_frame(reason)),
+                    )
                 });
                 if let Some(frame) = &frame {
                     let _ = state.error_tx.send(frame.clone());
                 }
+                let recovered = frame.is_none()
+                    && state
+                        .build_error
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some();
                 *state
                     .build_error
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = frame;
+                // The pages showing the error are told it is over: a fix to
+                // a module a page has not loaded brings it no update to
+                // clear the overlay with.
+                if recovered {
+                    let _ = state.error_tx.send(BUILD_OK_FRAME.to_string());
+                }
                 match outcome {
                     ClientRun::Fresh(pinned) => {
                         install_bundle(&state, &cache, pinned);
@@ -3381,6 +3566,22 @@ fn run_script_process(
     Ok(())
 }
 
+/// An error frame marked as the client bundle's own failure (`build`), so
+/// the pages can tell its overlay from one a plugin's error raised when
+/// the bundle builds again.
+fn build_error_frame(frame: String) -> String {
+    match serde_json::from_str::<serde_json::Value>(&frame) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("build".into(), true.into());
+            serde_json::Value::Object(fields).to_string()
+        }
+        _ => frame,
+    }
+}
+
+/// Tells the pages the client bundle builds again after a failure.
+const BUILD_OK_FRAME: &str = r#"{"type":"oj:build-ok"}"#;
+
 /// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.
 const CLIENT_ERROR_FILE: &str = "client-error.json";
@@ -3509,6 +3710,7 @@ fn bundle_client_entry_cached(
             "  oj start: client bundle cache miss (a plugin generates a stylesheet from its modules)"
         ),
         Ok((stats, pinned)) => {
+            bundler.note_restored(&stats.inputs);
             let rehashed = match stats.rehashed {
                 0 => String::new(),
                 n => format!(", {n} re-hashed"),
@@ -3594,10 +3796,8 @@ async fn compile_css(
 #[derive(Debug, PartialEq)]
 enum Route {
     Document,
-    /// A GET whose last segment has an extension (`/robots.txt`,
-    /// `/users/john.doe`): a static file or module if one exists, otherwise the
-    /// SSR handler (a Start server route or a dotted route param), like Vite
-    /// where every request nothing else owns reaches the app.
+    /// A GET whose last segment has an extension (`/robots.txt`), or a page
+    /// request to one of oj's `/@` urls: the file or module, else SSR.
     StaticOrDocument,
     Api,
     Pass,
@@ -3609,6 +3809,7 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
         req.uri().path(),
         req.uri().path(),
         req.method(),
+        req.headers(),
         proxy_prefixes,
     )
 }
@@ -3616,12 +3817,23 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
 /// [`classify`] with `path` the request's path past the dev `base` (what
 /// oj's own routes see) and `raw` the path as sent (what `server.proxy`
 /// matches, as Vite's proxy runs ahead of its base middleware).
-fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[String]) -> Route {
-    // Only oj's own `/__` endpoints are the dev server's: Vite reserves no
-    // `/__` prefix, so an app route or a plugin middleware page under it
-    // goes through the middleware and SSR like any document.
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
-        return Route::Pass;
+fn classify_path(
+    path: &str,
+    raw: &str,
+    method: &Method,
+    headers: &header::HeaderMap,
+    proxy_prefixes: &[String],
+) -> Route {
+    // oj's own urls go first; a page request one of them misses reaches SSR.
+    if oj_server::is_dev_server_request(path, headers) {
+        return if path.starts_with("/@")
+            && matches!(*method, Method::GET | Method::HEAD)
+            && oj_server::is_page_request(headers)
+        {
+            Route::StaticOrDocument
+        } else {
+            Route::Pass
+        };
     }
     if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
@@ -3646,24 +3858,6 @@ fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[Strin
     }
 }
 
-/// `/@vite/client` under Start dev: oj's dev client, as the inner server
-/// answers it, after a check that leaves the socket to the Start client on a
-/// document oj rendered. Its live-reload tag follows the stream's last chunk,
-/// so while the document still parses the decision waits for its end.
-fn page_client_js(base: &str, path: &str) -> Option<String> {
-    match path {
-        "/@vite/client" => Some(format!(
-            "import \"{base}/@vite/env\";\nimport \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
-        )),
-        "/@oj-start/page-client.js" => Some(
-            "if (document.querySelector('script[src*=\"/@oj-start/live-reload.js\"]')) globalThis.__ojPageClient = \"start\";\n\
-             else if (document.readyState === \"loading\") globalThis.__ojPageClient = \"pending\";\n"
-                .to_string(),
-        ),
-        _ => None,
-    }
-}
-
 fn document_url(url: &str) -> String {
     let (path, query) = match url.split_once('?') {
         Some((p, q)) => (p, format!("?{q}")),
@@ -3683,6 +3877,125 @@ fn strip_base<'a>(base: &str, path: &'a str) -> &'a str {
         Some(rest) if !base.is_empty() && rest.starts_with('/') => rest,
         _ => path,
     }
+}
+
+/// `/@vite/client` under Start dev: oj's dev client, as the inner server
+/// answers it, after a check that leaves the socket to the Start client on a
+/// document oj rendered. Its live-reload tag follows the stream's last chunk,
+/// so while the document still parses the decision waits for its end.
+fn page_client_js(base: &str, path: &str) -> Option<String> {
+    match path {
+        "/@vite/client" => Some(format!(
+            "import \"{base}/@vite/env\";\nimport \"{base}/@oj-start/page-client.js\";\nexport * from \"{base}/@oj/client.js\";\n"
+        )),
+        "/@oj-start/page-client.js" => Some(
+            "if (document.querySelector('script[src*=\"/@oj-start/live-reload.js\"]')) globalThis.__ojPageClient = \"start\";\n\
+             else if (document.readyState === \"loading\") globalThis.__ojPageClient = \"pending\";\n"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// The Start dev host's own urls (its client, chunks, patches and route
+/// list); `None` for any other path.
+async fn serve_start_url(
+    state: &Arc<StartState>,
+    path: &str,
+    req: &axum::http::request::Parts,
+) -> Option<Response> {
+    if path == "/@oj-start/live-reload.js" {
+        return Some(match tokio::fs::read_to_string(&state.live_reload).await {
+            Ok(js) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                render_live_reload(
+                    &js,
+                    state.hmr_overlay,
+                    &state.base,
+                    crate::start_reloads::stamp_in(req.uri.query()),
+                    crate::start_hot::hot_change_in(req.uri.query()),
+                    state.hmr_ping,
+                ),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("oj start: live-reload client: {e}"),
+            )
+                .into_response(),
+        });
+    }
+    // The overlay element the live-reload client shows build errors in,
+    // written beside it by write_start_assets.
+    if path == "/@oj-start/error-overlay.js" {
+        let overlay = state.live_reload.with_file_name("error-overlay.js");
+        return Some(serve_js(&overlay, "error overlay").await);
+    }
+    // The app's routes, for a host UI's route picker: oj's own answer, never
+    // the app's router (which has no such route and would render its 404).
+    if path == crate::start_routes::PATH {
+        return Some(routes_json(state, &req.method).await);
+    }
+    if path == crate::start_hot::LAZY_PATH {
+        if req.method != Method::GET {
+            return Some((StatusCode::METHOD_NOT_ALLOWED, "oj start: lazy: GET").into_response());
+        }
+        return Some(lazy_chunk(state, req.uri.query()).await);
+    }
+    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
+        let client = req.uri.query().and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("clientId=").map(percent_decode))
+        });
+        if let Some(kept) = state.bundler.hot.take(name, client.as_deref()) {
+            return Some(kept);
+        }
+        return Some(state.bundler.hot.serve(name));
+    }
+    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
+        return Some(serve_fs_asset(state, &format!("/{rest}")).await);
+    }
+    if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
+        let Some(id) = served_sheet_id(rest) else {
+            return Some(
+                (
+                    StatusCode::FORBIDDEN,
+                    "oj start: not a plugin-served stylesheet",
+                )
+                    .into_response(),
+            );
+        };
+        return Some(match css_body(state, Path::new(&id)).await {
+            Some(body) => css_response(body),
+            None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
+        });
+    }
+    // Not for a page navigation to `/@vite/client`, which Vite's transform
+    // middleware never answers: that one is the app's, like any other page.
+    if oj_server::is_dev_server_request(path, &req.headers) {
+        if let Some(js) = page_client_js(&state.base, path) {
+            // Vite's `send`: `no-cache`, and `server.headers` on its client.
+            return Some(with_dev_headers(
+                state,
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/javascript"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    js,
+                )
+                    .into_response(),
+            ));
+        }
+    }
+    if let Some(name) = path.strip_prefix("/@oj-start/") {
+        let page = oj_server::is_page_request(&req.headers);
+        return Some(serve_client_chunk(state, &req.headers, name, page).await);
+    }
+    None
 }
 
 async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: Next) -> Response {
@@ -3713,6 +4026,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     let weak = Arc::downgrade(&state);
                     HotPage {
                         has,
+                        another_run: state.reloads.another_run(parts.uri.query()),
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
                         reload_needed: Arc::new(move || {
@@ -3738,69 +4052,18 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             Err(e) => e.into_response(),
         };
     }
-    if path == "/@oj-start/live-reload.js" {
-        return match tokio::fs::read_to_string(&state.live_reload).await {
-            Ok(js) => (
-                [
-                    (header::CONTENT_TYPE, "text/javascript"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                render_live_reload(
-                    &js,
-                    state.hmr_overlay,
-                    &state.base,
-                    crate::start_reloads::stamp_in(req.uri().query()),
-                    crate::start_hot::hot_change_in(req.uri().query()),
-                    state.hmr_ping,
-                ),
-            )
-                .into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("oj start: live-reload client: {e}"),
-            )
-                .into_response(),
-        };
-    }
-    // The overlay element the live-reload client shows build errors in,
-    // written beside it by write_start_assets.
-    if path == "/@oj-start/error-overlay.js" {
-        let overlay = state.live_reload.with_file_name("error-overlay.js");
-        return serve_js(&overlay, "error overlay").await;
-    }
-    // The app's routes, for a host UI's route picker: oj's own answer, never
-    // the app's router (which has no such route and would render its 404).
-    if path == crate::start_routes::PATH {
-        return routes_json(&state, req.method()).await;
-    }
-    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
-        return state.bundler.hot.serve(name);
-    }
-    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
-        return serve_fs_asset(&state, &format!("/{rest}")).await;
-    }
-    if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
-        let Some(id) = served_sheet_id(rest) else {
-            return (
-                StatusCode::FORBIDDEN,
-                "oj start: not a plugin-served stylesheet",
-            )
-                .into_response();
-        };
-        return match css_body(&state, Path::new(&id)).await {
-            Some(body) => css_response(body),
-            None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
-        };
-    }
-    if let Some(js) = page_client_js(&state.base, path) {
-        // Vite's transform middleware sends `server.headers` on its client.
-        return with_dev_headers(
-            &state,
-            ([(header::CONTENT_TYPE, "text/javascript")], js).into_response(),
-        );
-    }
-    if let Some(name) = path.strip_prefix("/@oj-start/") {
-        return serve_client_chunk(&state, req.headers(), name).await;
+    let (parts, body) = req.into_parts();
+    let own = serve_start_url(&state, path, &parts).await;
+    let req = Request::from_parts(parts, body);
+    if let Some(resp) = own {
+        // A page request for a name oj does not serve (`/@oj-start/posts`).
+        if resp.status() != StatusCode::NOT_FOUND
+            || !matches!(*req.method(), Method::GET | Method::HEAD)
+            || !oj_server::is_page_request(req.headers())
+        {
+            return resp;
+        }
+        return forward_document(&state, path_and_query(&req), req.headers(), None).await;
     }
     if path.starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
@@ -3810,7 +4073,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
-    let route = classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes);
+    let route = classify_path(
+        path,
+        req.uri().path(),
+        req.method(),
+        req.headers(),
+        &state.proxy_prefixes,
+    );
     // A file under `publicDir` answers before the router and the SSR handler
     // see the request, as Vite's servePublicMiddleware runs ahead of its html
     // middlewares for every appType: `/hub/index.html` is that file, not the
@@ -3866,6 +4135,8 @@ struct HotPage {
     reload_needed: Arc<dyn Fn() + Send + Sync>,
     /// The hot changes the page says it has (`h` on its socket's url).
     has: Option<u64>,
+    /// Its document was served by another run of the dev server.
+    another_run: bool,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -4062,7 +4333,18 @@ async fn start_hmr_socket(
                                 if let Some(old) = page.replace(id.clone()) {
                                     h.bundler.page_gone(&old);
                                 }
-                                h.bundler.page_connected(&id);
+                                // A patch made for it before its socket
+                                // opened (the bundler knew the page from an
+                                // `import()` it made first) reached no
+                                // socket: the page reloads onto it.
+                                if h.bundler.page_connected(&id, h.another_run)
+                                    && socket
+                                        .send(Message::Text(HOT_BEHIND_FRAME.into()))
+                                        .await
+                                        .is_err()
+                                {
+                                    break;
+                                }
                             }
                             Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
                             Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
@@ -4143,6 +4425,8 @@ async fn forward_document(
         return public_response(state, &hit, &Method::GET, headers).await;
     }
     ensure_bundle_current(state).await;
+    // The run waited for may have ended as a hot update.
+    state.client_output_fresh().await;
     ensure_runner_fresh(state).await;
     forward(
         state,
@@ -4265,7 +4549,9 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
 /// open across a restart of the dev server names chunks this run never had,
 /// and its socket is not reloaded on connect (a stamp from another run
 /// counts as current, see start_reloads), so this is what brings it back. A
-/// page that asks for a name nothing ever had reloads once for it and stays.
+/// page that asks for a name nothing ever had reloads for it once per
+/// document it is served (its stamp and the hot changes it has), and stays
+/// when the reload brings the same document back.
 /// A source map is asked for by the browser's tools, not by a page.
 fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     if !name.ends_with(".map") {
@@ -4293,6 +4579,7 @@ async fn serve_client_chunk(
     state: &StartState,
     req: &axum::http::HeaderMap,
     name: &str,
+    page: bool,
 ) -> Response {
     let name = percent_decode(name);
     let served = state
@@ -4301,7 +4588,10 @@ async fn serve_client_chunk(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .chunk(&name);
     let Some(served) = served else {
-        chunk_gone(&state.error_tx, &name);
+        // A page request is no stale chunk of an open page: the app answers it.
+        if !page {
+            chunk_gone(&state.error_tx, &name);
+        }
         return (
             StatusCode::NOT_FOUND,
             format!("oj start: {name} is not in the client bundle manifest"),
@@ -4350,8 +4640,33 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
-    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !served.entry;
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`, and
+    // a name's content never changes. What changes is whether the dev
+    // server still answers for the name: a page that took a change as a hot
+    // update was not reloaded for it, so it can ask for a chunk long after
+    // the bundle that named it, and one the server no longer has is how
+    // such a page learns it is too old (`chunk_gone`). A browser that cached
+    // the chunk for good never asks, and runs the old code out of its
+    // cache. So with hot updates on the browser asks each time and the ETag
+    // makes that a 304, as Vite's dev server sends every module
+    // (server/send.ts `send`: `Cache-Control: no-cache` with an `Etag`, 304
+    // on `If-None-Match`; server/middlewares/transform.ts keeps
+    // `max-age=31536000,immutable` for versioned dependency urls alone).
+    // This only reaches a chunk the document has yet to import: one in its
+    // module map is never asked for again.
+    //
+    // Without hot updates a change reloads the pages onto the new names
+    // (once the editor's gate lets the reload through), and a page still on
+    // an old entry with an old chunk in the cache is consistent with
+    // itself, so a name is fetched once. Left open in that mode: a page
+    // kept across a restart of the dev server, which nothing reloads, runs
+    // a cached chunk of the run before.
+    //
+    // `hot_bundle` is the gate's and the client's word alone: an app with
+    // `server.hmr: false` reloads for every change too (its bundle is not
+    // built hot, see `DevBundler::run`) and still revalidates here, which
+    // costs it a 304 per chunk and no more.
+    let immutable = !served.entry && !state.bundler.hot_bundle();
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
@@ -4411,6 +4726,346 @@ fn render_live_reload(
     .replace(
         "__OJ_PING_MS__",
         &ping.map_or(0, |p| p.as_millis()).to_string(),
+    )
+}
+
+/// `GET /@oj-start/hmr/lazy?id=<proxy id>&clientId=<runtime id>`: the module
+/// behind an open page's `import()`, as it is now. Under Vite's dev server
+/// the page's `import()` is a request for the module itself, which the
+/// transform middleware answers `no-cache` with the module's current code
+/// (and import analysis has given the importer the module's url with the
+/// `?t=` of its last hot update); here the page's bundle holds a call into
+/// its module registry, which asks for the module, and the static imports
+/// the page lacks, by id.
+async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
+    use crate::start_bundle::dev::LazyAnswer;
+    let param = |name: &str| {
+        query.unwrap_or("").split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k == name).then(|| percent_decode(v))
+        })
+    };
+    let (Some(id), Some(client)) = (param("id"), param("clientId")) else {
+        return (StatusCode::BAD_REQUEST, "oj start: lazy: id and clientId").into_response();
+    };
+    let module = |code: String| {
+        (
+            [
+                (header::CONTENT_TYPE, "text/javascript"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            code,
+        )
+            .into_response()
+    };
+    // A tab left open across a restart of the dev server runs a bundle this
+    // run never made: no module of this one fits it. It is told to reload
+    // as its socket reconnects; an `import()` it makes before that reloads
+    // it too, through the same guard (once per stamp: a document that comes
+    // back from a cache under the same stamp is not reloaded again), and
+    // stays pending while it does. Past the guard the import rejects.
+    //
+    // The request says which run rendered its page (the document's stamp,
+    // as its socket does): the socket of such a tab may not have come back
+    // yet, or may never open.
+    if state.reloads.another_run(query) || state.bundler.page_from_another_run(&client) {
+        return module(
+            "if (globalThis.__ojStartHmr?.reloadBehind?.()) await new Promise(() => {});\n\
+             throw new Error(\"[oj] this page was served by another run of the dev server: reload it\");\n\
+             export {};\n"
+                .to_string(),
+        );
+    }
+    // The engine forgets a page with no socket open some time after its
+    // last request ends, however it ends.
+    let _forget = ForgetUnconnected {
+        bundler: Arc::clone(&state.bundler),
+        client: client.clone(),
+    };
+    let end = tokio::time::Instant::now() + LAZY_WAIT_CAP;
+    // When a flush was seen with its patches still to be sent.
+    let mut flushed_at: Option<tokio::time::Instant> = None;
+    let answer = loop {
+        // Subscribed before the gate is read: a flush between the two is
+        // not missed.
+        let mut flushes = state.gate.as_ref().map(|gate| gate.subscribe_flush());
+        // In a task of its own: a page that goes away mid-request must not
+        // cancel a compile half-way (the engine's scan is not written to be
+        // cancelled). Its waits (for a bundle run, for the engine) end with
+        // the cap all the same; the task ends on its own.
+        let compile = {
+            let (bundler, id, client) = (Arc::clone(&state.bundler), id.clone(), client.clone());
+            tokio::spawn(async move { bundler.lazy_chunk(&id, &client).await })
+        };
+        let answer = match tokio::time::timeout_at(end, compile).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) | Err(_) => {
+                LazyAnswer::Unavailable(crate::start_bundle::errors::BundleError::from_message(
+                    "the dev server did not compile the module in time",
+                ))
+            }
+        };
+        let now = tokio::time::Instant::now();
+        match &answer {
+            // While the editor's gate holds changes, a chunk that carries a
+            // module among them would run code the gate has not released,
+            // next to the modules whose patches it holds. Its answer waits
+            // for the flush (the editor's, or the hold cap's) and for the
+            // patches the flush releases to go out, and is compiled again:
+            // the rule is asked again of what it carries then (another
+            // change may be held by now).
+            LazyAnswer::Compiled(code) if now < end => {
+                let Some(gate) = &state.gate else {
+                    break answer;
+                };
+                if !gate.reload_is_held() && !state.bundler.hot.has_parked() {
+                    break answer;
+                }
+                if gate.reload_is_held() {
+                    let held = held_modules(code, state.bundler.root(), &gate.pending_paths());
+                    let Some(held) = held else {
+                        // Factories with no list of what they are: waited
+                        // for, as carrying a held module.
+                        flushed_at = None;
+                        if let Some(flushes) = &mut flushes {
+                            let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                        }
+                        continue;
+                    };
+                    if held.is_empty() {
+                        break answer;
+                    }
+                    // The chunk carries modules of the held change. A page
+                    // that already runs every one of them may take it: a
+                    // module that ran is not run again, and the chunk's
+                    // registrations of the held modules are skipped, so
+                    // the chunk runs none of the held change's own code.
+                    // (What it does run was compiled against the change:
+                    // a held edit that turns a module from an ES module
+                    // into a CommonJS one, or back, changes how its
+                    // importers are compiled, and such an importer is
+                    // taken against the page's instance of the old shape
+                    // until the flush. That case is not detected.) Only
+                    // the page knows what it has run (a patch can carry a
+                    // module it never ran), so it is asked: it takes the
+                    // kept chunk, or asks for the module again with
+                    // `held=1` to wait for the flush.
+                    if param("held").as_deref() != Some("1") {
+                        let kept = format!(
+                            "await __rolldown_runtime__.ojPatched({});\n__rolldown_runtime__.ojSkipHeld({});\n{code}\n;__rolldown_runtime__.ojSkipHeld(null);\n",
+                            state.bundler.hot.sent_seq(&client),
+                            serde_json::json!(held),
+                        );
+                        let take = format!(
+                            "{}?clientId={client}",
+                            state.bundler.hot.keep(&client, kept)
+                        );
+                        return module(format!(
+                            "await __rolldown_runtime__.ojLazyWhileHeld({}, {}, {});\nexport {{}};\n",
+                            serde_json::json!(held),
+                            serde_json::Value::String(take),
+                            serde_json::Value::String(id.clone()),
+                        ));
+                    }
+                    flushed_at = None;
+                    if let Some(flushes) = &mut flushes {
+                        let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                    }
+                } else {
+                    // Flushed, its patches not sent yet (a flush that lands
+                    // while a rebundle runs releases at the run's end): a
+                    // moment, and bounded, so that frames no run comes to
+                    // release cannot keep an import waiting.
+                    let since = *flushed_at.get_or_insert(now);
+                    if now.duration_since(since) > PARKED_AFTER_FLUSH {
+                        break answer;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            // The engine compiled nothing: some module does not compile (an
+            // edit mid-way), and the engine then fails every compile with
+            // that module's error; the overlay shows it to every page from
+            // the rebundle that failed. An import of the module the error
+            // is about rejects with it at once, as the request for a module
+            // that does not transform does under Vite. One of another
+            // module waits for a bundle that builds: the engine cannot
+            // compile it meanwhile, and failing it for an error that is not
+            // its own would be worse than the wait.
+            LazyAnswer::Unavailable(e) if now < end => {
+                // The bundle's recorded failure first: after a failed full
+                // build the engine's own error names the module asked for
+                // whatever is broken ("cannot compile …: the last full build
+                // failed").
+                if let Some(own) = build_error_of(state, &id) {
+                    break LazyAnswer::Failed(own);
+                }
+                if !e.message.contains("the last full build failed")
+                    && names_module(&e.payload(), &id)
+                {
+                    break answer;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            _ => break answer,
+        }
+    };
+    match answer {
+        // Compiled against every patch sent to the page so far: the page
+        // applies them before it runs the module (a frame can be slower than
+        // this answer).
+        LazyAnswer::Compiled(code) => module(format!(
+            "await __rolldown_runtime__.ojPatched({});\n{code}",
+            state.bundler.hot.sent_seq(&client)
+        )),
+        LazyAnswer::Restored(code) => module(code),
+        LazyAnswer::Unknown => (StatusCode::NOT_FOUND, "oj start: no such module").into_response(),
+        // A module that throws, with the error as the bundler gave it, after
+        // showing it in the overlay of the page that asked (Vite's client
+        // shows the error of a failed transform).
+        // A module, like the other answers: the `export` makes it a syntax
+        // error as a classic script, so a page of another origin cannot run
+        // it with a `<script>` and read the error (see `start_hot`).
+        LazyAnswer::Unavailable(e) | LazyAnswer::Failed(e) => module(format!(
+            "globalThis.__ojStartHmr?.showBuildError?.({});\nthrow new Error({});\nexport {{}};\n",
+            e.payload(),
+            serde_json::Value::String(e.message.clone())
+        )),
+    }
+}
+
+/// How long frames may stay parked after a flush before an `import()` stops
+/// waiting for them to go out.
+const PARKED_AFTER_FLUSH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Tells the bundler, ten seconds after a request for a module ends, to
+/// forget the page that made it unless its socket is open by then (it
+/// would otherwise render a patch at every edit for a page that left, or
+/// whose proxy passes no socket).
+struct ForgetUnconnected {
+    bundler: Arc<ClientBundler>,
+    client: String,
+}
+
+impl Drop for ForgetUnconnected {
+    fn drop(&mut self) {
+        let (bundler, client) = (Arc::clone(&self.bundler), std::mem::take(&mut self.client));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            bundler.forget_unconnected(&client);
+        });
+    }
+}
+
+/// The client bundle's failure, when it is about the module `proxy` stands
+/// for (the error names its file): what an `import()` of that module
+/// rejects with while the bundle does not build.
+fn build_error_of(
+    state: &StartState,
+    proxy: &str,
+) -> Option<crate::start_bundle::errors::BundleError> {
+    let frame = state
+        .build_error
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()?;
+    let err = serde_json::from_str::<serde_json::Value>(&frame).ok()?;
+    names_module(&err["err"], proxy).then(|| {
+        let mut own = crate::start_bundle::errors::BundleError::from_message(
+            err["err"]["message"].as_str().unwrap_or_default(),
+        );
+        own.id = err["err"]["id"].as_str().map(str::to_string);
+        own.frame = err["err"]["frame"].as_str().unwrap_or_default().to_string();
+        own
+    })
+}
+
+/// Whether the error payload `err` (Vite's shape) is about the file of the
+/// module `proxy` stands for.
+fn names_module(err: &serde_json::Value, proxy: &str) -> bool {
+    let Some(target) = rolldown_common::lazy_proxy_target(proxy) else {
+        return false;
+    };
+    let file = target.split('?').next().unwrap_or(target);
+    let about = |v: &serde_json::Value| {
+        v.as_str()
+            .is_some_and(|s| s.split('?').next().unwrap_or(s) == file)
+    };
+    // By its id or location where the bundler gave one; a plugin's failed
+    // transform names the file in its message alone.
+    !file.is_empty()
+        && (about(&err["id"])
+            || about(&err["loc"]["file"])
+            || err["message"].as_str().is_some_and(|m| {
+                // The path where it ends: `note.ts` is not named by an error
+                // about `note.tsx`.
+                m.match_indices(file).any(|(at, _)| {
+                    !m[at + file.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                })
+            }))
+}
+
+/// The files among what the bundler's engine reports as changed, which is
+/// also `*` (everything, before a full rebuild) and module ids that are no
+/// file (a lazy boundary's proxy, a virtual module): the ones the dev
+/// server's watcher would rebuild for.
+fn changed_files(reported: &[String]) -> Vec<PathBuf> {
+    reported
+        .iter()
+        .filter(|id| !id.contains(['?', '\0', '*']))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && watch_relevant(p))
+        .collect()
+}
+
+/// How long a page's `import()` waits at most, for the editor's gate (past
+/// the gate's own hold cap, which flushes) or for a bundle that builds.
+const LAZY_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The modules a lazy chunk carries whose files are among `pending` (the
+/// changes the editor's gate holds), by the ids the page's registry knows
+/// them by; `None` for a chunk with factories and no list of what they are
+/// (taken as carrying a held module, not as carrying none). The chunk
+/// opens with rolldown's `registerGraph({ids:[…],localCount:N,…})`: its
+/// first `localCount` ids are the modules it carries, each a path from the
+/// app root with the module's query. (The engine's own list of what a
+/// chunk carries is emptied before the chunk is returned.)
+fn held_modules(code: &str, root: &Path, pending: &[PathBuf]) -> Option<Vec<String>> {
+    let Some(at) = code.find("registerGraph({ids:") else {
+        return (!code.contains("registerFactory(")).then(Vec::new);
+    };
+    let rest = &code[at + "registerGraph({ids:".len()..];
+    let mut ids = serde_json::Deserializer::from_str(rest).into_iter::<Vec<String>>();
+    let Some(Ok(list)) = ids.next() else {
+        return None;
+    };
+    let after = &rest[ids.byte_offset()..];
+    let local = after
+        .strip_prefix(",localCount:")
+        .map(|s| {
+            s.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(list.len());
+    Some(
+        list.into_iter()
+            .take(local)
+            .filter(|id| {
+                let file = root.join(id.split('?').next().unwrap_or(id));
+                pending.iter().any(|p| {
+                    *p == file
+                        || std::fs::canonicalize(p)
+                            .ok()
+                            .zip(std::fs::canonicalize(&file).ok())
+                            .is_some_and(|(a, b)| a == b)
+                })
+            })
+            .collect(),
     )
 }
 
@@ -4601,7 +5256,7 @@ fn public_file_path(
     if *method != Method::GET && *method != Method::HEAD {
         return None;
     }
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+    if oj_server::is_dev_server_path(path) {
         return None;
     }
     // Vite's urlRE is `(\?|&)url(?:&|$)`, its importQueryRE
@@ -5106,6 +5761,36 @@ fn collect_headers(headers: &header::HeaderMap) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    // The deferred bundle and the boot's rebuild can both be pending: a
+    // document waits for the last of them, not the first to end.
+    #[tokio::test]
+    async fn documents_wait_for_every_hold() {
+        let holds = tokio::sync::watch::channel(0).0;
+        let (boot, boot_done) = tokio::sync::oneshot::channel();
+        let (deferred, deferred_done) = tokio::sync::oneshot::channel::<()>();
+        hold_documents(&holds, boot_done);
+        hold_documents(&holds, deferred_done);
+        let mut waiting = holds.subscribe();
+        boot.send(()).unwrap();
+        let left = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            waiting.wait_for(|n| *n < 2),
+        )
+        .await
+        .unwrap()
+        .map(|n| *n)
+        .unwrap();
+        assert_eq!(left, 1, "documents let through with a hold still pending");
+        drop(deferred);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            waiting.wait_for(|n| *n == 0),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
     #[test]
     fn start_build_out_dir_follows_vites_empty_out_dir_rule() {
         let base = tmp("start-out-dir");
@@ -5434,6 +6119,7 @@ mod tests {
                                 frames: bundler.hot.subscribe(),
                                 reload_needed: Arc::new(|| {}),
                                 has: None,
+                                another_run: false,
                             });
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
@@ -6913,6 +7599,116 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // While the bundle does not build, an import of the module the error is
+    // about rejects with it; one of another module does not.
+    #[test]
+    fn a_build_error_is_told_to_be_about_the_module_asked_for() {
+        let err = serde_json::json!({
+            "message": "Unterminated string",
+            "id": "/app/src/lib/note.ts",
+            "loc": { "file": "/app/src/lib/note.ts", "line": 1, "column": 21 },
+        });
+        assert!(names_module(&err, "/app/src/lib/note.ts?rolldown-lazy=1"));
+        assert!(!names_module(
+            &err,
+            "/app/src/routes/about.tsx?tsr-split=component?rolldown-lazy=1"
+        ));
+        assert!(!names_module(&err, "/app/src/lib/note.ts"));
+        // By its file alone, and through a query on either side.
+        let by_loc =
+            serde_json::json!({ "message": "x", "loc": { "file": "/app/src/routes/about.tsx" } });
+        assert!(names_module(
+            &by_loc,
+            "/app/src/routes/about.tsx?tsr-split=component?rolldown-lazy=1"
+        ));
+        assert!(!names_module(
+            &serde_json::json!({ "message": "x" }),
+            "/app/a.ts?rolldown-lazy=1"
+        ));
+    }
+
+    #[test]
+    fn a_build_error_names_its_module_in_its_message_when_nowhere_else() {
+        let err = serde_json::json!({
+            "message": "plugin transform failed for /app/src/lib/note.ts:\n Unterminated string"
+        });
+        assert!(names_module(&err, "/app/src/lib/note.ts?rolldown-lazy=1"));
+        assert!(!names_module(&err, "/app/src/lib/other.ts?rolldown-lazy=1"));
+        // A file whose path only starts with the module's is another file.
+        let longer = serde_json::json!({
+            "message": "plugin transform failed for /app/src/lib/note.tsx:\nError: Unterminated string",
+        });
+        assert!(!names_module(
+            &longer,
+            "/app/src/lib/note.ts?rolldown-lazy=1"
+        ));
+        assert!(names_module(
+            &longer,
+            "/app/src/lib/note.tsx?rolldown-lazy=1"
+        ));
+    }
+
+    #[test]
+    fn the_bundles_own_error_frame_says_so() {
+        let frame: serde_json::Value = serde_json::from_str(&build_error_frame(
+            r#"{"type":"error","err":{"message":"boom"}}"#.to_string(),
+        ))
+        .unwrap();
+        assert_eq!(frame["build"], true);
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["err"]["message"], "boom");
+    }
+
+    #[test]
+    fn only_files_among_the_engines_changed_ids_are_held() {
+        let reported: Vec<String> = [
+            "/app/src/a.tsx",
+            "*",
+            "/app/src/b.ts?rolldown-lazy=1",
+            "/app/src/routes/c.tsx?tsr-split=component",
+            "\0virtual:x",
+            "src/relative.ts",
+            "/app/src/routeTree.gen.ts",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(changed_files(&reported), [PathBuf::from("/app/src/a.tsx")]);
+    }
+
+    // The modules a lazy chunk carries are the first `localCount` ids of its
+    // `registerGraph` prelude; the rest are modules it only refers to.
+    #[test]
+    fn the_held_modules_a_lazy_chunk_carries_are_told_from_those_it_refers_to() {
+        let root = Path::new("/app");
+        let chunk = |local: usize| {
+            format!(
+                "__rolldown_runtime__.registerGraph({{ids:[\"src/routes/about.tsx?tsr-split=component\",\"src/lib/event.ts\"],localCount:{local},edges:[[1],[]],stamps:{{}}}});\n//#region src/routes/about.tsx"
+            )
+        };
+        let about = [PathBuf::from("/app/src/routes/about.tsx")];
+        let event = [PathBuf::from("/app/src/lib/event.ts")];
+        let both = [about[0].clone(), event[0].clone()];
+        let held = |code: &str, pending: &[PathBuf]| held_modules(code, root, pending);
+        assert_eq!(
+            held(&chunk(1), &about).unwrap(),
+            ["src/routes/about.tsx?tsr-split=component"]
+        );
+        assert!(held(&chunk(1), &event).unwrap().is_empty());
+        assert_eq!(held(&chunk(2), &event).unwrap(), ["src/lib/event.ts"]);
+        assert_eq!(held(&chunk(2), &both).unwrap().len(), 2);
+        assert!(held(&chunk(2), &[]).unwrap().is_empty());
+        // Factories without the list: held, not let through.
+        assert!(held(
+            "__rolldown_runtime__.registerFactory(\"src/routes/about.tsx\", () => {});",
+            &event
+        )
+        .is_none());
+        // A restored chunk imported by name carries nothing compiled now.
+        assert!(held("import \"../about-abc.js\";\nexport {};\n", &about)
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn percent_decode_handles_escapes_and_partials() {
         assert_eq!(percent_decode("/plain/path.css"), "/plain/path.css");
@@ -6952,6 +7748,12 @@ mod tests {
         // oj's own urls and a path that tries to leave the dir.
         assert_eq!(at("/@oj-start/x.js", None), None);
         assert_eq!(at("/@fs/etc/passwd", None), None);
+        // Any other `/@` path is a file name like another (Vite's
+        // isInternalRequest names only its own prefixes).
+        assert_eq!(
+            at("/@someone.png", None),
+            Some(PathBuf::from("/app/public/@someone.png"))
+        );
         assert_eq!(at("/../package.json", None), None);
         assert_eq!(at("/a/%2e%2e/package.json", None), None);
         assert_eq!(at("//etc/passwd", None), None);
@@ -7095,22 +7897,23 @@ mod tests {
         assert_eq!(strip_base("", "/@oj-start/hmr"), "/@oj-start/hmr");
         let get = Method::GET;
         let no_proxy: Vec<String> = vec![];
+        let h = header::HeaderMap::new();
         assert!(matches!(
-            classify_path("/@id/x", "/app/@id/x", &get, &no_proxy),
+            classify_path("/@id/x", "/app/@id/x", &get, &h, &no_proxy),
             Route::Pass
         ));
         assert!(matches!(
-            classify_path("/about", "/app/about", &get, &no_proxy),
+            classify_path("/about", "/app/about", &get, &h, &no_proxy),
             Route::Document
         ));
         // Vite's proxy matches the url as sent, ahead of the base middleware.
         let proxy = vec!["/api".to_string()];
         assert!(matches!(
-            classify_path("/api/x", "/app/api/x", &get, &proxy),
+            classify_path("/api/x", "/app/api/x", &get, &h, &proxy),
             Route::Document
         ));
         assert!(matches!(
-            classify_path("/api/x", "/api/x", &get, &proxy),
+            classify_path("/api/x", "/api/x", &get, &h, &proxy),
             Route::Pass
         ));
     }
@@ -7170,6 +7973,65 @@ mod tests {
             classify(&req("GET", "/__component/preview/Badge"), &no_proxy),
             Route::Document
         ));
+        // Nor any `/@` path but oj's own urls: a route param (`/@someone`)
+        // is a document, a dotted one may be a file first.
+        for path in ["/@someone", "/@someone/posts", "/%40someone"] {
+            assert_eq!(classify(&req("GET", path), &no_proxy), Route::Document);
+        }
+        assert_eq!(
+            classify(&req("GET", "/@someone.png"), &no_proxy),
+            Route::StaticOrDocument
+        );
+        assert_eq!(classify(&req("POST", "/@someone"), &no_proxy), Route::Api);
+        // oj's own `/@` urls are tried first; a page request reaches SSR on a
+        // miss (`/@id/posts`, `/@oj/posts`), a module request keeps oj's answer.
+        let html = |path: &str| {
+            let mut r = req("GET", path);
+            r.headers_mut()
+                .insert("accept", "text/html".parse().unwrap());
+            classify(&r, &no_proxy)
+        };
+        for path in [
+            "/@react-refresh",
+            "/@fs/app/src/a.ts",
+            "/@id/virtual:x",
+            "/@id/posts",
+            "/@oj/client.js",
+            "/@oj/posts",
+            crate::start_routes::PATH,
+            crate::start_hot::PATCH_PREFIX,
+            crate::start_bundle::assets::DEV_ID_BASE,
+        ] {
+            assert_eq!(html(path), Route::StaticOrDocument, "{path}");
+            assert_eq!(
+                classify(&req("GET", path), &no_proxy),
+                Route::Pass,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            classify(&req("HEAD", "/@oj/client.js"), &no_proxy),
+            Route::Pass
+        );
+        let mut head = req("HEAD", "/@id/posts");
+        head.headers_mut()
+            .insert("accept", "text/html".parse().unwrap());
+        assert_eq!(classify(&head, &no_proxy), Route::StaticOrDocument);
+        // A page navigation to one of Vite's urls is a document (Vite's
+        // transform middleware skips `documentFetchDests`); oj's own
+        // endpoints and `/@fs/` files are still tried first.
+        let page = |path: &str| {
+            let mut r = req("GET", path);
+            r.headers_mut()
+                .insert("sec-fetch-dest", "document".parse().unwrap());
+            classify(&r, &no_proxy)
+        };
+        assert_eq!(page("/@id/posts"), Route::Document);
+        assert_eq!(page("/@vite/client"), Route::Document);
+        assert_eq!(page("/@react-refresh"), Route::Document);
+        assert_eq!(page("/@oj/client.js"), Route::StaticOrDocument);
+        assert_eq!(page("/@oj/diagnostics"), Route::StaticOrDocument);
+        assert_eq!(page("/@fs/etc/passwd"), Route::StaticOrDocument);
         assert!(matches!(
             classify(&req("GET", "/__hmr_gate"), &no_proxy),
             Route::Pass

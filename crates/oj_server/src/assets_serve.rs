@@ -381,12 +381,18 @@ pub(crate) fn vite_env_module(config: &oj_config::OjConfig, env_object: &str) ->
             defines.insert(key, value);
         }
     }
+    // A value that reads it, not one whose text only names it: a string
+    // literal (`JSON.stringify("see import.meta.env")`) reads nothing, and
+    // the keys are property names here.
+    let reads_env = defines
+        .values()
+        .any(|v| v.contains("import.meta.env") && serde_json::from_str::<String>(v).is_err());
     let defines = defines
         .iter()
         .map(|(k, v)| format!("{}: {v}", serde_json::Value::String(k.clone())))
         .collect::<Vec<_>>()
         .join(", ");
-    let prelude = if defines.contains("import.meta.env") {
+    let prelude = if reads_env {
         format!("import.meta.env = {env_object};\n")
     } else {
         String::new()

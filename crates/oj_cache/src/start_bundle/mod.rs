@@ -19,9 +19,10 @@ mod persist;
 mod prune;
 
 use epoch::epoch;
+pub use memo::MEMO_FRESHNESS_SLACK_NS;
 use memo::{build_memo, read_memo, verified_digests, write_memo};
 
-pub const START_BUNDLE_FORMAT: u32 = 5;
+pub const START_BUNDLE_FORMAT: u32 = 6;
 pub const DEFAULT_PRUNE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 /// Generations kept per store, enforced on every persist. Vite's dep cache
 /// keeps exactly one generation; this store keeps `current` plus a small
@@ -31,7 +32,14 @@ pub const KEEP_GENERATIONS: usize = 8;
 
 /// glob-scopes.json is the generation's `import.meta.glob` calls, which a
 /// restore re-expands (see [`StartBundleStore::restore`]).
-const ARTIFACTS: [&str; 3] = ["client-entry.modules", "manifest.ts", GLOB_SCOPES_FILE];
+/// client-modules.json is the chunk each module is in, which answers a
+/// page's `import()` of a restored hot bundle while nothing has been edited.
+const ARTIFACTS: [&str; 4] = [
+    "client-entry.modules",
+    "manifest.ts",
+    GLOB_SCOPES_FILE,
+    "client-modules.json",
+];
 const GLOB_SCOPES_FILE: &str = "glob-scopes.json";
 const CLOSURE_FILE: &str = "closure.json";
 const MEMO_FILE: &str = "memo.json";
@@ -183,6 +191,20 @@ pub struct RestoreStats {
     pub chunks: usize,
     pub rehashed: usize,
     pub elapsed_ms: u128,
+    /// The sources the restored bundle stands for, as the key was verified.
+    pub inputs: Vec<RestoredInput>,
+}
+
+/// A closure file as a restore verified it: its size and mtime (ns) when
+/// usable, the blake3 digest of its bytes, and whether that stat vouches for
+/// them (false with no stat, or one within the freshness slack). The digest
+/// tells a file rewritten with the same bytes from a saved one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestoredInput {
+    pub file: PathBuf,
+    pub stat: Option<(u64, u64)>,
+    pub digest: [u8; 32],
+    pub settled: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -341,6 +363,7 @@ impl StartBundleStore {
             chunks: manifest.files.len(),
             rehashed: digests.rehashed,
             elapsed_ms: started.elapsed().as_millis(),
+            inputs: digests.inputs(&files),
         };
         Ok((stats, self.pin(&manifest)))
     }
@@ -433,7 +456,9 @@ fn restore_artifacts(
     manifest: &GenerationManifest,
     key: &str,
 ) -> Result<(), Miss> {
-    for name in ARTIFACTS {
+    // The closure list too: the dev server's rebundle gate reads it, and the
+    // restored bundle's own inputs are the ones that can move under it.
+    for name in ARTIFACTS.into_iter().chain([CLOSURE_FILE]) {
         let Ok(bytes) = fs::read(entry.join(name)) else {
             let _ = fs::remove_dir_all(entry);
             return Err(Miss::EntryCorrupt(key.to_string()));

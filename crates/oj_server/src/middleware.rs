@@ -194,6 +194,19 @@ pub type RouteHook = Arc<
 /// dev server's state exists only then). Empty, requests pass straight on.
 pub type RouteHookSlot = Arc<std::sync::OnceLock<RouteHook>>;
 
+/// A page navigation to one of Vite's urls (`/@vite/env`) gets what an
+/// unknown path gets.
+pub(crate) async fn page_navigation_middleware(
+    State(state): State<Arc<ServerState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if crate::is_dev_server_request(req.uri().path(), req.headers()) {
+        return next.run(req).await;
+    }
+    html::serve_fallback(State(state), req).await
+}
+
 pub(crate) async fn route_hook_middleware(
     State(slot): State<RouteHookSlot>,
     req: axum::extract::Request,

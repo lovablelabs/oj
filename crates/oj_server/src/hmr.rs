@@ -452,12 +452,12 @@ pub(crate) fn hmr_now() -> u64 {
 }
 
 /// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
-/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
+/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj's own urls.
 pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String {
-    if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
+    let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    if timestamp == 0 || crate::is_dev_server_path(path) || !url.starts_with('/') {
         return url.to_string();
     }
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -992,6 +992,22 @@ impl HmrGateHandle {
         gate.hold(&self.state, paths, &Default::default(), true)
     }
 
+    /// Every write made up to now is covered, as a flush covers the writes
+    /// made before it: what the gate holds is let go, with nothing sent (the
+    /// caller takes those writes up itself), and a watcher's later report of
+    /// such a write is not held.
+    pub fn cover_writes_so_far(&self) {
+        let Some(gate) = &self.state.hmr_gate else {
+            return;
+        };
+        let mut inner = gate.inner.lock().unwrap();
+        inner.last_flush = Some(std::time::SystemTime::now());
+        gate.held_reload
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        inner.pending.clear();
+        inner.born.clear();
+    }
+
     /// Whether the gate still holds anything: changes awaiting a flush, or an
     /// armed page reload. The Start rebuild reads this when it finishes — the
     /// hold itself was taken at the watcher event, so an editor flush that
@@ -1000,6 +1016,13 @@ impl HmrGateHandle {
         self.state.hmr_gate.as_ref().is_some_and(|gate| {
             gate.held_reload.load(std::sync::atomic::Ordering::SeqCst)
                 || !gate.inner.lock().unwrap().pending.is_empty()
+        })
+    }
+
+    /// The files whose changes the gate holds.
+    pub fn pending_paths(&self) -> Vec<PathBuf> {
+        self.state.hmr_gate.as_ref().map_or_else(Vec::new, |gate| {
+            gate.inner.lock().unwrap().pending.keys().cloned().collect()
         })
     }
 

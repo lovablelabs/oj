@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use crate::imports::{exports_sass_entry, split_package_specifier};
 use crate::path::{node_modules_load_paths, read_package_json, with_ext};
 use crate::resolve::{CssResolve, CssResolveConfig};
 
@@ -59,6 +60,7 @@ pub fn compile_sass_collecting(
         resolve: opts.resolve.into(),
         seen: RefCell::default(),
         probes: RefCell::default(),
+        failed: RefCell::default(),
     };
     let mut options = grass::Options::default().fs(&fs);
     let node_modules = opts
@@ -76,7 +78,8 @@ pub fn compile_sass_collecting(
     for nm in &node_modules {
         options = options.load_path(nm);
     }
-    let prepared = prepare_sass_imports(source, &opts.resolve);
+    let prepared = prepare_sass_imports(source, opts.load_dir, &opts.resolve)
+        .map_err(|e| format!("sass error: {e}"))?;
     let source = match opts.additional_data {
         Some(data) if !data.is_empty() => format!("{data}\n{prepared}"),
         _ => prepared,
@@ -88,15 +91,25 @@ pub fn compile_sass_collecting(
         .map(|css| css.strip_suffix('\n').map(str::to_string).unwrap_or(css))
         .map_err(|e| format!("sass error: {e}"));
     deps.append(&mut fs.seen.borrow_mut());
-    out
+    match fs.failed.take() {
+        Some(e) => Err(format!("sass error: {e}")),
+        None => out,
+    }
 }
 
 /// Rewrite `@use` / `@forward` / `@import` lines into specifiers grass can
 /// resolve: `.scss` / `.sass` dropped (grass mis-probes dotted basenames that
 /// keep it), aliases and root-absolute paths made absolute, `~` stripped.
-/// `url(...)` lines and `.css` imports are left alone.
-pub(crate) fn prepare_sass_imports(source: &str, resolve: &CssResolve<'_>) -> String {
+/// `url(...)` lines and `.css` imports are left alone. `dir` is the
+/// importing file's directory. An error where the root's copy of a
+/// `resolve.dedupe` package rejects an import.
+pub(crate) fn prepare_sass_imports(
+    source: &str,
+    dir: Option<&Path>,
+    resolve: &CssResolve<'_>,
+) -> Result<String, String> {
     let has_resolve = resolve.root.is_some() || !resolve.alias.is_empty();
+    let failed = RefCell::new(None);
     let mut out = String::with_capacity(source.len());
     for line in source.split_inclusive('\n') {
         let t = line.trim_start();
@@ -114,13 +127,21 @@ pub(crate) fn prepare_sass_imports(source: &str, resolve: &CssResolve<'_>) -> St
             .replace(".sass'", "'");
         // Aliases first, so a configured `~` alias wins over the strip.
         let aliased = if has_resolve {
-            rewrite_quoted(&stripped, |spec| rewrite_sass_spec(spec, resolve))
+            rewrite_quoted(&stripped, |spec| {
+                rewrite_sass_spec(spec, dir, resolve).unwrap_or_else(|e| {
+                    failed.borrow_mut().get_or_insert(e);
+                    None
+                })
+            })
         } else {
             stripped
         };
         out.push_str(&aliased.replace("\"~", "\"").replace("'~", "'"));
     }
-    out
+    match failed.into_inner() {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// Every quoted string of `line` passed through `rewrite` (None keeps it).
@@ -142,15 +163,75 @@ fn rewrite_quoted(line: &str, rewrite: impl Fn(&str) -> Option<String>) -> Strin
     out
 }
 
-/// An aliased or root-absolute specifier as an absolute path. Root-absolute
-/// only when a stylesheet exists under the root (it may be a real absolute
-/// path otherwise).
-fn rewrite_sass_spec(spec: &str, resolve: &CssResolve<'_>) -> Option<String> {
+/// An aliased, root-absolute or deduped specifier as an absolute path.
+/// Root-absolute only when a stylesheet exists under the root (it may be a
+/// real absolute path otherwise).
+fn rewrite_sass_spec(
+    spec: &str,
+    dir: Option<&Path>,
+    resolve: &CssResolve<'_>,
+) -> Result<Option<String>, String> {
     let path = match resolve.alias_path(spec) {
-        Some(p) => p,
-        None => resolve.root_path(spec).filter(|p| sass_file_exists(p))?,
+        Some(p) => Some(p),
+        None => match resolve.root_path(spec).filter(|p| sass_file_exists(p)) {
+            Some(p) => Some(p),
+            None => deduped_sass_path(spec, dir, resolve)?,
+        },
     };
-    Some(path.to_string_lossy().into_owned())
+    Ok(path.map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// A `resolve.dedupe` package's stylesheet in the root's copy, as Vite's sass
+/// resolver finds it: through the copy's `exports` where it has them (an
+/// import they reject is an error), else as a file in it. None when the
+/// importer has a relative match (Sass tries that first) or the root's copy
+/// lacks it, where the importer's own lookup answers as in Vite.
+fn deduped_sass_path(
+    spec: &str,
+    dir: Option<&Path>,
+    resolve: &CssResolve<'_>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(root) = resolve.dedupe_root(spec) else {
+        return Ok(None);
+    };
+    if dir.is_some_and(|d| sass_file_exists(&d.join(spec))) {
+        return Ok(None);
+    }
+    let Some((pkg, rest)) = split_package_specifier(spec) else {
+        return Ok(None);
+    };
+    let Some(nm) = node_modules_load_paths(root)
+        .into_iter()
+        .find(|nm| nm.join(pkg).is_dir())
+    else {
+        return Ok(None);
+    };
+    if read_package_json(&nm.join(pkg)).is_some_and(|json| json.get("exports").is_some()) {
+        let reject = |e: String| {
+            format!(
+                "cannot resolve \"{spec}\" from the root's copy of \"{pkg}\" (resolve.dedupe): {e}"
+            )
+        };
+        let Some(file) = exports_sass_entry(spec, root, resolve.production).map_err(reject)? else {
+            return Ok(None);
+        };
+        // The import lines carry no `.scss` / `.sass` (see prepare_sass_imports).
+        return match file.extension().and_then(|e| e.to_str()) {
+            Some("scss" | "sass") => Ok(Some(file.with_extension(""))),
+            Some("css") => Ok(Some(file)),
+            // Vite's sass importer takes stylesheets only, and Sass then finds nothing.
+            _ => Err(reject(format!("{} is not a stylesheet", file.display()))),
+        };
+    }
+    let path = nm.join(spec);
+    // A bare package needs a stylesheet entry (`sass` / `style` / `main`) or an index.
+    let entry = || {
+        rest.is_empty()
+            && ["index.scss", "index.sass"]
+                .iter()
+                .any(|i| package_entry(&path.join(i)).is_some())
+    };
+    Ok((sass_file_exists(&path) || entry()).then_some(path))
 }
 
 /// Whether `base` names a stylesheet the way dart-sass probes: the file, an
@@ -223,6 +304,8 @@ struct SassFs {
     /// resolve like the entry's.
     resolve: CssResolveConfig,
     seen: RefCell<Vec<PathBuf>>,
+    /// The first import a stylesheet read here could not have prepared.
+    failed: RefCell<Option<String>>,
     /// `(is_dir, is_file)` answers: grass re-probes the same candidates from
     /// every partial, and files do not change within a compile.
     probes: RefCell<HashMap<(bool, PathBuf), bool>>,
@@ -256,9 +339,20 @@ impl grass::Fs for SassFs {
             probe_target(p).unwrap_or_else(|| p.to_path_buf())
         };
         let bytes = std::fs::read(&real)?;
+        let dir = real.parent().map(Path::to_path_buf);
         self.seen.borrow_mut().push(real);
         match String::from_utf8(bytes) {
-            Ok(text) => Ok(prepare_sass_imports(&text, &self.resolve.as_ref()).into_bytes()),
+            Ok(text) => {
+                match prepare_sass_imports(&text, dir.as_deref(), &self.resolve.as_ref()) {
+                    Ok(prepared) => Ok(prepared.into_bytes()),
+                    // grass cannot carry a message of ours through a read, so
+                    // the compile goes on and its caller reports this instead.
+                    Err(e) => {
+                        self.failed.borrow_mut().get_or_insert(e);
+                        Ok(text.into_bytes())
+                    }
+                }
+            }
             Err(e) => Ok(e.into_bytes()),
         }
     }
@@ -368,7 +462,7 @@ mod tests {
     use crate::*;
 
     fn strip_sass_import_ext(source: &str) -> String {
-        prepare_sass_imports(source, &CssResolve::default())
+        prepare_sass_imports(source, None, &CssResolve::default()).unwrap()
     }
 
     #[test]
@@ -509,6 +603,150 @@ mod tests {
         );
         assert!(css.contains("padding: 4px"), "~pkg/path resolved: {css}");
         assert!(css.contains(".plain"), "style entry resolved: {css}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_deduped_use_inside_a_dependency_takes_the_root_copy() {
+        let base = std::env::temp_dir().join(format!("oj-css-dedupe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let consumer = base.join("node_modules/consumer");
+        for (dir, marker) in [
+            (base.join("node_modules/shared"), "root"),
+            (consumer.join("node_modules/shared"), "nested"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("package.json"), r#"{"name":"shared"}"#).unwrap();
+            std::fs::write(dir.join("_t.scss"), format!(".{marker} {{ a: b; }}\n")).unwrap();
+        }
+        // Nested: a partial of the dependency read through the importer.
+        std::fs::write(consumer.join("_inner.scss"), "@use \"shared/t\";\n").unwrap();
+        let dedupe = vec!["shared".to_string()];
+        let compile = |src: &str, dedupe: &[String]| {
+            compile_sass_opts(
+                src,
+                &SassOptions {
+                    load_dir: Some(&consumer),
+                    resolve: CssResolve {
+                        root: Some(&base),
+                        dedupe,
+                        ..CssResolve::default()
+                    },
+                    ..SassOptions::default()
+                },
+            )
+            .unwrap()
+        };
+        // A bare `@use "shared"`: the root's copy has no stylesheet entry, so the
+        // importer's copy answers; once it has one, that one.
+        std::fs::write(
+            consumer.join("node_modules/shared/_index.scss"),
+            ".nested-index { a: b; }\n",
+        )
+        .unwrap();
+        assert!(compile("@use \"shared\";\n", &dedupe).contains(".nested-index"));
+        std::fs::write(
+            base.join("node_modules/shared/_index.scss"),
+            ".root-index { a: b; }\n",
+        )
+        .unwrap();
+        let css = compile("@use \"shared\";\n", &dedupe);
+        assert!(
+            css.contains(".root-index") && !css.contains(".nested-index"),
+            "{css}"
+        );
+        for src in ["@use \"shared/t\";\n", "@use \"inner\";\n"] {
+            let css = compile(src, &dedupe);
+            assert!(
+                css.contains(".root") && !css.contains(".nested"),
+                "{src}: {css}"
+            );
+            assert!(
+                compile(src, &[]).contains(".nested"),
+                "{src} without dedupe"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Vite's sass resolver reads the root copy's `exports` (conditions `sass`,
+    // `style`): a subpath they map is the root's file, one they hide fails,
+    // and neither is answered by the copy under the dependency.
+    #[test]
+    fn a_deduped_use_follows_the_root_copys_exports() {
+        let base =
+            std::env::temp_dir().join(format!("oj-css-dedupe-exports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let consumer = base.join("node_modules/consumer");
+        let root_copy = base.join("node_modules/shared");
+        let nested = consumer.join("node_modules/shared");
+        std::fs::create_dir_all(root_copy.join("src")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            root_copy.join("package.json"),
+            r#"{"name":"shared","exports":{".":"./index.js","./t":{"sass":"./src/_t.scss"},"./p/*":"./src/*.scss","./q/_t":"./src/_t.scss"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root_copy.join("src/_t.scss"), ".root { a: b; }\n").unwrap();
+        std::fs::write(root_copy.join("index.js"), "export {};\n").unwrap();
+        std::fs::write(nested.join("package.json"), r#"{"name":"shared"}"#).unwrap();
+        for file in ["_t.scss", "_hidden.scss", "_index.scss"] {
+            std::fs::write(nested.join(file), ".nested { a: b; }\n").unwrap();
+        }
+        for dir in ["p", "q"] {
+            std::fs::create_dir_all(nested.join(dir)).unwrap();
+            std::fs::write(nested.join(dir).join("_t.scss"), ".nested { a: b; }\n").unwrap();
+        }
+        std::fs::write(consumer.join("_inner.scss"), "@use \"shared/hidden\";\n").unwrap();
+        let dedupe = vec!["shared".to_string()];
+        let compile = |src: &str, dedupe: &[String]| {
+            compile_sass_opts(
+                src,
+                &SassOptions {
+                    load_dir: Some(&consumer),
+                    resolve: CssResolve {
+                        root: Some(&base),
+                        dedupe,
+                        ..CssResolve::default()
+                    },
+                    ..SassOptions::default()
+                },
+            )
+        };
+        // `./t` under the `sass` condition; `./p/t` through a pattern and `./q/t`
+        // through `./q/_t`, as the partial.
+        for src in [
+            "@use \"shared/t\";\n",
+            "@use \"shared/p/t\";\n",
+            "@use \"shared/q/t\";\n",
+        ] {
+            let css = compile(src, &dedupe).unwrap();
+            assert!(
+                css.contains(".root") && !css.contains(".nested"),
+                "{src}: {css}"
+            );
+            assert!(
+                compile(src, &[]).unwrap().contains(".nested"),
+                "{src} without dedupe"
+            );
+        }
+        // Hidden by the root copy's `exports`, from the entry and from a partial
+        // it loads; and a package entry that is no stylesheet.
+        for (src, spec) in [
+            ("@use \"shared/hidden\";\n", "shared/hidden"),
+            ("@use \"inner\";\n", "shared/hidden"),
+            ("@use \"shared\";\n", "\"shared\" from"),
+        ] {
+            let err = compile(src, &dedupe).unwrap_err();
+            assert!(
+                err.contains("root's copy of \"shared\"") && err.contains(spec),
+                "{src}: {err}"
+            );
+            assert!(
+                compile(src, &[]).unwrap().contains(".nested"),
+                "{src} without dedupe"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

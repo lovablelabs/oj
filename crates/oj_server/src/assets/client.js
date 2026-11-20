@@ -548,13 +548,13 @@ async function lost(ws) {
 // holds the socket: these exports load, but no update reaches them.
 // "pending": the document was still parsing, so its tag may yet come.
 if (globalThis.__ojPageClient === "pending") {
-  document.addEventListener(
-    "DOMContentLoaded",
-    () => {
-      if (!document.querySelector('script[src*="/@oj-start/live-reload.js"]')) connect();
-    },
-    { once: true },
-  );
+  const decide = () => {
+    if (!document.querySelector('script[src*="/@oj-start/live-reload.js"]')) connect();
+  };
+  // The mark outlives the parse it was made in: a copy of this client that
+  // evaluates after it has no DOMContentLoaded left to wait for.
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", decide, { once: true });
+  else decide();
 } else if (!globalThis.__ojPageClient) {
   connect();
 }

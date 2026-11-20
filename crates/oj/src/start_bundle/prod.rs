@@ -234,6 +234,12 @@ fn client_plugins(
         env,
         worker,
     ));
+    let dedupe = if worker {
+        oj_config::resolve_dedupe(&start.config)
+    } else {
+        oj_config::environment_dedupe(&start.config, env)
+    };
+    plugins.extend(crate::build::dedupe_plugin(&start.root, dedupe));
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())
@@ -600,6 +606,10 @@ pub(crate) async fn build(
                 "ssr",
                 false,
                 conditions,
+            ));
+            plugins.extend(crate::build::dedupe_plugin(
+                &start.root,
+                oj_config::environment_dedupe(&start.config, "ssr"),
             ));
             plugins.push(Pluginable::new_shared(
                 StartCodePlugin::new(&start.root, CodeTarget::Server)
