@@ -85,13 +85,15 @@ pub async fn ssr_dev(
         engine,
     });
 
-    let app = built
-        .router
-        .clone()
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&ssr_state),
-            ssr_route,
-        ));
+    // Inside the dev server's cors and host gates, as Start's routes are: a
+    // host that is not allowed gets no render either.
+    {
+        let state = Arc::clone(&ssr_state);
+        let hook: oj_server::RouteHook =
+            Arc::new(move |req, next| Box::pin(ssr_route(State(Arc::clone(&state)), req, next)));
+        let _ = built.route_hook.set(hook);
+    }
+    let app = built.router.clone();
 
     let (listener, port) = built.bind_listener().await?;
     if let Some(host) = built.plugin_host.clone() {
@@ -167,8 +169,14 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
 enum Route {
     Document,
     Loader,
-    Action { json: bool },
+    Action {
+        json: bool,
+    },
     Pass,
+    /// A request under `/@` the dev server is asked first (a page request to
+    /// one of oj's urls, `curl /@someone`), rendered when it has nothing
+    /// there, as Vite's internal middlewares hand a miss on.
+    PassOrDocument,
 }
 
 async fn ssr_route(State(state): State<Arc<SsrState>>, req: Request, next: Next) -> Response {
@@ -223,16 +231,37 @@ async fn ssr_route(State(state): State<Arc<SsrState>>, req: Request, next: Next)
             }
         }
         Route::Pass => next.run(req).await,
+        Route::PassOrDocument => {
+            let path = req.uri().path().to_string();
+            let resp = next.run(req).await;
+            if resp.status() != StatusCode::NOT_FOUND {
+                return resp;
+            }
+            render_route(&state, &path).await
+        }
     }
 }
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     let path = req.uri().path();
-    // Vite reserves no `/__` prefix: only oj's own endpoints skip SSR.
-    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+    // A socket upgrade is never a page.
+    if oj_server::is_websocket_upgrade(req.headers()) {
         return Route::Pass;
     }
-    if path.rsplit('/').next().is_some_and(|seg| seg.contains('.')) {
+    let dotted = path.rsplit('/').next().is_some_and(|seg| seg.contains('.'));
+    // oj's own urls go first; a page request one of them misses is rendered.
+    if oj_server::is_dev_server_request(path, req.headers()) {
+        return if path.starts_with("/@")
+            && !dotted
+            && matches!(*req.method(), Method::GET | Method::HEAD)
+            && oj_server::is_page_request(req.headers())
+        {
+            Route::PassOrDocument
+        } else {
+            Route::Pass
+        };
+    }
+    if dotted {
         return Route::Pass;
     }
     // Same rule as the dev server's proxy middleware: `^` contexts are regexes
@@ -248,9 +277,29 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
         return Route::Pass;
     }
     let is_loader = req.headers().contains_key("oj-loader");
+    // Any other request to a `/@` url is the dev server's first, as Vite's
+    // transform middleware tries it before the app's handler (a plugin's
+    // `/@my-plugin-runtime`). What it misses is rendered, as Vite hands its
+    // miss on (`curl /@someone`, a `fetch()`), but for a script request,
+    // which gets no page.
+    if path.starts_with("/@")
+        && !is_loader
+        && matches!(*req.method(), Method::GET | Method::HEAD)
+        && !oj_server::is_page_request(req.headers())
+    {
+        let script = req
+            .headers()
+            .get("sec-fetch-dest")
+            .is_some_and(|d| d.as_bytes() == b"script");
+        return if script {
+            Route::Pass
+        } else {
+            Route::PassOrDocument
+        };
+    }
     match *req.method() {
         Method::GET if is_loader => Route::Loader,
-        Method::GET => Route::Document,
+        Method::GET | Method::HEAD => Route::Document,
         Method::POST => Route::Action { json: is_loader },
         _ => Route::Pass,
     }
@@ -441,7 +490,93 @@ mod tests {
                 .unwrap();
             matches!(classify(&req, &prefixes), Route::Pass)
         };
+        let classified = |path: &str, dest: Option<&str>| {
+            let mut req = axum::http::Request::get(path);
+            if let Some(dest) = dest {
+                req = req.header("sec-fetch-dest", dest);
+            } else {
+                req = req.header("accept", "text/html");
+            }
+            classify(&req.body(axum::body::Body::empty()).unwrap(), &prefixes)
+        };
         assert!(route("GET", "/@oj/client.js"), "internal urls pass through");
+        // A page request to an extensionless one is rendered when oj has
+        // nothing there; a module request keeps oj's answer.
+        for path in ["/@react-refresh", "/@id/posts", "/@oj/posts", "/@fs/posts"] {
+            assert!(
+                matches!(classified(path, None), Route::PassOrDocument),
+                "{path}"
+            );
+            assert!(
+                matches!(classified(path, Some("script")), Route::Pass),
+                "{path}"
+            );
+        }
+        // A page navigation to one of Vite's urls is a page; oj's own
+        // endpoints still answer one.
+        for path in ["/@id/posts", "/@vite/client", "/@react-refresh"] {
+            assert!(
+                matches!(classified(path, Some("document")), Route::Document),
+                "{path}"
+            );
+        }
+        assert!(matches!(
+            classified("/@oj/client.js", Some("document")),
+            Route::Pass
+        ));
+        let head = axum::http::Request::head("/@id/posts")
+            .header("accept", "text/html")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(matches!(classify(&head, &prefixes), Route::PassOrDocument));
+        assert!(matches!(
+            classified("/@oj/diagnostics", Some("iframe")),
+            Route::PassOrDocument
+        ));
+        for path in ["/@someone", "/@someone/posts", "/@my-plugin-runtime"] {
+            assert!(
+                matches!(classified(path, None), Route::Document),
+                "an app page under /@ is rendered: {path}"
+            );
+            assert!(
+                matches!(classified(path, Some("script")), Route::Pass),
+                "a module request under /@ is the dev server's: {path}"
+            );
+            // Neither a page nor a script (`curl`, a `fetch()`): the dev
+            // server first, the render on its miss.
+            for dest in ["empty", "worker"] {
+                assert!(
+                    matches!(classified(path, Some(dest)), Route::PassOrDocument),
+                    "{path} as {dest}"
+                );
+            }
+            let plain = axum::http::Request::get(path)
+                .header("accept", "*/*")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                matches!(classify(&plain, &prefixes), Route::PassOrDocument),
+                "{path} with Accept: */*"
+            );
+        }
+        for hmr in ["/@hmr", "/hmr"] {
+            let upgrade = axum::http::Request::get(hmr)
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                matches!(classify(&upgrade, &prefixes), Route::Pass),
+                "a socket upgrade to a configured hmr path passes through: {hmr}"
+            );
+        }
+        let head = axum::http::Request::head("/someone")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(
+            matches!(classify(&head, &prefixes), Route::Document),
+            "a HEAD is rendered as its GET is"
+        );
         assert!(
             route("GET", "/__hmr_gate"),
             "oj's own endpoints pass through"

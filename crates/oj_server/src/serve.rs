@@ -62,6 +62,11 @@ async fn serve_internal_route(
     if path.starts_with(state.vite_deps_prefix.as_str()) {
         return Some(serve_vite_dep_url(state, headers, path).await);
     }
+    // A page navigation to one of Vite's urls (`/@id/x`) is the app's: Vite's
+    // transform middleware never answers one.
+    if !crate::is_dev_server_request(path, headers) {
+        return None;
+    }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {
         if name.contains('/') || name.contains("..") {
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());
@@ -161,7 +166,13 @@ async fn serve_internal_route(
                 .await,
             );
         }
-        return Some(serve_plugin_id(state, &spec, &importer).await);
+        // An id nothing resolves or loads (oj's 404) goes on to the app, as
+        // Vite's transform hands its `ERR_LOAD_URL` on; a module request keeps it.
+        let resp = serve_plugin_id(state, &spec, &importer).await;
+        if resp.status() == StatusCode::NOT_FOUND && !fetches_script(headers) {
+            return None;
+        }
+        return Some(resp);
     }
     None
 }
@@ -256,8 +267,14 @@ async fn request_file(
     uri: &Uri,
     rel: &str,
 ) -> Result<PathBuf, Box<Response>> {
-    if let Some(abs) = uri.path().strip_prefix("/@fs") {
-        let Some(real) = fs_gate(state, &PathBuf::from(urldecode(abs))) else {
+    if let Some(abs) = crate::fs_url_path(uri.path()) {
+        let abs = PathBuf::from(urldecode(abs));
+        // Only an existing file is refused or served; a miss goes on to the
+        // app, as sirv hands it on in Vite's serveRawFsMiddleware.
+        if !abs.is_file() {
+            return Err(Box::new(serve_missing(state, headers, uri, rel).await));
+        }
+        let Some(real) = fs_gate(state, &abs) else {
             return Err(Box::new(
                 (StatusCode::FORBIDDEN, "oj: /@fs path not allow-listed").into_response(),
             ));
@@ -328,7 +345,9 @@ async fn serve_fallback(
     uri: &Uri,
     rel: &str,
 ) -> Response {
-    if state.app_type != "custom" && accepts_html_fallback(headers) {
+    // Vite's indexHtml middleware serves no page to a module request.
+    let page = !fetches_script(headers);
+    if page && state.app_type != "custom" && accepts_html_fallback(headers) {
         if let Some(page) = html_fallback_candidate(rel)
             .and_then(|c| locate(&state.root, state.public_dir.as_deref(), &c))
         {
@@ -342,7 +361,7 @@ async fn serve_fallback(
             };
         }
     }
-    if state.app_type == "spa" && is_spa_navigation(rel, headers) {
+    if page && state.app_type == "spa" && is_spa_navigation(rel, headers) {
         return serve_index_html(state, &original_url(uri)).await;
     }
     (StatusCode::NOT_FOUND, format!("oj: no such file: /{rel}")).into_response()

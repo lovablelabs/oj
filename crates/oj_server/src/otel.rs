@@ -650,9 +650,9 @@ fn route_class(path: &str) -> &'static str {
     if let Some(class) = class {
         return class;
     }
-    // Other `/@` paths are dev-server modules (`/@react-refresh`,
-    // `/@virtual/..`, `/@oj-empty`), never pages.
-    if path.starts_with("/@") {
+    // oj's other `/@` urls (`/@react-refresh`, `/@virtual/..`, `/@oj-empty`)
+    // are modules.
+    if crate::is_dev_server_path(path) {
         return "module";
     }
     "document"
@@ -688,6 +688,7 @@ mod tests {
         assert_eq!(route_class("/logo.svg"), "asset");
         assert_eq!(route_class("/"), "document");
         assert_eq!(route_class("/dashboard/settings"), "document");
+        assert_eq!(route_class("/@someone"), "document");
         assert_eq!(route_class("/index.html"), "document");
         assert_eq!(route_class("/@vite/client"), "internal");
         assert_eq!(route_class("/node_modules/.vite/deps/react.js"), "dep");

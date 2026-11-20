@@ -365,10 +365,15 @@ fn is_spa_navigation_rules() {
     assert!(is_spa_navigation("dashboard", &empty));
     assert!(is_spa_navigation("projects/abc", &empty));
     assert!(!is_spa_navigation("main.js", &empty));
-    assert!(!is_spa_navigation("@vite/client", &empty));
-    // Vite's htmlFallback reserves no `__` prefix (oj's own endpoints are
-    // routed before the fallback).
+    // Vite's htmlFallback reserves no `__` or `@` prefix: whatever oj
+    // answers itself never reaches the fallback, so a `/@` path that does
+    // names nothing oj serves (`/@someone`, `/@id/posts`, `/@vite/client`).
     assert!(is_spa_navigation("__component/preview/Badge", &empty));
+    assert!(is_spa_navigation("@someone", &empty));
+    assert!(is_spa_navigation("@someone/posts", &empty));
+    assert!(is_spa_navigation("@id/posts", &empty));
+    assert!(is_spa_navigation("@vite/client", &empty));
+    assert!(!is_spa_navigation("@oj/missing.js", &empty));
     assert!(!is_spa_navigation("src/App.tsx", &empty));
     assert!(!is_spa_navigation("node_modules/react/index.js", &empty));
     let mut html = HeaderMap::new();
