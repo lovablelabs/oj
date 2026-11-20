@@ -367,6 +367,77 @@ fn extraction_counts_the_plugins_a_host_would_run() {
     );
 }
 
+/// Whether a plugin's `config` hook, run by the extractor, finds `condition`
+/// (JS over `this.meta`) true: it then declares a runner-backed environment.
+/// `vite` is the app's `node_modules/vite` (its version, `rollupVersion` and
+/// `rolldownVersion` export) or none, with no config loader either way.
+fn config_hook_sees(vite: Option<(&str, &str, Option<&str>)>, condition: &str) -> bool {
+    let dir = app(&format!(
+        r#"export default {{ plugins: [{{
+  name: "meta-probe",
+  config() {{
+    if ({condition}) return {{ environments: {{ worker: {{ dev: {{ createEnvironment() {{}} }} }} }} }};
+  }},
+}}] }};"#
+    ));
+    if let Some((version, rollup, rolldown)) = vite {
+        let vite = dir.path().join("node_modules/vite");
+        std::fs::create_dir_all(&vite).unwrap();
+        std::fs::write(
+            vite.join("package.json"),
+            format!(r#"{{"name":"vite","version":"{version}","type":"module","exports":{{".":"./index.js"}}}}"#),
+        )
+        .unwrap();
+        let rolldown = rolldown
+            .map(|r| format!("export const rolldownVersion = \"{r}\";\n"))
+            .unwrap_or_default();
+        std::fs::write(
+            vite.join("index.js"),
+            format!("export const version = \"{version}\";\nexport const rollupVersion = \"{rollup}\";\n{rolldown}"),
+        )
+        .unwrap();
+    }
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true)
+        .expect("the config extracts");
+    v.ssr.as_ref().and_then(|s| s.get("runnerBacked")) == Some(&serde_json::Value::Bool(true))
+}
+
+// The extractor's run of a `config` hook sees the app's Vite's meta, as the
+// plugin host's does: `rolldownVersion` under Vite 8 only.
+#[test]
+fn the_extractor_config_hook_sees_rolldown_version_only_under_vite_8() {
+    let _g = lock();
+    let sees = |vite| config_hook_sees(Some(vite), "this.meta.rolldownVersion");
+    assert!(sees(("8.0.3", "4.0.0", Some("1.2.19"))), "under vite 8");
+    assert!(!sees(("7.3.1", "4.0.0", None)), "under vite 7");
+}
+
+// Vite 7 and 8 hand `config` their basePluginContextMeta, without
+// `watchMode`; with no app `vite`, the meta is Vite 8's, as in the plugin host.
+#[test]
+fn the_extractor_config_hook_meta_is_the_app_vites_base_meta() {
+    let _g = lock();
+    for (vite, expected) in [
+        (
+            Some(("8.0.3", "4.50.2", Some("1.2.19"))),
+            r#"{"viteVersion":"8.0.3","rollupVersion":"4.50.2","rolldownVersion":"1.2.19"}"#,
+        ),
+        (
+            Some(("7.3.1", "4.50.2", None)),
+            r#"{"viteVersion":"7.3.1","rollupVersion":"4.50.2"}"#,
+        ),
+        (
+            None,
+            r#"{"viteVersion":"8.0.0","rollupVersion":"4.0.0","rolldownVersion":"1.0.0"}"#,
+        ),
+    ] {
+        assert!(
+            config_hook_sees(vite, &format!("JSON.stringify(this.meta) === '{expected}'")),
+            "under {vite:?}, the meta is not {expected}"
+        );
+    }
+}
+
 /// The process env with `vars` set over it, as a later launch would see it.
 fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
     let mut all: Vec<(String, String)> = oj_env::get()

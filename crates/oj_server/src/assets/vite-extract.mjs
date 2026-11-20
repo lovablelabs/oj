@@ -6,7 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode, esmEntry, startRouterGenerator } from "./vite-config-node.mjs";
+import { asNode, esmEntry, pluginContextMeta, startRouterGenerator } from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
@@ -938,6 +938,7 @@ async function loadConfig() {
   if (vitePath) {
     try {
       const vite = await import(pathToFileURL(vitePath).href);
+      configHookContext.meta = pluginContextMeta(vite);
       // Vite evaluates the config file ONCE: resolveConfig itself calls
       // loadConfigFromFile and merges the inline config over the file's
       // (node.js resolveConfig: `config = mergeConfig(loadResult.config,
@@ -1495,9 +1496,10 @@ const skipsConfigHook = (p) => {
   return isReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
 };
 
-// Vite's BasicMinimalPluginContext surface, enough for a config hook to speak.
+// Vite's BasicMinimalPluginContext surface, enough for a config hook to speak;
+// the meta is the app's Vite's once loadConfig imported it, as the host's is.
 const configHookContext = {
-  meta: { rollupVersion: "4.0.0", watchMode: false },
+  meta: pluginContextMeta(null),
   debug() {},
   info() {},
   warn(m) {
