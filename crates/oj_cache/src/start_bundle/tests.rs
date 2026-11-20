@@ -211,36 +211,40 @@ fn persist_then_restore_roundtrips_artifacts() {
 }
 
 // A restore reports each closure file under the stat its key was verified
-// at, with the digest of its bytes when the file is within the slack.
+// at, with the digest of its bytes, and vouches by the stat only for a file
+// outside the slack.
 #[test]
 fn a_restore_vouches_only_for_settled_files() {
     let fx = Fixture::new("restoreinputs");
     fx.store().persist(&fx.start).unwrap();
     fx.clear_start_dir();
-    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
-    assert_eq!(stats.inputs.len(), 2);
-    for (file, stat, digest) in &stats.inputs {
-        let meta = fs::metadata(file).unwrap();
-        assert_eq!(*stat, Some((meta.len(), mtime_ns(&meta).unwrap())));
-        assert_eq!(
-            *digest,
-            Some(*blake3::hash(&fs::read(file).unwrap()).as_bytes()),
-            "just written: {file:?}"
-        );
+    // Modified "a minute from now": inside the slack however long the
+    // machine takes to get from here to the restore.
+    let soon = SystemTime::now() + Duration::from_secs(60);
+    for name in ["a.tsx", "b.tsx"] {
+        set_mtime(&fx.module(name), soon);
     }
-
+    let reported = |settled: bool| {
+        let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+        assert_eq!(stats.inputs.len(), 2);
+        for input in &stats.inputs {
+            let meta = fs::metadata(&input.file).unwrap();
+            assert_eq!(input.stat, Some((meta.len(), mtime_ns(&meta).unwrap())));
+            assert_eq!(
+                input.digest,
+                *blake3::hash(&fs::read(&input.file).unwrap()).as_bytes()
+            );
+            assert_eq!(input.settled, settled, "{:?}", input.file);
+        }
+    };
+    reported(false);
     fx.settle_modules();
-    let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
-    for (file, stat, digest) in &stats.inputs {
-        let meta = fs::metadata(file).unwrap();
-        assert_eq!(*stat, Some((meta.len(), mtime_ns(&meta).unwrap())));
-        assert_eq!(*digest, None, "settled: {file:?}");
-    }
+    reported(true);
 }
 
 // A file the restore hashed but could not stat usefully (an mtime before the
-// epoch here) is still one of the bundle's inputs, with no stat to vouch for
-// it.
+// epoch here) is still one of the bundle's inputs, with its digest and no
+// stat to vouch for it.
 #[test]
 fn a_restore_keeps_an_input_it_has_no_stat_for() {
     let fx = Fixture::new("restorenostat");
@@ -252,17 +256,23 @@ fn a_restore_keeps_an_input_it_has_no_stat_for() {
         UNIX_EPOCH - Duration::from_secs(86_400),
     );
     let (stats, _) = fx.store().restore(&fx.start, no_globs).unwrap();
+    let digest = |name: &str| *blake3::hash(&fs::read(fx.module(name)).unwrap()).as_bytes();
     let a = fs::metadata(fx.module("a.tsx")).unwrap();
-    let b = blake3::hash(&fs::read(fx.module("b.tsx")).unwrap());
     assert_eq!(
         stats.inputs,
         vec![
-            (
-                fx.module("a.tsx"),
-                Some((a.len(), mtime_ns(&a).unwrap())),
-                None
-            ),
-            (fx.module("b.tsx"), None, Some(*b.as_bytes())),
+            RestoredInput {
+                file: fx.module("a.tsx"),
+                stat: Some((a.len(), mtime_ns(&a).unwrap())),
+                digest: digest("a.tsx"),
+                settled: true,
+            },
+            RestoredInput {
+                file: fx.module("b.tsx"),
+                stat: None,
+                digest: digest("b.tsx"),
+                settled: false,
+            },
         ]
     );
 }

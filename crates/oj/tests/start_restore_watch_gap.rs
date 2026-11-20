@@ -149,14 +149,7 @@ fn a_file_created_under_a_glob_between_the_restore_and_the_watcher_reaches_the_c
 /// The fixture with the holding plugin, the route and a note, and a first
 /// start that caches the client bundle.
 fn cached_start(root: &Path) {
-    let config = root.join("vite.config.ts");
-    let source = std::fs::read_to_string(&config).unwrap();
-    let source = source.replacen(
-        "  plugins: [\n",
-        "  plugins: [\n    holdServerPlugin(),\n",
-        1,
-    );
-    std::fs::write(&config, format!("{source}{HOLD_PLUGIN}")).unwrap();
+    hold_plugin(root);
     write_about(root, "about-before-restart");
     write_note(root, "one", "note-one");
     let dev = Server::oj_dev(root);
@@ -166,6 +159,18 @@ fn cached_start(root: &Path) {
         dev.output()
     );
     assert!(client_holds(&dev, "about-before-restart"));
+}
+
+/// Adds the holding plugin to the fixture's config.
+fn hold_plugin(root: &Path) {
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen(
+        "  plugins: [\n",
+        "  plugins: [\n    holdServerPlugin(),\n",
+        1,
+    );
+    std::fs::write(&config, format!("{source}{HOLD_PLUGIN}")).unwrap();
 }
 
 // A save that breaks the build fails the boot's rebuild; the first page is
@@ -281,6 +286,115 @@ fn a_restore_right_after_the_sources_were_written_rebuilds_nothing() {
         !dev.output().contains("rebuilding for"),
         "the boot rebuilt files its restore had verified (first page took {:?})\n{}",
         asked.elapsed(),
+        dev.output()
+    );
+}
+
+// A file of the bundle written again with the same bytes while the server
+// starts (a plugin that regenerates a source on every start, without
+// comparing it first) has a new mtime and nothing new to build.
+#[test]
+fn a_file_rewritten_with_the_same_bytes_during_the_start_rebuilds_nothing() {
+    let Some(app) = app("restore-watch-gap-same-bytes") else {
+        return;
+    };
+    let root = &app.0;
+    cached_start(root);
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    touch_tree(&root.join("src"), long_ago);
+    let dev = held_start(root, "same-bytes", || {
+        write_about(root, "about-before-restart")
+    });
+    let (status, _) = dev.request("GET", "/about", &[]);
+    assert_eq!(status, 200, "{}", dev.output());
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        !dev.output().contains("rebuilding for"),
+        "the boot rebuilt for a file whose bytes did not change\n{}",
+        dev.output()
+    );
+}
+
+// A save after the watcher started and before the boot scan is in the scan
+// and is an event queued for the watcher: the boot's rebuild covers it, and
+// the event rebuilds nothing again and reloads no page.
+#[test]
+fn a_save_the_boot_rebuild_covered_is_not_rebuilt_again_for_its_watcher_event() {
+    let Some(app) = app("restore-watch-gap-both") else {
+        return;
+    };
+    let root = &app.0;
+    cached_start(root);
+    let dev = Server::oj_dev_at(
+        root,
+        &[("DEBUG", "oj:boot"), ("OJ_BOOT_SCAN_DELAY_MS", "1500")],
+        "watcher ready, boot scan next",
+        || write_about(root, "about-saved-after-the-watcher"),
+    );
+    let (status, page) = dev.request("GET", "/about", &[]);
+    assert!(
+        status == 200 && page.contains("about-saved-after-the-watcher"),
+        "the server renders the saved route: {status} {page:?}\n{}",
+        dev.output()
+    );
+    assert_client_holds(&dev, "about-saved-after-the-watcher");
+    // Long enough for a second run: it waits a second for the bundler to
+    // report the file, then builds in full.
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    let output = dev.output();
+    assert_eq!(
+        output.matches("rebuilding for").count(),
+        1,
+        "one rebuild, the boot's\n{output}"
+    );
+    assert_eq!(
+        output.matches("rebuilt, reloading").count(),
+        1,
+        "the boot's rebuild ends before any page loads; none is reloaded after\n{output}"
+    );
+}
+
+// Behind the editor's hot-update gate, the dev server's watcher and, on a
+// boot that builds the client bundle, the bundler's engine watch the sources
+// before the server listens, and each holds a save it reports. One made
+// then is no edit the editor will flush, and no page existed to keep it
+// from: the gate holds nothing for it, and the first page runs it.
+#[test]
+fn a_save_the_bundler_reports_during_the_start_is_not_held_by_the_gate() {
+    let Some(app) = app("restore-watch-gap-gate") else {
+        return;
+    };
+    let root = &app.0;
+    write_about(root, "about-before-restart");
+    write_note(root, "one", "note-one");
+    // The scan waits long enough for the bundler's watcher to report first.
+    let dev = Server::oj_dev_at(
+        root,
+        &[
+            ("OJ_HMR_GATE", "1"),
+            ("OJ_HMR_FULL_RELOAD", "false"),
+            ("DEBUG", "oj:boot"),
+            ("OJ_BOOT_SCAN_DELAY_MS", "2500"),
+        ],
+        "watcher ready, boot scan next",
+        || write_about(root, "about-saved-during-the-start"),
+    );
+    let (status, page) = dev.request("GET", "/about", &[]);
+    assert!(
+        status == 200 && page.contains("about-saved-during-the-start"),
+        "the server renders the saved route: {status} {page:?}\n{}",
+        dev.output()
+    );
+    assert_client_holds(&dev, "about-saved-during-the-start");
+    let (_, gate) = dev.request("GET", "/__hmr_gate", &[]);
+    assert!(
+        !gate.contains("about.tsx"),
+        "the gate holds a save from before the server listened: {gate}\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.output().contains("reload held"),
+        "the boot's rebuild waits for no flush\n{}",
         dev.output()
     );
 }

@@ -827,9 +827,24 @@ pub async fn start_dev(
     // Scanned once the watcher covers the root: a save before is moved, one
     // after reaches the watcher. Documents wait for the scan's rebuild.
     built.watcher_ready().await;
+    oj_server::boot_phase("watcher ready, boot scan next");
     let boot = {
         let (state, cache) = (Arc::clone(&state), cache.clone());
-        tokio::task::spawn_blocking(move || boot_changes(&state, &cache)).await?
+        tokio::task::spawn_blocking(move || {
+            boot_scan_delay_for_tests();
+            // A save made while the server starts is the boot's to pick up
+            // (the scan below, or the build that read it), not an edit the
+            // editor will flush: no page has loaded anything yet. The dev
+            // server's watcher and the bundler's engine, both watching by
+            // now, hold such a save as they report it, and with no flush to
+            // come it stayed held until the gate's cap, an `import()` of the
+            // file waiting with it.
+            if let Some(gate) = &state.gate {
+                gate.cover_writes_so_far();
+            }
+            boot_changes(&state, &cache)
+        })
+        .await?
     };
     let boot = (!boot.0.is_empty() || !boot.1.is_empty()).then(|| {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1247,6 +1262,40 @@ struct BootBatch {
     done: tokio::sync::oneshot::Sender<()>,
 }
 
+/// The contents each file of the boot batch had when the batch was queued
+/// (none: no file), which the boot's rebuild then read. An event the watcher
+/// had queued for one of them reports those same contents.
+#[derive(Default)]
+struct BootCovered(std::collections::HashMap<PathBuf, Option<blake3::Hash>>);
+
+impl BootCovered {
+    fn of(paths: &std::collections::HashSet<PathBuf>) -> Self {
+        Self(
+            paths
+                .iter()
+                .map(|p| (p.clone(), Self::contents(p)))
+                .collect(),
+        )
+    }
+
+    fn contents(path: &Path) -> Option<blake3::Hash> {
+        std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
+    }
+
+    /// Takes out of `paths`, a batch of watcher events, the files that are
+    /// still as the boot batch had them. A file is asked about once: its
+    /// next event is a save of its own, whatever it wrote.
+    fn drop_covered(&mut self, paths: &mut std::collections::HashSet<PathBuf>) {
+        if self.0.is_empty() {
+            return;
+        }
+        paths.retain(|p| match self.0.remove(p) {
+            Some(at_boot) => Self::contents(p) != at_boot,
+            None => true,
+        });
+    }
+}
+
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
 /// rebundle worker. Batches landing while a rebundle is in flight merge into
 /// the single pending run (paths union), so at most one run ever queues.
@@ -1485,6 +1534,18 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Tests stretch the moment between the watcher's start and the boot scan
+/// (`OJ_BOOT_SCAN_DELAY_MS`), where a save is both in the scan and an event
+/// queued for the watcher.
+fn boot_scan_delay_for_tests() {
+    if let Some(delay) = std::env::var("OJ_BOOT_SCAN_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+}
+
 /// What changed under the boot bundle before the watcher covered the root:
 /// its files saved since it read them (or its restore verified them), and
 /// the files its globs match today that it never read, as the restore's own
@@ -1678,6 +1739,8 @@ fn spawn_start_watcher(
         // Scanned once the boot batch is queued; events queue on the feed
         // meanwhile (a file created during it can read as known, as in chokidar).
         let mut known: Option<KnownFiles> = None;
+        // The boot batch's files as they were when it was queued.
+        let mut covered = BootCovered::default();
         loop {
             if boot.is_none() && known.is_none() {
                 known = Some(KnownFiles(oj_server::watched_files(&watch_root)));
@@ -1691,7 +1754,10 @@ fn spawn_start_watcher(
             let first_batch = boot.take().map(|b| {
                 created.extend(b.added.iter().cloned());
                 boot_done = Some(b.done);
-                b.moved.into_iter().chain(b.added).collect()
+                let paths: std::collections::HashSet<PathBuf> =
+                    b.moved.into_iter().chain(b.added).collect();
+                covered = BootCovered::of(&paths);
+                paths
             });
             let at_boot = first_batch.is_some();
             let mut paths: std::collections::HashSet<PathBuf> = if let Some(paths) = first_batch {
@@ -1743,6 +1809,12 @@ fn spawn_start_watcher(
                     }
                 }
                 known.forget_gone(&paths);
+                // A save made after the watcher started and before the boot
+                // scan is in the boot batch and is an event queued here: the
+                // boot's rebuild read it, so it is no change to build or
+                // reload for again. Vite's watcher, created with
+                // `ignoreInitial`, has no such second report of a file.
+                covered.drop_covered(&mut paths);
             }
             if paths.is_empty() {
                 continue;

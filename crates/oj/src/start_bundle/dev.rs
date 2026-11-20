@@ -284,7 +284,7 @@ impl DevBundler {
     /// them.
     pub(crate) fn input_files(&self) -> std::collections::HashSet<PathBuf> {
         let built = self.built.lock().unwrap();
-        built.iter().map(|(file, _, _)| file.clone()).collect()
+        built.iter().map(|(file, ..)| file.clone()).collect()
     }
 
     /// Takes a bundle restored from the store as the one being served, its

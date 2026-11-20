@@ -195,9 +195,17 @@ pub struct RestoreStats {
     pub inputs: Vec<RestoredInput>,
 }
 
-/// A closure file, its size and mtime (ns) when usable, and the blake3 digest
-/// of its bytes when that stat cannot vouch for them (within the slack).
-pub type RestoredInput = (PathBuf, Option<(u64, u64)>, Option<[u8; 32]>);
+/// A closure file as a restore verified it: its size and mtime (ns) when
+/// usable, the blake3 digest of its bytes, and whether that stat vouches for
+/// them (false with no stat, or one within the freshness slack). The digest
+/// tells a file rewritten with the same bytes from a saved one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestoredInput {
+    pub file: PathBuf,
+    pub stat: Option<(u64, u64)>,
+    pub digest: [u8; 32],
+    pub settled: bool,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Miss {

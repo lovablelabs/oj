@@ -118,19 +118,24 @@ pub(super) fn verified_digests(files: &[PathBuf], memo: Option<&Memo>) -> Digest
 }
 
 impl Digests {
-    /// Each file that had a digest, with its stat, and the digest too when
-    /// the stat cannot vouch for it (none, or within the freshness slack).
+    /// Each file that had a digest, with it and its stat, and whether that
+    /// stat vouches for the contents (usable, and outside the freshness
+    /// slack).
     pub(super) fn inputs(&self, files: &[PathBuf]) -> Vec<super::RestoredInput> {
         files
             .iter()
             .zip(&self.stats)
             .zip(&self.hashes)
             .filter_map(|((path, stat), hash)| {
-                let hash = hash.as_ref()?;
                 let settled = stat.is_some_and(|(_, mtime_ns)| {
                     mtime_ns.saturating_add(MEMO_FRESHNESS_SLACK_NS) <= self.statted_at_ns
                 });
-                Some((path.clone(), *stat, (!settled).then(|| *hash.as_bytes())))
+                Some(super::RestoredInput {
+                    file: path.clone(),
+                    stat: *stat,
+                    digest: *hash.as_ref()?.as_bytes(),
+                    settled,
+                })
             })
             .collect()
     }
