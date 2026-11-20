@@ -57,7 +57,7 @@ pub struct MediaQuery {
 impl MediaQuery {
     pub fn new(rule: MediaQueryRule) -> Self {
         MediaQuery {
-            queries: resolve_media_types(normalize(rule), true),
+            queries: resolve_media_types(normalize(rule, false), true),
         }
     }
 
@@ -395,6 +395,41 @@ pub(crate) fn is_leading_not_query(rule: &MediaQueryRule) -> bool {
         && !rest.iter().any(contains_media_keyword)
 }
 
+// Whether the non-`Or` conjuncts already constrain incompatible media types
+// (contradictory media types or `not all` / `not(all)`), using the exact same
+// rules as `resolve_media_types`'s conjunction pass.
+fn has_media_type_conflict(rules: &[MediaQueryRule]) -> bool {
+    let mut media_type: Option<&str> = None;
+    for rule in rules {
+        if matches!(rule, MediaQueryRule::Or(_)) {
+            continue;
+        }
+        if let MediaQueryRule::Keyword {
+            key, not: false, ..
+        } = rule
+        {
+            if key != "all" {
+                match media_type {
+                    None => media_type = Some(key.as_str()),
+                    Some(current) if current != key => return true,
+                    Some(_) => {}
+                }
+            }
+            continue;
+        }
+        match media_type_requirement(rule) {
+            None => {}
+            Some(None) => return true,
+            Some(Some(required)) => match media_type {
+                None => media_type = Some(required),
+                Some(current) if current != required => return true,
+                Some(_) => {}
+            },
+        }
+    }
+    false
+}
+
 // Folds media types into at most one per conjunction: contradictory types
 // collapse the branch to `not all`, redundant ones drop, negated types become
 // their complement, and a conjunction over an `or` distributes into branches.
@@ -437,6 +472,9 @@ fn resolve_media_types(node: MediaQueryRule, is_query_list: bool) -> MediaQueryR
                 .iter()
                 .position(|r| matches!(r, MediaQueryRule::Or(_)))
             {
+                if has_media_type_conflict(&resolved) {
+                    return never_rule();
+                }
                 let MediaQueryRule::Or(branches) = resolved.remove(or_index) else {
                     unreachable!("position matched an or rule");
                 };
@@ -515,17 +553,17 @@ fn resolve_media_types(node: MediaQueryRule, is_query_list: bool) -> MediaQueryR
 // ---------------------------------------------------------------------------
 // normalization
 
-fn normalize(rule: MediaQueryRule) -> MediaQueryRule {
+fn normalize(rule: MediaQueryRule, under_not: bool) -> MediaQueryRule {
     match rule {
         MediaQueryRule::And(rules) => {
             let mut flattened = Vec::new();
             for r in rules {
-                match normalize(r) {
+                match normalize(r, under_not) {
                     MediaQueryRule::And(inner) => flattened.extend(inner),
                     other => flattened.push(other),
                 }
             }
-            let merged = merge_intervals_for_and(&flattened);
+            let merged = merge_intervals_for_and(&flattened, !under_not);
             if merged.is_empty() {
                 MediaQueryRule::Keyword {
                     key: "all".to_string(),
@@ -536,9 +574,11 @@ fn normalize(rule: MediaQueryRule) -> MediaQueryRule {
                 MediaQueryRule::And(merged)
             }
         }
-        MediaQueryRule::Or(rules) => MediaQueryRule::Or(rules.into_iter().map(normalize).collect()),
+        MediaQueryRule::Or(rules) => {
+            MediaQueryRule::Or(rules.into_iter().map(|r| normalize(r, under_not)).collect())
+        }
         MediaQueryRule::Not(inner) => {
-            let operand = normalize(*inner);
+            let operand = normalize(*inner, true);
             if let MediaQueryRule::Keyword { key, not: true, .. } = &operand
                 && key == "all"
             {
@@ -549,7 +589,7 @@ fn normalize(rule: MediaQueryRule) -> MediaQueryRule {
                 };
             }
             if let MediaQueryRule::Not(inner2) = operand {
-                return normalize(*inner2);
+                return normalize(*inner2, under_not);
             }
             MediaQueryRule::Not(Box::new(operand))
         }
@@ -575,7 +615,16 @@ const MERGE_EPSILON: f64 = 0.01;
 // the two sides cannot both match at a fractional viewport width.
 const MAX_WIDTH_PX_EPSILON: f64 = 0.02;
 
-fn merge_intervals_for_and(rules: &[MediaQueryRule]) -> Vec<MediaQueryRule> {
+fn merge_intervals_for_and(
+    rules: &[MediaQueryRule],
+    prune_media_conflicts: bool,
+) -> Vec<MediaQueryRule> {
+    // In positive polarity (outside any `not`), a conjunction whose media types
+    // already conflict will collapse to `not all` in `resolve_media_types`
+    // regardless of how remaining `not (A and B)` terms distribute.
+    if prune_media_conflicts && has_media_type_conflict(rules) {
+        return vec![never_rule()];
+    }
     // (not (A and B)) with exactly two operands distributes into an OR of the
     // two negated branches before any interval math happens.
     for (idx, rule) in rules.iter().enumerate() {
@@ -594,7 +643,7 @@ fn merge_intervals_for_and(rules: &[MediaQueryRule]) -> Vec<MediaQueryRule> {
                 .map(|negated| {
                     let mut input = others.clone();
                     input.push(MediaQueryRule::Not(Box::new(negated.clone())));
-                    merge_intervals_for_and(&input)
+                    merge_intervals_for_and(&input, prune_media_conflicts)
                 })
                 .collect();
             return vec![MediaQueryRule::Or(

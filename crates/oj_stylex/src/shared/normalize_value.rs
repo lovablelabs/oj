@@ -191,14 +191,18 @@ fn normalize_zero_dimensions(nodes: &mut [Node], key: &str) {
         }
         // Units compare case-insensitively; none of them is the lowercase of a
         // non-ASCII string, so the ASCII fold matches `toLowerCase()`.
-        let unit_str = dimension.unit.to_ascii_lowercase();
-        if matches!(unit_str.as_str(), "deg" | "grad" | "turn" | "rad") {
+        let u = dimension.unit;
+        if u.eq_ignore_ascii_case("deg")
+            || u.eq_ignore_ascii_case("grad")
+            || u.eq_ignore_ascii_case("turn")
+            || u.eq_ignore_ascii_case("rad")
+        {
             node.value = "0deg".to_string();
-        } else if matches!(unit_str.as_str(), "ms" | "s") {
+        } else if u.eq_ignore_ascii_case("ms") || u.eq_ignore_ascii_case("s") {
             node.value = "0s".to_string();
-        } else if unit_str == "fr" {
+        } else if u.eq_ignore_ascii_case("fr") {
             node.value = "0fr".to_string();
-        } else if unit_str == "%" {
+        } else if u == "%" {
             node.value = "0%".to_string();
         } else if end_function == 0 {
             node.value = "0".to_string();
