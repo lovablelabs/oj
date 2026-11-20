@@ -32,9 +32,13 @@ function loadPage({
   const listeners = {};
   const clock = { now: 0 };
   const said = [];
+  // What the client warned of in the console.
+  const warned = [];
   // The elements the client appended to the document's head.
   const added = [];
-  // The page's resource timeline: the urls it has fetched, and its observers.
+  // The page's resource timeline: the entries of what it has fetched (the
+  // url, and the response's status where the page was told one), and its
+  // observers.
   const resources = [];
   const observers = [];
   class PerformanceObserver {
@@ -61,10 +65,10 @@ function loadPage({
   const page = {
     WebSocket,
     PerformanceObserver,
-    performance: { getEntriesByType: (type) => (type === "resource" ? resources.map((name) => ({ name })) : []) },
+    performance: { getEntriesByType: (type) => (type === "resource" ? resources.slice() : []) },
     fetch: (...args) => fetch(...args),
     URL,
-    console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
+    console: { error() {}, debug() {}, warn: (line) => warned.push(line), log: (line) => said.push(line) },
     location: {
       protocol: "http:",
       host: hostname,
@@ -174,6 +178,7 @@ function loadPage({
     pagehide: (persisted) => emit(listeners, "pagehide", { persisted }),
     pageshow: (persisted) => emit(listeners, "pageshow", { persisted }),
     said,
+    warned,
     online: () => emit(listeners, "online"),
     // A promise rejection nothing in the page handled (a failed import()),
     // and the page's request to the server it leads to, settled.
@@ -183,9 +188,12 @@ function loadPage({
     },
     // The page fetched `url`: on its timeline, and told to its observers
     // unless `observed` is false (an entry the observer has yet to deliver).
-    fetched: (url, observed = true) => {
-      resources.push(url);
-      if (observed) observers.forEach((seen) => seen({ getEntries: () => [{ name: url }] }));
+    // `status`: the response's, as a browser that reports one has it
+    // (PerformanceResourceTiming.responseStatus).
+    fetched: (url, observed = true, status = undefined) => {
+      const entry = status === undefined ? { name: url } : { name: url, responseStatus: status };
+      resources.push(entry);
+      if (observed) observers.forEach((seen) => seen({ getEntries: () => [entry] }));
     },
     // The page's timers come due.
     elapse: () => timers.splice(0).forEach((fn) => fn()),
@@ -329,6 +337,114 @@ test("a tab that reloaded for one gone chunk reloads for the next, under the sam
   assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 1);
   assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 1, "another chunk, later");
   assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 0, "the same one again is a cached document");
+});
+
+test("a later document reloads for a chunk an earlier one reloaded for: an edit taken back and made again", async () => {
+  // Hot updates rename a chunk back and forth without a new stamp: a tab
+  // reloads for a name, the edit is taken back (the name is the current
+  // chunk's again) and made again, and a later document of the tab, which
+  // names more hot changes, falls behind far enough to meet the same name
+  // gone. The mark is the document's, so it reloads; the same document
+  // served again from a cache does not.
+  const storage = new Map();
+  const reloads = async (hot) => {
+    const page = loadPage({ stamp: '"1f-4"', hot, storage });
+    page.open();
+    page.fetched(GONE_URL);
+    await page.receive(GONE);
+    return [reloadsIn(page.log), page.warned];
+  };
+  const reloading = "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js); reloading";
+  const same =
+    "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js), and reloading served the same document";
+  assert.deepEqual(await reloads("0"), [1, [reloading]]);
+  assert.deepEqual(await reloads("0"), [0, [same]], "the same document again");
+  assert.deepEqual(await reloads("4"), [1, [reloading]], "a later document, the same name");
+  assert.deepEqual(await reloads("4"), [0, [same]], "and that one again");
+});
+
+test("a page that has the chunk loaded is not reloaded when another page finds it gone", async () => {
+  // Two tabs: this one loaded the route's chunk (200) and runs it. The
+  // server drops the name later, an older tab asks for it and gets a 404,
+  // and the frame about that goes to every page. Only a request that was
+  // not answered with the chunk is this page's own trouble.
+  const healthy = loadPage({ stamp: '"1f-4"' });
+  healthy.open();
+  healthy.fetched(GONE_URL, true, 200);
+  await healthy.receive(GONE);
+  for (let i = 0; i < 4; i++) healthy.elapse();
+  assert.equal(reloadsIn(healthy.log), 0, "it has the chunk");
+  assert.deepEqual(healthy.warned, []);
+
+  // Revalidated from the browser's cache counts as loaded too.
+  const revalidated = loadPage({ stamp: '"1f-4"' });
+  revalidated.open();
+  revalidated.fetched(GONE_URL, true, 304);
+  await revalidated.receive(GONE);
+  for (let i = 0; i < 4; i++) revalidated.elapse();
+  assert.equal(reloadsIn(revalidated.log), 0);
+
+  // The page whose request failed reloads, read off the timeline or told
+  // by its observer; so does one whose browser reports no status, or 0.
+  for (const [observed, status] of [
+    [true, 404],
+    [false, 404],
+    [true, undefined],
+    [true, 0],
+  ]) {
+    const asking = loadPage({ stamp: '"1f-4"' });
+    asking.open();
+    asking.fetched(GONE_URL, observed, status);
+    await asking.receive(GONE);
+    assert.equal(reloadsIn(asking.log), 1, `observed ${observed}, status ${status}`);
+  }
+
+  // A page that loaded the chunk once and asks for it again later, when
+  // it is gone (a stylesheet or a worker's script is fetched each time).
+  const retried = loadPage({ stamp: '"1f-4"' });
+  retried.open();
+  retried.fetched(GONE_URL, true, 200);
+  retried.fetched(GONE_URL, true, 404);
+  await retried.receive(GONE);
+  assert.equal(reloadsIn(retried.log), 1);
+});
+
+test("the document that is reloading for a gone chunk says so once", async () => {
+  // The frame and the import's own rejection both speak of one failed
+  // import. The frame reloads; the rejection, settled while the document
+  // is still on its way out, finds the mark the frame left, and must not
+  // say the reload served the same document: no reload has happened yet.
+  const page = loadPage({ stamp: '"1f-4"' });
+  page.open();
+  page.fetched(GONE_URL);
+  await page.receive(GONE);
+  await page.rejected(new TypeError(`Failed to fetch dynamically imported module: ${GONE_URL}`));
+  assert.equal(reloadsIn(page.log), 1);
+  assert.deepEqual(page.warned, [
+    "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js); reloading",
+  ]);
+});
+
+test("a document whose reload did not happen asks again for the next gone chunk", async () => {
+  // The reload can be refused (a `beforeunload` prompt the user declines):
+  // the document stays. The chunk it reloaded for is not asked about
+  // again, by the frame or by the import's rejection; another chunk it
+  // finds gone later is a reload of its own.
+  const page = loadPage({ stamp: '"1f-4"' });
+  page.open();
+  page.fetched(GONE_URL);
+  await page.receive(GONE);
+  assert.equal(reloadsIn(page.log), 1);
+  await page.receive(GONE);
+  assert.equal(reloadsIn(page.log), 1, "the same chunk again");
+  const next = "http://localhost/@oj-start/posts-CAFEBABE.js";
+  page.fetched(next);
+  await page.receive({ type: "oj:chunk-gone", name: "posts-CAFEBABE.js" });
+  assert.equal(reloadsIn(page.log), 2, "another chunk, in the document that stayed");
+  assert.deepEqual(page.warned, [
+    "[oj] a chunk of this page is gone from the dev server (about-DEADBEEF.js); reloading",
+    "[oj] a chunk of this page is gone from the dev server (posts-CAFEBABE.js); reloading",
+  ]);
 });
 
 test("a cached document that asks for two gone chunks as it loads stops after one reload for each", async () => {
@@ -851,4 +967,33 @@ test("a stylesheet link added for a hot update carries the document's nonce", as
   assert.deepEqual(await linked({ [META]: { attrs: { nonce: "meta-attr" } } }), { nonce: "meta-attr" });
   // A tag without a nonce (no policy) gives none.
   assert.deepEqual(await linked({ [OWN]: {} }), {});
+});
+
+test("an import() answered for another run's page reloads it through the behind guard: once per stamp", () => {
+  const storage = new Map();
+  const reloads = (stamp) => {
+    const { bus, log } = loadPage({ stamp, storage });
+    const reloaded = bus.reloadBehind();
+    return [reloaded, reloadsIn(log)];
+  };
+  assert.deepEqual(reloads('"1f-4"'), [true, 1]);
+  // The reload served the same document again (a cache): it stops there.
+  assert.deepEqual(reloads('"1f-4"'), [false, 0]);
+  assert.deepEqual(reloads('"20-0"'), [true, 1]);
+  // The socket's own behind frame shares the guard.
+  const { open, receive, log } = loadPage({ stamp: '"20-0"', storage });
+  open();
+  log.length = 0;
+  return receive({ type: "oj:behind" }).then(() => assert.equal(reloadsIn(log), 0));
+});
+
+test("an uncaught failed import of a hot update or of the answer to an import() is no chunk gone from the server", async () => {
+  for (const url of [
+    "http://localhost/@oj-start/hmr/lazy?id=%2Fapp%2Fsrc%2Fa.ts%3Frolldown-lazy%3D1&clientId=c1&n=1",
+    "http://localhost/@oj-start/hmr/hmr_patch_3.js",
+  ]) {
+    const page = loadPage({ stamp: '"1f-4"' });
+    await page.rejected(new TypeError(`Failed to fetch dynamically imported module: ${url}`));
+    assert.equal(reloadsIn(page.log), 0, url);
+  }
 });

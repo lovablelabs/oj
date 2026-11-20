@@ -112,18 +112,21 @@
   // dev server serves this file ("" at the root).
   const base = __OJ_DEV_BASE__;
 
-  function showError(err) {
+  // `build`: the client bundle's own failure, whose overlay goes when the
+  // bundle builds again (a plugin's error overlay does not).
+  function showError(err, build) {
     console.error("[oj] build error\n" + ((err && err.message) || err));
     if (!enableOverlay) return;
     import(base + "/@oj-start/error-overlay.js")
       .then(() => {
         const Overlay = customElements.get("vite-error-overlay");
         document.querySelectorAll("vite-error-overlay").forEach((n) => (n.close ? n.close() : n.remove()));
-        document.body.appendChild(new Overlay(err));
+        const overlay = new Overlay(err);
+        if (build) overlay.ojBuildError = true;
+        document.body.appendChild(overlay);
       })
       .catch(() => {});
   }
-
   // A Tailwind sheet scans the sources it styles, so an edit applied in place
   // can need new rules: re-link each same-origin stylesheet (Vite's css-update
   // swap: the old sheet stays until the new one loads, no unstyled flash).
@@ -232,6 +235,37 @@
     !(docHas != null && msg.change <= docHas);
   // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
+  // Whether this document may reload for being behind under `mark`: once.
+  // One that comes back under the same mark was served from a cache (a
+  // service worker's, say), and reloading again would only loop.
+  const behindOnce = (mark) => {
+    let last = null;
+    try {
+      last = sessionStorage.getItem(BEHIND_KEY);
+    } catch {}
+    if (last === mark) {
+      console.warn("[oj] this page is older than the dev server's code, and reloading served it unchanged");
+      return false;
+    }
+    try {
+      sessionStorage.setItem(BEHIND_KEY, mark);
+    } catch {}
+    return true;
+  };
+  // Sent with each request for a module behind an `import()`: which run of
+  // the dev server rendered this document.
+  bus.stamp = stamp;
+  // For the answer to an `import()` made by a page another run of the dev
+  // server rendered (the same reload its socket is told to make, under the
+  // same guard); whether it reloads.
+  bus.reloadBehind = () => {
+    if (!behindOnce(stamp)) return false;
+    snapshot();
+    location.reload();
+    return true;
+  };
+  // For the answer to an `import()` of a module that does not compile.
+  bus.showBuildError = (err) => showError(err, true);
   // A chunk this document names and the dev server no longer has: a rebundle
   // this page missed renamed it, and the old name has fallen out of the
   // bundles the server keeps serving (or its file was swept). The page's
@@ -246,9 +280,21 @@
   // chunks as it loads would otherwise reload for each in turn, forever.
   const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
   const GONE_CHUNK_MARKS = 64;
+  // The document's hot changes are part of the mark as well: hot updates
+  // rename chunks back and forth (an edit taken back brings the old name
+  // back) without a new stamp, so a tab can meet a name it reloaded for
+  // under an earlier document, and that document is not this one. One
+  // served from a cache comes back with the same changes, and stops.
+  // Once per document and chunk: the server's frame and the import's own
+  // rejection can both speak of one failed import, and the second, finding
+  // the mark the first left, would say the reload served the same document
+  // while this one is still on its way out. By name, not for the document
+  // as a whole: a reload the user declined (a `beforeunload` prompt) leaves
+  // the document where it is, and the next chunk it finds gone asks again.
+  const reloadedFor = new Set();
   const reloadForGoneChunk = (what) => {
-    if (stamp == null) return;
-    const mark = stamp + "|" + what;
+    if (stamp == null || reloadedFor.has(what)) return;
+    const mark = stamp + "|" + (docHas ?? "") + "|" + what;
     let marks = [];
     try {
       const kept = JSON.parse(sessionStorage.getItem(GONE_CHUNK_KEY) || "[]");
@@ -265,18 +311,23 @@
       sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
     } catch {}
     console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
+    reloadedFor.add(what);
     snapshot();
     location.reload();
   };
   // The server says which chunk is gone (oj:chunk-gone) to every open page,
-  // and the one that asked for it is the one to reload: the others, behind
-  // or not, have nothing broken. A page knows what it asked for from its
-  // resource timeline, kept here by an observer since the timeline's own
-  // buffer fills on a large app. The import's rejection would not do: a
-  // router catches a failed lazy import (TanStack Router's
-  // lazyRouteComponent), so no unhandled rejection is ever raised, where
-  // Vite's `vite:preloadError` is dispatched by its preload helper before
-  // the import rejects, caught or not.
+  // and the one that asked for it and did not get it is the one to reload:
+  // the others, behind or not, have nothing broken. A page knows what it
+  // asked for from its resource timeline, kept here by an observer since
+  // the timeline's own buffer fills on a large app. A request that was
+  // answered with the chunk does not count (`responseStatus`, where the
+  // browser reports one): a page that has the chunk loaded keeps running
+  // it, and the frame is about another page's request, made after the
+  // chunk went. The import's rejection would not do: a router catches a
+  // failed lazy import (TanStack Router's lazyRouteComponent), so no
+  // unhandled rejection is ever raised, where Vite's `vite:preloadError` is
+  // dispatched by its preload helper before the import rejects, caught or
+  // not.
   const CHUNKS = base + "/@oj-start/";
   const asked = new Set();
   // The chunk a url names (null for a url that is not one of the dev
@@ -286,16 +337,26 @@
     const at = url.indexOf(CHUNKS);
     if (at < 0) return null;
     const name = url.slice(at + CHUNKS.length);
+    // A hot update, or the answer to an `import()`, is no chunk of the
+    // bundle: one that fails rejects its import, as under Vite, and is
+    // asked for again.
+    if (name.startsWith("hmr/")) return null;
     try {
       return decodeURIComponent(name);
     } catch {
       return name;
     }
   };
+  // Whether the request got its chunk. No status (an older browser) or 0
+  // (one the browser will not tell) is not known to have.
+  const answered = (entry) => {
+    const status = entry.responseStatus;
+    return typeof status === "number" && status > 0 && status < 400;
+  };
   const noteAsked = (entries) => {
     for (const entry of entries) {
       const name = chunkNamed(entry.name);
-      if (name != null) asked.add(name);
+      if (name != null && !answered(entry)) asked.add(name);
     }
   };
   try {
@@ -422,7 +483,20 @@
       // the fixed rebundle's update or reload clears it.
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
-        showError(msg.err);
+        showError(msg.err, msg.build === true);
+        return;
+      }
+      // The client bundle builds again. An update this page applies clears
+      // the overlay itself; a fix with nothing for this page to run (the
+      // broken module was one it has not loaded) sends no update, and the
+      // overlay would stay up. Only a page whose bundle ran: one that
+      // opened on the failed build is reloaded onto the fixed one.
+      if (msg && msg.type === "oj:build-ok") {
+        if (bus.runtime && enableOverlay) {
+          document.querySelectorAll("vite-error-overlay").forEach((n) => {
+            if (n.ojBuildError) n.close ? n.close() : n.remove();
+          });
+        }
         return;
       }
       // A chunk some page asked for is gone from the server: this page
@@ -464,18 +538,7 @@
       if (msg && msg.type === "oj:behind") {
         // A missed hot change keys on the changes the page has too: the
         // reload brings a document stamped with newer ones.
-        const mark = msg.hot ? stamp + "#h" + hotHas : stamp;
-        let last = null;
-        try {
-          last = sessionStorage.getItem(BEHIND_KEY);
-        } catch {}
-        if (last === mark) {
-          console.warn("[oj] this page is older than the dev server's code, and reloading served it unchanged");
-          return;
-        }
-        try {
-          sessionStorage.setItem(BEHIND_KEY, mark);
-        } catch {}
+        if (!behindOnce(msg.hot ? stamp + "#h" + hotHas : stamp)) return;
       }
     }
     await notify("vite:beforeFullReload", { type: "full-reload" });

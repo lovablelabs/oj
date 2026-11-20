@@ -14,7 +14,7 @@
 //! key), `glob-scopes.json`, `manifest.ts`, `css-urls.json`, and the
 //! `client-error.json` / `client-hmr.json` records of how the run went.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -38,8 +38,27 @@ use crate::build::EmitState;
 
 pub(crate) const CLIENT_ERROR_FILE: &str = "client-error.json";
 pub(crate) const CLIENT_HMR_FILE: &str = "client-hmr.json";
+/// The chunk each module of the client bundle is in: what answers a page's
+/// `import()` while no engine runs (see [`DevBundler::lazy_chunk`]).
+const CLIENT_MODULES_FILE: &str = "client-modules.json";
 /// The path the dev server serves the client entry chunk at, under `base`.
 const CLIENT_ENTRY_PATH: &str = "/@oj-start/client-entry.js";
+
+/// What answers a page's `import()`.
+pub(crate) enum LazyAnswer {
+    /// The module, compiled by the engine for the page.
+    Compiled(String),
+    /// A module that imports the restored chunk holding it.
+    Restored(String),
+    /// No module of a hot bundle goes by that id.
+    Unknown,
+    /// The engine did not compile the module: for an error that may be the
+    /// module's own or another's (an edit that does not compile, whatever
+    /// module it is in, fails every compile), or because no engine runs.
+    Unavailable(BundleError),
+    /// The module cannot be answered, and waiting changes nothing.
+    Failed(BundleError),
+}
 
 pub(crate) struct DevBundler {
     start: Arc<StartConfig>,
@@ -71,6 +90,12 @@ pub(crate) struct DevBundler {
     style_epoch: std::sync::atomic::AtomicU64,
     /// Pages that announced their runtime id, with their open sockets.
     clients: Mutex<PageSockets>,
+    /// Whether an engine ever ran in this dev server: until one does, the
+    /// bundle the pages run is the one on disk (built or restored at boot).
+    engine_started: std::sync::atomic::AtomicBool,
+    /// The modules of the bundle a boot restored from the cache, by chunk
+    /// (see [`DevBundler::lazy_chunk`]); read when first asked.
+    restored_modules: Mutex<Option<HashMap<String, String>>>,
     /// Specifiers the app's `external` function kept external, so the dev
     /// bundle's unresolved-import check takes the function's own answers.
     fn_externals: Arc<Mutex<HashSet<String>>>,
@@ -124,6 +149,8 @@ impl DevBundler {
             host_failed: std::sync::atomic::AtomicBool::new(false),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(PageSockets::default()),
+            engine_started: std::sync::atomic::AtomicBool::new(false),
+            restored_modules: Mutex::default(),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
             loaded,
@@ -277,18 +304,29 @@ impl DevBundler {
     }
 
     /// A page announced its runtime id: the engine addresses its patches.
-    pub(crate) fn page_connected(&self, id: &str) {
+    /// `another_run`: its document was served by another run of the dev
+    /// server.
+    ///
+    /// Whether the page is behind a hot update already: one made for it
+    /// before its socket opened (see [`HotUpdates::connected`]).
+    pub(crate) fn page_connected(&self, id: &str, another_run: bool) -> bool {
         let mut pages = self
             .clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !pages.connect(id) {
-            return;
+        if another_run {
+            pages.another_run.insert(id.to_string());
         }
+        let first = pages.connect(id);
+        if !first {
+            return false;
+        }
+        let behind = self.hot.connected(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.register_client(id).await });
         }
+        behind
     }
 
     pub(crate) fn page_gone(&self, id: &str) {
@@ -299,6 +337,171 @@ impl DevBundler {
         if !pages.gone(id) {
             return;
         }
+        pages.another_run.remove(id);
+        self.hot.forget(id);
+        if let Some(engine) = self.engine.get() {
+            let id = id.to_string();
+            pages.then(async move { engine.remove_client(&id).await });
+        }
+    }
+
+    /// The module behind an `import()` of an open page (see [`LazyAnswer`]).
+    ///
+    /// With the engine running, the module is compiled for the page as the
+    /// bundle has it now: its factory and those of the static imports the
+    /// page does not hold yet (rolldown's `DevEngine::compile_lazy_entry`).
+    ///
+    /// A boot that restored the bundle from the cache runs no engine until
+    /// the first edit, and until then the restored bundle is the app as it
+    /// is: the answer imports the restored chunk that holds the module, which
+    /// registers it as it evaluates, at no cost to the boot. The first edit
+    /// starts the engine and reloads the pages onto its bundle.
+    ///
+    /// Nothing here starts a bundle: a request cannot make the dev server
+    /// build.
+    pub(crate) async fn lazy_chunk(&self, proxy: &str, client: &str) -> LazyAnswer {
+        // Only the id of an `import()`'s boundary: the engine would scan
+        // any other module of the graph it is given as if it had changed.
+        if !self.hot_bundle() || rolldown_common::lazy_proxy_target(proxy).is_none() {
+            return LazyAnswer::Unknown;
+        }
+        let engine = match self.engine.get() {
+            Some(engine) => engine,
+            None => {
+                let never_ran = !self
+                    .engine_started
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if never_ran {
+                    return match self.restored_chunk_of(proxy) {
+                        // Beside this answer's own URL (`…/@oj-start/hmr/lazy`).
+                        Ok(Some(chunk)) => LazyAnswer::Restored(format!(
+                            "import {};\nexport {{}};\n",
+                            serde_json::Value::String(format!("../{chunk}"))
+                        )),
+                        Ok(None) => LazyAnswer::Unknown,
+                        // Nothing to wait for: no bundler runs.
+                        Err(why) => LazyAnswer::Failed(BundleError::from_message(why)),
+                    };
+                }
+                // Between two engines (a session that starts over): the next
+                // one answers. A run in progress holds the session.
+                drop(self.session.lock().await);
+                match self.engine.get() {
+                    Some(engine) => engine,
+                    None => {
+                        return LazyAnswer::Unavailable(BundleError::from_message(
+                            "the client bundle is not built",
+                        ))
+                    }
+                }
+            }
+        };
+        // Not while a bundle is being made: a run in progress is waited
+        // for, and one that starts waits for this compile.
+        let _no_run = self.session.lock().await;
+        // Nothing is compiled while the engine's last build failed. A
+        // module that build could not load is loaded by the next thing
+        // that scans the graph; if that were this compile, right after the
+        // file is fixed and before the engine's watcher reports it, the
+        // fixed module would join the graph with no update made for it, and
+        // the engine's own update would then find nothing changed: a page
+        // running the module would keep its code from before, told that
+        // the build is fine again. The engine's update takes the fix, as
+        // Vite's does (hmr.ts handleHMRUpdate), and imports wait for it.
+        let errored = on_rolldown(&self.start.rolldown, engine.get_bundle_state())
+            .await
+            .map(|state| state.last_build_errored)
+            .unwrap_or(false);
+        if errored {
+            return LazyAnswer::Unavailable(BundleError::from_message(
+                "the client bundle does not build: a module of it has an error",
+            ));
+        }
+        // Known to the engine before it compiles for it: what the page
+        // already holds is left out of the answer. (The page's socket
+        // registers it too; a request can come first.)
+        on_rolldown(
+            &self.start.rolldown,
+            engine.register_client(client.to_string()),
+        )
+        .await;
+        let result = on_rolldown(
+            &self.start.rolldown,
+            engine.compile_lazy_entry(proxy.to_string(), client.to_string()),
+        )
+        .await;
+        match result {
+            // The page reports the chunk once its factories registered (as
+            // for a patch); the export keeps it an ES module.
+            Ok(out) => LazyAnswer::Compiled(format!(
+                "{}\n;__rolldown_runtime__.payloadDelivered({});\n; export {{}}",
+                out.code,
+                serde_json::to_string(&out.filename).unwrap_or_default()
+            )),
+            Err(errs) => {
+                let err = BundleError::from_diagnostics(&errs.into_vec());
+                if err.message.contains("Lazy entry module not found") {
+                    LazyAnswer::Unknown
+                } else {
+                    // The engine's error is not always the module's own:
+                    // with a broken module anywhere in the graph it fails
+                    // every compile with that module's error, and after a
+                    // failed full build with "the last full build failed".
+                    LazyAnswer::Unavailable(err)
+                }
+            }
+        }
+    }
+
+    /// The chunk of the bundle on disk that holds the module `proxy` stands
+    /// for (client-modules.json, written with the bundle and restored with
+    /// it); `None` for an id that is no module of the bundle.
+    fn restored_chunk_of(&self, proxy: &str) -> Result<Option<String>, String> {
+        let Some(target) = rolldown_common::lazy_proxy_target(proxy) else {
+            return Ok(None);
+        };
+        let mut modules = self
+            .restored_modules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if modules.is_none() {
+            let file = self.start.cache.join(CLIENT_MODULES_FILE);
+            let read = std::fs::read_to_string(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()))
+                .map_err(|e| {
+                    format!("the client bundle's module map ({CLIENT_MODULES_FILE}): {e}")
+                })?;
+            *modules = Some(read);
+        }
+        Ok(modules.as_ref().and_then(|m| m.get(target).cloned()))
+    }
+
+    /// Whether the page `id` runs a bundle of another run of the dev server
+    /// (a tab left open across a restart), as its socket said when it
+    /// connected. Such a page is told to reload as it connects; this is for
+    /// an `import()` it makes before it does.
+    pub(crate) fn page_from_another_run(&self, id: &str) -> bool {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .another_run
+            .contains(id)
+    }
+
+    /// The engine forgets a page that asked for a module and has no socket
+    /// open (a proxy that passes none, a page that left): it would render a
+    /// patch for it at every edit. Queued with the pages' own comings and
+    /// goings, so a socket that connects meanwhile registers after it.
+    pub(crate) fn forget_unconnected(&self, id: &str) {
+        let mut pages = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pages.is_open(id) {
+            return;
+        }
+        self.hot.forget(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.remove_client(&id).await });
@@ -510,7 +713,11 @@ impl DevBundler {
             eprintln!("{}: client bundling", oj_server::oj_brand());
             let parts = self.parts(host, true)?;
             let runtime = std::fs::read_to_string(start.cache.join("hmr-runtime.js"))
-                .map_err(|e| BundleError::from_message(format!("hmr-runtime.js: {e}")))?;
+                .map_err(|e| BundleError::from_message(format!("hmr-runtime.js: {e}")))?
+                .replace(
+                    "__OJ_DEV_BASE__",
+                    &serde_json::Value::String(start.dev_url_base()).to_string(),
+                );
             let declared = declared_externals(host, &self.fn_externals);
             let live = HotSession::start(
                 parts,
@@ -527,6 +734,8 @@ impl DevBundler {
                 || self.pages(),
             )
             .await?;
+            self.engine_started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut live = live;
             live.host_engine = host_engine;
             *session = Some(live);
@@ -917,10 +1126,14 @@ pub(crate) fn write_outputs<'a>(
     let mut modules = 0usize;
     let mut entry = None;
     let mut closure: Vec<String> = Vec::new();
+    let mut chunk_of = serde_json::Map::new();
     for out in outputs {
         let (name, bytes): (&str, &[u8]) = match out {
             Output::Chunk(c) => {
                 modules += c.modules.keys.len();
+                for id in c.modules.keys.iter() {
+                    chunk_of.insert(id.as_str().to_string(), c.filename.as_str().into());
+                }
                 closure.extend(c.modules.keys.iter().map(|k| k.as_str().to_string()));
                 if c.is_entry && entry.is_none() {
                     entry = Some(c.filename.to_string());
@@ -946,6 +1159,7 @@ pub(crate) fn write_outputs<'a>(
         &cache.join("client-chunks.json"),
         &serde_json::json!({ "entry": entry, "files": files }),
     )?;
+    write_json(&cache.join(CLIENT_MODULES_FILE), &chunk_of.into())?;
     // Module count for the editor's update-progress narration.
     std::fs::write(cache.join("client-entry.modules"), modules.to_string())?;
 
@@ -1127,6 +1341,8 @@ fn write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
 #[derive(Default)]
 pub(crate) struct PageSockets {
     open: std::collections::HashMap<String, usize>,
+    /// The open pages whose document another run of the dev server served.
+    another_run: HashSet<String>,
     /// The last engine call queued; the next one runs after it.
     chain: Option<tokio::task::JoinHandle<()>>,
 }
@@ -1143,6 +1359,10 @@ impl PageSockets {
             }
             call.await;
         }));
+    }
+
+    fn is_open(&self, id: &str) -> bool {
+        self.open.contains_key(id)
     }
 
     /// Whether `id` was not connected before: the engine learns of it.

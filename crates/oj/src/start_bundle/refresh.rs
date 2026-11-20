@@ -152,6 +152,11 @@ impl Plugin for RefreshTransform {
         _ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
+        // A lazy boundary's proxy is oj's own one-line module: no transform
+        // may read its id as the module it stands for.
+        if rolldown_common::is_lazy_proxy(args.id) {
+            return Ok(None);
+        }
         let id = args.id;
         let path = clean(id);
         if id.contains('\0')
@@ -259,6 +264,11 @@ impl Plugin for RefreshWrapper {
         _ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
+        // A lazy boundary's proxy is oj's own one-line module: no transform
+        // may read its id as the module it stands for.
+        if rolldown_common::is_lazy_proxy(args.id) {
+            return Ok(None);
+        }
         let id = args.id;
         let path = clean(id);
         if id.starts_with('\0')
