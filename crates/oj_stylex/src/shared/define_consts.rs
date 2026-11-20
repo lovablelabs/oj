@@ -36,13 +36,6 @@ pub fn define_consts(
         }
         let const_key = if let Some(rest) = key.strip_prefix("--") {
             rest.to_string()
-        } else if options.debug && options.enable_debug_class_names {
-            format!(
-                "{}-{}{}",
-                var_safe_key(&key),
-                options.class_name_prefix,
-                hash(&format!("{export_id}.{key}"))
-            )
         } else {
             format!(
                 "{}{}",
@@ -81,24 +74,6 @@ fn object_entries(
             .collect()),
         _ => Err(StylexError::non_style_object(fn_name)),
     }
-}
-
-// parity: `(key[0] >= '0' && key[0] <= '9' ? '_' + key : key).replace(/[^a-zA-Z0-9]/g, '_')`
-// — the replace runs per UTF-16 unit (astral chars become two underscores).
-fn var_safe_key(key: &str) -> String {
-    let prefixed: std::borrow::Cow<'_, str> =
-        if key.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            format!("_{key}").into()
-        } else {
-            key.into()
-        };
-    prefixed
-        .encode_utf16()
-        .map(|unit| match char::from_u32(u32::from(unit)) {
-            Some(c) if c.is_ascii_alphanumeric() => c,
-            _ => '_',
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -158,15 +133,6 @@ mod tests {
         .unwrap();
         assert_eq!(&*out.rules[0].class_name, "already");
         assert_eq!(&*out.rules[1].class_name, "");
-    }
-
-    #[test]
-    fn var_safe_key_rules() {
-        assert_eq!(var_safe_key("myColor"), "myColor");
-        assert_eq!(var_safe_key("2xl"), "_2xl");
-        assert_eq!(var_safe_key("foo-bar"), "foo_bar");
-        assert_eq!(var_safe_key("ké y"), "k__y");
-        assert_eq!(var_safe_key("a😀b"), "a__b");
     }
 
     #[test]

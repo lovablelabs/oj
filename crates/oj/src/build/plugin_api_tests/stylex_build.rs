@@ -253,6 +253,105 @@ async fn the_sheet_joins_the_entrys_stylesheet_not_a_lazy_ones() {
     );
 }
 
+/// `@stylexjs/unplugin` 0.19.2 picks its sheet's home by name out of the
+/// bundle's stylesheets, which Rolldown lists by file name: the first
+/// `index-<hash>.css`, else the first `style-<hash>.css`, else the first
+/// sheet (a lazy chunk's here, though the entry has one). Each row is where
+/// Vite 8 with the plugin puts it for the same app.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sheet_joins_the_index_then_the_style_then_the_first_stylesheet() {
+    let config = |inputs: &str| {
+        format!(
+            "import stylex from \"@stylexjs/unplugin\";\n\
+             export default {{\n\
+               plugins: [stylex.vite({{ useCSSLayers: true }})],\n\
+               build: {{ rollupOptions: {{ input: [{inputs}] }} }},\n\
+             }};\n"
+        )
+    };
+    let page = |entry: &str| {
+        format!(
+            r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/{entry}.ts"></script></body></html>"#
+        )
+    };
+    for (name, inputs, lazy, joined) in [
+        (
+            "stylex-pick-index",
+            r#""app.html", "index.html""#,
+            &["alpha", "style"][..],
+            "from-home",
+        ),
+        (
+            "stylex-pick-style",
+            r#""app.html""#,
+            &["alpha", "style"][..],
+            "from-style",
+        ),
+        (
+            "stylex-pick-first",
+            r#""app.html""#,
+            &["alpha", "zed"][..],
+            "from-alpha",
+        ),
+    ] {
+        let imports: String = lazy
+            .iter()
+            .map(|chunk| format!("import(\"./{chunk}\");\n"))
+            .collect();
+        let mut files = vec![
+            ("vite.config.js".to_string(), config(inputs)),
+            ("app.html".to_string(), page("main")),
+            ("index.html".to_string(), page("home")),
+            (
+                "src/main.ts".to_string(),
+                format!("import \"./app.css\";\n{imports}{MAIN}"),
+            ),
+            (
+                "src/app.css".to_string(),
+                ".from-app { margin: 0 }\n".to_string(),
+            ),
+            (
+                "src/home.ts".to_string(),
+                "import \"./home.css\";\nexport const home = 1;\n".to_string(),
+            ),
+            (
+                "src/home.css".to_string(),
+                ".from-home { margin: 1px }\n".to_string(),
+            ),
+        ];
+        for chunk in lazy {
+            files.push((
+                format!("src/{chunk}.ts"),
+                format!("import \"./{chunk}.css\";\nexport const lazy = 1;\n"),
+            ));
+            files.push((
+                format!("src/{chunk}.css"),
+                format!(".from-{chunk} {{ padding: 0 }}\n"),
+            ));
+        }
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, body)| (path.as_str(), body.as_str()))
+            .collect();
+        let Some(root) = app(name, &files) else {
+            return;
+        };
+        build_app(&root).await.expect("the StyleX app builds");
+        let built = files_under(&root.join("dist"));
+        let with_stylex: Vec<&String> = built
+            .iter()
+            .filter(|(p, c)| p.ends_with(".css") && c.contains("color: olive"))
+            .map(|(_, c)| c)
+            .collect();
+        assert_eq!(with_stylex.len(), 1, "{name}: {built:?}");
+        assert!(
+            with_stylex[0].contains(joined),
+            "{name}: the StyleX sheet joins the {joined} sheet, not:\n{}",
+            with_stylex[0]
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ssr_build_compiles_and_writes_the_fallback_sheet() {
     let Some(root) = app(

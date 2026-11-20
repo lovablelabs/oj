@@ -35,7 +35,7 @@ const TEMPLATE: &str = include_str!("../assets/vite8-react-serve.json");
 /// `build.rolldownOptions.platform`), so any other version goes to the engine.
 const VITE: &str = "8.3.5";
 const PLUGIN_REACT: &str = "6.1.2";
-const STYLEX_UNPLUGIN: &str = "0.19.1";
+const STYLEX_UNPLUGIN: &str = "0.19.2";
 
 /// The extraction output for `vite` (the app's vite.config), or None when the
 /// config is not one this reader accepts or the installed toolchain is not

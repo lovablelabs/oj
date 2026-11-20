@@ -579,6 +579,24 @@ fn invoke(compiled: &DynamicCompiled, table: &ExprTable<'_>, args: &[Rt]) -> Res
         obj.insert("$$css".to_string(), css_tag.clone());
         elements.push(Value::Object(obj));
     }
+    // `expr !== undefined && { key: expr != null ? "cls" : "", $$css }`
+    for guarded in &compiled.guarded_props {
+        let v = interp.eval(table.get(guarded.expr))?;
+        // `undefined` is an identifier lookup: a parameter may shadow it.
+        if strict_eq(&v, &interp.lookup("undefined")) {
+            elements.push(Value::Bool(false));
+            continue;
+        }
+        let class = if is_nullish(&v) {
+            String::new()
+        } else {
+            guarded.lit.clone()
+        };
+        let mut obj = Map::new();
+        obj.insert(guarded.key.clone(), Value::String(class));
+        obj.insert("$$css".to_string(), css_tag.clone());
+        elements.push(Value::Object(obj));
+    }
     if !compiled.conditional_props.is_empty() {
         let mut obj = Map::new();
         for (key, parts) in &compiled.conditional_props {
@@ -589,7 +607,7 @@ fn invoke(compiled: &DynamicCompiled, table: &ExprTable<'_>, args: &[Rt]) -> Res
                     ClassPart::Guarded { lit, expr } => {
                         let v = interp.eval(table.get(*expr))?;
                         if is_nullish(&v) {
-                            v
+                            Rt::Str(String::new())
                         } else {
                             Rt::Str(lit.clone())
                         }

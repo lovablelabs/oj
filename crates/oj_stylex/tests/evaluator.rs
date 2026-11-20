@@ -491,6 +491,315 @@ fn evaluation_import_corpus_resolves_now_that_its_options_ship() {
     assert!(injecting > 0, "corpus no longer exercises runtimeInjection");
 }
 
+enum Hardened {
+    Rule(&'static str),
+    Error(&'static str),
+}
+
+fn assert_hardened(source: &str, filename: &str, options: Value, want: &Hardened) {
+    let root = corpus_root();
+    let root_str = root.to_string_lossy().into_owned();
+    let options = CompilerOptions::from_json(&options)
+        .and_then(|o| o.resolve())
+        .unwrap_or_else(|e| panic!("options: {}", e.message));
+    let filename = root.join(filename).to_string_lossy().into_owned();
+    let result = compile_module(source, &filename, &root_str, &options, &StdFs);
+    match (result, want) {
+        (Ok(output), Hardened::Rule(ltr)) => {
+            let rules: Vec<&str> = output
+                .creates
+                .iter()
+                .flat_map(|(_, out)| out.rules.iter())
+                .map(|rule| &*rule.ltr)
+                .collect();
+            assert_eq!(rules, [*ltr], "{source}");
+        }
+        (Err(err), Hardened::Error(message)) => {
+            assert_eq!(
+                err.message.lines().next().unwrap_or_default(),
+                *message,
+                "{source}"
+            );
+        }
+        (Ok(_), Hardened::Error(message)) => panic!("expected {message:?} for {source}"),
+        (Err(err), Hardened::Rule(_)) => panic!("unexpected {:?} for {source}", err.message),
+    }
+}
+
+/// The 0.19.2 evaluator hardening: only allowlisted static methods of
+/// `String`/`Number`/`Math`/`Object`/`Array` run at compile time, the
+/// prototype-chain properties are never read, and the function registries
+/// only answer for names they own. Every row is the live 0.19.2 answer.
+#[test]
+fn evaluator_hardening_matches_0_19_2() {
+    use Hardened::{Error, Rule};
+    const BLOCKED: &str = "Access to this property is not allowed during compilation.";
+    const CALL: &str = "Unsupported expression: CallExpression";
+    const UNDEFINED: &str = "Referenced constant is not defined.";
+    const X: Hardened = Rule(".x1qj0nkt{content:\"x\"}");
+    const O: &str = "const o = { a: \"x\" };\n";
+    const NESTED: &str = "const o = { a: { b: { c: \"x\" } } };\n";
+
+    // (prelude, `content` value expression, outcome)
+    let cases: &[(&str, &str, Hardened)] = &[
+        // Allowlisted static methods run; data properties, mutators and
+        // everything else on the five globals are no longer callable.
+        (
+            "",
+            "String(Math.max(1, 2))",
+            Rule(".xhs4kdw{content:\"2\"}"),
+        ),
+        ("", "Math.PI()", Error(CALL)),
+        ("", "Math.random()", Error(CALL)),
+        ("", "Math.sumPrecise([1, 2])", Error(CALL)),
+        ("", "Math[\"max\"](1, 2)", Error(CALL)),
+        (
+            "",
+            "Object.keys({ a: 1, b: 2 }).join(\" \")",
+            Rule(".xybty1h{content:\"a b\"}"),
+        ),
+        (
+            "",
+            "Object.entries({ a: 1 }).join(\" \")",
+            Rule(".x436hi9{content:\"a,1\"}"),
+        ),
+        (
+            "",
+            "String(Object.hasOwn({ a: 1 }, \"a\"))",
+            Rule(".x1ez55b5{content:\"true\"}"),
+        ),
+        ("", "Object.assign({}, { a: 1 }).a", Error(CALL)),
+        ("", "Object.freeze({ a: \"x\" }).a", Error(CALL)),
+        ("", "Object.seal({ a: \"x\" }).a", Error(CALL)),
+        ("", "Object.create(null)", Error(CALL)),
+        ("", "Object.getPrototypeOf({})", Error(CALL)),
+        ("", "Object.setPrototypeOf({}, null)", Error(CALL)),
+        (
+            "",
+            "Object.defineProperty({}, \"a\", { value: 1 }).a",
+            Error(CALL),
+        ),
+        ("", "Object.defineProperties({}, {})", Error(CALL)),
+        (
+            "",
+            "Object.getOwnPropertyDescriptor({ a: \"x\" }, \"a\").value",
+            Error(CALL),
+        ),
+        ("", "Object.preventExtensions({ a: \"x\" }).a", Error(CALL)),
+        ("", "Object.prototype()", Error(CALL)),
+        ("", "Object.length()", Error(CALL)),
+        ("", "Object.name()", Error(CALL)),
+        (
+            "",
+            "Array.of(\"a\", \"b\").join(\"-\")",
+            Rule(".x1t42mo{content:\"a-b\"}"),
+        ),
+        ("", "Array.fromAsync([1])", Error(CALL)),
+        ("", "Array.prototype()", Error(CALL)),
+        (
+            "",
+            "String(Number.parseInt(\"12px\"))",
+            Rule(".x1wkv6l8{content:\"12\"}"),
+        ),
+        ("", "Number.EPSILON()", Error(CALL)),
+        (
+            "",
+            "String.fromCharCode(65, 66)",
+            Rule(".xpf4ll6{content:\"AB\"}"),
+        ),
+        ("", "String.prototype()", Error(CALL)),
+        ("", "String.name()", Error(CALL)),
+        // A shadowing binding is ignored for allowlisted methods and is the
+        // callee for the rest.
+        (
+            "const Math = { max: () => 9 };\n",
+            "String(Math.max(1, 2))",
+            Rule(".xhs4kdw{content:\"2\"}"),
+        ),
+        (
+            "const Math = { PI: () => 4 };\n",
+            "String(Math.PI())",
+            Rule(".x1xiz97l{content:\"4\"}"),
+        ),
+        (
+            "const Math = { random: () => 4 };\n",
+            "String(Math.random())",
+            Rule(".x1xiz97l{content:\"4\"}"),
+        ),
+        (
+            "const Object = { assign: (a) => a };\n",
+            "Object.assign(\"x\")",
+            X,
+        ),
+        (
+            "const Object = { freeze: (a) => a };\n",
+            "Object[\"freeze\"](\"x\")",
+            X,
+        ),
+        (
+            "const Array = { prototype: (a) => a };\n",
+            "Array.prototype(\"x\")",
+            Error(BLOCKED),
+        ),
+        // Blocked property reads: inherited or own, static or computed.
+        (O, "o.constructor", Error(BLOCKED)),
+        (O, "o.__proto__", Error(BLOCKED)),
+        (O, "o.prototype", Error(BLOCKED)),
+        (
+            "const o = { constructor: \"x\" };\n",
+            "o.constructor",
+            Error(BLOCKED),
+        ),
+        (
+            "const o = { prototype: \"x\" };\n",
+            "o[\"prototype\"]",
+            Error(BLOCKED),
+        ),
+        (
+            "const o = { a: \"x\" };\nconst k = \"constructor\";\n",
+            "o[k]",
+            Error(BLOCKED),
+        ),
+        (O, "o[\"__pro\" + \"to__\"]", Error(BLOCKED)),
+        (O, "o[`constructor`]", Error(BLOCKED)),
+        (NESTED, "o.a.constructor", Error(BLOCKED)),
+        (NESTED, "o.constructor.name", Error(BLOCKED)),
+        (NESTED, "o.a.b.__proto__.c", Error(BLOCKED)),
+        (O, "o.missing.constructor", Error(BLOCKED)),
+        ("", "\"abc\".constructor", Error(BLOCKED)),
+        ("", "[1].constructor", Error(BLOCKED)),
+        ("", "(5).constructor", Error(BLOCKED)),
+        (
+            "",
+            "String(\"abc\".length)",
+            Rule(".x1ih1qui{content:\"3\"}"),
+        ),
+        ("", "[\"x\"][0]", X),
+        // The block is checked before the read, so it wins over a nullish
+        // object; any other key still reports the TypeError.
+        ("const n = null;\n", "n.constructor", Error(BLOCKED)),
+        (
+            "const n = null;\n",
+            "n.foo",
+            Error("Cannot read properties of null (reading 'foo')"),
+        ),
+        // Blocked method calls on literals and evaluated receivers.
+        ("", "\"abc\".constructor(\"x\")", Error(BLOCKED)),
+        ("", "\"abc\"[\"constructor\"](\"x\")", Error(BLOCKED)),
+        ("", "(5).constructor(1)", Error(BLOCKED)),
+        ("", "(5).__proto__()", Error(BLOCKED)),
+        ("", "[1].constructor(2)", Error(BLOCKED)),
+        (O, "o.constructor(\"x\")", Error(BLOCKED)),
+        (O, "o[\"constructor\"](\"x\")", Error(BLOCKED)),
+        (O, "o.constructor(missing)", Error(BLOCKED)),
+        (
+            "const o = { constructor: (a) => a };\n",
+            "o.constructor(\"x\")",
+            Error(BLOCKED),
+        ),
+        (
+            "const o = { prototype: (a) => a };\n",
+            "o.prototype(\"x\")",
+            Error(BLOCKED),
+        ),
+        (
+            "",
+            "\"abc\".toUpperCase().constructor(\"x\")",
+            Error(BLOCKED),
+        ),
+        (NESTED, "o.a.constructor.keys(o)", Error(CALL)),
+        ("", "missing.constructor(\"x\")", Error(CALL)),
+        // The block applies wherever the member is evaluated, and only then.
+        (O, "typeof o.constructor", Error(BLOCKED)),
+        (O, "`${o.constructor}`", Error(BLOCKED)),
+        (O, "({ ...o.constructor }).a", Error(BLOCKED)),
+        (
+            O,
+            "o.a ? \"y\" : o.constructor",
+            Rule(".x1t2hdmn{content:\"y\"}"),
+        ),
+        (O, "o.a || o.constructor", X),
+        // The function registries answer only for their own names: an
+        // `Object.prototype` name is neither a registered identifier nor a
+        // registered member of the stylex namespace.
+        ("", "toString()", Error(UNDEFINED)),
+        ("", "valueOf()", Error(UNDEFINED)),
+        ("", "constructor(\"x\")", Error(UNDEFINED)),
+        ("", "String(hasOwnProperty(\"a\"))", Error(UNDEFINED)),
+        ("", "String(isPrototypeOf({}))", Error(UNDEFINED)),
+        (
+            "",
+            "stylex.toString()",
+            Rule(".x12ljtz1{content:\"[object Object]\"}"),
+        ),
+        (
+            "",
+            "String(stylex.hasOwnProperty(\"create\"))",
+            Rule(".x9g66vw{content:\"false\"}"),
+        ),
+        ("", "stylex.constructor(\"x\")", Error(BLOCKED)),
+        ("", "constructor.keys({ a: 1 })", Error(CALL)),
+        ("", "toString.call(\"x\")", Error(CALL)),
+        ("", "__proto__.toString()", Error(CALL)),
+        // Computed keys: a symbol never reaches the lookup, everything else
+        // is read through its string form.
+        (O, "o[Symbol.iterator]", Error(UNDEFINED)),
+        (
+            "",
+            "String(Object.getOwnPropertySymbols({}).length)",
+            Rule(".xemru37{content:\"0\"}"),
+        ),
+        ("const o = { 1: \"x\" };\n", "o[1]", X),
+        ("const o = { true: \"x\" };\n", "o[true]", X),
+        ("const o = { null: \"x\" };\n", "o[null]", X),
+        ("const o = { undefined: \"x\" };\n", "o[undefined]", X),
+        ("const o = { \"a,b\": \"x\" };\n", "o[[\"a\", \"b\"]]", X),
+        ("const o = { \"[object Object]\": \"x\" };\n", "o[{}]", X),
+        ("const o = { \"1.5\": \"x\" };\n", "o[1.50]", X),
+    ];
+    for (prelude, expr, want) in cases {
+        let source = format!(
+            "import * as stylex from '@stylexjs/stylex';\n{prelude}export const styles = stylex.create({{ a: {{ content: {expr} }} }});\n"
+        );
+        assert_hardened(&source, "src/input.js", serde_json::json!({}), want);
+    }
+
+    // An imported variable group: its own blocked keys are refused, while a
+    // deeper chain is still one flattened variable name.
+    let themed: &[(&str, Hardened)] = &[
+        ("MyTheme.constructor", Error(BLOCKED)),
+        ("MyTheme[\"__proto__\"]", Error(BLOCKED)),
+        ("MyTheme.prototype", Error(BLOCKED)),
+        ("MyTheme[k]", Error(BLOCKED)),
+        ("MyTheme.constructor(\"x\")", Error(BLOCKED)),
+        ("holder.t.constructor", Error(BLOCKED)),
+        ("holder.t.foreground.constructor", Error(BLOCKED)),
+        (
+            "holder.t.foreground",
+            Rule(".xp5qx1w{color:var(--x1jqb1tb)}"),
+        ),
+        (
+            "MyTheme.foreground.constructor",
+            Rule(".x16z1d6t{color:var(--x1p8oo1z)}"),
+        ),
+        (
+            "MyTheme.__proto__.foreground",
+            Rule(".x1icq27w{color:var(--x10kn4nc)}"),
+        ),
+        ("MyTheme.toString()", Rule(".xh4l241{color:xjvfbhb}")),
+    ];
+    for (expr, want) in themed {
+        let source = format!(
+            "const k = 'constructor';\nimport stylex from 'stylex';\nimport {{ MyTheme }} from 'otherFile.stylex';\nconst holder = {{ t: MyTheme }};\nexport const styles = stylex.create({{ a: {{ color: {expr} }} }});\n"
+        );
+        let options = serde_json::json!({
+            "unstable_moduleResolution": { "type": "haste" },
+            "classNamePrefix": "x",
+        });
+        assert_hardened(&source, "test.js", options, want);
+    }
+}
+
 #[test]
 fn canonical_name_fallback_branches() {
     let fixroot = fixtures_root();

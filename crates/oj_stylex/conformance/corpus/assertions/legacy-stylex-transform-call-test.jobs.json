@@ -756,7 +756,6 @@
         "runtimeInjection": true,
         "dev": true,
         "enableDevClassNames": false,
-        "enableDebugClassNames": true,
         "enableInlinedConditionalMerge": false
       },
       "mode": "prod",
@@ -783,7 +782,6 @@
         "runtimeInjection": true,
         "dev": true,
         "enableDevClassNames": false,
-        "enableDebugClassNames": true,
         "enableInlinedConditionalMerge": false
       },
       "mode": "prod",
@@ -810,7 +808,6 @@
         "runtimeInjection": true,
         "dev": true,
         "enableDevClassNames": false,
-        "enableDebugClassNames": true,
         "enableInlinedConditionalMerge": false
       },
       "mode": "prod",
@@ -836,7 +833,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -862,7 +858,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1200,7 +1195,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1226,7 +1220,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1252,7 +1245,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false,
         "enableInlinedConditionalMerge": false
       },
@@ -1279,7 +1271,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1305,7 +1296,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1355,7 +1345,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",
@@ -1381,7 +1370,6 @@
         "styleResolution": "application-order",
         "runtimeInjection": true,
         "dev": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": false
       },
       "mode": "prod",

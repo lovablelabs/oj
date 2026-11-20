@@ -922,8 +922,7 @@
         "unstable_moduleResolution": {
           "type": "haste"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "expect": "ok",
@@ -939,8 +938,7 @@
         "unstable_moduleResolution": {
           "type": "haste"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "expect": "ok",
@@ -956,8 +954,7 @@
         "unstable_moduleResolution": {
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "expect": "ok",

@@ -8,7 +8,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[command(
     name = "fru",
     version,
-    about = "Clean-room StyleX compiler (oracle: @stylexjs/babel-plugin 0.19.0)"
+    about = "Clean-room StyleX compiler (oracle: @stylexjs/babel-plugin 0.19.2)"
 )]
 struct Cli {
     #[command(subcommand)]

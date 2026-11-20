@@ -1478,8 +1478,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-code"],
@@ -1505,8 +1504,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-metadata"],
@@ -1558,8 +1556,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-code"],
@@ -1585,8 +1582,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-metadata"],
@@ -1622,8 +1618,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "dev": true,
-        "enableDebugClassNames": true
+        "dev": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-code"],
@@ -1649,8 +1644,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "dev": true,
-        "enableDebugClassNames": true
+        "dev": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-metadata"],
@@ -1749,8 +1743,7 @@
           "themeFileExtension": "cssvars",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-code"],
@@ -1777,8 +1770,7 @@
           "themeFileExtension": "cssvars",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars", "assert-metadata"],

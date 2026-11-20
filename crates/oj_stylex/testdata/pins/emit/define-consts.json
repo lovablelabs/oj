@@ -495,31 +495,30 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "canonicalFileName": "tokens.stylex.ts",
   "exportName": "tokens",
   "expectedRules": [
    {
-    "className": "myColor-xqrwzb",
-    "constKey": "myColor-xqrwzb",
+    "className": "xqrwzb",
+    "constKey": "xqrwzb",
     "constVal": "red",
     "ltr": "",
     "rtl": null,
     "priority": 0
    },
    {
-    "className": "_2xl-x1v5zn7q",
-    "constKey": "_2xl-x1v5zn7q",
+    "className": "x1v5zn7q",
+    "constKey": "x1v5zn7q",
     "constVal": "32px",
     "ltr": "",
     "rtl": null,
     "priority": 0
    },
    {
-    "className": "k__y-x16j7xh0",
-    "constKey": "k__y-x16j7xh0",
+    "className": "x16j7xh0",
+    "constKey": "x16j7xh0",
     "constVal": "x",
     "ltr": "",
     "rtl": null,
@@ -542,8 +541,7 @@
     "type": "commonJS",
     "rootDir": "/fake/root"
    },
-   "debug": true,
-   "enableDebugClassNames": true
+   "debug": true
   },
   "canonicalFileName": "tokens.stylex.ts",
   "exportName": "tokens",

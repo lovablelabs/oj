@@ -1092,15 +1092,18 @@ impl<'a, 'env> Evaluator<'a, 'env> {
             }
             let mut current = base_value;
             for (i, key) in parts.iter().enumerate() {
-                match self.member_lookup(&current, key, expr.span())? {
+                match self.checked_member_lookup(&current, key, expr.span())? {
                     EvalOutcome::Value(v) => current = v,
                     deopt => return Ok(deopt),
                 }
                 if let JsValue::Proxy(proxy) = &current
                     && i + 1 < parts.len()
                 {
-                    let rest = parts[i + 1..].join(".");
-                    return self.value(JsValue::Str(proxy.resolve_key(&rest)));
+                    let rest = &parts[i + 1..];
+                    if rest.iter().any(|key| methods::is_blocked_property(key)) {
+                        return self.deopt(expr.span(), errs::BLOCKED_PROPERTY_ACCESS);
+                    }
+                    return self.value(JsValue::Str(proxy.resolve_key(&rest.join("."))));
                 }
             }
             return self.value(current);
@@ -1122,7 +1125,21 @@ impl<'a, 'env> Evaluator<'a, 'env> {
             _ => unreachable!("eval_member only receives member expressions"),
         };
         let object = value_or_return!(self, object_expr);
-        self.member_lookup(&object, &key, expr.span())
+        self.checked_member_lookup(&object, &key, expr.span())
+    }
+
+    // parity: evaluate-path.js isBlockedProperty — checked after the object and
+    // key evaluate, before the read (so it wins over a nullish-object TypeError).
+    pub(crate) fn checked_member_lookup(
+        &mut self,
+        object: &JsValue,
+        key: &str,
+        span: Span,
+    ) -> EvalResult {
+        if methods::is_blocked_property(key) {
+            return self.deopt(span, errs::BLOCKED_PROPERTY_ACCESS);
+        }
+        self.member_lookup(object, key, span)
     }
 
     fn member_lookup(&mut self, object: &JsValue, key: &str, span: Span) -> EvalResult {
@@ -1448,28 +1465,24 @@ impl<'a, 'env> Evaluator<'a, 'env> {
                 let object_name = object.name.as_str();
                 if let Some(prop) = prop_static {
                     // parity: no binding check — a shadowed `Math` still hits
-                    // the global for known methods.
-                    if methods::is_valid_callee(object_name) && !methods::is_invalid_method(prop) {
-                        match methods::lookup_global_static(object_name, prop) {
-                            methods::StaticMember::Fn(found) => {
-                                let args = match self.eval_arguments_raw(call)? {
-                                    Ok(args) => args,
-                                    Err(deopt) => return Ok(EvalOutcome::NonStatic(deopt)),
-                                };
-                                let result =
-                                    methods::call_global_static(self, object_name, found, &args)?;
-                                return self.value(result);
-                            }
-                            methods::StaticMember::NonCallable => {
-                                return self.func_apply_error(call);
-                            }
-                            methods::StaticMember::Unsupported => {
-                                return Err(StylexError::unsupported_api(&format!(
-                                    "compile-time call to {object_name}.{prop}"
-                                )));
-                            }
-                            methods::StaticMember::Unknown => {}
+                    // the global for allowlisted methods; anything else falls
+                    // through to the registry and value-callee branches.
+                    match methods::lookup_global_static(object_name, prop) {
+                        Some(methods::StaticMember::Fn(found)) => {
+                            let args = match self.eval_arguments_raw(call)? {
+                                Ok(args) => args,
+                                Err(deopt) => return Ok(EvalOutcome::NonStatic(deopt)),
+                            };
+                            let result =
+                                methods::call_global_static(self, object_name, found, &args)?;
+                            return self.value(result);
                         }
+                        Some(methods::StaticMember::Unsupported) => {
+                            return Err(StylexError::unsupported_api(&format!(
+                                "compile-time call to {object_name}.{prop}"
+                            )));
+                        }
+                        None => {}
                     }
                 }
                 if let Some(prop) = prop_static.or(prop_string)
@@ -1507,6 +1520,11 @@ impl<'a, 'env> Evaluator<'a, 'env> {
                     return self.deopt(call.span, errs::unsupported_expression("CallExpression"));
                 }
             };
+            // parity: a method reached through a confidently evaluated object
+            // (literal receivers included) may not be a prototype-chain hook.
+            if methods::is_blocked_property(&property) {
+                return self.deopt(member_property_span(member), errs::BLOCKED_PROPERTY_ACCESS);
+            }
             if let JsValue::Proxy(proxy) = &object_value
                 && property == "toString"
             {
@@ -2049,23 +2067,16 @@ fn babel_type_name(expr: &Expression<'_>) -> &'static str {
     }
 }
 
-const VALID_CALLEES: [&str; 5] = ["String", "Number", "Math", "Object", "Array"];
-const INVALID_METHODS: [&str; 7] = [
-    "random",
-    "assign",
-    "defineProperties",
-    "defineProperty",
-    "freeze",
-    "seal",
-    "splice",
-];
-
 fn is_valid_callee(name: &str) -> bool {
-    VALID_CALLEES.contains(&name)
+    methods::is_valid_callee(name)
 }
 
-fn is_invalid_method(name: &str) -> bool {
-    INVALID_METHODS.contains(&name)
+fn member_property_span(member: &oxc_ast::ast::MemberExpression<'_>) -> Span {
+    match member {
+        oxc_ast::ast::MemberExpression::StaticMemberExpression(m) => m.property.span,
+        oxc_ast::ast::MemberExpression::ComputedMemberExpression(m) => m.expression.span(),
+        oxc_ast::ast::MemberExpression::PrivateFieldExpression(m) => m.field.span,
+    }
 }
 
 pub fn truthy(value: &JsValue) -> bool {

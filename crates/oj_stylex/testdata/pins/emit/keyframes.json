@@ -342,8 +342,8 @@
   },
   "options": {},
   "expected": {
-   "animationName": "x1t1ekxd-B",
-   "ltr": "@keyframes x1t1ekxd-B{from{transition-duration:500px;}}",
+   "animationName": "xsitqex-B",
+   "ltr": "@keyframes xsitqex-B{from{transition-duration:.5s;}}",
    "rtl": null,
    "priority": 0
   }
@@ -367,8 +367,8 @@
   },
   "options": {},
   "expected": {
-   "animationName": "xqbz69g-B",
-   "ltr": "@keyframes xqbz69g-B{from{animation-delay:100px;}}",
+   "animationName": "xb9t2st-B",
+   "ltr": "@keyframes xb9t2st-B{from{animation-delay:.1s;}}",
    "rtl": null,
    "priority": 0
   }
@@ -392,8 +392,8 @@
   },
   "options": {},
   "expected": {
-   "animationName": "xlzccsj-B",
-   "ltr": "@keyframes xlzccsj-B{from{line-height:1.535px;}}",
+   "animationName": "x6bapky-B",
+   "ltr": "@keyframes x6bapky-B{from{line-height:1.535;}}",
    "rtl": null,
    "priority": 0
   }
@@ -453,8 +453,8 @@
   },
   "options": {},
   "expected": {
-   "animationName": "x1pjpf79-B",
-   "ltr": "@keyframes x1pjpf79-B{from{flex-grow:1.0000000000000001e+21px;}}",
+   "animationName": "xlta4if-B",
+   "ltr": "@keyframes xlta4if-B{from{flex-grow:1.0000000000000001e+21;}}",
    "rtl": null,
    "priority": 0
   }

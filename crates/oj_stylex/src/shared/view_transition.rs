@@ -7,7 +7,7 @@ use crate::hash::hash;
 use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::shared::dashify::dashify;
-use crate::shared::position_try::expand_dashify_transform;
+use crate::shared::position_try::{dashify_keys, expand_scalars, transform_values};
 
 const VALID_VIEW_TRANSITION_CLASS_PROPERTIES: [&str; 4] = ["group", "imagePair", "old", "new"];
 
@@ -23,7 +23,10 @@ pub fn view_transition_class(
     let mut style_strings: Vec<(String, String)> = Vec::new();
     for (key, style) in styles.entries() {
         let entries = object_entries_js(style, "a nullish viewTransitionClass style value")?;
-        let transformed = expand_dashify_transform(&entries, options)?;
+        let transformed = dashify_keys(&transform_values(
+            &expand_scalars(&entries, options)?,
+            options,
+        )?);
         let mut decls = String::new();
         for (k, v) in transformed.entries() {
             let EvalValue::Str(v) = v else {

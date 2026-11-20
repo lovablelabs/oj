@@ -1,8 +1,9 @@
 // Drives testdata/pins/media-query.json, generated from the live
-// @stylexjs/babel-plugin 0.19.0 oracle by conformance/src/gen-pins-mq.mjs.
+// @stylexjs/babel-plugin 0.19.2 oracle by conformance/src/gen-pins-mq.mjs.
 
 use oj_stylex::shared::media_query::{
-    MediaQuery, MediaQueryError, is_media_key, last_media_query_wins_transform,
+    MediaQuery, MediaQueryError, WidthBoundKind, is_media_key, last_media_query_wins_transform,
+    width_sort_bound,
 };
 use serde::Deserialize;
 
@@ -141,6 +142,67 @@ fn sibling_pins_match_oracle() {
 }
 
 #[test]
+fn media_query_0_19_2_fixes_and_width_bounds() {
+    // #1652: single px min-/max-width bound extraction for stylesheet sort.
+    for (prelude, expected) in [
+        (
+            "@media (min-width: 600px)",
+            Some((WidthBoundKind::Min, 600.0)),
+        ),
+        (
+            "@media (max-width: 599.98px)",
+            Some((WidthBoundKind::Max, 599.98)),
+        ),
+        (
+            "@media (width >= 400px)",
+            Some((WidthBoundKind::Min, 400.0)),
+        ),
+        (
+            "@media (width <= 800px)",
+            Some((WidthBoundKind::Max, 800.0)),
+        ),
+        ("@media (min-width: 40em)", None),
+        ("@media (min-width: 600px) and (max-width: 900px)", None),
+        ("@media not (min-width: 600px)", None),
+        (
+            "@media screen and (min-width: 600px)",
+            Some((WidthBoundKind::Min, 600.0)),
+        ),
+    ] {
+        let got = width_sort_bound(prelude).map(|b| (b.kind, b.value));
+        assert_eq!(got, expected, "prelude {prelude:?}");
+    }
+
+    // #1858: 0.02px max-width epsilon closes gaps between sibling media queries.
+    let rewritten = last_media_query_wins_transform(&[
+        "@media (min-width: 600px)".to_string(),
+        "@media (min-width: 900px)".to_string(),
+    ])
+    .expect("epsilon siblings");
+    assert_eq!(
+        rewritten,
+        vec![
+            "@media (min-width: 600px) and (max-width: 899.98px)",
+            "@media (min-width: 900px)",
+        ]
+    );
+
+    // #1888 & #2001: media-type resolution and preserving leading `not`.
+    assert_eq!(
+        MediaQuery::parse("@media not screen and (min-width: 600px)")
+            .unwrap()
+            .to_string(),
+        "@media not screen and (min-width: 600px)"
+    );
+    let types = last_media_query_wins_transform(&[
+        "@media screen and (min-width: 600px)".to_string(),
+        "@media print".to_string(),
+    ])
+    .expect("media types");
+    assert_eq!(types[1], "@media print");
+}
+
+#[test]
 fn top_level_condition_first_keys_stay_verbatim() {
     // depth-0 keys never reach the transform, malformed ones included
     let pins = load_pins();
@@ -208,4 +270,58 @@ fn transform_repeats_are_stable_and_errors_are_not_memoized() {
             Err(MediaQueryError::Syntax(_))
         ));
     }
+}
+
+#[test]
+fn many_sibling_screen_media_queries_prune_conflicting_branches() {
+    let keys: Vec<String> = (1..=18)
+        .map(|i| format!("@media screen and (min-width: {}px)", i * 100))
+        .collect();
+    let started = std::time::Instant::now();
+    let rewritten = last_media_query_wins_transform(&keys).expect("18 screen siblings");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "18 sibling screen queries should complete in milliseconds, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(rewritten.len(), 18);
+    for (i, got) in rewritten.iter().enumerate() {
+        let mut expected = format!("@media screen and (min-width: {}px)", (i + 1) * 100);
+        for j in (i + 1)..18 {
+            expected.push_str(&format!(" and (not (min-width: {}px))", (j + 1) * 100));
+        }
+        assert_eq!(got, &expected, "sibling {i}");
+    }
+
+    // Negated media-type contradictions must not be pruned inside `not (...)`.
+    assert_eq!(
+        MediaQuery::parse("@media not (screen and print)")
+            .unwrap()
+            .to_string(),
+        "@media not screen, not print"
+    );
+    assert_eq!(
+        MediaQuery::parse("@media (not (screen and (not (screen and (min-width: 200px)))))")
+            .unwrap()
+            .to_string(),
+        "@media print, print and (min-width: 200px), screen and (min-width: 200px)"
+    );
+
+    // Direct `resolve_media_types` And/Or distribution pruning with 18 `Or` terms.
+    let mut query = String::from("@media screen");
+    for i in 1..=18 {
+        query.push_str(&format!(" and (print or (min-width: {}px))", i * 100));
+    }
+    let started = std::time::Instant::now();
+    let parsed = MediaQuery::parse(&query).expect("18 Or terms");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "18 And/Or terms should complete in milliseconds, took {:?}",
+        started.elapsed()
+    );
+    let mut expected = String::from("@media screen");
+    for i in (1..=18).rev() {
+        expected.push_str(&format!(" and (min-width: {}px)", i * 100));
+    }
+    assert_eq!(parsed.to_string(), expected);
 }

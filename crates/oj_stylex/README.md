@@ -1,6 +1,6 @@
 # oj_stylex
 
-Rust compiler for StyleX, targeting `@stylexjs/babel-plugin` 0.19.0 behaviour.
+Rust compiler for StyleX, targeting `@stylexjs/babel-plugin` 0.19.2 behaviour.
 
 Source transforms, OXC AST transforms and deterministic stylesheet assembly
 are provided by the `api` and `assemble` modules. AST integration requires the

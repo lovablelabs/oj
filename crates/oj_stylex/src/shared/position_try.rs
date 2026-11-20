@@ -85,26 +85,27 @@ fn position_try_impl(
     styles: &JsObjectMap,
     options: &ResolvedOptions,
 ) -> Result<(String, StylexRule), StylexError> {
-    let expanded = expand_dashify_transform(styles, options)?;
-    let mut keys: Vec<&str> = expanded.keys().collect();
-    keys.sort_by(|a, b| utf16_cmp(a, b));
+    let expanded = transform_values(&dashify_keys(&expand_scalars(styles, options)?), options)?;
 
-    // Upstream stores the whole generateLtr PAIR as the value, so each ltr decl
-    // doubles into `k:ltrKey;k:ltrValue;` (and rtl too, when a flip fires).
-    let mut ltr_string = String::new();
-    let mut rtl_string = String::new();
-    for key in keys {
-        let Some(EvalValue::Str(value)) = expanded.get(key) else {
+    // Each side is rebuilt from its generated pairs, so a key the generator
+    // renames lands under the new name and a collision keeps the last value.
+    let ctx = RtlContext::of(options);
+    let mut ltr_styles = JsObjectMap::new();
+    let mut rtl_styles = JsObjectMap::new();
+    for (key, value) in expanded.entries() {
+        let EvalValue::Str(value) = value else {
             unreachable!("transform stage only stores strings");
         };
-        // Upstream passes no options here, so both sides see defaultOptions.
-        let (lk, lv) = generate_ltr(key, value, RtlContext::DEFAULTS);
-        ltr_string.push_str(&format!("{key}:{lk};{key}:{lv};"));
-        match generate_rtl(key, value, RtlContext::DEFAULTS) {
-            Some((rk, rv)) => rtl_string.push_str(&format!("{key}:{rk};{key}:{rv};")),
-            None => rtl_string.push_str(&format!("{key}:{value};")),
-        }
+        let (lk, lv) = generate_ltr(key, value, ctx);
+        ltr_styles.insert(lk, EvalValue::Str(lv.into_owned()));
+        let (rk, rv) = generate_rtl(key, value, ctx).map_or_else(
+            || (key.to_string(), value.clone()),
+            |(k, v)| (k.into_owned(), v.into_owned()),
+        );
+        rtl_styles.insert(rk, EvalValue::Str(rv));
     }
+    let ltr_string = construct_position_try_string(&ltr_styles);
+    let rtl_string = construct_position_try_string(&rtl_styles);
 
     let name = format!("--{}{}", options.class_name_prefix, hash(&ltr_string));
     let ltr = format!("@position-try {name} {{{ltr_string}}}");
@@ -141,9 +142,27 @@ fn assert_valid_properties(styles: &JsObjectMap) -> Result<(), StylexError> {
     Ok(())
 }
 
-// parity: stylex-position-try.js preprocessProperties + dashify + transformValue
-// pipe (same stage as stylex-keyframes.js; each stage rebuilds the object).
-pub(crate) fn expand_dashify_transform(
+// parity: stylex-position-try.js constructPositionTryObj
+fn construct_position_try_string(styles: &JsObjectMap) -> String {
+    let mut keys: Vec<&str> = styles.keys().collect();
+    keys.sort_by(|a, b| utf16_cmp(a, b));
+    let mut out = String::new();
+    for key in keys {
+        let Some(EvalValue::Str(value)) = styles.get(key) else {
+            unreachable!("generated declarations are strings");
+        };
+        out.push_str(&format!("{key}:{value};"));
+    }
+    out
+}
+
+// The three stages `positionTry`, `keyframes` and `viewTransitionClass` pipe a
+// style object through. Each rebuilds the object, so duplicate keys collapse
+// first-position last-value. positionTry dashifies before it transforms; the
+// other two transform first, so their values see the camelCase key.
+
+// parity: preprocessProperties / expandFrameShorthands
+pub(crate) fn expand_scalars(
     styles: &JsObjectMap,
     options: &ResolvedOptions,
 ) -> Result<JsObjectMap, StylexError> {
@@ -173,14 +192,26 @@ pub(crate) fn expand_dashify_transform(
             }
         }
     }
+    Ok(expanded)
+}
+
+pub(crate) fn dashify_keys(styles: &JsObjectMap) -> JsObjectMap {
     let mut dashed = JsObjectMap::new();
-    for (key, value) in expanded.entries() {
+    for (key, value) in styles.entries() {
         dashed.insert(dashify(key), value.clone());
     }
+    dashed
+}
+
+// transformValue keys its ms-suffix and unitless tables by camelCase name, so
+// a caller that dashified first misses them (`transition-duration: 500` is
+// 500px).
+pub(crate) fn transform_values(
+    styles: &JsObjectMap,
+    options: &ResolvedOptions,
+) -> Result<JsObjectMap, StylexError> {
     let mut transformed = JsObjectMap::new();
-    for (key, value) in dashed.entries() {
-        // transformValue sees the already-dashed key (the same camelCase-keyed
-        // suffix-table misses as keyframes: `transition-duration: 500` → 500px).
+    for (key, value) in styles.entries() {
         let out = match value {
             EvalValue::Str(s) => transform_value_str(key, s, options.enable_font_size_px_to_rem),
             EvalValue::Num(n) => transform_value_num(key, *n, options.enable_font_size_px_to_rem),
@@ -216,22 +247,17 @@ mod tests {
 
     #[test]
     fn basic_output_matches_oracle() {
-        // Pinned via live-oracle probe 2026-08-28.
+        // Pinned against @stylexjs/babel-plugin 0.19.2 (misc/position-try.json
+        // "basic numbers").
         let options = ResolvedOptions::default();
         let styles = obj(&[
             ("width", EvalValue::Num(100.0)),
             ("top", EvalValue::Num(0.0)),
         ]);
         let (name, rule) = position_try(&styles, &options).unwrap();
-        assert_eq!(name, "--x1cy0vnv");
-        assert_eq!(
-            &*rule.ltr,
-            "@position-try --x1cy0vnv {top:top;top:0;width:width;width:100px;}"
-        );
-        assert_eq!(
-            rule.rtl.as_deref(),
-            Some("@position-try --x1cy0vnv {top:0;width:100px;}")
-        );
+        assert_eq!(name, "--x1x22k8n");
+        assert_eq!(&*rule.ltr, "@position-try --x1x22k8n {top:0;width:100px;}");
+        assert_eq!(rule.rtl, None);
         assert!(rule.priority == 0.0);
         assert_eq!(rule.const_key, None);
     }

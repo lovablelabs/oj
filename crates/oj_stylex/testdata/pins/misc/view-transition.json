@@ -232,8 +232,8 @@
   },
   "options": {},
   "expected": {
-   "className": "x1t5xrs5",
-   "ltr": "::view-transition-group(*.x1t5xrs5){transition-duration:500px;line-height:1.5px;}",
+   "className": "x3nv1pa",
+   "ltr": "::view-transition-group(*.x3nv1pa){transition-duration:.5s;line-height:1.5;}",
    "rtl": null,
    "priority": 1
   }

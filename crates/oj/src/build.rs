@@ -4477,13 +4477,14 @@ pub async fn build(
                 })
                 .collect::<Vec<_>>()
                 .concat();
-            let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
+            let mut combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
             // Named before the StyleX sheet joins it, as Vite names the asset
             // before the plugin's generateBundle appends to it.
             let hash = css_asset_hash(&combined);
             // Vite emits the bundle from the generateBundle that strips the
             // hash marker off every other sheet, too late to be stripped.
-            let combined = append_stylex(format!("{combined}/*$vite$:1*/"), stylex_css.take());
+            combined.push_str("/*$vite$:1*/");
+            let combined = append_stylex(combined, stylex_css.take().as_deref());
             let css_name = render_asset_name(css_asset_opts.asset_names, "style", &hash, "css");
             if let Some(parent) = out_dir.join(&css_name).parent() {
                 fs::create_dir_all(parent)?;
@@ -6351,7 +6352,7 @@ async fn build_client_entry(
         let resolve = css_resolve_of(root, config, "client", is_production);
         let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
         let hash = css_asset_hash(&combined);
-        let combined = append_stylex(combined, stylex_css);
+        let combined = append_stylex(combined, stylex_css.as_deref());
         let name = oj_config::assets_dir_path(&assets_dir, &format!("style-{}.css", &hash[..8]));
         if let Some(parent) = out_dir.join(&name).parent() {
             fs::create_dir_all(parent)?;
@@ -6679,7 +6680,7 @@ async fn build_library(
             .concat();
         let resolve = css_resolve_of(root, config, "client", is_production);
         let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
-        let combined = append_stylex(combined, stylex_css.take());
+        let combined = append_stylex(combined, stylex_css.take().as_deref());
         // Vite: `build.lib.cssFileName`, else the library's file name / package name.
         let css_stem = lib
             .css_file_name
@@ -6848,12 +6849,18 @@ fn chunk_css_asset(css: &str, resolve: &oj_css::CssResolve<'_>) -> anyhow::Resul
     oj_css::finalize_chunk_css(css, resolve).map_err(|e| anyhow::anyhow!(e))
 }
 
-fn append_stylex(css: String, stylex: Option<String>) -> String {
-    match stylex {
-        Some(sheet) if css.is_empty() => sheet,
-        Some(sheet) => format!("{css}\n{sheet}"),
-        None => css,
+fn append_stylex(mut css: String, stylex: Option<&str>) -> String {
+    let Some(sheet) = stylex else {
+        return css;
+    };
+    if css.is_empty() {
+        css.push_str(sheet);
+    } else {
+        css.reserve(1 + sheet.len());
+        css.push('\n');
+        css.push_str(sheet);
     }
+    css
 }
 
 /// The plugin's writeBundle fallback for a build with no stylesheet:
@@ -7073,29 +7080,7 @@ fn emit_split_css_files(
     }
     let mut seen_assets: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
-    // The StyleX sheet joins the first entry chunk's stylesheet (where the
-    // plugin's lands under Vite, whose entry CSS is emitted first), else the
-    // first stylesheet: never a lazy chunk's when an entry has one.
-    let chunks_with_css: Vec<&rolldown_common::OutputChunk> = output
-        .assets
-        .iter()
-        .filter_map(|o| match o {
-            rolldown_common::Output::Chunk(c)
-                if c.modules
-                    .keys
-                    .iter()
-                    .any(|m| css_map.contains_key(m.as_str())) =>
-            {
-                Some(c.as_ref())
-            }
-            _ => None,
-        })
-        .collect();
-    let stylex_chunk = chunks_with_css
-        .iter()
-        .find(|c| c.is_entry)
-        .or(chunks_with_css.first())
-        .map(|c| c.filename.to_string());
+    let mut sheets: Vec<(&rolldown_common::OutputChunk, ChunkStylesheet)> = Vec::new();
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
@@ -7115,21 +7100,40 @@ fn emit_split_css_files(
         else {
             continue;
         };
+        sheets.push((chunk.as_ref(), sheet));
+    }
+    // The StyleX sheet joins the stylesheet the plugin's generateBundle picks
+    // out of the bundle, whose assets Rolldown lists by file name: the first
+    // `index-<hash>.css` (an `index.html` entry's), else the first
+    // `style-<hash>.css`, else the first sheet, which may be a lazy chunk's.
+    let stylex_sheet = {
+        let mut names: Vec<&str> = sheets.iter().map(|(_, s)| s.name.as_str()).collect();
+        names.sort_unstable();
+        oj_stylex::plugin::pick_css_asset(&names).map(|at| names[at].to_string())
+    };
+    let stylex_sheet = stylex_sheet.and_then(|name| Some((name, stylex_css.take()?)));
+    let mut written_sheets: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (chunk, sheet) in sheets {
         let ChunkStylesheet {
             css,
             name: css_name,
             sources,
         } = sheet;
-        let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
-            append_stylex(css, stylex_css.take())
-        } else {
-            css
-        };
-        if let Some(parent) = out_dir.join(&css_name).parent() {
-            fs::create_dir_all(parent)?;
+        // Chunks sharing one sheet (same name, same CSS) write the file once;
+        // every referencing chunk still records it in manifest_entries/chunk_css.
+        if written_sheets.insert(css_name.clone()) {
+            let css = match &stylex_sheet {
+                Some((name, stylex)) if *name == css_name => {
+                    append_stylex(css, Some(stylex.as_str()))
+                }
+                _ => css,
+            };
+            if let Some(parent) = out_dir.join(&css_name).parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(out_dir.join(&css_name), &css)?;
+            emitted.push((css_name.clone(), css.len()));
         }
-        fs::write(out_dir.join(&css_name), &css)?;
-        emitted.push((css_name.clone(), css.len()));
         for entry in manifest_entries.iter_mut() {
             if entry.file == chunk.filename.as_str() {
                 entry.css.push(css_name.clone());

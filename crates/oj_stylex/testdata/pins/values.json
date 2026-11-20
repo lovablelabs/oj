@@ -1555,8 +1555,8 @@
   },
   "expect": {
    "decl_prop": "content",
-   "class_name": "xg73sis",
-   "value": "\"\"abc\""
+   "class_name": "x1syln29",
+   "value": "\"\\\"abc\""
   }
  },
  {
@@ -1802,8 +1802,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x1z09mvf",
-   "value": "translateX(0px) translateY(0)"
+   "class_name": "x1qnwtyu",
+   "value": "translateX(0px) translateY(0px)"
   }
  },
  {
@@ -1814,8 +1814,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x22e6n3",
-   "value": "translateX(0px)translateY(0)"
+   "class_name": "xmw42zx",
+   "value": "translateX(0px)translateY(0px)"
   }
  },
  {
@@ -1826,8 +1826,8 @@
   },
   "expect": {
    "decl_prop": "transform",
-   "class_name": "x1x2b8gf",
-   "value": "translateX(0px) translateY(0) translateZ(0px)"
+   "class_name": "x17syzoa",
+   "value": "translateX(0px) translateY(0px) translateZ(0px)"
   }
  },
  {

@@ -2,7 +2,7 @@
 // parity: babel-plugin/src/shared/utils/normalize-value.js (+ normalizers/*)
 
 use crate::jsrt::js_number_to_string;
-use crate::shared::css_value::{Kind, Node, parse, stringify, unit, walk};
+use crate::shared::css_value::{Kind, Node, parse, stringify, unit, walk, walk_pruned};
 use crate::shared::dashify::dashify;
 
 // Local until errors.rs lands a shared error surface; Display strings for the
@@ -82,7 +82,9 @@ fn normalize_whitespace(nodes: &mut Vec<Node>) -> Result<(), CssValueError> {
             Kind::Func => {
                 nodes[i].before.clear();
                 nodes[i].after.clear();
-                whitespace_walk_nested(&mut nodes[i].nodes);
+                if !is_url(&nodes[i]) {
+                    whitespace_walk_nested(&mut nodes[i].nodes);
+                }
             }
             Kind::Word
                 if nodes[i].value == "!important" && i > 0 && nodes[i - 1].kind == Kind::Space =>
@@ -120,7 +122,9 @@ fn whitespace_walk_nested(nodes: &mut [Node]) {
             Kind::Func => {
                 node.before.clear();
                 node.after.clear();
-                whitespace_walk_nested(&mut node.nodes);
+                if !is_url(node) {
+                    whitespace_walk_nested(&mut node.nodes);
+                }
             }
             // Nested '!important' upstream splices the TOP-level node list (a
             // latent bug never hit by valid CSS); we deliberately skip it.
@@ -129,76 +133,101 @@ fn whitespace_walk_nested(nodes: &mut [Node]) {
     }
 }
 
+// The normalizers leave a `url()`'s contents as the author wrote them. No
+// non-ASCII letter lowercases into "url", so the ASCII fold is exact.
+fn is_url(node: &Node) -> bool {
+    node.kind == Kind::Func && node.value.eq_ignore_ascii_case("url")
+}
+
 // parity: normalizers/timings.js — ms >= 10 becomes seconds
 fn normalize_timings(nodes: &mut [Node]) {
-    walk(nodes, &mut |node| {
+    walk_pruned(nodes, &mut |node| {
+        if is_url(node) {
+            return false;
+        }
         if node.kind != Kind::Word {
-            return;
+            return true;
         }
         let Some(value) = js_parse_float(&node.value) else {
-            return;
+            return true;
         };
         let Some(dimension) = unit(&node.value) else {
-            return;
+            return true;
         };
         if dimension.unit != "ms" || value < 10.0 {
-            return;
+            return true;
         }
         node.value = js_number_to_string(value / 1000.0) + "s";
+        true
     });
 }
 
-// parity: normalizers/zero-dimensions.js, including its one-live-function
-// endFunction bookkeeping (later sibling functions lose zero-unit protection).
+// parity: normalizers/zero-dimensions.js. `end_function` is the furthest end
+// of any function seen so far, cleared once a node starts past it; a zero
+// inside a function keeps its unit.
 fn normalize_zero_dimensions(nodes: &mut [Node], key: &str) {
     if key.starts_with("--") {
         return;
     }
     let mut end_function: usize = 0;
-    walk(nodes, &mut |node| {
-        if node.kind == Kind::Func && end_function == 0 {
-            end_function = node.source_end_index;
+    walk_pruned(nodes, &mut |node| {
+        if node.kind == Kind::Func {
+            end_function = end_function.max(node.source_end_index);
         }
         if end_function > 0 && node.source_index > end_function {
             end_function = 0;
         }
+        if is_url(node) {
+            return false;
+        }
         if node.kind != Kind::Word {
-            return;
+            return true;
         }
         let Some(dimension) = unit(&node.value) else {
-            return;
+            return true;
         };
         if dimension.number != "0" {
-            return;
+            return true;
         }
-        let unit_str = dimension.unit;
-        if matches!(unit_str, "deg" | "grad" | "turn" | "rad") {
+        // Units compare case-insensitively; none of them is the lowercase of a
+        // non-ASCII string, so the ASCII fold matches `toLowerCase()`.
+        let u = dimension.unit;
+        if u.eq_ignore_ascii_case("deg")
+            || u.eq_ignore_ascii_case("grad")
+            || u.eq_ignore_ascii_case("turn")
+            || u.eq_ignore_ascii_case("rad")
+        {
             node.value = "0deg".to_string();
-        } else if matches!(unit_str, "ms" | "s") {
+        } else if u.eq_ignore_ascii_case("ms") || u.eq_ignore_ascii_case("s") {
             node.value = "0s".to_string();
-        } else if unit_str == "fr" {
+        } else if u.eq_ignore_ascii_case("fr") {
             node.value = "0fr".to_string();
-        } else if unit_str == "%" {
+        } else if u == "%" {
             node.value = "0%".to_string();
         } else if end_function == 0 {
             node.value = "0".to_string();
         }
+        true
     });
 }
 
 // parity: normalizers/leading-zero.js
 fn normalize_leading_zero(nodes: &mut [Node]) {
-    walk(nodes, &mut |node| {
+    walk_pruned(nodes, &mut |node| {
+        if is_url(node) {
+            return false;
+        }
         if node.kind != Kind::Word {
-            return;
+            return true;
         }
         let Some(value) = js_parse_float(&node.value) else {
-            return;
+            return true;
         };
         if (0.0..1.0).contains(&value) {
             let unit_str = unit(&node.value).map(|d| d.unit).unwrap_or_default();
             node.value = js_number_to_string(value).replacen("0.", ".", 1) + unit_str;
         }
+        true
     });
 }
 
@@ -318,6 +347,55 @@ mod tests {
             CssValueError::UnclosedString.to_string(),
             "Rule contains an unclosed string"
         );
+    }
+
+    // Each expectation is the @stylexjs/babel-plugin 0.19.2 output pinned in
+    // testdata/pins/values.json.
+    #[test]
+    fn url_contents_are_left_alone() {
+        for (key, input, expected) in [
+            ("backgroundImage", "url( a  b.png )", "url(a  b.png)"),
+            ("backgroundImage", "url(0.5px)", "url(0.5px)"),
+            ("backgroundImage", "url(1000ms)", "url(1000ms)"),
+            (
+                "backgroundImage",
+                "URL( \"a b\" 0.50px )",
+                "URL(\"a b\" 0.50px)",
+            ),
+            ("background", "url(a) 0px 0.5px", "url(a) 0 .5px"),
+        ] {
+            assert_eq!(
+                normalize_value(input, key, false).unwrap(),
+                expected,
+                "{key}: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_keeps_its_unit_only_inside_a_function() {
+        for (key, input, expected) in [
+            (
+                "margin",
+                "calc(calc(0px) + 0px) 0px",
+                "calc(calc(0px) + 0px) 0",
+            ),
+            (
+                "margin",
+                "a(b(0px) 0px) 0px c(0px) 0px",
+                "a(b(0px) 0px) 0 c(0px) 0",
+            ),
+            ("width", "0PX", "0"),
+            ("rotate", "0DEG", "0deg"),
+            ("transitionDuration", "0Ms", "0s"),
+            ("gridTemplateColumns", "0FR 1fr", "0fr 1fr"),
+        ] {
+            assert_eq!(
+                normalize_value(input, key, false).unwrap(),
+                expected,
+                "{key}: {input}"
+            );
+        }
     }
 
     #[test]

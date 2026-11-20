@@ -205,6 +205,70 @@ fn define_consts_requires_named_export_and_theme_filename() {
     assert!(out.rules[0].const_key.is_some());
 }
 
+/// 0.19.2 refuses prototype-chain reads in every statically evaluated
+/// argument; where the member is only a runtime subject it is left alone.
+#[test]
+fn blocked_property_reads_fail_static_apis_and_stay_runtime_elsewhere() {
+    let err = compile_err(&format!(
+        "{IMP}const o = {{ a: 'red' }};\n\
+         export const k = stylex.keyframes({{ from: {{ color: o.constructor }} }});\n"
+    ));
+    assert_eq!(
+        err.message.lines().next(),
+        Some("Only static values are allowed inside of a keyframes() call.")
+    );
+
+    let opts = options(serde_json::json!({
+        "unstable_moduleResolution": { "type": "commonJS", "rootDir": "<ROOT>" }
+    }));
+    for (api, key) in [("defineVars", "__proto__"), ("defineConsts", "prototype")] {
+        let err = compile_with(
+            &format!(
+                "{IMP}const o = {{ a: 'red' }};\n\
+                 export const vars = stylex.{api}({{ color: o.{key} }});\n"
+            ),
+            "src/blocked.stylex.ts",
+            &opts,
+        )
+        .expect_err("blocked read must fail");
+        assert_eq!(
+            err.message.lines().next(),
+            Some(format!("Only static values are allowed inside of a {api}() call.").as_str())
+        );
+    }
+
+    let out = compile(&format!(
+        "{IMP}const o = {{ a: 'red' }};\n\
+         export const styles = stylex.create({{ a: (w) => ({{ color: o.constructor, width: w.__proto__ }}) }});\n"
+    ));
+    let code = &out.code;
+    assert!(code.contains("(o.constructor) !== undefined &&"), "{code}");
+    assert!(code.contains("(w.__proto__) !== undefined &&"), "{code}");
+    let rules: Vec<&str> = out.rules.iter().map(|rule| &*rule.ltr).collect();
+    assert_eq!(
+        &rules[..2],
+        [
+            ".x14rh7hd{color:var(--x-color)}",
+            ".x5lhr3w{width:var(--x-width)}"
+        ]
+    );
+
+    let out = compile(&format!(
+        "{IMP}const styles = stylex.create({{ a: {{ color: 'red' }}, b: {{ color: 'blue' }} }});\n\
+         const o = {{ a: 'a' }};\n\
+         export const cond = stylex.props(o.constructor && styles.a);\n\
+         export const call = stylex.props(Math.PI() ? styles.a : styles.b);\n\
+         export const key = stylex.props(styles[o.constructor]);\n"
+    ));
+    let code = &out.code;
+    assert!(code.contains("[!!(o.constructor) << 0]"), "{code}");
+    assert!(code.contains("[!!(Math.PI()) << 0]"), "{code}");
+    assert!(
+        code.contains("stylex.props(styles[o.constructor])"),
+        "{code}"
+    );
+}
+
 #[test]
 fn markers_replace_in_place() {
     let out = compile(&format!(
@@ -718,7 +782,8 @@ fn dynamic_static_chunks_hoist_to_shared_module_consts() {
         "code: {code}"
     );
     assert!(
-        code.contains("a: (w) => [_temp, {") && code.contains("b: (h) => [_temp2, {"),
+        code.contains("a: (w) => [_temp, (w) !== undefined && {")
+            && code.contains("b: (h) => [_temp2, (h) !== undefined && {"),
         "code: {code}"
     );
 }
@@ -790,9 +855,62 @@ fn dynamic_arrow_chunk_shapes_match_upstream() {
     assert!(
         local
             .code
-            .contains("const _temp = {kMwMTN: \"x1e2nbdu\", \"$$css\": true};\nconst _styles = ({root: (w) => [_temp, {"),
+            .contains("const _temp = {kMwMTN: \"x1e2nbdu\", \"$$css\": true};\nconst _styles = ({root: (w) => [_temp, (w) !== undefined && {"),
         "code: {}",
         local.code
+    );
+}
+
+#[test]
+fn dynamic_single_class_props_are_guarded_against_undefined() {
+    // stylex 0.19.2 (#1731), oracle output probed live: a prop whose only
+    // class depends on an argument is its own array element, skipped when the
+    // argument is undefined; a null argument yields "" instead of null.
+    let out = compile(&format!(
+        "{IMP}export const styles = stylex.create({{ root: (w, c) => ({{ color: 'red', width: w, backgroundColor: c }}) }});\n"
+    ));
+    assert!(
+        out.code.contains(
+            "root: (w, c) => [_temp, \
+             (w) !== undefined && {kzqmXN: ((w) != null ? \"x5lhr3w\" : \"\"), $$css: true}, \
+             (c) !== undefined && {kWkggS: ((c) != null ? \"xl8spv7\" : \"\"), $$css: true}, \
+             {\"--x-width\":"
+        ),
+        "code: {}",
+        out.code
+    );
+
+    // Guards precede the conditional chunk, whose guarded parts fall back to
+    // "" as well; a multi-class prop stays in the conditional chunk.
+    let mixed = compile(&format!(
+        "{IMP}export const styles = stylex.create({{ root: (c, w) => ({{ color: {{ default: c, ':hover': 'blue' }}, width: w }}) }});\n"
+    ));
+    assert!(
+        mixed.code.contains(
+            "root: (c, w) => [\
+             (w) !== undefined && {kzqmXN: ((w) != null ? \"x5lhr3w\" : \"\"), $$css: true}, \
+             {kMwMTN: ((c) != null ? \"x3d248p \" : \"\") + \"x17z2mba\", $$css: true}, \
+             {\"--x-4xs81a\":"
+        ),
+        "code: {}",
+        mixed.code
+    );
+
+    // The dev css tag is repeated on every guard.
+    let dev = compile_with(
+        &format!(
+            "{IMP}export const styles = stylex.create({{ root: (w) => ({{ width: w }}) }});\n"
+        ),
+        "src/input.ts",
+        &options(serde_json::json!({ "dev": true })),
+    )
+    .expect("compile");
+    assert!(
+        dev.code.contains(
+            "(w) !== undefined && {\"width-kzqmXN\": ((w) != null ? \"x5lhr3w\" : \"\"), $$css: \"fixture-pkg:src/input.ts:2\"}"
+        ),
+        "code: {}",
+        dev.code
     );
 }
 

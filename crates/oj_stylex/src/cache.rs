@@ -22,7 +22,7 @@ pub const CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Bump on any behavior-affecting compiler change (the STYLEX_PASS_VERSION
 /// pattern): the crate version alone does not move per commit.
-pub const STYLEX_PASS_VERSION: &str = "0.19.0-rs.2";
+pub const STYLEX_PASS_VERSION: &str = "0.19.2-rs.1";
 
 pub fn compiler_fingerprint() -> &'static str {
     static FINGERPRINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();

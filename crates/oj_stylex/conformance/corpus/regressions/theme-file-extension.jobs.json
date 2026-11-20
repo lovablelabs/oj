@@ -266,7 +266,6 @@
       "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\n",
       "options": {
         "debug": true,
-        "enableDebugClassNames": true,
         "unstable_moduleResolution": {
           "type": "commonJS",
           "rootDir": "<ROOT>",
@@ -805,7 +804,6 @@
       "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
       "options": {
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": true,
         "dev": true,
         "unstable_moduleResolution": {
@@ -825,7 +823,6 @@
       "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
       "options": {
         "debug": true,
-        "enableDebugClassNames": true,
         "enableDevClassNames": true,
         "dev": true,
         "unstable_moduleResolution": {
