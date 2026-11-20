@@ -16,7 +16,10 @@
 //! itself (`oj_server::import_protection`) and the plugin host leaves Start's
 //! plugins out: the violations it logs are the ones Start's plugin logs for
 //! the same app, a handler-only import passes, and a page serves again once
-//! its denied import is gone.
+//! its denied import is gone. The server render denies a `*.client.*` file
+//! reached through an alias and mocks one imported by a relative path, as it
+//! does with Start's plugin. An app whose documents a worker renders keeps
+//! Start's plugin, which denies that render's imports.
 //!
 //! The app is the Start fixture (see `start_app`). The browser half skips
 //! without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
@@ -32,7 +35,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use browser::Page;
-use start_app::{app, Server};
+use start_app::{app, cloudflare_app, Server};
 
 const SECRET: &str = "export const secret = () => \"server-secret\";\n";
 
@@ -72,20 +75,24 @@ const USES_SECRET: &str = "const extra = <p id=\"secret\">{secret()}</p>;";
 /// `tanstackStart({ ... })`.
 fn app_with(name: &str, files: &[(&str, String)], options: Option<&str>) -> Option<start_app::App> {
     let app = app(name)?;
+    write_app(&app.0, files, options);
+    Some(app)
+}
+
+fn write_app(root: &Path, files: &[(&str, String)], options: Option<&str>) {
     for (rel, body) in files {
-        let path = app.0.join(rel);
+        let path = root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
     if let Some(options) = options {
-        let config = app.0.join("vite.config.ts");
+        let config = root.join("vite.config.ts");
         let source = std::fs::read_to_string(&config).unwrap();
         let call = "tanstackStart({ server: { entry: \"ssr-entry\" } })";
         assert!(source.contains(call), "{source}");
         let with = format!("tanstackStart({{ server: {{ entry: \"ssr-entry\" }}, {options} }})");
         std::fs::write(&config, source.replacen(call, &with, 1)).unwrap();
     }
-    Some(app)
 }
 
 /// `oj build`: whether it succeeded, and its output.
@@ -2418,5 +2425,128 @@ async fn dev_checking_imports_itself_serves_the_page_once_the_import_is_gone() {
         hydrated,
         "the page did not hydrate once the import was gone: {errors:?}\n{}",
         dev.output()
+    );
+}
+
+/// The about route rendering a `*.client.*` file's export, which `import`
+/// names: denied to the server render.
+fn client_only_use(import: &str) -> [(&'static str, String); 2] {
+    [
+        (
+            "src/lib/widget.client.ts",
+            "export const widget = () => \"client-widget\";\n".to_string(),
+        ),
+        (
+            "src/routes/about.tsx",
+            about(
+                &format!("import {{ widget }} from \"{import}\";"),
+                "const extra = <p id=\"widget\">{String(widget)}</p>;",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn dev_denies_a_client_only_file_the_server_render_reaches_through_an_alias() {
+    let files = client_only_use("@app/lib/widget.client");
+    let Some((native, hosted)) = dev_violations("ip-native-server-alias", &files) else {
+        return;
+    };
+    for output in [&native, &hosted] {
+        assert_denied(
+            output,
+            &[
+                "[import-protection] Import denied in server environment",
+                "Denied by file pattern: **/*.client.*",
+                "src/lib/widget.client.ts",
+            ],
+        );
+    }
+}
+
+#[test]
+fn dev_mocks_a_client_only_file_the_server_render_imports_by_a_relative_path() {
+    let files = client_only_use("../lib/widget.client");
+    for (name, options) in [
+        ("ip-native-server-relative", ERRORS),
+        ("ip-native-server-relative-hosted", HOSTED),
+    ] {
+        let Some(app) = app_with(name, &files, Some(options)) else {
+            return;
+        };
+        let dev = Server::oj_dev(&app.0);
+        let (status, body) = dev.request("GET", "/about", &[]);
+        assert_eq!(status, 200, "{name}: {body}\n{}", dev.output());
+        assert!(
+            body.contains("[import-protection mock]"),
+            "{name}: the server render used the file itself:\n{body}"
+        );
+        assert!(
+            !dev.output().contains("Import denied in server environment"),
+            "{name}: the relative import was denied:\n{}",
+            dev.output()
+        );
+    }
+}
+
+#[test]
+fn dev_leaves_import_protection_to_starts_plugin_where_a_worker_renders_the_documents() {
+    let Some(cf) = cloudflare_app("ip-native-worker") else {
+        return;
+    };
+    let root = &cf.app.0;
+    write_app(
+        root,
+        &client_only_use("@app/lib/widget.client"),
+        Some(ERRORS),
+    );
+    std::fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{"name":"oj-start-fixture","main":"@tanstack/react-start/server-entry","compatibility_date":"2025-09-01","compatibility_flags":["nodejs_compat"]}"#,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let with = config
+        .replacen(
+            "import { defineConfig } from \"vite\";",
+            "import { defineConfig } from \"vite\";\nimport { cloudflare } from \"@cloudflare/vite-plugin\";",
+            1,
+        )
+        .replacen(
+            "    tanstackStart(",
+            "    cloudflare({ viteEnvironment: { name: \"ssr\" } }),\n    tanstackStart(",
+            1,
+        );
+    assert!(with.contains("cloudflare("), "{config}");
+    std::fs::write(root.join("vite.config.ts"), with).unwrap();
+    let dev = Server::oj_dev_with(
+        root,
+        &[
+            ("WRANGLER_SEND_METRICS", "false"),
+            ("CI", "1"),
+            ("NO_COLOR", "1"),
+        ],
+    );
+    let _ = dev.request("GET", "/about", &[]);
+    assert!(
+        dev.logs("a custom dev environment is declared"),
+        "no runner environment:\n{}",
+        dev.output()
+    );
+    assert!(
+        dev.output()
+            .contains("tanstack-start-core:import-protection["),
+        "the plugin host left Start's import protection out:\n{}",
+        dev.output()
+    );
+    // The worker's own render of the route, which only Start's plugin sees.
+    assert!(
+        (0..12).any(|_| dev.logs("Denied by file pattern: **/*.client.*")),
+        "the import was not denied:\n{}",
+        dev.output()
+    );
+    assert_denied(
+        &dev.output(),
+        &["[import-protection] Import denied in server environment"],
     );
 }
