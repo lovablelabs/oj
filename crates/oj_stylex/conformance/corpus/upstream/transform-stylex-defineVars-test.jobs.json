@@ -346,8 +346,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars"],
@@ -363,8 +362,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars"],
@@ -380,8 +378,7 @@
           "rootDir": "<ROOT>",
           "type": "commonJS"
         },
-        "dev": true,
-        "enableDebugClassNames": true
+        "dev": true
       },
       "mode": "prod",
       "tags": ["defineVars"],
@@ -414,8 +411,7 @@
           "themeFileExtension": "cssvars",
           "type": "commonJS"
         },
-        "debug": true,
-        "enableDebugClassNames": true
+        "debug": true
       },
       "mode": "prod",
       "tags": ["defineVars"],

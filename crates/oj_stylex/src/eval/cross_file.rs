@@ -51,7 +51,6 @@ struct VarGroup {
     export_name: String,
     var_group_hash: String,
     class_name_prefix: String,
-    debug_class_names: bool,
 }
 
 impl PartialEq for VarGroupProxy {
@@ -75,7 +74,6 @@ impl VarGroupProxy {
                 export_name,
                 var_group_hash,
                 class_name_prefix: options.class_name_prefix.clone(),
-                debug_class_names: options.debug && options.enable_debug_class_names,
             }),
         }
     }
@@ -95,19 +93,7 @@ impl VarGroupProxy {
             &group.export_name,
             Some(key),
         ));
-        let var_name = if group.debug_class_names {
-            let mut safe: String = key
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect();
-            if key.starts_with(|c: char| c.is_ascii_digit()) {
-                safe.insert(0, '_');
-            }
-            format!("{safe}-{}{hashed}", group.class_name_prefix)
-        } else {
-            format!("{}{hashed}", group.class_name_prefix)
-        };
-        format!("var(--{var_name})")
+        format!("var(--{}{hashed})", group.class_name_prefix)
     }
 }
 
@@ -134,15 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn debug_class_names_var_safe_keys() {
-        let options = crate::options::CompilerOptions::from_json(
-            &serde_json::json!({ "debug": true, "enableDebugClassNames": true }),
-        )
+    fn debug_leaves_variable_names_hashed() {
+        let options = crate::options::CompilerOptions::from_json(&serde_json::json!({
+            "debug": true
+        }))
         .unwrap()
         .resolve()
         .unwrap();
         let p = proxy(&options);
-        assert_eq!(p.resolve_key("2fast"), "var(--_2fast-x1xncp22)");
-        assert_eq!(p.resolve_key("weird key!"), "var(--weird_key_-x1ixwx2f)");
+        assert_eq!(p.resolve_key("accent"), "var(--x8fssgy)");
+        assert_eq!(p.resolve_key("2fast"), "var(--x1xncp22)");
     }
 }

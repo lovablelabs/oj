@@ -27,7 +27,6 @@ fn defaults_match_upstream_resolution() {
     assert!(!opts.dev);
     assert!(!opts.debug);
     assert!(!opts.test);
-    assert!(!opts.enable_debug_class_names);
     assert!(!opts.enable_debug_data_prop);
     assert!(!opts.enable_dev_class_names);
     assert!(!opts.enable_font_size_px_to_rem);
@@ -80,22 +79,6 @@ fn boolean_chains_resolve_like_set_options() {
         (
             json!({ "dev": true, "debug": false }),
             |o| o.enable_debug_data_prop,
-            false,
-        ),
-        // enableDebugClassNames defaults false even under debug.
-        (
-            json!({ "debug": true }),
-            |o| o.enable_debug_class_names,
-            false,
-        ),
-        (
-            json!({ "debug": true, "enableDebugClassNames": true }),
-            |o| o.enable_debug_class_names,
-            true,
-        ),
-        (
-            json!({ "debug": true, "enableDebugClassNames": false }),
-            |o| o.enable_debug_class_names,
             false,
         ),
         // enableDevClassNames follows dev, not debug.
@@ -461,6 +444,14 @@ fn unknown_top_level_keys_are_rejected_by_name() {
     let err = resolve(json!({ "useRemForFontSize": true })).unwrap_err();
     assert_eq!(err.code, ErrorCode::UnknownOption);
     assert!(err.message.contains("useRemForFontSize"));
+
+    // StyleX 0.19.2 removed the option; it is one more key the plugin no
+    // longer reads.
+    for value in [json!(true), json!(false)] {
+        let err = resolve(json!({ "debug": true, "enableDebugClassNames": value })).unwrap_err();
+        assert_eq!(err.code, ErrorCode::UnknownOption);
+        assert!(err.message.contains("enableDebugClassNames"));
+    }
 }
 
 // state-manager.js:444 hardcodes definedStylexCSSVariables to `{}` and its only
@@ -503,16 +494,17 @@ fn inert_upstream_keys_are_accepted_and_ignored() {
     assert_eq!(
         ok(json!({
             "debug": true,
-            "enableDebugClassNames": true,
+            "enableDebugDataProp": false,
             "useLayers": true,
             "definedStylexCSSVariables": { "foo": 1 },
         })),
-        ok(json!({ "debug": true, "enableDebugClassNames": true })),
+        ok(json!({ "debug": true, "enableDebugDataProp": false })),
     );
 }
 
 // Deliberate divergence: upstream logAndDefault logs and falls back (to values that
-// can differ from the ??-defaults, e.g. enableDebugClassNames→true); we hard-error.
+// can differ from the ??-defaults, e.g. enableDebugDataProp→false under debug); we
+// hard-error.
 #[test]
 fn wrong_typed_values_hard_error() {
     let table: Vec<Value> = vec![
@@ -520,7 +512,7 @@ fn wrong_typed_values_hard_error() {
         json!({ "debug": "true" }),
         json!({ "test": "true" }),
         json!({ "classNamePrefix": 1 }),
-        json!({ "enableDebugClassNames": "false" }),
+        json!({ "enableDebugDataProp": "false" }),
         json!({ "enableInlinedConditionalMerge": "false" }),
         json!({ "enableMinifiedKeys": "false" }),
         json!({ "importSources": 1 }),
