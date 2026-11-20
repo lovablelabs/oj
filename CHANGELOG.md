@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev, hot updates on: a file deleted while the rebundle for an earlier change is still on its way no longer fails that rebundle. With a file created under an `import.meta.glob` and another member deleted a moment later (a batch of files written and removed one after the other), the pages showed the error overlay with `Could not load <file>?raw … No such file or directory` and the log said `client bundle failed`, until the rebuild for the deletion cleared it. The bundler's engine watches the files itself and had already failed its update over the deleted file's module; the rebundle in flight took that failure for its own, since every file of its own batch was still there. A failed update over a module whose file is gone now leads to the full build, as it already did when the deletion was in the rebundle's own batch (in Vite, the import-glob plugin's `hotUpdate` re-expands the glob's importers on a create or delete, so a deleted member is never asked for again and fails nothing). A deleted file that a module still imports fails that build and is reported; before, it could also be taken for a successful rebuild when a second update for the deleted file was running, leaving the pages on the output from before the deletion.
+
 ## [0.4.17] - 2026-11-18
 
 ### Changed
