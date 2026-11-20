@@ -627,7 +627,10 @@ fn run_input(input: Input, ctx: &JobCtx<'_>) -> Item {
 }
 
 fn line_only(json: String) -> Emit {
-    let mut head = json.into_bytes();
+    bytes_only(json.into_bytes())
+}
+
+fn bytes_only(mut head: Vec<u8>) -> Emit {
     head.push(b'\n');
     Emit { head, body: None }
 }
@@ -687,7 +690,8 @@ fn run_job(job: &mut Job, ctx: &JobCtx<'_>) -> (Emit, Option<CacheOutcome>) {
             let _t = timings::start(Stage::NdjsonOut);
             let result = match (ctx.payload, ctx.format) {
                 (Payload::Rules, _) => {
-                    line_only(OkLine::new(&json_str(&job.id), 0).rules(&rules).finish())
+                    let line = OkLine::new(&json_str(&job.id), rules.len() * 96);
+                    bytes_only(line.rules(&rules).finish_bytes())
                 }
                 (Payload::Full, Format::Ndjson) => Emit {
                     head: result_line_ok(&job.id, &code, &rules),

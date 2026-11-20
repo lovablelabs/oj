@@ -88,7 +88,7 @@ struct Shared {
 
 /// One reply as written: `line` ends in its newline.
 struct Response {
-    line: String,
+    line: Vec<u8>,
     shutdown: bool,
 }
 
@@ -123,7 +123,7 @@ pub fn run(stdio: bool, threads: Option<usize>, timings_flag: bool) {
                     if timings_flag {
                         attach_wall(&mut response.line, started.elapsed().as_nanos() as u64);
                     }
-                    response.line.push('\n');
+                    response.line.push(b'\n');
                     if tx.send((i, response)).is_err() {
                         queue.abort();
                         break;
@@ -136,6 +136,8 @@ pub fn run(stdio: bool, threads: Option<usize>, timings_flag: bool) {
         read_requests(queue);
         queue.finish();
     });
+    // The command ends with its input: the registry is not worth walking to free.
+    std::mem::forget(shared);
     timings::report_to_stderr();
 }
 
@@ -201,10 +203,10 @@ fn is_blank(line: &[u8]) -> bool {
 fn write_responses(rx: &mpsc::Receiver<(usize, Response)>) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut ready: Vec<String> = Vec::new();
+    let mut ready: Vec<Vec<u8>> = Vec::new();
     let mut done_below = 0usize;
     let mut done_ahead = std::collections::BTreeSet::new();
-    let mut shutdown: Option<(usize, String)> = None;
+    let mut shutdown: Option<(usize, Vec<u8>)> = None;
     for first in rx.iter() {
         for (i, response) in std::iter::once(first).chain(rx.try_iter()) {
             if i == done_below {
@@ -235,15 +237,13 @@ fn write_responses(rx: &mpsc::Receiver<(usize, Response)>) {
 
 // Every line ends in its newline, so std's stdout `LineWriter` hands the whole
 // batch to the fd: one syscall, and no copy into a buffer on the way.
-fn write_lines(out: &mut StdoutLock<'_>, lines: &mut Vec<String>) {
+fn write_lines(out: &mut StdoutLock<'_>, lines: &mut Vec<Vec<u8>>) {
     let written = match lines.as_slice() {
         [] => return,
-        [line] => out.write_all(line.as_bytes()),
+        [line] => out.write_all(line),
         lines => {
-            let mut slices: Vec<IoSlice<'_>> = lines
-                .iter()
-                .map(|line| IoSlice::new(line.as_bytes()))
-                .collect();
+            let mut slices: Vec<IoSlice<'_>> =
+                lines.iter().map(|line| IoSlice::new(line)).collect();
             write_all_vectored(out, &mut slices)
         }
     };
@@ -253,10 +253,10 @@ fn write_lines(out: &mut StdoutLock<'_>, lines: &mut Vec<String>) {
     lines.clear();
 }
 
-fn attach_wall(line: &mut String, wall_ns: u64) {
-    debug_assert!(line.ends_with('}'));
+fn attach_wall(line: &mut Vec<u8>, wall_ns: u64) {
+    debug_assert!(line.ends_with(b"}"));
     line.pop();
-    line.push_str(&format!(",\"wall_ns\":{wall_ns}}}"));
+    line.extend_from_slice(format!(",\"wall_ns\":{wall_ns}}}").as_bytes());
 }
 
 fn handle(line: &[u8], shared: &Shared) -> Response {
@@ -269,7 +269,8 @@ fn handle(line: &[u8], shared: &Shared) -> Response {
         Ok(request) => request,
         Err(err) => {
             return Response {
-                line: input_error_line("null", &format!("malformed request line: {err}")),
+                line: input_error_line("null", &format!("malformed request line: {err}"))
+                    .into_bytes(),
                 shutdown: false,
             };
         }
@@ -286,14 +287,14 @@ fn handle(line: &[u8], shared: &Shared) -> Response {
             .str("fingerprint", crate::cache::compiler_fingerprint())
             .value("threads", &shared.threads)
             .value("pid", &std::process::id())
-            .finish(),
+            .finish_bytes(),
         "shutdown" => {
             return Response {
-                line: OkLine::new(id, 0).finish(),
+                line: OkLine::new(id, 0).finish_bytes(),
                 shutdown: true,
             };
         }
-        other => protocol_error_line(id, "BAD_OP", &format!("unknown op {other}")),
+        other => protocol_error_line(id, "BAD_OP", &format!("unknown op {other}")).into_bytes(),
     };
     Response {
         line,
@@ -335,10 +336,10 @@ fn register(registry: &Mutex<RuleRegistry>, key: &str, rules: Vec<StylexRule>) -
 
 // Same inputs and result bytes as a `batch` job; `key` additionally publishes
 // the rules to the registry, `wantMap` appends a mappings-only sourcemap.
-fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> Vec<u8> {
     let (Some(root), Some(filename)) = (request.root.as_deref(), request.filename.as_deref())
     else {
-        return input_error_line(id, "transform needs root and filename");
+        return input_error_line(id, "transform needs root and filename").into_bytes();
     };
     let source = match read_job_source(
         root,
@@ -346,13 +347,13 @@ fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> String {
         request.source_path.as_deref(),
     ) {
         Ok(source) => source,
-        Err(detail) => return input_error_line(id, &detail),
+        Err(detail) => return input_error_line(id, &detail).into_bytes(),
     };
     let options = {
         let _t = timings::start(Stage::Options);
         match resolve_options_memoized(request.options) {
             Ok(options) => options,
-            Err(error) => return compile_error_line(id, root, filename, error),
+            Err(error) => return compile_error_line(id, root, filename, error).into_bytes(),
         }
     };
     let root_dir = root.trim_end_matches('/');
@@ -393,7 +394,7 @@ fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> String {
     });
     let (code, rules, map) = match compiled {
         Ok(compiled) => compiled,
-        Err(error) => return compile_error_line(id, root, filename, error),
+        Err(error) => return compile_error_line(id, root, filename, error).into_bytes(),
     };
     let _t = timings::start(Stage::NdjsonOut);
     let code_bytes = if want_code {
@@ -415,19 +416,20 @@ fn transform(request: &Request<'_>, id: &str, shared: &Shared) -> String {
             .value("generation", &generation)
             .value("rulesChanged", &changed);
     }
-    line.finish()
+    line.finish_bytes()
 }
 
-fn set_file_rules(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+fn set_file_rules(request: &Request<'_>, id: &str, shared: &Shared) -> Vec<u8> {
     let (Some(key), Some(tuples)) = (request.key.as_deref(), &request.rules) else {
-        return input_error_line(id, "setFileRules needs key and rules");
+        return input_error_line(id, "setFileRules needs key and rules").into_bytes();
     };
     let mut rules = Vec::with_capacity(tuples.len());
     for (i, tuple) in tuples.iter().enumerate() {
         match StylexRule::from_metadata_tuple(tuple) {
             Ok(rule) => rules.push(rule),
             Err(detail) => {
-                return protocol_error_line(id, "BAD_RULE", &format!("rule {i}: {detail}"));
+                return protocol_error_line(id, "BAD_RULE", &format!("rule {i}: {detail}"))
+                    .into_bytes();
             }
         }
     }
@@ -435,25 +437,25 @@ fn set_file_rules(request: &Request<'_>, id: &str, shared: &Shared) -> String {
     OkLine::new(id, 0)
         .value("generation", &generation)
         .value("rulesChanged", &changed)
-        .finish()
+        .finish_bytes()
 }
 
-fn remove_file(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+fn remove_file(request: &Request<'_>, id: &str, shared: &Shared) -> Vec<u8> {
     let Some(key) = request.key.as_deref() else {
-        return input_error_line(id, "removeFile needs key");
+        return input_error_line(id, "removeFile needs key").into_bytes();
     };
     let mut registry = lock(&shared.registry);
     let removed = registry.remove_file(key);
     OkLine::new(id, 0)
         .value("removed", &removed)
         .value("generation", &registry.generation())
-        .finish()
+        .finish_bytes()
 }
 
-fn sheet(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+fn sheet(request: &Request<'_>, id: &str, shared: &Shared) -> Vec<u8> {
     let cfg = match AssembleConfig::from_json(request.config.as_ref().unwrap_or(&Value::Null)) {
         Ok(cfg) => cfg,
-        Err(err) => return protocol_error_line(id, "BAD_CONFIG", &err.to_string()),
+        Err(err) => return protocol_error_line(id, "BAD_CONFIG", &err.to_string()).into_bytes(),
     };
     // The lock covers the assembly alone: transforms go on registering while
     // the sheet is escaped into its reply.
@@ -470,8 +472,8 @@ fn sheet(request: &Request<'_>, id: &str, shared: &Shared) -> String {
             .str("css", &css)
             .value("generation", &generation)
             .value("files", &files)
-            .finish(),
-        Err(err) => protocol_error_line(id, "ASSEMBLE", &err.to_string()),
+            .finish_bytes(),
+        Err(err) => protocol_error_line(id, "ASSEMBLE", &err.to_string()).into_bytes(),
     }
 }
 
@@ -479,20 +481,22 @@ fn sheet(request: &Request<'_>, id: &str, shared: &Shared) -> String {
 // StyleX-bearing file once, and register its rules under its absolute path.
 // Each compile is a session of the live fs `transform` compiles through, so
 // the transforms that follow find what the pass resolved already kept.
-fn warm(request: &Request<'_>, id: &str, shared: &Shared) -> String {
+fn warm(request: &Request<'_>, id: &str, shared: &Shared) -> Vec<u8> {
     let (Some(root), Some(roots)) = (request.root.as_deref(), &request.roots) else {
-        return input_error_line(id, "warm needs root and roots");
+        return input_error_line(id, "warm needs root and roots").into_bytes();
     };
     let raw_options = match request.options {
         Some(raw) => match serde_json::from_str::<Value>(raw.get()) {
             Ok(value) => value,
-            Err(err) => return protocol_error_line(id, "BAD_OPTIONS", &err.to_string()),
+            Err(err) => {
+                return protocol_error_line(id, "BAD_OPTIONS", &err.to_string()).into_bytes();
+            }
         },
         None => Value::Null,
     };
     let options = match CompilerOptions::from_json(&raw_options).and_then(|o| o.resolve()) {
         Ok(options) => options,
-        Err(error) => return protocol_error_line(id, "BAD_OPTIONS", &error.message),
+        Err(error) => return protocol_error_line(id, "BAD_OPTIONS", &error.message).into_bytes(),
     };
     let started = Instant::now();
     let files = compile::discover(roots, shared.threads);
@@ -558,7 +562,7 @@ fn warm(request: &Request<'_>, id: &str, shared: &Shared) -> String {
         .value("errors", &errors)
         .value("generation", &generation)
         .value("wallMs", &(started.elapsed().as_secs_f64() * 1e3))
-        .finish()
+        .finish_bytes()
 }
 
 #[cfg(test)]
@@ -596,7 +600,7 @@ mod tests {
             registry: Mutex::new(RuleRegistry::new()),
             threads: 1,
         };
-        let response = warm(&request, "1", &shared);
+        let response = String::from_utf8(warm(&request, "1", &shared)).unwrap();
         assert!(response.contains(r#""stylexFiles":2"#), "{response}");
         assert!(response.contains(r#""errors":[]"#), "{response}");
         assert!(MemoFs::shared().keeps_relative(&src, "./tokens.stylex"));

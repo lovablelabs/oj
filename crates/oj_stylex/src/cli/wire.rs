@@ -44,9 +44,14 @@ impl OkLine {
         self
     }
 
-    pub fn finish(mut self) -> String {
+    pub fn finish(self) -> String {
+        String::from_utf8(self.finish_bytes()).expect("serde_json emits valid UTF-8")
+    }
+
+    /// The line for a writer that takes bytes: no validation pass over it.
+    pub fn finish_bytes(mut self) -> Vec<u8> {
         self.0.push(b'}');
-        String::from_utf8(self.0).expect("serde_json emits valid UTF-8")
+        self.0
     }
 
     fn key(&mut self, name: &str) {
