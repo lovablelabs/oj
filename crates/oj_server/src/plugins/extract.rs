@@ -31,6 +31,10 @@ pub struct ViteValues {
     pub assets_inline_limit_envs: Option<serde_json::Map<String, serde_json::Value>>,
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
+    /// The client environment's resolved `resolve.dedupe`, whole.
+    pub client_dedupe: Option<Vec<String>>,
+    /// The ssr environment's resolved `resolve.dedupe`, whole.
+    pub ssr_dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
     /// The `build` block as the extractor normalized it; see `extractBuild` in vite-extract.mjs.
     pub build: Option<serde_json::Value>,
@@ -1261,6 +1265,8 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .cloned(),
         proxy: non_null(json, "proxy"),
         dedupe: json.get("dedupe").and_then(string_list),
+        client_dedupe: json.get("clientDedupe").and_then(string_list),
+        ssr_dedupe: json.get("ssrDedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
         build: non_null(json, "build"),
         oxc: non_null(json, "oxc"),
@@ -1524,6 +1530,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             rc.dedupe.get_or_insert(dedupe);
         }
     }
+    for (env, dedupe) in [("client", v.client_dedupe), ("ssr", v.ssr_dedupe)] {
+        if let Some(dedupe) = dedupe.filter(|d| !d.is_empty()) {
+            merge_environment_dedupe(config, env, dedupe);
+        }
+    }
     if let Some(od) = v.optimize_deps {
         merge_optimize_deps(config, od);
     }
@@ -1632,6 +1643,37 @@ fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
             if !map.is_empty() {
                 sc.headers = Some(map);
             }
+        }
+    }
+}
+
+/// Adds `dedupe` to `environments.<env>.resolve.dedupe`, after what the
+/// config file lists there.
+fn merge_environment_dedupe(config: &mut oj_config::OjConfig, env: &str, dedupe: Vec<String>) {
+    use serde_json::{Map, Value};
+    let environment = config
+        .environments
+        .get_or_insert_with(Default::default)
+        .entry(env.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(environment) = environment.as_object_mut() else {
+        return;
+    };
+    let resolve = environment
+        .entry("resolve")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(resolve) = resolve.as_object_mut() else {
+        return;
+    };
+    let list = resolve
+        .entry("dedupe")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(list) = list.as_array_mut() else {
+        return;
+    };
+    for name in dedupe {
+        if !list.iter().any(|v| v.as_str() == Some(name.as_str())) {
+            list.push(Value::String(name));
         }
     }
 }

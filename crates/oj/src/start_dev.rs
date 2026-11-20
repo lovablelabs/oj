@@ -686,9 +686,17 @@ pub async fn start_dev(
         built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
     ));
     if let Some(gate) = built.hmr_gate.clone() {
+        let holder = gate.clone();
         bundler
             .hot
             .set_gate(Arc::new(move || gate.reload_is_held()));
+        // The files the watcher below would rebuild for, as it holds them.
+        bundler.hot.set_holder(Arc::new(move |files| {
+            let paths = changed_files(files);
+            if !paths.is_empty() {
+                holder.hold_reload(&paths);
+            }
+        }));
     }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
@@ -2041,15 +2049,29 @@ async fn rebundle_worker(
                     .bundle_ok
                     .store(failure.is_none(), std::sync::atomic::Ordering::SeqCst);
                 let frame = failure.as_deref().map(|reason| {
-                    client_error_frame(&cache).unwrap_or_else(|| bundler_failure_frame(reason))
+                    build_error_frame(
+                        client_error_frame(&cache).unwrap_or_else(|| bundler_failure_frame(reason)),
+                    )
                 });
                 if let Some(frame) = &frame {
                     let _ = state.error_tx.send(frame.clone());
                 }
+                let recovered = frame.is_none()
+                    && state
+                        .build_error
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some();
                 *state
                     .build_error
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = frame;
+                // The pages showing the error are told it is over: a fix to
+                // a module a page has not loaded brings it no update to
+                // clear the overlay with.
+                if recovered {
+                    let _ = state.error_tx.send(BUILD_OK_FRAME.to_string());
+                }
                 match outcome {
                     ClientRun::Fresh(pinned) => {
                         install_bundle(&state, &cache, pinned);
@@ -3472,6 +3494,22 @@ fn run_script_process(
     Ok(())
 }
 
+/// An error frame marked as the client bundle's own failure (`build`), so
+/// the pages can tell its overlay from one a plugin's error raised when
+/// the bundle builds again.
+fn build_error_frame(frame: String) -> String {
+    match serde_json::from_str::<serde_json::Value>(&frame) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("build".into(), true.into());
+            serde_json::Value::Object(fields).to_string()
+        }
+        _ => frame,
+    }
+}
+
+/// Tells the pages the client bundle builds again after a failure.
+const BUILD_OK_FRAME: &str = r#"{"type":"oj:build-ok"}"#;
+
 /// Where the client bundle records its failure (Vite's
 /// prepareError shape); absent after a success.
 const CLIENT_ERROR_FILE: &str = "client-error.json";
@@ -3787,6 +3825,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     let weak = Arc::downgrade(&state);
                     HotPage {
                         has,
+                        another_run: state.reloads.another_run(parts.uri.query()),
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
                         reload_needed: Arc::new(move || {
@@ -3847,7 +3886,20 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if path == crate::start_routes::PATH {
         return routes_json(&state, req.method()).await;
     }
+    if path == crate::start_hot::LAZY_PATH {
+        if *req.method() != Method::GET {
+            return (StatusCode::METHOD_NOT_ALLOWED, "oj start: lazy: GET").into_response();
+        }
+        return lazy_chunk(&state, req.uri().query()).await;
+    }
     if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
+        let client = req.uri().query().and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("clientId=").map(percent_decode))
+        });
+        if let Some(kept) = state.bundler.hot.take(name, client.as_deref()) {
+            return kept;
+        }
         return state.bundler.hot.serve(name);
     }
     if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
@@ -3933,6 +3985,8 @@ struct HotPage {
     reload_needed: Arc<dyn Fn() + Send + Sync>,
     /// The hot changes the page says it has (`h` on its socket's url).
     has: Option<u64>,
+    /// Its document was served by another run of the dev server.
+    another_run: bool,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -4129,7 +4183,18 @@ async fn start_hmr_socket(
                                 if let Some(old) = page.replace(id.clone()) {
                                     h.bundler.page_gone(&old);
                                 }
-                                h.bundler.page_connected(&id);
+                                // A patch made for it before its socket
+                                // opened (the bundler knew the page from an
+                                // `import()` it made first) reached no
+                                // socket: the page reloads onto it.
+                                if h.bundler.page_connected(&id, h.another_run)
+                                    && socket
+                                        .send(Message::Text(HOT_BEHIND_FRAME.into()))
+                                        .await
+                                        .is_err()
+                                {
+                                    break;
+                                }
                             }
                             Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
                             Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
@@ -4334,7 +4399,9 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
 /// open across a restart of the dev server names chunks this run never had,
 /// and its socket is not reloaded on connect (a stamp from another run
 /// counts as current, see start_reloads), so this is what brings it back. A
-/// page that asks for a name nothing ever had reloads once for it and stays.
+/// page that asks for a name nothing ever had reloads for it once per
+/// document it is served (its stamp and the hot changes it has), and stays
+/// when the reload brings the same document back.
 /// A source map is asked for by the browser's tools, not by a page.
 fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     if !name.ends_with(".map") {
@@ -4419,8 +4486,33 @@ async fn serve_client_chunk(
     };
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
-    // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !served.entry;
+    // Every chunk but the entry is named by rolldown's `[name]-[hash]`, and
+    // a name's content never changes. What changes is whether the dev
+    // server still answers for the name: a page that took a change as a hot
+    // update was not reloaded for it, so it can ask for a chunk long after
+    // the bundle that named it, and one the server no longer has is how
+    // such a page learns it is too old (`chunk_gone`). A browser that cached
+    // the chunk for good never asks, and runs the old code out of its
+    // cache. So with hot updates on the browser asks each time and the ETag
+    // makes that a 304, as Vite's dev server sends every module
+    // (server/send.ts `send`: `Cache-Control: no-cache` with an `Etag`, 304
+    // on `If-None-Match`; server/middlewares/transform.ts keeps
+    // `max-age=31536000,immutable` for versioned dependency urls alone).
+    // This only reaches a chunk the document has yet to import: one in its
+    // module map is never asked for again.
+    //
+    // Without hot updates a change reloads the pages onto the new names
+    // (once the editor's gate lets the reload through), and a page still on
+    // an old entry with an old chunk in the cache is consistent with
+    // itself, so a name is fetched once. Left open in that mode: a page
+    // kept across a restart of the dev server, which nothing reloads, runs
+    // a cached chunk of the run before.
+    //
+    // `hot_bundle` is the gate's and the client's word alone: an app with
+    // `server.hmr: false` reloads for every change too (its bundle is not
+    // built hot, see `DevBundler::run`) and still revalidates here, which
+    // costs it a 304 per chunk and no more.
+    let immutable = !served.entry && !state.bundler.hot_bundle();
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
@@ -4480,6 +4572,346 @@ fn render_live_reload(
     .replace(
         "__OJ_PING_MS__",
         &ping.map_or(0, |p| p.as_millis()).to_string(),
+    )
+}
+
+/// `GET /@oj-start/hmr/lazy?id=<proxy id>&clientId=<runtime id>`: the module
+/// behind an open page's `import()`, as it is now. Under Vite's dev server
+/// the page's `import()` is a request for the module itself, which the
+/// transform middleware answers `no-cache` with the module's current code
+/// (and import analysis has given the importer the module's url with the
+/// `?t=` of its last hot update); here the page's bundle holds a call into
+/// its module registry, which asks for the module, and the static imports
+/// the page lacks, by id.
+async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
+    use crate::start_bundle::dev::LazyAnswer;
+    let param = |name: &str| {
+        query.unwrap_or("").split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k == name).then(|| percent_decode(v))
+        })
+    };
+    let (Some(id), Some(client)) = (param("id"), param("clientId")) else {
+        return (StatusCode::BAD_REQUEST, "oj start: lazy: id and clientId").into_response();
+    };
+    let module = |code: String| {
+        (
+            [
+                (header::CONTENT_TYPE, "text/javascript"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            code,
+        )
+            .into_response()
+    };
+    // A tab left open across a restart of the dev server runs a bundle this
+    // run never made: no module of this one fits it. It is told to reload
+    // as its socket reconnects; an `import()` it makes before that reloads
+    // it too, through the same guard (once per stamp: a document that comes
+    // back from a cache under the same stamp is not reloaded again), and
+    // stays pending while it does. Past the guard the import rejects.
+    //
+    // The request says which run rendered its page (the document's stamp,
+    // as its socket does): the socket of such a tab may not have come back
+    // yet, or may never open.
+    if state.reloads.another_run(query) || state.bundler.page_from_another_run(&client) {
+        return module(
+            "if (globalThis.__ojStartHmr?.reloadBehind?.()) await new Promise(() => {});\n\
+             throw new Error(\"[oj] this page was served by another run of the dev server: reload it\");\n\
+             export {};\n"
+                .to_string(),
+        );
+    }
+    // The engine forgets a page with no socket open some time after its
+    // last request ends, however it ends.
+    let _forget = ForgetUnconnected {
+        bundler: Arc::clone(&state.bundler),
+        client: client.clone(),
+    };
+    let end = tokio::time::Instant::now() + LAZY_WAIT_CAP;
+    // When a flush was seen with its patches still to be sent.
+    let mut flushed_at: Option<tokio::time::Instant> = None;
+    let answer = loop {
+        // Subscribed before the gate is read: a flush between the two is
+        // not missed.
+        let mut flushes = state.gate.as_ref().map(|gate| gate.subscribe_flush());
+        // In a task of its own: a page that goes away mid-request must not
+        // cancel a compile half-way (the engine's scan is not written to be
+        // cancelled). Its waits (for a bundle run, for the engine) end with
+        // the cap all the same; the task ends on its own.
+        let compile = {
+            let (bundler, id, client) = (Arc::clone(&state.bundler), id.clone(), client.clone());
+            tokio::spawn(async move { bundler.lazy_chunk(&id, &client).await })
+        };
+        let answer = match tokio::time::timeout_at(end, compile).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) | Err(_) => {
+                LazyAnswer::Unavailable(crate::start_bundle::errors::BundleError::from_message(
+                    "the dev server did not compile the module in time",
+                ))
+            }
+        };
+        let now = tokio::time::Instant::now();
+        match &answer {
+            // While the editor's gate holds changes, a chunk that carries a
+            // module among them would run code the gate has not released,
+            // next to the modules whose patches it holds. Its answer waits
+            // for the flush (the editor's, or the hold cap's) and for the
+            // patches the flush releases to go out, and is compiled again:
+            // the rule is asked again of what it carries then (another
+            // change may be held by now).
+            LazyAnswer::Compiled(code) if now < end => {
+                let Some(gate) = &state.gate else {
+                    break answer;
+                };
+                if !gate.reload_is_held() && !state.bundler.hot.has_parked() {
+                    break answer;
+                }
+                if gate.reload_is_held() {
+                    let held = held_modules(code, state.bundler.root(), &gate.pending_paths());
+                    let Some(held) = held else {
+                        // Factories with no list of what they are: waited
+                        // for, as carrying a held module.
+                        flushed_at = None;
+                        if let Some(flushes) = &mut flushes {
+                            let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                        }
+                        continue;
+                    };
+                    if held.is_empty() {
+                        break answer;
+                    }
+                    // The chunk carries modules of the held change. A page
+                    // that already runs every one of them may take it: a
+                    // module that ran is not run again, and the chunk's
+                    // registrations of the held modules are skipped, so
+                    // the chunk runs none of the held change's own code.
+                    // (What it does run was compiled against the change:
+                    // a held edit that turns a module from an ES module
+                    // into a CommonJS one, or back, changes how its
+                    // importers are compiled, and such an importer is
+                    // taken against the page's instance of the old shape
+                    // until the flush. That case is not detected.) Only
+                    // the page knows what it has run (a patch can carry a
+                    // module it never ran), so it is asked: it takes the
+                    // kept chunk, or asks for the module again with
+                    // `held=1` to wait for the flush.
+                    if param("held").as_deref() != Some("1") {
+                        let kept = format!(
+                            "await __rolldown_runtime__.ojPatched({});\n__rolldown_runtime__.ojSkipHeld({});\n{code}\n;__rolldown_runtime__.ojSkipHeld(null);\n",
+                            state.bundler.hot.sent_seq(&client),
+                            serde_json::json!(held),
+                        );
+                        let take = format!(
+                            "{}?clientId={client}",
+                            state.bundler.hot.keep(&client, kept)
+                        );
+                        return module(format!(
+                            "await __rolldown_runtime__.ojLazyWhileHeld({}, {}, {});\nexport {{}};\n",
+                            serde_json::json!(held),
+                            serde_json::Value::String(take),
+                            serde_json::Value::String(id.clone()),
+                        ));
+                    }
+                    flushed_at = None;
+                    if let Some(flushes) = &mut flushes {
+                        let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                    }
+                } else {
+                    // Flushed, its patches not sent yet (a flush that lands
+                    // while a rebundle runs releases at the run's end): a
+                    // moment, and bounded, so that frames no run comes to
+                    // release cannot keep an import waiting.
+                    let since = *flushed_at.get_or_insert(now);
+                    if now.duration_since(since) > PARKED_AFTER_FLUSH {
+                        break answer;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            // The engine compiled nothing: some module does not compile (an
+            // edit mid-way), and the engine then fails every compile with
+            // that module's error; the overlay shows it to every page from
+            // the rebundle that failed. An import of the module the error
+            // is about rejects with it at once, as the request for a module
+            // that does not transform does under Vite. One of another
+            // module waits for a bundle that builds: the engine cannot
+            // compile it meanwhile, and failing it for an error that is not
+            // its own would be worse than the wait.
+            LazyAnswer::Unavailable(e) if now < end => {
+                // The bundle's recorded failure first: after a failed full
+                // build the engine's own error names the module asked for
+                // whatever is broken ("cannot compile …: the last full build
+                // failed").
+                if let Some(own) = build_error_of(state, &id) {
+                    break LazyAnswer::Failed(own);
+                }
+                if !e.message.contains("the last full build failed")
+                    && names_module(&e.payload(), &id)
+                {
+                    break answer;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            _ => break answer,
+        }
+    };
+    match answer {
+        // Compiled against every patch sent to the page so far: the page
+        // applies them before it runs the module (a frame can be slower than
+        // this answer).
+        LazyAnswer::Compiled(code) => module(format!(
+            "await __rolldown_runtime__.ojPatched({});\n{code}",
+            state.bundler.hot.sent_seq(&client)
+        )),
+        LazyAnswer::Restored(code) => module(code),
+        LazyAnswer::Unknown => (StatusCode::NOT_FOUND, "oj start: no such module").into_response(),
+        // A module that throws, with the error as the bundler gave it, after
+        // showing it in the overlay of the page that asked (Vite's client
+        // shows the error of a failed transform).
+        // A module, like the other answers: the `export` makes it a syntax
+        // error as a classic script, so a page of another origin cannot run
+        // it with a `<script>` and read the error (see `start_hot`).
+        LazyAnswer::Unavailable(e) | LazyAnswer::Failed(e) => module(format!(
+            "globalThis.__ojStartHmr?.showBuildError?.({});\nthrow new Error({});\nexport {{}};\n",
+            e.payload(),
+            serde_json::Value::String(e.message.clone())
+        )),
+    }
+}
+
+/// How long frames may stay parked after a flush before an `import()` stops
+/// waiting for them to go out.
+const PARKED_AFTER_FLUSH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Tells the bundler, ten seconds after a request for a module ends, to
+/// forget the page that made it unless its socket is open by then (it
+/// would otherwise render a patch at every edit for a page that left, or
+/// whose proxy passes no socket).
+struct ForgetUnconnected {
+    bundler: Arc<ClientBundler>,
+    client: String,
+}
+
+impl Drop for ForgetUnconnected {
+    fn drop(&mut self) {
+        let (bundler, client) = (Arc::clone(&self.bundler), std::mem::take(&mut self.client));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            bundler.forget_unconnected(&client);
+        });
+    }
+}
+
+/// The client bundle's failure, when it is about the module `proxy` stands
+/// for (the error names its file): what an `import()` of that module
+/// rejects with while the bundle does not build.
+fn build_error_of(
+    state: &StartState,
+    proxy: &str,
+) -> Option<crate::start_bundle::errors::BundleError> {
+    let frame = state
+        .build_error
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()?;
+    let err = serde_json::from_str::<serde_json::Value>(&frame).ok()?;
+    names_module(&err["err"], proxy).then(|| {
+        let mut own = crate::start_bundle::errors::BundleError::from_message(
+            err["err"]["message"].as_str().unwrap_or_default(),
+        );
+        own.id = err["err"]["id"].as_str().map(str::to_string);
+        own.frame = err["err"]["frame"].as_str().unwrap_or_default().to_string();
+        own
+    })
+}
+
+/// Whether the error payload `err` (Vite's shape) is about the file of the
+/// module `proxy` stands for.
+fn names_module(err: &serde_json::Value, proxy: &str) -> bool {
+    let Some(target) = rolldown_common::lazy_proxy_target(proxy) else {
+        return false;
+    };
+    let file = target.split('?').next().unwrap_or(target);
+    let about = |v: &serde_json::Value| {
+        v.as_str()
+            .is_some_and(|s| s.split('?').next().unwrap_or(s) == file)
+    };
+    // By its id or location where the bundler gave one; a plugin's failed
+    // transform names the file in its message alone.
+    !file.is_empty()
+        && (about(&err["id"])
+            || about(&err["loc"]["file"])
+            || err["message"].as_str().is_some_and(|m| {
+                // The path where it ends: `note.ts` is not named by an error
+                // about `note.tsx`.
+                m.match_indices(file).any(|(at, _)| {
+                    !m[at + file.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                })
+            }))
+}
+
+/// The files among what the bundler's engine reports as changed, which is
+/// also `*` (everything, before a full rebuild) and module ids that are no
+/// file (a lazy boundary's proxy, a virtual module): the ones the dev
+/// server's watcher would rebuild for.
+fn changed_files(reported: &[String]) -> Vec<PathBuf> {
+    reported
+        .iter()
+        .filter(|id| !id.contains(['?', '\0', '*']))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && watch_relevant(p))
+        .collect()
+}
+
+/// How long a page's `import()` waits at most, for the editor's gate (past
+/// the gate's own hold cap, which flushes) or for a bundle that builds.
+const LAZY_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The modules a lazy chunk carries whose files are among `pending` (the
+/// changes the editor's gate holds), by the ids the page's registry knows
+/// them by; `None` for a chunk with factories and no list of what they are
+/// (taken as carrying a held module, not as carrying none). The chunk
+/// opens with rolldown's `registerGraph({ids:[…],localCount:N,…})`: its
+/// first `localCount` ids are the modules it carries, each a path from the
+/// app root with the module's query. (The engine's own list of what a
+/// chunk carries is emptied before the chunk is returned.)
+fn held_modules(code: &str, root: &Path, pending: &[PathBuf]) -> Option<Vec<String>> {
+    let Some(at) = code.find("registerGraph({ids:") else {
+        return (!code.contains("registerFactory(")).then(Vec::new);
+    };
+    let rest = &code[at + "registerGraph({ids:".len()..];
+    let mut ids = serde_json::Deserializer::from_str(rest).into_iter::<Vec<String>>();
+    let Some(Ok(list)) = ids.next() else {
+        return None;
+    };
+    let after = &rest[ids.byte_offset()..];
+    let local = after
+        .strip_prefix(",localCount:")
+        .map(|s| {
+            s.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(list.len());
+    Some(
+        list.into_iter()
+            .take(local)
+            .filter(|id| {
+                let file = root.join(id.split('?').next().unwrap_or(id));
+                pending.iter().any(|p| {
+                    *p == file
+                        || std::fs::canonicalize(p)
+                            .ok()
+                            .zip(std::fs::canonicalize(&file).ok())
+                            .is_some_and(|(a, b)| a == b)
+                })
+            })
+            .collect(),
     )
 }
 
@@ -5527,6 +5959,7 @@ mod tests {
                                 frames: bundler.hot.subscribe(),
                                 reload_needed: Arc::new(|| {}),
                                 has: None,
+                                another_run: false,
                             });
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
@@ -7004,6 +7437,116 @@ mod tests {
         assert_eq!(served_sheet_id("..%2Fsecret.css"), None);
         assert_eq!(served_sheet_id("__x00__virtual:data.js"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // While the bundle does not build, an import of the module the error is
+    // about rejects with it; one of another module does not.
+    #[test]
+    fn a_build_error_is_told_to_be_about_the_module_asked_for() {
+        let err = serde_json::json!({
+            "message": "Unterminated string",
+            "id": "/app/src/lib/note.ts",
+            "loc": { "file": "/app/src/lib/note.ts", "line": 1, "column": 21 },
+        });
+        assert!(names_module(&err, "/app/src/lib/note.ts?rolldown-lazy=1"));
+        assert!(!names_module(
+            &err,
+            "/app/src/routes/about.tsx?tsr-split=component?rolldown-lazy=1"
+        ));
+        assert!(!names_module(&err, "/app/src/lib/note.ts"));
+        // By its file alone, and through a query on either side.
+        let by_loc =
+            serde_json::json!({ "message": "x", "loc": { "file": "/app/src/routes/about.tsx" } });
+        assert!(names_module(
+            &by_loc,
+            "/app/src/routes/about.tsx?tsr-split=component?rolldown-lazy=1"
+        ));
+        assert!(!names_module(
+            &serde_json::json!({ "message": "x" }),
+            "/app/a.ts?rolldown-lazy=1"
+        ));
+    }
+
+    #[test]
+    fn a_build_error_names_its_module_in_its_message_when_nowhere_else() {
+        let err = serde_json::json!({
+            "message": "plugin transform failed for /app/src/lib/note.ts:\n Unterminated string"
+        });
+        assert!(names_module(&err, "/app/src/lib/note.ts?rolldown-lazy=1"));
+        assert!(!names_module(&err, "/app/src/lib/other.ts?rolldown-lazy=1"));
+        // A file whose path only starts with the module's is another file.
+        let longer = serde_json::json!({
+            "message": "plugin transform failed for /app/src/lib/note.tsx:\nError: Unterminated string",
+        });
+        assert!(!names_module(
+            &longer,
+            "/app/src/lib/note.ts?rolldown-lazy=1"
+        ));
+        assert!(names_module(
+            &longer,
+            "/app/src/lib/note.tsx?rolldown-lazy=1"
+        ));
+    }
+
+    #[test]
+    fn the_bundles_own_error_frame_says_so() {
+        let frame: serde_json::Value = serde_json::from_str(&build_error_frame(
+            r#"{"type":"error","err":{"message":"boom"}}"#.to_string(),
+        ))
+        .unwrap();
+        assert_eq!(frame["build"], true);
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["err"]["message"], "boom");
+    }
+
+    #[test]
+    fn only_files_among_the_engines_changed_ids_are_held() {
+        let reported: Vec<String> = [
+            "/app/src/a.tsx",
+            "*",
+            "/app/src/b.ts?rolldown-lazy=1",
+            "/app/src/routes/c.tsx?tsr-split=component",
+            "\0virtual:x",
+            "src/relative.ts",
+            "/app/src/routeTree.gen.ts",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(changed_files(&reported), [PathBuf::from("/app/src/a.tsx")]);
+    }
+
+    // The modules a lazy chunk carries are the first `localCount` ids of its
+    // `registerGraph` prelude; the rest are modules it only refers to.
+    #[test]
+    fn the_held_modules_a_lazy_chunk_carries_are_told_from_those_it_refers_to() {
+        let root = Path::new("/app");
+        let chunk = |local: usize| {
+            format!(
+                "__rolldown_runtime__.registerGraph({{ids:[\"src/routes/about.tsx?tsr-split=component\",\"src/lib/event.ts\"],localCount:{local},edges:[[1],[]],stamps:{{}}}});\n//#region src/routes/about.tsx"
+            )
+        };
+        let about = [PathBuf::from("/app/src/routes/about.tsx")];
+        let event = [PathBuf::from("/app/src/lib/event.ts")];
+        let both = [about[0].clone(), event[0].clone()];
+        let held = |code: &str, pending: &[PathBuf]| held_modules(code, root, pending);
+        assert_eq!(
+            held(&chunk(1), &about).unwrap(),
+            ["src/routes/about.tsx?tsr-split=component"]
+        );
+        assert!(held(&chunk(1), &event).unwrap().is_empty());
+        assert_eq!(held(&chunk(2), &event).unwrap(), ["src/lib/event.ts"]);
+        assert_eq!(held(&chunk(2), &both).unwrap().len(), 2);
+        assert!(held(&chunk(2), &[]).unwrap().is_empty());
+        // Factories without the list: held, not let through.
+        assert!(held(
+            "__rolldown_runtime__.registerFactory(\"src/routes/about.tsx\", () => {});",
+            &event
+        )
+        .is_none());
+        // A restored chunk imported by name carries nothing compiled now.
+        assert!(held("import \"../about-abc.js\";\nexport {};\n", &about)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

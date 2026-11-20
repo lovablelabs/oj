@@ -102,6 +102,96 @@ fn the_resolved_alias_list_leads_in_its_order() {
     );
 }
 
+// The client environment's `resolve.dedupe` is the top-level list plus what
+// `environments.client` and plugins' `configEnvironment` hooks add (TanStack
+// Start's React and router), as Vite merges them; the client resolver takes
+// it, and the ssr environment does not inherit the client's additions.
+#[test]
+fn the_client_dedupe_list_takes_the_client_environments_additions() {
+    let mut config: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "environments": { "client": { "resolve": { "dedupe": ["from-file"] } } } }"#,
+    )
+    .unwrap();
+    merge_vite_values(
+        &mut config,
+        parse_vite_values(&serde_json::json!({
+            "dedupe": ["react"],
+            "clientDedupe": ["from-file", "router"]
+        })),
+    );
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "client"),
+        ["react", "from-file", "router"]
+    );
+    assert_eq!(oj_config::resolve_dedupe(&config), ["react"]);
+    assert_eq!(oj_config::environment_dedupe(&config, "ssr"), ["react"]);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    for dir in [
+        "node_modules/router",
+        "node_modules/host/node_modules/router",
+    ] {
+        let dir = root.join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"router","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("index.js"), "export {};\n").unwrap();
+    }
+    let resolved = crate::client_resolver(&root, &config)
+        .resolve(&root.join("node_modules/host"), "router")
+        .unwrap();
+    assert_eq!(resolved, root.join("node_modules/router/index.js"));
+}
+
+// The ssr environment's list is Vite's resolved one too: the top-level list,
+// the app's own and what plugins' `configEnvironment` hooks add for ssr.
+#[test]
+fn the_ssr_dedupe_list_takes_the_ssr_environments_resolved_list() {
+    let mut config = oj_config::OjConfig::default();
+    merge_vite_values(
+        &mut config,
+        parse_vite_values(&serde_json::json!({
+            "dedupe": ["react"],
+            "ssrDedupe": ["react", "shared"]
+        })),
+    );
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "ssr"),
+        ["react", "shared"]
+    );
+    assert_eq!(oj_config::environment_dedupe(&config, "client"), ["react"]);
+}
+
+// oj's config file keeps its own top-level list over Vite's, so an entry
+// only Vite's top-level list holds still reaches each environment through
+// that environment's resolved list.
+#[test]
+fn an_environment_dedupe_list_survives_a_top_level_list_oj_does_not_adopt() {
+    let mut config: oj_config::OjConfig =
+        serde_json::from_str(r#"{ "resolve": { "dedupe": ["a"] } }"#).unwrap();
+    merge_vite_values(
+        &mut config,
+        parse_vite_values(&serde_json::json!({
+            "dedupe": ["react"],
+            "clientDedupe": ["react", "router"],
+            "ssrDedupe": ["react", "react-dom"]
+        })),
+    );
+    assert_eq!(oj_config::resolve_dedupe(&config), ["a"]);
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "client"),
+        ["a", "react", "router"]
+    );
+    assert_eq!(
+        oj_config::environment_dedupe(&config, "ssr"),
+        ["a", "react", "react-dom"]
+    );
+}
+
 // An oj-side ssr key must not drop the extractor's verdict: per-key merge,
 // `runnerBacked` always adopted.
 #[test]
@@ -1571,6 +1661,8 @@ fn merge_adopts_only_unset_fields() {
         assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
+        client_dedupe: None,
+        ssr_dedupe: None,
         optimize_deps: None,
         build: None,
         oxc: None,
@@ -1630,6 +1722,8 @@ fn merge_never_overrides_config() {
         assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
+        client_dedupe: None,
+        ssr_dedupe: None,
         optimize_deps: None,
         build: None,
         oxc: None,

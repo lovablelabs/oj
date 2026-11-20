@@ -10,7 +10,8 @@
 //! the browser unresolved.
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use rolldown_plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext,
@@ -244,5 +245,99 @@ impl Plugin for TsconfigPathsPlugin {
             )
             .await?;
         Ok(resolved.ok().map(HookResolveIdOutput::from_resolved_id))
+    }
+}
+
+/// The specifier as written, query on, when the asset step resolves it without the query.
+#[derive(Hash, PartialEq, Eq)]
+pub(crate) struct QueriedImport;
+
+impl rolldown_plugin::typedmap::TypedMapKey for QueriedImport {
+    type Value = String;
+}
+
+/// `resolve.dedupe` after the app's plugins: a bare import of a listed
+/// package resolves from the app root for every importer, as Vite's resolve
+/// plugin does with its `dedupe` option, so a copy nested under a
+/// dependency's own node_modules never becomes a second instance. Where the
+/// root has no such package or file the importer's own lookup stands; any
+/// other error from the root's copy (a subpath its `exports` hide) fails.
+#[derive(Debug)]
+pub(crate) struct DedupePlugin {
+    /// A stand-in importer at the root: a bare id resolves from there as a
+    /// package only, never as a path (no importer would fall back to the cwd).
+    root_importer: PathBuf,
+    dedupe: HashSet<String>,
+}
+
+impl DedupePlugin {
+    /// None for an empty list.
+    pub fn new(root: &Path, dedupe: Vec<String>) -> Option<Self> {
+        (!dedupe.is_empty()).then(|| DedupePlugin {
+            root_importer: root.join("__oj_importer__.js"),
+            dedupe: dedupe.into_iter().collect(),
+        })
+    }
+}
+
+impl Plugin for DedupePlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:dedupe")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        use rolldown_common::ImportKind;
+        use rolldown_resolver::ResolveError;
+        let spec = args.specifier;
+        let Some(importer) = args.importer else {
+            return Ok(None);
+        };
+        if !matches!(
+            args.kind,
+            ImportKind::Import | ImportKind::DynamicImport | ImportKind::Require
+        ) || !oj_resolver::dedupes(
+            &self.dedupe,
+            args.custom.get(&QueriedImport).map_or(spec, String::as_str),
+        ) {
+            return Ok(None);
+        }
+        let resolver = ctx.resolver();
+        let from_root = match resolver.resolve(Some(&self.root_importer), spec, args.kind, false) {
+            Ok(resolved) => resolved,
+            // A Node built-in stays the bundler's (external on a Node platform).
+            Err(ResolveError::NotFound(_) | ResolveError::Builtin { .. }) => return Ok(None),
+            // The root's `browser` field maps the package to `false`: an empty module, as rolldown gives it.
+            Err(ResolveError::Ignored(path)) => {
+                return Ok(Some(HookResolveIdOutput::from_resolved_id(
+                    rolldown_common::ResolvedId {
+                        id: rolldown_common::ModuleId::new_empty(&path.to_string_lossy()),
+                        ..Default::default()
+                    },
+                )))
+            }
+            Err(e) => anyhow::bail!(
+                "cannot resolve \"{spec}\" from the root's copy of \"{}\" (resolve.dedupe): {e}",
+                oj_resolver::package_name(spec)
+            ),
+        };
+        let file = importer.split(['?', '#']).next().unwrap_or(importer);
+        if Path::new(file).is_absolute() {
+            if let Ok(own) = resolver.resolve(Some(Path::new(file)), spec, args.kind, false) {
+                if own.path == from_root.path {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(HookResolveIdOutput::from_resolved_id(
+            rolldown_common::ResolvedId::from(from_root),
+        )))
     }
 }

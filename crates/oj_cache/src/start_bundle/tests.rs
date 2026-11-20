@@ -87,6 +87,11 @@ impl Fixture {
         fs::write(self.start.join("client-entry.modules"), "2").unwrap();
         fs::write(self.start.join("manifest.ts"), format!("// {marker}")).unwrap();
         fs::write(self.start.join(GLOB_SCOPES_FILE), "[]").unwrap();
+        fs::write(
+            self.start.join("client-modules.json"),
+            r#"{"/app/src/a.tsx":"shared-x.js"}"#,
+        )
+        .unwrap();
     }
 
     fn clear_start_dir(&self) {
@@ -189,6 +194,11 @@ fn persist_then_restore_roundtrips_artifacts() {
     assert_eq!(
         fs::read_to_string(fx.start.join("manifest.ts")).unwrap(),
         "// bundle-v1"
+    );
+    // The chunk each module is in comes back with the bundle.
+    assert_eq!(
+        fs::read_to_string(fx.start.join("client-modules.json")).unwrap(),
+        r#"{"/app/src/a.tsx":"shared-x.js"}"#
     );
     assert_eq!(
         fs::read_to_string(fx.start.join(CSS_URLS_FILE)).unwrap(),

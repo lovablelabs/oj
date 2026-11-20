@@ -84,15 +84,65 @@ fn client_bundle(dev: &Server) -> String {
     let (status, entry) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
     assert_eq!(status, 200, "the client entry\n{}", dev.output());
     let mut text = entry.clone();
-    for chunk in entry
-        .split(['"', '\''])
-        .filter_map(|s| s.strip_prefix("./"))
-        .filter(|s| s.ends_with(".js"))
-    {
-        let (_, code) = dev.request("GET", &format!("/@oj-start/{chunk}"), &[]);
-        text.push_str(&code);
+    // Every chunk the entry reaches: the ones it imports by name, and the
+    // modules behind its `import()`s, which a hot bundle asks the dev server
+    // for by module id (as a page does), with the chunks those import in turn.
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = vec![entry];
+    while let Some(code) = queue.pop() {
+        for chunk in code
+            .split(['"', '\''])
+            // `./x.js` beside a chunk; `../x.js` from the answer to an
+            // `import()`, which a boot restored from the cache gives as the
+            // restored chunk's name.
+            .filter_map(|s| s.strip_prefix("./").or_else(|| s.strip_prefix("../")))
+            .filter(|s| s.ends_with(".js"))
+        {
+            if seen.insert(chunk.to_string()) {
+                let (_, code) = dev.request("GET", &format!("/@oj-start/{chunk}"), &[]);
+                text.push_str(&code);
+                queue.push(code);
+            }
+        }
+        for proxy in lazy_proxies(&code) {
+            if seen.insert(proxy.clone()) {
+                let path = format!(
+                    "/@oj-start/hmr/lazy?id={}&clientId=test",
+                    percent_encode(&proxy)
+                );
+                let (status, code) = dev.request("GET", &path, &[]);
+                assert_eq!(status, 200, "the module behind {proxy}\n{}", dev.output());
+                text.push_str(&code);
+                queue.push(code);
+            }
+        }
     }
     text
+}
+
+/// The proxy ids of the `import()`s in `code`, as a hot bundle renders them:
+/// `requestLazy("<module>", "<proxy id>")`.
+fn lazy_proxies(code: &str) -> Vec<String> {
+    code.split("requestLazy(")
+        .skip(1)
+        .filter_map(|call| {
+            let args = call.split_once(')')?.0;
+            let (_, proxy) = args.split_once(", ")?;
+            let end = proxy.rfind('"')?;
+            serde_json::from_str::<String>(&proxy[..=end]).ok()
+        })
+        .collect()
+}
+
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// One `oj dev` boot of `root`: its client bundle and its log.

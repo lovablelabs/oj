@@ -158,9 +158,15 @@ fn inherited_list(config: &OjConfig, env_name: &str, key: &str, top: Vec<String>
     out
 }
 
-/// An environment's `resolve.dedupe` (see [`inherited_list`]).
+/// An environment's `resolve.dedupe`: the top-level list, then its own, duplicates dropped.
 pub fn environment_dedupe(config: &OjConfig, env_name: &str) -> Vec<String> {
-    inherited_list(config, env_name, "dedupe", resolve_dedupe(config))
+    let mut out = resolve_dedupe(config);
+    for item in env_resolve_list(config, env_name, "dedupe").unwrap_or_default() {
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
 }
 
 /// An environment's `resolve.extensions`, or None for the defaults (see
