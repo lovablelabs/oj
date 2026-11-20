@@ -3801,6 +3801,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         return lazy_chunk(&state, req.uri().query()).await;
     }
     if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
+        let client = req.uri().query().and_then(|q| {
+            q.split('&')
+                .find_map(|kv| kv.strip_prefix("clientId=").map(percent_decode))
+        });
+        if let Some(kept) = state.bundler.hot.take(name, client.as_deref()) {
+            return kept;
+        }
         return state.bundler.hot.serve(name);
     }
     if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
@@ -4534,12 +4541,52 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
                 if !gate.reload_is_held() && !state.bundler.hot.has_parked() {
                     break answer;
                 }
-                if gate.reload_is_held()
-                    && !carries_held_change(code, state.bundler.root(), &gate.pending_paths())
-                {
-                    break answer;
-                }
                 if gate.reload_is_held() {
+                    let held = held_modules(code, state.bundler.root(), &gate.pending_paths());
+                    let Some(held) = held else {
+                        // Factories with no list of what they are: waited
+                        // for, as carrying a held module.
+                        flushed_at = None;
+                        if let Some(flushes) = &mut flushes {
+                            let _ = tokio::time::timeout_at(end, flushes.recv()).await;
+                        }
+                        continue;
+                    };
+                    if held.is_empty() {
+                        break answer;
+                    }
+                    // The chunk carries modules of the held change. A page
+                    // that already runs every one of them may take it: a
+                    // module that ran is not run again, and the chunk's
+                    // registrations of the held modules are skipped, so
+                    // the chunk runs none of the held change's own code.
+                    // (What it does run was compiled against the change:
+                    // a held edit that turns a module from an ES module
+                    // into a CommonJS one, or back, changes how its
+                    // importers are compiled, and such an importer is
+                    // taken against the page's instance of the old shape
+                    // until the flush. That case is not detected.) Only
+                    // the page knows what it has run (a patch can carry a
+                    // module it never ran), so it is asked: it takes the
+                    // kept chunk, or asks for the module again with
+                    // `held=1` to wait for the flush.
+                    if param("held").as_deref() != Some("1") {
+                        let kept = format!(
+                            "await __rolldown_runtime__.ojPatched({});\n__rolldown_runtime__.ojSkipHeld({});\n{code}\n;__rolldown_runtime__.ojSkipHeld(null);\n",
+                            state.bundler.hot.sent_seq(&client),
+                            serde_json::json!(held),
+                        );
+                        let take = format!(
+                            "{}?clientId={client}",
+                            state.bundler.hot.keep(&client, kept)
+                        );
+                        return module(format!(
+                            "await __rolldown_runtime__.ojLazyWhileHeld({}, {}, {});\nexport {{}};\n",
+                            serde_json::json!(held),
+                            serde_json::Value::String(take),
+                            serde_json::Value::String(id.clone()),
+                        ));
+                    }
                     flushed_at = None;
                     if let Some(flushes) = &mut flushes {
                         let _ = tokio::time::timeout_at(end, flushes.recv()).await;
@@ -4688,22 +4735,22 @@ fn changed_files(reported: &[String]) -> Vec<PathBuf> {
 /// the gate's own hold cap, which flushes) or for a bundle that builds.
 const LAZY_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Whether a lazy chunk carries a module whose file is among `pending` (the
-/// changes the editor's gate holds). The chunk opens with rolldown's
-/// `registerGraph({ids:[…],localCount:N,…})`: its first `localCount` ids are
-/// the modules it carries, each a path from the app root with the module's
-/// query.
-fn carries_held_change(code: &str, root: &Path, pending: &[PathBuf]) -> bool {
+/// The modules a lazy chunk carries whose files are among `pending` (the
+/// changes the editor's gate holds), by the ids the page's registry knows
+/// them by; `None` for a chunk with factories and no list of what they are
+/// (taken as carrying a held module, not as carrying none). The chunk
+/// opens with rolldown's `registerGraph({ids:[…],localCount:N,…})`: its
+/// first `localCount` ids are the modules it carries, each a path from the
+/// app root with the module's query. (The engine's own list of what a
+/// chunk carries is emptied before the chunk is returned.)
+fn held_modules(code: &str, root: &Path, pending: &[PathBuf]) -> Option<Vec<String>> {
     let Some(at) = code.find("registerGraph({ids:") else {
-        // Factories with no list of what they are: taken as carrying a held
-        // module rather than as carrying none. (The engine's own list of
-        // what a chunk carries is emptied before the chunk is returned.)
-        return code.contains("registerFactory(");
+        return (!code.contains("registerFactory(")).then(Vec::new);
     };
     let rest = &code[at + "registerGraph({ids:".len()..];
     let mut ids = serde_json::Deserializer::from_str(rest).into_iter::<Vec<String>>();
     let Some(Ok(list)) = ids.next() else {
-        return false;
+        return None;
     };
     let after = &rest[ids.byte_offset()..];
     let local = after
@@ -4715,16 +4762,21 @@ fn carries_held_change(code: &str, root: &Path, pending: &[PathBuf]) -> bool {
         })
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(list.len());
-    list.iter().take(local).any(|id| {
-        let file = root.join(id.split('?').next().unwrap_or(id));
-        pending.iter().any(|p| {
-            *p == file
-                || std::fs::canonicalize(p)
-                    .ok()
-                    .zip(std::fs::canonicalize(&file).ok())
-                    .is_some_and(|(a, b)| a == b)
-        })
-    })
+    Some(
+        list.into_iter()
+            .take(local)
+            .filter(|id| {
+                let file = root.join(id.split('?').next().unwrap_or(id));
+                pending.iter().any(|p| {
+                    *p == file
+                        || std::fs::canonicalize(p)
+                            .ok()
+                            .zip(std::fs::canonicalize(&file).ok())
+                            .is_some_and(|(a, b)| a == b)
+                })
+            })
+            .collect(),
+    )
 }
 
 /// `GET /@oj/tanstack/routes.json`: the generated route tree's routes, read
@@ -7288,7 +7340,7 @@ mod tests {
     // The modules a lazy chunk carries are the first `localCount` ids of its
     // `registerGraph` prelude; the rest are modules it only refers to.
     #[test]
-    fn a_lazy_chunk_carrying_a_held_file_is_told_from_one_referring_to_it() {
+    fn the_held_modules_a_lazy_chunk_carries_are_told_from_those_it_refers_to() {
         let root = Path::new("/app");
         let chunk = |local: usize| {
             format!(
@@ -7297,22 +7349,26 @@ mod tests {
         };
         let about = [PathBuf::from("/app/src/routes/about.tsx")];
         let event = [PathBuf::from("/app/src/lib/event.ts")];
-        assert!(carries_held_change(&chunk(1), root, &about));
-        assert!(!carries_held_change(&chunk(1), root, &event));
-        assert!(carries_held_change(&chunk(2), root, &event));
-        assert!(!carries_held_change(&chunk(2), root, &[]));
+        let both = [about[0].clone(), event[0].clone()];
+        let held = |code: &str, pending: &[PathBuf]| held_modules(code, root, pending);
+        assert_eq!(
+            held(&chunk(1), &about).unwrap(),
+            ["src/routes/about.tsx?tsr-split=component"]
+        );
+        assert!(held(&chunk(1), &event).unwrap().is_empty());
+        assert_eq!(held(&chunk(2), &event).unwrap(), ["src/lib/event.ts"]);
+        assert_eq!(held(&chunk(2), &both).unwrap().len(), 2);
+        assert!(held(&chunk(2), &[]).unwrap().is_empty());
         // Factories without the list: held, not let through.
-        assert!(carries_held_change(
+        assert!(held(
             "__rolldown_runtime__.registerFactory(\"src/routes/about.tsx\", () => {});",
-            root,
             &event
-        ));
+        )
+        .is_none());
         // A restored chunk imported by name carries nothing compiled now.
-        assert!(!carries_held_change(
-            "import \"../about-abc.js\";\nexport {};\n",
-            root,
-            &about
-        ));
+        assert!(held("import \"../about-abc.js\";\nexport {};\n", &about)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

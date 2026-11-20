@@ -38,6 +38,18 @@ pub(crate) struct Frame {
     pub seq: Option<u32>,
 }
 
+/// An answer kept for one page (see [`HotUpdates::keep`]).
+struct Kept {
+    name: String,
+    client: String,
+    code: axum::body::Bytes,
+}
+
+/// What kept answers go by, beside the patches.
+const KEPT_PREFIX: &str = "lazy_held_";
+/// How much the kept answers may hold together.
+const KEPT_BYTES: usize = 32 * 1024 * 1024;
+
 /// Tells the editor's gate of files that changed.
 pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 
@@ -64,6 +76,10 @@ pub(crate) struct HotUpdates {
     /// lock a release drains under, so a frame is never stranded by a flush
     /// landing between them.
     gate: std::sync::OnceLock<crate::start_reloads::Held>,
+    /// Answers kept for their pages to take ([`HotUpdates::keep`]), and how
+    /// many so far, for their names.
+    answers: Mutex<VecDeque<Kept>>,
+    kept: std::sync::atomic::AtomicU64,
     /// Each connected page's last patch sent (see [`HotUpdates::sent_seq`]).
     sent_seq: Mutex<std::collections::HashMap<String, u32>>,
     /// Pages a patch was made for while they had no socket open.
@@ -82,6 +98,8 @@ impl HotUpdates {
             generation: std::sync::atomic::AtomicU64::new(0),
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
+            answers: Mutex::new(VecDeque::new()),
+            kept: std::sync::atomic::AtomicU64::new(0),
             sent_seq: Mutex::default(),
             unheard: Mutex::default(),
             holder: std::sync::OnceLock::new(),
@@ -208,6 +226,10 @@ impl HotUpdates {
 
     /// The page `client` is gone.
     pub(crate) fn forget(&self, client: &str) {
+        self.answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|k| k.client != client);
         self.sent_seq
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -347,6 +369,57 @@ impl HotUpdates {
             text,
             seq: Some(patch.seq),
         });
+    }
+
+    /// Keeps `code`, compiled for the page `client`, for that page to take
+    /// once; its url.
+    pub(crate) fn keep(&self, client: &str, code: String) -> String {
+        let name = format!(
+            "{KEPT_PREFIX}{}.js",
+            self.kept.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        // A store of its own (an answer must not push out a patch a page
+        // has yet to fetch), bounded by what it holds.
+        let mut answers = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        answers.push_back(Kept {
+            name: name.clone(),
+            client: client.to_string(),
+            code: code.into(),
+        });
+        while answers.len() > 1 && answers.iter().map(|k| k.code.len()).sum::<usize>() > KEPT_BYTES
+        {
+            answers.pop_front();
+        }
+        format!("{}{name}", self.patch_prefix)
+    }
+
+    /// The answer kept as `name` for the page `client`, which is its last
+    /// use; `None` for a name that is no kept answer's.
+    pub(crate) fn take(&self, name: &str, client: Option<&str>) -> Option<Response> {
+        if !name.starts_with(KEPT_PREFIX) {
+            return None;
+        }
+        let mut answers = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = answers
+            .iter()
+            .position(|k| k.name == name && Some(k.client.as_str()) == client);
+        Some(match at.and_then(|at| answers.remove(at)) {
+            Some(kept) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                kept.code,
+            )
+                .into_response(),
+            None => (StatusCode::NOT_FOUND, "oj start: no such answer").into_response(),
+        })
     }
 
     pub(crate) fn serve(&self, name: &str) -> Response {

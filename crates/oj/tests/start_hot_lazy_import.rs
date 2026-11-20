@@ -741,6 +741,241 @@ async fn a_lazy_route_changed_in_a_held_change_waits_for_the_flush() {
     page.close().await;
 }
 
+/// Notes, in the page, each url its runtime imports while a change is held
+/// (the kept chunk it takes, the module it asks for again).
+async fn watch_held_imports(page: &Page) {
+    page.eval::<bool>(
+        "(() => { const rt = globalThis.__rolldown_runtime__; const real = rt.ojImport.bind(rt); \
+         globalThis.__heldImports = []; \
+         rt.ojImport = (url) => { globalThis.__heldImports.push(url); return real(url); }; return true; })()",
+    )
+    .await;
+}
+
+/// Whether the page's runtime imported a url holding `part` during a hold.
+const HELD_IMPORT: &str =
+    "(part) => (globalThis.__heldImports ?? []).some((url) => url.includes(part))";
+
+/// A held change edits only a module the page already runs (the home route
+/// shows it). The lazy route, which reads that module and is not part of
+/// the change, loads during the hold without waiting for the flush, against
+/// the module as the page has it; the flush then updates both in place.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lazy_route_reading_a_held_module_the_page_runs_loads_during_the_hold() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-util",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(&root, INDEX, INDEX_READS);
+    let dev = Server::oj_dev_with(&root, GATE);
+    let page = open_home(&dev).await;
+
+    watch_held_imports(&page).await;
+    let before = taken_in(&dev);
+    held(
+        &dev,
+        &root,
+        &[(EVENT, "export const EVENTS = [\"a\", \"b\", \"c\"];\n")],
+    )
+    .await;
+    took_in(&dev, before).await;
+    go_to_about(&page).await;
+    let loaded = page
+        .poll(&format!("{SHOWN} === '2'"), Duration::from_secs(15))
+        .await;
+    assert!(
+        loaded,
+        "the lazy route did not load during the hold: shows {:?}; page errors: {:?}\n{}",
+        page.eval::<String>(SHOWN).await,
+        page.errors(),
+        dev.output()
+    );
+    // Through the chunk kept for this page, not by waiting.
+    assert!(
+        page.eval::<bool>(&format!(
+            "({HELD_IMPORT})('lazy_held_') && !({HELD_IMPORT})('held=1')"
+        ))
+        .await,
+        "the page did not take the kept chunk: {:?}",
+        page.eval::<Vec<String>>("globalThis.__heldImports").await
+    );
+
+    flush(&dev);
+    shows(&page, &dev, "3").await;
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// A held change edits only a module the page has not loaded. Imported
+/// during the hold, it must not show the held code: the import waits for
+/// the flush.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_only_a_held_change_edits_is_not_imported_before_the_flush() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-unloaded",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let dev = Server::oj_dev_with(&root, GATE);
+    let page = open_home(&dev).await;
+
+    watch_held_imports(&page).await;
+    let before = taken_in(&dev);
+    held(&dev, &root, &[(NOTE, "export const note = \"note v2\";\n")]).await;
+    took_in(&dev, before).await;
+    load_note(&page).await;
+    assert!(
+        page.poll(&format!("({HELD_IMPORT})('held=1')"), WAIT).await,
+        "the page did not ask to wait for the flush"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        assert_eq!(
+            page.eval::<String>(NOTE_SHOWN).await,
+            "none",
+            "the held module was imported during the hold\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    flush(&dev);
+    notes(&page, &dev, "note v2").await;
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// The flush of a held change that needs a reload (it adds a route): an
+/// import waiting for it ends with the page, and the reloaded page imports
+/// the module as changed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_waiting_for_a_flush_that_reloads_is_current_after_it() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-reload",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let dev = Server::oj_dev_with(&root, GATE);
+    let page = open_home(&dev).await;
+
+    let extra = "src/routes/extra.tsx";
+    watch_held_imports(&page).await;
+    let before = taken_in(&dev);
+    held(
+        &dev,
+        &root,
+        &[
+            (NOTE, "export const note = \"note v2\";\n"),
+            (
+                extra,
+                "import { createFileRoute } from \"@tanstack/react-router\";\n\nexport const Route = createFileRoute(\"/extra\")({\n  component: () => <p id=\"extra\">extra</p>,\n});\n",
+            ),
+        ],
+    )
+    .await;
+    took_in(&dev, before).await;
+    load_note(&page).await;
+    assert!(
+        page.poll(&format!("({HELD_IMPORT})('held=1')"), WAIT).await,
+        "the page did not ask to wait for the flush"
+    );
+    assert_eq!(page.eval::<String>(NOTE_SHOWN).await, "none");
+
+    flush(&dev);
+    hot_ready(&page).await;
+    load_note(&page).await;
+    notes(&page, &dev, "note v2").await;
+    page.close().await;
+}
+
+/// Two tabs and one held change, to a module the first tab has imported and
+/// the second has not. Both go to a lazy route that reads it during the
+/// hold: the first loads it at once, against the module as it runs it; the
+/// second, which would run the module's held code, waits. The flush brings
+/// both to the change, with no reload.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_tab_is_answered_by_what_it_runs_during_a_hold() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-tabs",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    write(
+        &root,
+        ABOUT,
+        r#"import { createFileRoute } from "@tanstack/react-router";
+import { note } from "../lib/note";
+
+export const Route = createFileRoute("/about")({
+  component: AboutPage,
+});
+
+function AboutPage() {
+  return <p id="about">{note}</p>;
+}
+"#,
+    );
+    let dev = Server::oj_dev_with(&root, GATE);
+    let runs = open_home(&dev).await;
+    load_note(&runs).await;
+    notes(&runs, &dev, "note v1").await;
+    let lacks = open_home(&dev).await;
+
+    watch_held_imports(&runs).await;
+    watch_held_imports(&lacks).await;
+    let before = taken_in(&dev);
+    held(&dev, &root, &[(NOTE, "export const note = \"note v2\";\n")]).await;
+    took_in(&dev, before).await;
+    go_to_about(&runs).await;
+    go_to_about(&lacks).await;
+    assert!(
+        runs.poll(&format!("{SHOWN} === 'note v1'"), Duration::from_secs(15))
+            .await,
+        "the tab that runs the module did not load the route during the hold: {:?}\n{}",
+        runs.eval::<String>(SHOWN).await,
+        dev.output()
+    );
+    assert!(
+        lacks
+            .poll(&format!("({HELD_IMPORT})('held=1')"), WAIT)
+            .await,
+        "the tab that never ran the module did not ask to wait for the flush"
+    );
+    assert_eq!(
+        lacks.eval::<String>(SHOWN).await,
+        "",
+        "the tab that never ran the module rendered the route during the hold"
+    );
+
+    flush(&dev);
+    shows(&runs, &dev, "note v2").await;
+    shows(&lacks, &dev, "note v2").await;
+    kept(&runs, &dev).await;
+    kept(&lacks, &dev).await;
+    lacks.close().await;
+    runs.close().await;
+}
+
 /// A lazy route the held change does not touch loads at once during the
 /// hold.
 #[tokio::test(flavor = "multi_thread")]
@@ -1692,6 +1927,182 @@ async fn a_tab_open_across_a_restart_reloads_when_the_server_is_back() {
         page.eval::<String>(NOTE_SHOWN).await,
         page.errors()
     );
+    page.close().await;
+}
+
+/// The same under a dev `base`, with two imports made together during one
+/// hold: a module the held change does not reach and a lazy route reading a
+/// held module the page runs. Both are answered during the hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_imports_in_one_hold_under_a_base_are_each_answered_by_the_rule() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-base",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let based = config.replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  base: \"/app/\",",
+        1,
+    );
+    assert_ne!(based, config, "the fixture's config moved");
+    write(&root, "vite.config.ts", &based);
+    write(&root, INDEX, INDEX_READS);
+    let dev = Server::oj_dev_with(&root, GATE);
+    let page = open_at(&dev, "/app/").await;
+    watch_held_imports(&page).await;
+
+    let before = taken_in(&dev);
+    held(
+        &dev,
+        &root,
+        &[(EVENT, "export const EVENTS = [\"a\", \"b\", \"c\"];\n")],
+    )
+    .await;
+    took_in(&dev, before).await;
+    page.eval::<bool>(
+        "(document.querySelector('#load').click(), document.querySelector('#to-about').click(), true)",
+    )
+    .await;
+    notes(&page, &dev, "note v1").await;
+    assert!(
+        page.poll(&format!("{SHOWN} === '2'"), Duration::from_secs(15))
+            .await,
+        "the lazy route did not load during the hold: {:?}\n{}",
+        page.eval::<String>(SHOWN).await,
+        dev.output()
+    );
+    assert!(
+        page.eval::<bool>(&format!("({HELD_IMPORT})('/app/@oj-start/hmr/lazy_held_')"))
+            .await,
+        "the kept chunk was not taken under the base: {:?}",
+        page.eval::<Vec<String>>("globalThis.__heldImports").await
+    );
+    flush(&dev);
+    assert!(
+        page.poll(&format!("{SHOWN} === '3'"), Duration::from_secs(40))
+            .await,
+        "the flush did not update the route: {:?}",
+        page.eval::<String>(SHOWN).await
+    );
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// A kept chunk the dev server no longer has (taken, or pushed out): the
+/// page asks for the module anew and gets it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kept_chunk_that_is_gone_is_asked_for_anew() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-gone",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev_with(&app.0, GATE);
+    let page = open_home(&dev).await;
+    let proxy = proxy_of(&dev, "src/lib/note.ts");
+    // Another page's kept chunk, and one that never was.
+    let (status, _) = dev.request(
+        "GET",
+        "/@oj-start/hmr/lazy_held_0.js?clientId=someone-else",
+        &[],
+    );
+    assert_eq!(status, 404);
+    let imported = page
+        .eval::<String>(&format!(
+            "(async () => {{ const rt = globalThis.__rolldown_runtime__; \
+             await rt.ojLazyWhileHeld([], '/@oj-start/hmr/lazy_held_999.js?clientId=' + rt.clientId, {proxy:?}); \
+             return rt.initModule('src/lib/note.ts').note; }})()"
+        ))
+        .await;
+    assert_eq!(imported, "note v1");
+    kept(&page, &dev).await;
+    page.close().await;
+}
+
+/// The flush lands while the page is fetching the chunk kept for it: the
+/// patch the flush released is applied first, and the chunk must leave what
+/// that patch registered alone. A later edit to a module the held one
+/// imports re-runs the held module on the page from its factory: it must be
+/// the patch's, not the one from before the hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_flush_during_the_fetch_of_a_kept_chunk_keeps_the_patchs_factories() {
+    let Some(app) = lazy_app(
+        "lazy-import-held-race",
+        "import { BASE } from \"./base\";\nexport const EVENTS = [...BASE, \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let base = "src/lib/base.ts";
+    write(&root, base, "export const BASE = [\"a\"];\n");
+    write(&root, INDEX, INDEX_READS);
+    let dev = Server::oj_dev_with(&root, GATE);
+    let page = open_home(&dev).await;
+    // The kept chunk reaches the page two seconds late; the page notes
+    // which update it had applied when the chunk was asked for and when it
+    // was evaluated.
+    page.eval::<bool>(
+        "(() => { const rt = globalThis.__rolldown_runtime__; const real = rt.ojImport.bind(rt); \
+         globalThis.__kept = []; \
+         rt.ojImport = (url) => { if (!url.includes('lazy_held_')) return real(url); \
+           globalThis.__kept.push('asked at update ' + rt.hmr.lastSeq); \
+           return new Promise((r) => setTimeout(r, 2000)).then(() => { \
+             globalThis.__kept.push('fetched at update ' + rt.hmr.lastSeq); return real(url); }); }; \
+         return true; })()",
+    )
+    .await;
+
+    let before = taken_in(&dev);
+    held(
+        &dev,
+        &root,
+        &[(
+            EVENT,
+            "import { BASE } from \"./base\";\nexport const EVENTS = [...BASE, \"b\", \"c\"];\n",
+        )],
+    )
+    .await;
+    took_in(&dev, before).await;
+    go_to_about(&page).await;
+    // The page decided to take the kept chunk; the flush lands during its
+    // fetch.
+    assert!(
+        page.poll("(globalThis.__kept ?? []).length === 1", WAIT)
+            .await,
+        "the page did not ask for the kept chunk"
+    );
+    flush(&dev);
+    shows(&page, &dev, "3").await;
+    // The premise: the flush's patch was applied before the chunk ran.
+    assert_eq!(
+        page.eval::<Vec<String>>("globalThis.__kept").await,
+        ["asked at update 0", "fetched at update 1"],
+        "the flush did not land during the fetch of the kept chunk"
+    );
+
+    // The held module is re-run for an edit of what it imports.
+    change(
+        &dev,
+        &root,
+        &[(base, "export const BASE = [\"a\", \"z\"];\n")],
+    )
+    .await;
+    shows(&page, &dev, "4").await;
+    kept(&page, &dev).await;
     page.close().await;
 }
 

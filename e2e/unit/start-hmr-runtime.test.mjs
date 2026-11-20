@@ -266,3 +266,95 @@ test("a page that is about to reload, or that the update never reaches, does not
   await late;
   assert.match(warned[0], /hot update 3 did not reach this page/);
 });
+
+// While the editor's gate holds a change, the server asks the page whether it
+// already runs the held modules a compiled chunk carries.
+const HELD_STUB = `class DevRuntime {
+  constructor(id) {
+    this.clientId = id; this.moduleCache = new Map(); this.factories = new Map(); this.factoryStamps = new Map();
+    this.lazyRequests = new Map(); this.staticImports = new Map(); this.rowStamps = new Map();
+  }
+  registerFactory(id, fn, stamp = 0) {
+    if (stamp < (this.factoryStamps.get(id) ?? 0)) return;
+    this.factoryStamps.set(id, stamp);
+    this.factories.set(id, fn);
+  }
+  registerGraph(delta) {
+    for (let i = 0; i < delta.localCount; i++) {
+      const id = delta.ids[i];
+      if (delta.stamps) this.rowStamps.set(id, delta.stamps[i] ?? 0);
+      this.staticImports.set(id, { edges: delta.edges[i].map((j) => delta.ids[j]) });
+    }
+  }
+}`;
+
+function heldRuntime() {
+  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '""');
+  const page = { console: { debug() {}, error() {} }, __ojStartHmr: {}, queueMicrotask, setTimeout, Date };
+  page.globalThis = page;
+  vm.createContext(page);
+  vm.runInContext(`${HELD_STUB}\n${source}`, page);
+  return page.__rolldown_runtime__;
+}
+
+test("a chunk carrying held modules is taken only by a page that runs them all; one the server lost is asked for anew", async () => {
+  const runtime = heldRuntime();
+  const asked = [];
+  runtime.ojImport = async (url) => {
+    asked.push(url);
+    if (url.includes("lazy_held_gone")) throw new TypeError("Failed to fetch dynamically imported module");
+  };
+  const proxy = "/abs/src/lazy.ts?rolldown-lazy=1";
+
+  // The page never ran one of them: it asks again, to wait for the flush.
+  runtime.moduleCache.set("src/util.ts", {});
+  await runtime.ojLazyWhileHeld(["src/util.ts", "src/other.ts"], "/@oj-start/hmr/lazy_held_0.js", proxy);
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^\/@oj-start\/hmr\/lazy\?id=.*&held=1$/);
+
+  // It runs them all: it takes the chunk.
+  asked.length = 0;
+  runtime.moduleCache.set("src/other.ts", {});
+  await runtime.ojLazyWhileHeld(["src/util.ts", "src/other.ts"], "/@oj-start/hmr/lazy_held_1.js", proxy);
+  assert.deepEqual(asked, ["/@oj-start/hmr/lazy_held_1.js"]);
+
+  // The kept chunk is gone: the module is asked for anew, not to wait.
+  asked.length = 0;
+  await runtime.ojLazyWhileHeld(["src/util.ts"], "/@oj-start/hmr/lazy_held_gone.js", proxy);
+  assert.equal(asked.length, 2);
+  assert.match(asked[1], /^\/@oj-start\/hmr\/lazy\?id=/);
+  assert.doesNotMatch(asked[1], /held=1/);
+});
+
+test("a taken chunk leaves the held modules' factories, graph rows and stamps as the page has them", async () => {
+  const runtime = heldRuntime();
+  const patch = () => "the patch's factory";
+  // The flush came while the chunk was on its way: its patch is applied.
+  runtime.registerFactory("src/util.ts", patch, 7);
+  runtime.registerGraph({ ids: ["src/util.ts", "src/dep-new.ts"], localCount: 1, edges: [[1]], stamps: { 0: 7 } });
+
+  // The chunk, compiled before the flush, as the server brackets it.
+  runtime.ojSkipHeld(["src/util.ts"]);
+  runtime.registerGraph({
+    ids: ["src/lazy.ts", "src/util.ts", "src/dep-old.ts"],
+    localCount: 2,
+    edges: [[1], [2]],
+    stamps: { 0: 3, 1: 9 },
+  });
+  runtime.registerFactory("src/lazy.ts", () => "lazy");
+  runtime.registerFactory("src/util.ts", () => "the held factory", 9);
+
+  assert.equal(runtime.factories.get("src/util.ts")("src/util.ts"), patch());
+  assert.equal(runtime.factoryStamps.get("src/util.ts"), 7);
+  assert.deepEqual(runtime.staticImports.get("src/util.ts").edges, ["src/dep-new.ts"]);
+  assert.equal(runtime.rowStamps.get("src/util.ts"), 7);
+  // What the chunk carries besides is taken, its edge to the held module too.
+  assert.ok(runtime.factories.has("src/lazy.ts"));
+  assert.deepEqual(runtime.staticImports.get("src/lazy.ts").edges, ["src/util.ts"]);
+  assert.equal(runtime.rowStamps.get("src/lazy.ts"), 3);
+
+  // Only for that chunk's evaluation.
+  await new Promise((r) => setTimeout(r, 0));
+  runtime.registerFactory("src/util.ts", () => "a later patch", 10);
+  assert.equal(runtime.factoryStamps.get("src/util.ts"), 10);
+});

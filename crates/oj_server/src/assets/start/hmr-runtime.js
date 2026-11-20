@@ -366,6 +366,7 @@ class OjDevRuntime extends DevRuntime {
   // `import()` of the module settles when it has finished evaluating, and
   // rejects if it threw, as the module's own `import()` does in a browser.
   registerFactory(id, factory, stamp) {
+    if (this.heldSkip?.has(id)) return;
     const runtime = this;
     return super.registerFactory(
       id,
@@ -435,6 +436,70 @@ class OjDevRuntime extends DevRuntime {
       clearTimeout(timer);
     }
     await hmr.queue;
+  }
+  // The dev server compiled a module for an `import()` while the editor's
+  // gate holds a change, and the chunk at `url` carries the modules `held`
+  // of that change. If this page already runs them all, it takes the chunk,
+  // which leaves them alone (`ojSkipHeld`): a module that ran is not run
+  // again, so the chunk runs nothing of the held change. Otherwise it asks
+  // for the module again, to be answered after the flush. A kept chunk the
+  // server no longer has is asked for anew.
+  async ojLazyWhileHeld(held, url, proxyModuleId) {
+    if (!held.every((id) => this.moduleCache.has(id))) {
+      return this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
+    }
+    try {
+      await this.ojImport(url);
+    } catch {
+      // Asked anew once (the server may hand back another chunk to take);
+      // if that fails too, the import waits for the flush.
+      try {
+        await this.ojImport(this.lazyChunkUrl(proxyModuleId));
+      } catch {
+        await this.ojImport(this.lazyChunkUrl(proxyModuleId) + "&held=1");
+      }
+    }
+  }
+  ojImport(url) {
+    return import(/* @vite-ignore */ url);
+  }
+  // Called by a chunk the page takes during a hold, right before its
+  // registrations: for the rest of the chunk's evaluation (it is
+  // synchronous from here) the factories and graph rows of `held` are not
+  // taken. They are the held change's; the page keeps its own until the
+  // patch the flush releases brings them, or already has that patch's if
+  // the flush came while the chunk was on its way.
+  ojSkipHeld(held) {
+    // Ended by the chunk's last statement (`ojSkipHeld(null)`); the
+    // microtask is for a chunk that throws before it gets there.
+    this.heldSkip = held ? new Set(held) : null;
+    if (held) queueMicrotask(() => (this.heldSkip = null));
+  }
+  registerGraph(delta) {
+    const skip = this.heldSkip;
+    if (!skip || !delta.ids.slice(0, delta.localCount).some((id) => skip.has(id))) return super.registerGraph(delta);
+    // The same rows without the held modules': those move behind the
+    // local ones, where they are only referred to.
+    const local = [];
+    const held = [];
+    for (let i = 0; i < delta.localCount; i++) (skip.has(delta.ids[i]) ? held : local).push(i);
+    const order = [...local, ...held];
+    for (let i = delta.localCount; i < delta.ids.length; i++) order.push(i);
+    const moved = new Map(order.map((from, to) => [from, to]));
+    const rows = (of) => of && local.map((i) => of[i]);
+    const refs = (of) => of && local.map((i) => (of[i] ?? []).map((j) => moved.get(j)));
+    return super.registerGraph({
+      ...delta,
+      ids: order.map((i) => delta.ids[i]),
+      localCount: local.length,
+      edges: refs(delta.edges),
+      dynamicEdges: refs(delta.dynamicEdges),
+      bindings: rows(delta.bindings),
+      stamps:
+        delta.stamps &&
+        Object.fromEntries(local.flatMap((i, to) => (i in delta.stamps ? [[to, delta.stamps[i]]] : []))),
+      entries: delta.entries?.flatMap((i) => (local.includes(i) ? [local.indexOf(i)] : [])),
+    });
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });
