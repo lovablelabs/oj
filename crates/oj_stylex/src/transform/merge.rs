@@ -1,6 +1,8 @@
 //! Compile-time `props()`/`attrs()`/`stylex()` merge, oracle-pinned runtime port.
 // parity: stylex-props.js + stylex-merge.js + @stylexjs/stylex over styleq@0.2.1
 
+use std::borrow::Cow;
+
 use crate::errors::StylexError;
 use crate::eval::value::{EvalValue, JsObjectMap};
 use crate::jsrt::js_number_to_string;
@@ -64,8 +66,8 @@ pub fn plan_merge(
     options: &ResolvedOptions,
 ) -> Result<MergePlan<JsObjectMap>, StylexError> {
     plan_with(args, options, false, |values| match mode {
-        MergeMode::Props => merge_props(&values),
-        MergeMode::Attrs => merge_attrs(&values),
+        MergeMode::Props => props_of(values),
+        MergeMode::Attrs => attrs_of(values),
     })
 }
 
@@ -75,29 +77,33 @@ pub fn plan_legacy_merge(
     args: &[MergeArg],
     options: &ResolvedOptions,
 ) -> Result<MergePlan<String>, StylexError> {
-    plan_with(args, options, true, |values| merge_legacy(&values))
+    plan_with(args, options, true, |values| Ok(styleq(values)?.0))
 }
+
+static NULL_VALUE: EvalValue = EvalValue::Null;
 
 fn plan_with<T>(
     args: &[MergeArg],
     options: &ResolvedOptions,
     stop_on_first_bail: bool,
-    merge: impl Fn(Vec<EvalValue>) -> Result<T, StylexError>,
+    merge: impl Fn(&[&EvalValue]) -> Result<T, StylexError>,
 ) -> Result<MergePlan<T>, StylexError> {
-    enum Resolved {
-        Static(EvalValue),
-        Conditional(EvalValue, EvalValue),
+    enum Resolved<'a> {
+        Static(&'a EvalValue),
+        Conditional(&'a EvalValue, &'a EvalValue),
     }
     let mut bail = false;
     let mut bail_out_index: Option<usize> = None;
     let mut conditional = 0usize;
-    let mut resolved: Vec<Resolved> = Vec::new();
+    let mut resolved: Vec<Resolved<'_>> = Vec::with_capacity(args.len());
 
-    let to_value = |style: &NullableStyle| match style {
-        NullableStyle::Null => EvalValue::Null,
-        NullableStyle::Style(v) => v.clone(),
-        NullableStyle::Other => unreachable!("Other never reaches merging"),
-    };
+    fn to_value(style: &NullableStyle) -> &EvalValue {
+        match style {
+            NullableStyle::Null => &NULL_VALUE,
+            NullableStyle::Style(v) => v,
+            NullableStyle::Other => unreachable!("Other never reaches merging"),
+        }
+    }
 
     for (index, arg) in args.iter().enumerate() {
         match arg {
@@ -107,7 +113,9 @@ fn plan_with<T>(
             }
             MergeArg::Resolved(style) => resolved.push(Resolved::Static(to_value(style))),
             MergeArg::Conditional { primary, fallback } => {
-                if primary == &NullableStyle::Other || fallback == &NullableStyle::Other {
+                if matches!(primary, NullableStyle::Other)
+                    || matches!(fallback, NullableStyle::Other)
+                {
                     bail_out_index.get_or_insert(index);
                     bail = true;
                 } else {
@@ -117,11 +125,11 @@ fn plan_with<T>(
             }
             MergeArg::LogicalAnd { left, right } => {
                 // Inlining needs a non-static left (the runtime test) and a static right.
-                if left != &NullableStyle::Other || right == &NullableStyle::Other {
+                if !matches!(left, NullableStyle::Other) || matches!(right, NullableStyle::Other) {
                     bail_out_index.get_or_insert(index);
                     bail = true;
                 } else {
-                    resolved.push(Resolved::Conditional(to_value(right), EvalValue::Null));
+                    resolved.push(Resolved::Conditional(to_value(right), &NULL_VALUE));
                     conditional += 1;
                 }
             }
@@ -146,47 +154,47 @@ fn plan_with<T>(
         return Ok(MergePlan::Bail { bail_out_index });
     }
 
+    let mut values: Vec<&EvalValue> = Vec::with_capacity(resolved.len());
     if conditional == 0 {
-        let values = resolved
-            .iter()
-            .map(|r| match r {
-                Resolved::Static(v) => v.clone(),
-                Resolved::Conditional(..) => unreachable!("conditional == 0"),
-            })
-            .collect();
-        return Ok(MergePlan::Inlined(merge(values)?));
+        values.extend(resolved.iter().map(|r| match r {
+            Resolved::Static(v) => *v,
+            Resolved::Conditional(..) => unreachable!("conditional == 0"),
+        }));
+        return Ok(MergePlan::Inlined(merge(&values)?));
     }
 
     let mut entries = Vec::with_capacity(1 << conditional);
     for i in 0u32..(1 << conditional) {
         let mut bit = 0u32;
         let mut key = 0u32;
-        let values: Vec<EvalValue> = resolved
-            .iter()
-            .map(|r| match r {
-                Resolved::Static(v) => v.clone(),
-                Resolved::Conditional(primary, fallback) => {
-                    let taken = (i >> bit) & 1 == 1;
-                    bit += 1;
-                    if taken {
-                        primary.clone()
-                    } else {
-                        fallback.clone()
-                    }
-                }
-            })
-            .collect();
+        values.clear();
+        values.extend(resolved.iter().map(|r| match r {
+            Resolved::Static(v) => *v,
+            Resolved::Conditional(primary, fallback) => {
+                let taken = (i >> bit) & 1 == 1;
+                bit += 1;
+                if taken { *primary } else { *fallback }
+            }
+        }));
         for j in 0..conditional {
             key = (key << 1) | ((i >> j) & 1);
         }
-        entries.push((key, merge(values)?));
+        entries.push((key, merge(&values)?));
     }
     Ok(MergePlan::Table(entries))
+}
+
+fn refs(args: &[EvalValue]) -> Vec<&EvalValue> {
+    args.iter().collect()
 }
 
 /// Runtime `props(...args)` over evaluated values; args are one level flat
 /// (styleq flattens nested arrays itself).
 pub fn merge_props(args: &[EvalValue]) -> Result<JsObjectMap, StylexError> {
+    props_of(&refs(args))
+}
+
+fn props_of(args: &[&EvalValue]) -> Result<JsObjectMap, StylexError> {
     let (class_name, inline_style, debug) = styleq(args)?;
     let mut result = JsObjectMap::new();
     if !class_name.is_empty() {
@@ -212,28 +220,42 @@ pub fn merge_props(args: &[EvalValue]) -> Result<JsObjectMap, StylexError> {
 
 /// Runtime `attrs(...args)`: props reshaped, with the style object serialized.
 pub fn merge_attrs(args: &[EvalValue]) -> Result<JsObjectMap, StylexError> {
-    let props = merge_props(args)?;
+    attrs_of(&refs(args))
+}
+
+fn attrs_of(args: &[&EvalValue]) -> Result<JsObjectMap, StylexError> {
+    let (class_name, inline_style, debug) = styleq(args)?;
     let mut result = JsObjectMap::new();
-    if let Some(class_name) = props.get("className") {
-        result.insert("class", class_name.clone());
+    if !class_name.is_empty() {
+        result.insert("class", EvalValue::Str(class_name));
     }
-    if let Some(EvalValue::Obj(style)) = props.get("style") {
-        let serialized: Vec<String> = style
-            .entries()
-            .map(|(k, v)| {
-                // parity: 0.19.2 attrs() — custom properties are case-sensitive
-                // and keep their spelling.
-                if k.starts_with("--") {
-                    format!("{k}:{}", js_to_string(v))
-                } else {
-                    format!("{}:{}", to_kebab_case(k), js_to_string(v))
-                }
-            })
-            .collect();
-        result.insert("style", EvalValue::Str(serialized.join(";")));
+    if let Some(style) = inline_style
+        && !style.is_empty()
+    {
+        let mut serialized = String::new();
+        for (i, (k, v)) in style.entries().enumerate() {
+            if i > 0 {
+                serialized.push(';');
+            }
+            // parity: 0.19.2 attrs() — custom properties are case-sensitive
+            // and keep their spelling.
+            if k.starts_with("--") {
+                serialized.push_str(k);
+            } else {
+                serialized.push_str(&to_kebab_case(k));
+            }
+            serialized.push(':');
+            push_js_string(&mut serialized, v);
+        }
+        result.insert("style", EvalValue::Str(serialized));
     }
-    if let Some(debug) = props.get("data-style-src") {
-        result.insert("data-style-src", debug.clone());
+    let keep_debug = match &debug {
+        EvalValue::Str(s) => !s.is_empty(),
+        EvalValue::Null | EvalValue::Undefined => false,
+        _ => true,
+    };
+    if keep_debug {
+        result.insert("data-style-src", debug);
     }
     Ok(result)
 }
@@ -241,28 +263,99 @@ pub fn merge_attrs(args: &[EvalValue]) -> Result<JsObjectMap, StylexError> {
 /// Runtime `legacyMerge(...args)`: `styleq(args)[0]`. The inline-style object
 /// and the debug source string are discarded, empty string included.
 pub fn merge_legacy(args: &[EvalValue]) -> Result<String, StylexError> {
-    Ok(styleq(args)?.0)
+    Ok(styleq(&refs(args))?.0)
+}
+
+/// styleq's `definedProperties`. A style's own keys are unique, so each
+/// membership test only has to look at the properties earlier styles defined.
+struct Defined<'a> {
+    props: Vec<Cow<'a, str>>,
+    /// `key_mark` of every property an earlier style defined; filled when a
+    /// later style arrives, so a lone style never computes one.
+    marks: Vec<u64>,
+}
+
+impl<'a> Defined<'a> {
+    fn with_capacity(capacity: usize) -> Self {
+        Defined {
+            props: Vec::with_capacity(capacity),
+            marks: Vec::new(),
+        }
+    }
+
+    fn begin_style(&mut self) {
+        let marked = self.marks.len();
+        if marked < self.props.len() {
+            self.marks.reserve(self.props.capacity() - marked);
+            self.marks
+                .extend(self.props[marked..].iter().map(|prop| key_mark(prop)));
+        }
+    }
+
+    fn contains(&self, prop: &str) -> bool {
+        if self.marks.is_empty() {
+            return false;
+        }
+        let mark = key_mark(prop);
+        self.marks
+            .iter()
+            .zip(&self.props)
+            .any(|(have, defined)| *have == mark && defined == prop)
+    }
+
+    fn push(&mut self, prop: Cow<'a, str>) {
+        self.props.push(prop);
+    }
+}
+
+/// A key's length and leading bytes in one word, as a filter ahead of the
+/// string comparison: keys with different marks differ, and keys of up to
+/// seven bytes (the hashed keys of compiled styles) each have their own.
+fn key_mark(key: &str) -> u64 {
+    let bytes = key.as_bytes();
+    let mut word = [0u8; 8];
+    for (slot, byte) in word.iter_mut().zip(bytes) {
+        *slot = *byte;
+    }
+    u64::from_le_bytes(word) ^ ((bytes.len() as u64) << 56)
 }
 
 // parity: styleq@0.2.1 (cache-free path; the WeakMap cache is behaviorally
 // transparent for identical style sequences).
-fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue), StylexError> {
-    let mut defined: Vec<String> = Vec::new();
-    let mut class_name = String::new();
+fn styleq<'a>(
+    args: &[&'a EvalValue],
+) -> Result<(String, Option<JsObjectMap>, EvalValue), StylexError> {
+    let props: usize = args
+        .iter()
+        .map(|arg| match arg {
+            EvalValue::Obj(style) => style.len(),
+            _ => 0,
+        })
+        .sum();
+    let mut defined = Defined::with_capacity(props);
+    // Class names in pop order; each chunk (one compiled style) is prepended
+    // to the result, so the chunks are replayed back to front at the end.
+    let mut classes: Vec<&'a str> = Vec::with_capacity(props);
+    let mut chunk_ends: Vec<usize> = Vec::with_capacity(args.len());
+    let mut class_len = 0usize;
     let mut inline_style: Option<JsObjectMap> = None;
     let mut debug = EvalValue::Str(String::new());
-    let mut stack: Vec<EvalValue> = args.to_vec();
+    // Last argument first; array elements go on the stack and drain before
+    // the walk moves to the next argument, which is styleq's single LIFO.
+    let mut stack: Vec<&'a EvalValue> = Vec::new();
+    let mut remaining = args.iter().rev();
 
-    while let Some(style) = stack.pop() {
+    while let Some(style) = stack.pop().or_else(|| remaining.next().copied()) {
         match style {
             EvalValue::Null | EvalValue::Undefined | EvalValue::Bool(false) => {}
-            EvalValue::Arr(items) => stack.extend(items),
+            EvalValue::Arr(items) => stack.extend(items.iter()),
             // `true` and numbers have no enumerable own props upstream.
             EvalValue::Bool(true) | EvalValue::Num(_) => {}
             // styleq's `for..in` over a primitive string enumerates its
             // UTF-16 index keys ({0: 'a', 1: 'b'}) down the inline branch.
             EvalValue::Str(s) => {
                 let mut sub_style = JsObjectMap::new();
+                defined.begin_style();
                 for (i, unit) in s.encode_utf16().enumerate() {
                     let prop = i.to_string();
                     if defined.contains(&prop) {
@@ -271,7 +364,7 @@ fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue)
                     let value = String::from_utf16(&[unit])
                         .map_err(|_| StylexError::lone_surrogate("a styleq string argument"))?;
                     sub_style.insert(&prop, EvalValue::Str(value));
-                    defined.push(prop);
+                    defined.push(Cow::Owned(prop));
                 }
                 if !sub_style.is_empty() {
                     if let Some(prev) = inline_style.take() {
@@ -286,17 +379,17 @@ fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue)
                 let is_compiled = style
                     .get("$$css")
                     .is_some_and(|v| !matches!(v, EvalValue::Null | EvalValue::Undefined));
+                defined.begin_style();
                 if is_compiled {
-                    let mut chunk = String::new();
+                    let chunk_start = classes.len();
                     for (prop, value) in style.entries() {
                         if prop == "$$css" {
                             if !matches!(value, EvalValue::Bool(true)) {
                                 debug = if js_truthy(&debug) {
-                                    EvalValue::Str(format!(
-                                        "{}; {}",
-                                        js_to_string(value),
-                                        js_to_string(&debug)
-                                    ))
+                                    let mut joined = js_to_string(value);
+                                    joined.push_str("; ");
+                                    push_js_string(&mut joined, &debug);
+                                    EvalValue::Str(joined)
                                 } else {
                                     value.clone()
                                 };
@@ -304,26 +397,24 @@ fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue)
                             continue;
                         }
                         match value {
-                            EvalValue::Str(s) if !defined.iter().any(|d| d == prop) => {
-                                defined.push(prop.to_string());
-                                if !chunk.is_empty() {
-                                    chunk.push(' ');
+                            EvalValue::Str(s) if !defined.contains(prop) => {
+                                defined.push(Cow::Borrowed(prop));
+                                // An empty class still occupies a slot in the
+                                // chunk only when it is not the first one.
+                                if classes.len() > chunk_start || !s.is_empty() {
+                                    classes.push(s);
+                                    class_len += s.len() + 1;
                                 }
-                                chunk.push_str(s);
                             }
-                            EvalValue::Null if !defined.iter().any(|d| d == prop) => {
-                                defined.push(prop.to_string());
+                            EvalValue::Null if !defined.contains(prop) => {
+                                defined.push(Cow::Borrowed(prop));
                             }
                             // other value types: styleq logs and skips
                             _ => {}
                         }
                     }
-                    if !chunk.is_empty() {
-                        class_name = if class_name.is_empty() {
-                            chunk
-                        } else {
-                            format!("{chunk} {class_name}")
-                        };
+                    if classes.len() > chunk_start {
+                        chunk_ends.push(classes.len());
                     }
                 } else {
                     let mut sub_style = JsObjectMap::new();
@@ -331,13 +422,13 @@ fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue)
                         if matches!(value, EvalValue::Undefined) {
                             continue;
                         }
-                        if defined.iter().any(|d| d == prop) {
+                        if defined.contains(prop) {
                             continue;
                         }
                         if !matches!(value, EvalValue::Null) {
                             sub_style.insert(prop, value.clone());
                         }
-                        defined.push(prop.to_string());
+                        defined.push(Cow::Borrowed(prop));
                     }
                     if !sub_style.is_empty() {
                         if let Some(prev) = inline_style.take() {
@@ -349,6 +440,17 @@ fn styleq(args: &[EvalValue]) -> Result<(String, Option<JsObjectMap>, EvalValue)
                     }
                 }
             }
+        }
+    }
+
+    let mut class_name = String::with_capacity(class_len.saturating_sub(1));
+    for chunk in (0..chunk_ends.len()).rev() {
+        let start = if chunk == 0 { 0 } else { chunk_ends[chunk - 1] };
+        for class in &classes[start..chunk_ends[chunk]] {
+            if !class_name.is_empty() {
+                class_name.push(' ');
+            }
+            class_name.push_str(class);
         }
     }
     Ok((class_name, inline_style, debug))
@@ -423,7 +525,7 @@ impl StyleVarsCollector {
                         unreachable!("acc checked above");
                     };
                     let snapshot = NonNullProps::Props(list.clone());
-                    list.extend(non_null_keys(&value));
+                    push_non_null_keys(&value, list);
                     snapshot
                 }
             }
@@ -438,21 +540,23 @@ impl StyleVarsCollector {
 
 // `Object.keys(styleValue).filter((key) => styleValue[key] !== null)` — note
 // undefined values pass the !== null filter.
-fn non_null_keys(value: &EvalValue) -> Vec<String> {
+fn push_non_null_keys(value: &EvalValue, keys: &mut Vec<String>) {
     match value {
-        EvalValue::Obj(map) => map
-            .entries()
-            .filter(|(_, v)| !matches!(v, EvalValue::Null))
-            .map(|(k, _)| k.to_string())
-            .collect(),
-        EvalValue::Arr(items) => (0..items.len())
-            .filter(|i| !matches!(items[*i], EvalValue::Null))
-            .map(|i| i.to_string())
-            .collect(),
-        EvalValue::Str(s) => (0..s.encode_utf16().count())
-            .map(|i| i.to_string())
-            .collect(),
-        _ => Vec::new(),
+        EvalValue::Obj(map) => {
+            keys.reserve(map.len());
+            keys.extend(
+                map.entries()
+                    .filter(|(_, v)| !matches!(v, EvalValue::Null))
+                    .map(|(k, _)| k.to_owned()),
+            );
+        }
+        EvalValue::Arr(items) => keys.extend(
+            (0..items.len())
+                .filter(|i| !matches!(items[*i], EvalValue::Null))
+                .map(|i| i.to_string()),
+        ),
+        EvalValue::Str(s) => keys.extend((0..s.encode_utf16().count()).map(|i| i.to_string())),
+        _ => {}
     }
 }
 
@@ -462,6 +566,13 @@ fn js_truthy(value: &EvalValue) -> bool {
         EvalValue::Bool(true) | EvalValue::Obj(_) | EvalValue::Arr(_) => true,
         EvalValue::Str(s) => !s.is_empty(),
         EvalValue::Num(n) => *n != 0.0 && !n.is_nan(),
+    }
+}
+
+fn push_js_string(out: &mut String, value: &EvalValue) {
+    match value {
+        EvalValue::Str(s) => out.push_str(s),
+        other => out.push_str(&js_to_string(other)),
     }
 }
 
