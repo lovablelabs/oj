@@ -9,7 +9,8 @@ use std::sync::{Mutex, PoisonError, mpsc};
 use std::time::Instant;
 
 use crate::api::{
-    FileContext, MapMode, might_contain_stylex, transform_source_in, transform_source_in_with_map,
+    FileContext, MapMode, might_contain_stylex, transform_source_in_with_map,
+    transform_source_rules_in,
 };
 use crate::assemble::{AssembleConfig, RuleRegistry};
 use crate::module_resolution::MemoFs;
@@ -277,23 +278,36 @@ fn transform(request: &Request, id: &str, shared: &Shared) -> String {
         Some(true) => MapMode::Mappings,
         _ => MapMode::Off,
     };
+    let want_code = request.want_code != Some(false);
+    // Neither the code nor a map of it is read: only the rules are compiled.
+    let rules_only = !want_code && map_mode == MapMode::Off;
     let compiled = ARENA.with(|cell| {
         let mut allocator = cell.borrow_mut();
         allocator.reset();
-        let result =
-            transform_source_in_with_map(&allocator, &ctx, &options, MemoFs::shared(), map_mode);
+        let fs = MemoFs::shared();
+        let result = if rules_only {
+            transform_source_rules_in(&allocator, &ctx, &options, fs).map(|result| {
+                let rules = result.map_or_else(Vec::new, |result| result.rules);
+                (Cow::Borrowed(&*source), rules, None)
+            })
+        } else {
+            transform_source_in_with_map(&allocator, &ctx, &options, fs, map_mode).map(|result| {
+                match result {
+                    Some(result) => (Cow::Owned(result.code), result.rules, result.map),
+                    None => (Cow::Borrowed(&*source), Vec::new(), None),
+                }
+            })
+        };
         if allocator.capacity() > ARENA_CAP_BYTES {
             *allocator = Allocator::default();
         }
         result
     });
     let (code, rules, map) = match compiled {
-        Ok(Some(result)) => (Cow::Owned(result.code), result.rules, result.map),
-        Ok(None) => (Cow::Borrowed(&*source), Vec::new(), None),
+        Ok(compiled) => compiled,
         Err(error) => return compile_error_line(id, root, filename, error),
     };
     let _t = timings::start(Stage::NdjsonOut);
-    let want_code = request.want_code != Some(false);
     let mut line = OkLine::new(
         id,
         if want_code {
@@ -421,7 +435,7 @@ fn warm(request: &Request, id: &str, shared: &Shared) -> String {
                         source_text: source,
                         cwd,
                     };
-                    match transform_source_in(&allocator, &ctx, options, fs) {
+                    match transform_source_rules_in(&allocator, &ctx, options, fs) {
                         Ok(Some(result)) if !result.rules.is_empty() => {
                             compiled.fetch_add(1, Ordering::Relaxed);
                             let key = path.to_string_lossy().replace('\\', "/");

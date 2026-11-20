@@ -10,7 +10,10 @@ use std::sync::Mutex;
 use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
-use crate::api::{FileContext, parse_program, transform_program, transform_source_in};
+use crate::api::{
+    FileContext, parse_program, transform_program, transform_program_rules, transform_source_in,
+    transform_source_rules_in,
+};
 use crate::cache::{CacheStatus, CacheStore, compile_through_cache_in};
 use crate::errors::StylexError;
 use crate::module_resolution::MemoFs;
@@ -838,6 +841,8 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
         cwd: Path::new(root),
     };
     let fs = ctx.fs;
+    // `--emit rules` drops the code unread, so nothing builds it.
+    let rules_only = matches!(ctx.payload, Payload::Rules);
     match ctx.backend {
         Backend::Splice => ARENA.with(|cell| {
             let mut allocator = cell.borrow_mut();
@@ -857,6 +862,11 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
                     None => Ok((Cow::Borrowed(source), Vec::new(), outcome)),
                 };
             }
+            if rules_only {
+                let rules = transform_source_rules_in(&allocator, &file, &options, fs)?
+                    .map_or_else(Vec::new, |result| result.rules);
+                return Ok((Cow::Borrowed(source), rules, None));
+            }
             match transform_source_in(&allocator, &file, &options, fs)? {
                 Some(result) => Ok((Cow::Owned(result.code), result.rules, None)),
                 None => Ok((Cow::Borrowed(source), Vec::new(), None)),
@@ -869,10 +879,14 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
                 let _t = timings::start(Stage::Parse);
                 parse_program(&allocator, source, &filename)?
             };
+            if rules_only {
+                let result = transform_program_rules(&program, &file, &options, fs)?;
+                return Ok((Cow::Borrowed(source), result.rules, None));
+            }
             let result = transform_program(&allocator, &mut program, &file, &options, fs)?;
             // Untouched programs pass through byte-identical, like the splice
             // backend; only modified ones go through codegen.
-            let code = if result.modified && matches!(ctx.payload, Payload::Full) {
+            let code = if result.modified {
                 let _t = timings::start(Stage::PrintAst);
                 Cow::Owned(Codegen::new().build(&program).code)
             } else {

@@ -63,7 +63,7 @@ use crate::transform::js_out::{
 };
 use crate::transform::merge::{
     MemberEval, MergeArg, MergeMode, MergePlan, NullableStyle, StyleVarToKeep, StyleVarsCollector,
-    plan_legacy_merge, plan_merge,
+    plan_legacy_merge, plan_legacy_merge_shape, plan_merge, plan_merge_shape,
 };
 
 // ---------------------------------------------------------------------------
@@ -1285,10 +1285,28 @@ struct Shared<'a, 'env> {
     /// False on the splice path: the plan would be dropped unread, and its
     /// recording clones compiled maps and object values per site.
     build_plan: bool,
+    /// [`Emit::RulesOnly`]: no output text, no plan, and no work whose only
+    /// reader is one of them.
+    rules_only: bool,
+    /// Rules-only stand-in for the edit a props()/attrs()/merge/sx site
+    /// would have pushed: all `modified` needs of it.
+    rewritten: bool,
     /// Shared by every props()/attrs() evaluation: its inputs (import table,
     /// env) are fixed for the compile.
     props_registry: Option<FunctionRegistry>,
     error: Option<StylexError>,
+}
+
+/// What a compile's caller reads besides the rules, `modified` and the error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Emit {
+    /// The source with every edit spliced in ([`TransformOutput::code`]).
+    Splice,
+    /// The AST backend's [`AstPlan`].
+    Plan,
+    /// Neither: nothing that only shapes the output JS runs (printing, call
+    /// inlining, DCE, compensation imports).
+    RulesOnly,
 }
 
 pub fn transform_module<'a>(
@@ -1296,7 +1314,7 @@ pub fn transform_module<'a>(
     source: &str,
     state: &mut CompileState<'a>,
     fs: &dyn FsProvider,
-    build_plan: bool,
+    emit: Emit,
     want_map: bool,
 ) -> Result<TransformOutput, StylexError> {
     let mut shared = Shared {
@@ -1327,7 +1345,9 @@ pub fn transform_module<'a>(
         atom_static_sites: Vec::new(),
         atom_dynamic_callees: BTreeSet::new(),
         plan: AstPlan::default(),
-        build_plan,
+        build_plan: emit == Emit::Plan,
+        rules_only: emit == Emit::RulesOnly,
+        rewritten: false,
         props_registry: None,
         error: None,
     };
@@ -1344,16 +1364,17 @@ pub fn transform_module<'a>(
     }
     let has_atoms = !shared.state.imports.atom_imports.is_empty()
         || !shared.state.imports.atom_binding_locals.is_empty();
-    if has_atoms {
-        let index = pass_b1_index(shared.state, &shared.style_map);
-        {
+    if has_atoms || shared.rules_only {
+        // Pass B1 only marks what DCE keeps: no rule and no error reads it.
+        if !shared.rules_only {
+            let index = pass_b1_index(shared.state, &shared.style_map);
             let mut pass = PassB1 {
                 s: &mut shared,
                 index,
             };
             walk_program(&mut pass, program);
         }
-        {
+        if has_atoms {
             let mut pass = PassAtoms {
                 s: &mut shared,
                 callee_spans: BTreeSet::new(),
@@ -1387,6 +1408,25 @@ pub fn transform_module<'a>(
     }
     if let Some(error) = shared.error.take() {
         return Err(error);
+    }
+    if shared.rules_only {
+        // Everything past this point only adds edits, never removes the last
+        // one, so `modified` is whether any exists or would be added.
+        let modified = shared.rewritten
+            || shared.edits.iter().any(Option::is_some)
+            || !shared.state.treeshake_imports.is_empty()
+            || !shared.rewrite_import_sources(program).is_empty();
+        return Ok(TransformOutput {
+            code: String::new(),
+            modified,
+            splice_map: None,
+            create_objects: shared
+                .create_sites
+                .drain(..)
+                .map(|site| (site.var_name, site.compiled))
+                .collect(),
+            plan: AstPlan::default(),
+        });
     }
     shared.finalize_sx_bails();
     shared.apply_dce();
@@ -1603,9 +1643,10 @@ impl<'a, 'env> Shared<'a, 'env> {
         self.edits.len() - 1
     }
 
-    /// Plan mode reads only edit spans (DCE, take_edits_within), never text.
+    /// Plan mode reads only edit spans (DCE, take_edits_within), never text;
+    /// rules-only mode only whether an edit exists.
     fn splice_text(&self, print: impl FnOnce() -> String) -> String {
-        if self.build_plan {
+        if self.build_plan || self.rules_only {
             String::new()
         } else {
             print()
@@ -1823,7 +1864,7 @@ impl<'a, 'env> Shared<'a, 'env> {
                 }
                 Some(uid)
             };
-            if !self.build_plan {
+            if !self.build_plan && !self.rules_only {
                 dynamic.push((
                     ns.clone(),
                     print_dynamic_arrow(&dc, self.source, static_ident.as_deref()),
@@ -3084,6 +3125,12 @@ impl<'a, 'env> Shared<'a, 'env> {
                 return Flow::Skip;
             }
         };
+        if self.rules_only {
+            let shape = plan_merge_shape(&classified.args, self.state.options);
+            return self.settle_unprinted(shape, |s, bail_out_index| {
+                s.collect_from_arguments(&call.arguments, bail_out_index)
+            });
+        }
         let plan = match plan_merge(&classified.args, mode, self.state.options) {
             Ok(plan) => plan,
             Err(error) => {
@@ -3147,6 +3194,12 @@ impl<'a, 'env> Shared<'a, 'env> {
     // as a bare string; there is no JSX-spread fast path and no bail hoisting.
     fn process_legacy_merge_call(&mut self, call: &'a CallExpression<'a>) -> Flow {
         let classified = self.classify_legacy(&call.arguments);
+        if self.rules_only {
+            let shape = plan_legacy_merge_shape(&classified.args, self.state.options);
+            return self.settle_unprinted(shape, |s, bail_out_index| {
+                s.collect_from_arguments(&call.arguments, bail_out_index)
+            });
+        }
         let plan = match plan_legacy_merge(&classified.args, self.state.options) {
             Ok(plan) => plan,
             Err(error) => {
@@ -3209,6 +3262,15 @@ impl<'a, 'env> Shared<'a, 'env> {
                 return Flow::Skip;
             }
         };
+        if self.rules_only {
+            let shape = plan_merge_shape(&classified.args, self.state.options);
+            return self.settle_unprinted(shape, |s, bail_out_index| {
+                s.collect_single(expr, bail_out_index)?;
+                // A bailed sx attribute is rewritten to a props() spread.
+                s.rewritten = true;
+                Ok(())
+            });
+        }
         let plan = match plan_merge(&classified.args, MergeMode::Props, self.state.options) {
             Ok(plan) => plan,
             Err(error) => {
@@ -3265,6 +3327,29 @@ impl<'a, 'env> Shared<'a, 'env> {
                 Flow::Skip
             }
         }
+    }
+
+    /// Rules-only end of a props()/attrs()/merge/sx site. A bail still runs
+    /// the collector, whose evaluations can fail the compile, and walks on
+    /// into the nested sites; any other shape is one replacement.
+    fn settle_unprinted(
+        &mut self,
+        shape: Result<MergePlan<()>, StylexError>,
+        collect: impl FnOnce(&mut Self, Option<usize>) -> Result<(), StylexError>,
+    ) -> Flow {
+        let settled = shape.and_then(|shape| match shape {
+            MergePlan::Bail { bail_out_index } => {
+                collect(self, bail_out_index).map(|()| Flow::Walk)
+            }
+            MergePlan::Inlined(()) | MergePlan::Table(_) => {
+                self.rewritten = true;
+                Ok(Flow::Skip)
+            }
+        });
+        settled.unwrap_or_else(|error| {
+            self.fail(error);
+            Flow::Skip
+        })
     }
 
     /// parity: stylex-props.js:277-300 — an argument object carrying `$$css:

@@ -80,6 +80,40 @@ pub fn plan_legacy_merge(
     plan_with(args, options, true, |values| Ok(styleq(values)?.0))
 }
 
+/// [`plan_merge`] without the merged leaves, for callers that read only the
+/// plan's shape and its error; props and attrs share both.
+pub fn plan_merge_shape(
+    args: &[MergeArg],
+    options: &ResolvedOptions,
+) -> Result<MergePlan<()>, StylexError> {
+    plan_with(args, options, false, merge_error)
+}
+
+/// [`plan_legacy_merge`] without the merged leaves.
+pub fn plan_legacy_merge_shape(
+    args: &[MergeArg],
+    options: &ResolvedOptions,
+) -> Result<MergePlan<()>, StylexError> {
+    plan_with(args, options, true, merge_error)
+}
+
+/// The error merging `values` raises, without merging unless one can: styleq
+/// fails only on a string argument (nested arrays flatten into arguments)
+/// holding an astral character, whose UTF-16 halves it indexes one by one.
+fn merge_error(values: &[&EvalValue]) -> Result<(), StylexError> {
+    fn splits_a_pair(value: &EvalValue) -> bool {
+        match value {
+            EvalValue::Str(s) => s.bytes().any(|b| b >= 0xF0),
+            EvalValue::Arr(items) => items.iter().any(splits_a_pair),
+            _ => false,
+        }
+    }
+    if values.iter().any(|value| splits_a_pair(value)) {
+        styleq(values)?;
+    }
+    Ok(())
+}
+
 static NULL_VALUE: EvalValue = EvalValue::Null;
 
 fn plan_with<T>(

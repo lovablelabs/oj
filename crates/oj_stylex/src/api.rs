@@ -16,7 +16,7 @@ use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::state::CompileState;
 use crate::transform::ast_backend::apply_plan;
-use crate::transform::visitor::transform_module;
+use crate::transform::visitor::{Emit, transform_module};
 
 pub struct FileContext<'s> {
     /// Absolute path the source pretends to live at.
@@ -123,7 +123,14 @@ pub fn transform_source_in_with_map(
     );
     let out = {
         let _t = crate::timings::start(crate::timings::Stage::Transform);
-        transform_module(&program, ctx.source_text, &mut state, fs, false, want_map)?
+        transform_module(
+            &program,
+            ctx.source_text,
+            &mut state,
+            fs,
+            Emit::Splice,
+            want_map,
+        )?
     };
     let map = out.splice_map.as_ref().map(|m| {
         render_sourcemap(
@@ -165,8 +172,9 @@ pub fn transform_source_with_dep_log_in(
     Ok((result, recorder.into_log()))
 }
 
-/// AST-backend result: rules plus whether the caller's program was mutated.
-#[derive(Debug)]
+/// AST-backend result: rules plus whether the caller's program was mutated
+/// (for a rules-only compile, whether the full compile would rewrite it).
+#[derive(Debug, Default)]
 pub struct CompileResult {
     pub modified: bool,
     pub rules: Vec<StylexRule>,
@@ -207,7 +215,14 @@ pub fn transform_program<'a>(
             CompileState::build_with_imports(program_ref, options, Some(filename), cwd, imports);
         let out = {
             let _t = crate::timings::start(crate::timings::Stage::Transform);
-            transform_module(program_ref, ctx.source_text, &mut state, fs, true, false)?
+            transform_module(
+                program_ref,
+                ctx.source_text,
+                &mut state,
+                fs,
+                Emit::Plan,
+                false,
+            )?
         };
         (out.plan, out.modified, state.rules, out.create_objects)
     };
@@ -219,6 +234,71 @@ pub fn transform_program<'a>(
         modified,
         rules,
         create_objects,
+    })
+}
+
+/// [`transform_source_in`] for callers that read only the rules: `rules`,
+/// `modified`, `create_objects` and the error are the full compile's, and
+/// nothing that only shapes its output JS runs. `None` = pre-gate skip.
+pub fn transform_source_rules_in(
+    allocator: &Allocator,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<Option<CompileResult>, StylexError> {
+    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
+        return Ok(None);
+    };
+    let program = {
+        let _t = crate::timings::start(crate::timings::Stage::Parse);
+        parse_program(allocator, ctx.source_text, &ctx.filename.to_string_lossy())?
+    };
+    compile_rules(&program, sx_hit, ctx, options, fs).map(Some)
+}
+
+/// [`transform_program`] for callers that read only the rules; the program
+/// stays as parsed.
+pub fn transform_program_rules(
+    program: &Program<'_>,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
+    match options.gate.scan(ctx.source_text) {
+        Some(sx_hit) => compile_rules(program, sx_hit, ctx, options, fs),
+        None => Ok(CompileResult::default()),
+    }
+}
+
+fn compile_rules(
+    program: &Program<'_>,
+    sx_hit: bool,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
+    let Some(imports) = scan_unless_dormant(program, sx_hit, options)? else {
+        return Ok(CompileResult::default());
+    };
+    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
+    let cwd = ctx.cwd.to_string_lossy().replace('\\', "/");
+    let mut state =
+        CompileState::build_with_imports(program, options, Some(filename), cwd, imports);
+    let out = {
+        let _t = crate::timings::start(crate::timings::Stage::Transform);
+        transform_module(
+            program,
+            ctx.source_text,
+            &mut state,
+            fs,
+            Emit::RulesOnly,
+            false,
+        )?
+    };
+    Ok(CompileResult {
+        modified: out.modified,
+        rules: state.rules,
+        create_objects: out.create_objects,
     })
 }
 
