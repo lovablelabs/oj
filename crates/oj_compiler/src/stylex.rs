@@ -617,6 +617,86 @@ export function Card({ title, children }: { title: string; children?: ReactNode 
         }
     }
 
+    /// Uses of an import the search for a plain one does not see (see
+    /// `plainly_uses`): the symbols find them, and the module's interop is
+    /// the steps'.
+    #[test]
+    fn a_use_only_the_symbols_find_goes_through_the_steps() {
+        const STYLES: &str = "import * as stylex from '@stylexjs/stylex';\n\
+             const s = stylex.create({\n  a: { color: 'red' },\n});\n\
+             export const A = () => <i {...stylex.props(s.a)} />;\n";
+        let later = LaterTransforms::default();
+        for (above, below) in [
+            // Spread.
+            (
+                "import defaults from 'react';",
+                "export const all = { ...defaults };",
+            ),
+            (
+                "import { items } from 'react';",
+                "export const all = [...items];",
+            ),
+            (
+                "import { parts } from 'react';",
+                "export const most = Math.max(...parts);",
+            ),
+            (
+                "import * as props from 'react';",
+                "export const B = () => <b {...props} />;",
+            ),
+            // Above the import, called and read.
+            (
+                "export function made() { return create(); }",
+                "import create from 'react';",
+            ),
+            (
+                "export function maker() { return create; }",
+                "import create from 'react';",
+            ),
+            (
+                "export const all = () => [...items];",
+                "import { items } from 'react';",
+            ),
+            // Written with an escape.
+            (
+                "import { useState } from 'react';",
+                "export const useCount = () => use\\u0053tate(0);",
+            ),
+            (
+                "import { useState } from 'react';",
+                "export const use = use\\u{53}tate;",
+            ),
+            (
+                "import { use\\u0053tate } from 'react';",
+                "export const use = { ...useState };",
+            ),
+        ] {
+            let source = format!("{above}\n{STYLES}{below}\n");
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, &source, SourceType::tsx()).parse();
+            assert!(parsed.diagnostics.is_empty(), "{source}");
+            assert!(
+                may_rewrite(&parsed.program, &source, &later, &needs_interop),
+                "{source}"
+            );
+            let module = compile("/app/src/A.tsx", &source).unwrap();
+            let steps = steps("/app/src/A.tsx", &source).unwrap();
+            assert_eq!(module.code, steps.code, "{source}");
+            assert_eq!(module.map_json, steps.map_json, "{source}");
+            assert!(module.map_json.is_some());
+            assert_eq!(rules(&module), rules(&steps));
+            assert_eq!(module.imports, steps.imports);
+            assert!(!module.stylex_rules.is_empty());
+            // The binding is read off the dep's `module.exports`.
+            assert!(
+                module.code.contains("__ojcjs0") && module.code.contains("react.js"),
+                "{source}\n{}",
+                module.code
+            );
+            assert!(!module.code.contains("from 'react'"), "{}", module.code);
+        }
+    }
+
     #[test]
     fn errors_are_the_steps_own() {
         for (path, source) in [

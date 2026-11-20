@@ -358,7 +358,9 @@ pub(crate) fn imports_may_need_interop(
 /// or without it wherever the rewrite would ask: a use found here spares
 /// building the module's symbols to find it, and a module wrongly said to
 /// use a binding (its name in a comment) goes through the rewrite, which
-/// reads the symbols itself.
+/// reads the symbols itself. A "no" settles nothing: a use this does not
+/// see (a read, a spread, a name written with an escape) is one the symbols
+/// find, and the caller asks them.
 fn plainly_uses(source: &str, decl: &ImportDeclaration) -> bool {
     let bytes = source.as_bytes();
     let in_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$') || !b.is_ascii();
@@ -2134,6 +2136,68 @@ mod tests {
             "import { a, T } from \"cjs-dep\";\nexport const x: T = [a];\n",
             "import a from \"cjs-dep\";\nexport { a };\n",
             "import React from \"cjs-dep\";\nexport const x = <p />;\n",
+            // Spread.
+            "import a from \"cjs-dep\";\nexport const x = { ...a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [...a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = Math.max(...a);\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p {...a} />;\n",
+            // Above the import.
+            "export function f() { return a(); }\nimport a from \"cjs-dep\";\n",
+            "export function f() { return a; }\nimport a from \"cjs-dep\";\n",
+            "export const f = () => [...a];\nimport { a } from \"cjs-dep\";\n",
+            "export let x: T;\nimport { T } from \"cjs-dep\";\n",
+            // Written with an escape, where it is used or where it is bound.
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u0053tate(0);\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u{53}tate;\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = { ...use\\u0053tate };\n",
+            "import { use\\u0053tate } from \"cjs-dep\";\nexport const x = useState;\n",
+            "import { use\\u0053tate } from \"cjs-dep\";\nexport let x: useState;\n",
+            // Every other place a value is read.
+            "import { a } from \"cjs-dep\";\nexport const x = { a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { [a]: 1 };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { k: a };\n",
+            "import { a } from \"cjs-dep\";\nexport const [x = a] = [];\n",
+            "import { a } from \"cjs-dep\";\nexport const { [a]: x } = {};\n",
+            "import { a } from \"cjs-dep\";\nexport const x = (y = a) => y;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = () => a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = typeof a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = `${a}`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a`x`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a?.b;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a?.b();\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a[0];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a!;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a as unknown;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a satisfies unknown;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [!a, +a, -a, ~a, void a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = delete a.b;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = await a;\n",
+            "import { a } from \"cjs-dep\";\nexport function* x() { yield a; }\n",
+            "import { a } from \"cjs-dep\";\nexport function* x() { yield* a; }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = 1 in a;\n",
+            "import { A } from \"cjs-dep\";\nexport const x = 1 instanceof A;\n",
+            "import { a } from \"cjs-dep\";\nfor (const y of a) {}\n",
+            "import { a } from \"cjs-dep\";\nif (a) {}\n",
+            "import { a } from \"cjs-dep\";\na;\n",
+            "import { A } from \"cjs-dep\";\nexport class X extends A {}\n",
+            "import { a } from \"cjs-dep\";\nexport class X { y = a; }\n",
+            "import { a } from \"cjs-dep\";\nexport class X { static { a; } }\n",
+            "import { a } from \"cjs-dep\";\n@a\nexport class X {}\n",
+            "import { a } from \"cjs-dep\";\nexport class X { @a y = 1; }\n",
+            "import { a } from \"cjs-dep\";\nexport enum X { Y = a }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p>{a}</p>;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p k={a} />;\n",
+            "import { a } from \"cjs-dep\";\nexport default a;\n",
+            "import { a } from \"cjs-dep\";\nexport { a as b };\n",
+            "import { a } from \"cjs-dep\";\nexport { a as default };\n",
+            "import * as ns from \"cjs-dep\";\nimport X = ns.Y;\nexport const x = X;\n",
+            // And places a name is no value read.
+            "import { a } from \"cjs-dep\";\na: for (;;) { break a; }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { a: 1 }.a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = \"a\" + `a`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = (a: number) => 1;\n",
+            "import { a } from \"cjs-dep\";\nexport let x: typeof a;\n",
+            "import * as ns from \"cjs-dep\";\nimport X = ns.Y;\nexport let x: X;\n",
             // No binding to remove.
             "import \"cjs-dep\";\n",
             "import {} from \"cjs-dep\";\n",
@@ -2171,6 +2235,33 @@ mod tests {
         assert!(!may_need(written_as_value, &settings[0]));
         assert!(may_need(written_as_value, &settings[1]));
 
+        // A use the shortcut does not see is the symbols' to find: its "no"
+        // answers nothing.
+        let plain = |src: &str| {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, src, SourceType::tsx()).parse();
+            parsed.program.body.iter().any(|stmt| match stmt {
+                Statement::ImportDeclaration(decl) => plainly_uses(src, decl),
+                _ => false,
+            })
+        };
+        for src in [
+            "import a from \"cjs-dep\";\nexport const x = { ...a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [...a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = Math.max(...a);\n",
+            "export function f() { return a; }\nimport a from \"cjs-dep\";\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u0053tate(0);\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u{53}tate;\n",
+        ] {
+            assert!(!plain(src), "{src}");
+            assert!(may_need(src, &settings[0]), "{src}");
+            assert!(asks(src, &settings[0]), "{src}");
+        }
+        // A use above the import is as plain as one below it.
+        assert!(plain(
+            "export function f() { return a(); }\nimport a from \"cjs-dep\";\n"
+        ));
+
         // A name that only reads as a use sends the module through the pass,
         // which asks about nothing.
         for src in [
@@ -2206,6 +2297,9 @@ mod tests {
             ("x = use;", false),
             ("x = ns.use;", false),
             ("x = { use };", false),
+            ("x = { ...use };", false),
+            ("x = [...use];", false),
+            ("f(...use);", false),
             // Types.
             ("let x: Use;", false),
             ("let x: ns.Use;", false),
