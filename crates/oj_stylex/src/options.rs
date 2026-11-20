@@ -109,6 +109,9 @@ pub struct RuntimeInjection {
 
 const DEFAULT_INJECT_PATH: &str = "@stylexjs/stylex/lib/stylex-inject";
 
+/// `sxPropName ?? 'sx'`.
+pub(crate) const DEFAULT_SX_PROP_NAME: &str = "sx";
+
 // parity: babel-plugin src/utils/state-manager.js setOptions +
 // src/shared/utils/default-options.js (0.19.0 ??-chains).
 #[derive(Debug, Clone, PartialEq)]
@@ -139,7 +142,8 @@ pub struct ResolvedOptions {
     pub aliases: Option<AliasMap>,
     pub rewrite_aliases: bool,
     /// The pre-parse gate over `sx_prop_name`, `import_sources` and
-    /// `rewrite_aliases`, its searchers built once here instead of per file.
+    /// `rewrite_aliases`, its searchers built once here instead of per file
+    /// (those of the default needles, once for the process).
     pub(crate) gate: PreGate,
     /// Canonical `{:?}` capture of every other field, computed once at
     /// resolve: cache/memo keys read it instead of reformatting per call.
@@ -288,7 +292,7 @@ impl CompilerOptions {
         }
 
         let sx_prop_name = match get(&self.sx_prop_name) {
-            None => Some("sx".to_string()),
+            None => Some(DEFAULT_SX_PROP_NAME.to_string()),
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Bool(false)) => None,
             Some(other) => {
