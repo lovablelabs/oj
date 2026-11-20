@@ -13,6 +13,7 @@ import {
   extractResolve,
   extractSsr,
   mergeConfigLite,
+  startRouterOptions,
   warnUnsupported,
 } from "../../crates/oj_server/src/assets/vite-extract.mjs";
 
@@ -573,4 +574,49 @@ test("NODE_ENV-rule and externalizeDepsPlugin twins are byte-identical across th
       `the two ${what} copies drifted — keep them byte-identical`,
     );
   }
+});
+
+// Start's route-tree-footer.js: its declare-module block as one entry, then
+// the app's own routeTreeFileFooter.
+const START_BLOCK = [
+  "import type { getRouter } from './router.tsx'",
+  "import type { createStart } from '@tanstack/react-start'",
+  "declare module '@tanstack/react-start' {",
+  "  interface Register {",
+  "    ssr: true",
+  "    router: Awaited<ReturnType<typeof getRouter>>",
+  "  }",
+  "}",
+].join("\n");
+
+test("the Start router options keep the app's footer after Start's block", () => {
+  const out = startRouterOptions({
+    quoteStyle: "double",
+    indexToken: /hom(e)?/i,
+    plugins: [{}],
+    target: "react",
+    routeTreeFileFooter: () => [START_BLOCK, "// app footer"],
+  });
+  assert.deepEqual(out, {
+    quoteStyle: "double",
+    indexToken: { regex: "hom(e)?", flags: "i" },
+    routeTreeFileFooter: ["// app footer"],
+  });
+});
+
+test("a Start router option that is not data is left out, without a throw", () => {
+  const cyclic = { file: "root.tsx" };
+  cyclic.children = [cyclic];
+  const out = startRouterOptions({
+    quoteStyle: "double",
+    virtualRouteConfig: cyclic,
+    customScaffolding: { routeTemplate: 1n },
+    routeFilePrefix: () => "r-",
+  });
+  assert.deepEqual(out, { quoteStyle: "double" });
+});
+
+test("a Start footer without a declare-module entry gives the app no footer", () => {
+  const out = startRouterOptions({ routeTreeFileFooter: () => ["// a block of another shape", "// app footer"] });
+  assert.equal(out.routeTreeFileFooter, undefined);
 });

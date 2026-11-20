@@ -60,15 +60,16 @@ async function main() {
   // and route tree inline (start-plugin-core's parseStartConfig, from
   // tanstackStart's `srcDirectory` and `router`), so tsr.config.json never sets
   // them under Start; oj passes the same two (OJ_ROUTES_DIRECTORY,
-  // OJ_GENERATED_ROUTE_TREE). The rest are defaults under the file.
+  // OJ_GENERATED_ROUTE_TREE), and the generator options Start's generator ran
+  // with (OJ_ROUTER_OPTIONS, recorded at config extraction). The rest are
+  // defaults under the file.
+  const { routeTreeFileFooter: appFooter = [], ...routerOptions } = JSON.parse(process.env.OJ_ROUTER_OPTIONS || "{}");
   const START_PATHS = {
     routesDirectory: process.env.OJ_ROUTES_DIRECTORY || pathResolve(root, "src/routes"),
     generatedRouteTree: process.env.OJ_GENERATED_ROUTE_TREE || pathResolve(root, "src/routeTree.gen.ts"),
+    ...routerOptions,
   };
-  const OJ_DEFAULTS = {
-    autoCodeSplitting: false,
-    routeFileIgnorePattern: "\\.(test|spec|stories|bench)\\.|\\.d\\.ts$",
-  };
+  const OJ_DEFAULTS = { autoCodeSplitting: false };
   const configured = (() => {
     try {
       return JSON.parse(readFileSync(pathJoin(root, "tsr.config.json"), "utf8"));
@@ -150,9 +151,8 @@ async function main() {
       ...Object.fromEntries(Object.entries(OJ_DEFAULTS).filter(([k]) => !(k in configured))),
       ...START_PATHS,
       target: "react",
-      // The declare-module footer the framework's plugin writes; an app that sets
-      // routeTreeFileFooter itself keeps its own.
-      ...("routeTreeFileFooter" in configured ? {} : { routeTreeFileFooter: [moduleDeclaration()] }),
+      // Start's footer: its declare-module block, then the app's own.
+      routeTreeFileFooter: [moduleDeclaration(), ...appFooter],
     },
     root,
   );

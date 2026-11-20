@@ -1041,15 +1041,40 @@ async fn runner_render_warm(app: axum::Router) -> bool {
 struct RoutePaths {
     dir: PathBuf,
     tree: PathBuf,
+    /// The generator options Start's generator ran with, as JSON, which
+    /// generate.mjs passes inline (`OJ_ROUTER_OPTIONS`).
+    options: Option<String>,
+    /// Start's generator ran with a `virtualRouteConfig`.
+    virtual_config: bool,
 }
 
 impl RoutePaths {
     fn of(config: &oj_config::OjConfig, root: &Path) -> Self {
+        let options = config.vite_start_router.as_ref().map(|r| &r.options);
         RoutePaths {
             dir: oj_config::start_routes_dir(config, root),
             tree: oj_config::start_route_tree(config, root),
+            options: options.map(|o| serde_json::Value::Object(o.clone()).to_string()),
+            virtual_config: options.is_some_and(|o| o.contains_key("virtualRouteConfig")),
         }
     }
+
+    /// The tree comes from a virtual route config: the option, or a subtree config file.
+    fn virtual_tree(&self) -> bool {
+        self.virtual_config
+            || list_files_under(&self.dir).iter().any(|f| {
+                f.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(is_virtual_config_file)
+            })
+    }
+}
+
+/// router-generator's physical `isVirtualConfigFile`: a file name matching
+/// `/__virtual\.[mc]?[jt]s$/`.
+fn is_virtual_config_file(name: &str) -> bool {
+    name.rsplit_once("__virtual.")
+        .is_some_and(|(_, ext)| matches!(ext, "ts" | "js" | "mts" | "mjs" | "cts" | "cjs"))
 }
 
 /// The route files under `dir` (the routes directory): the extensions the
@@ -2922,6 +2947,12 @@ fn generate_route_tree(
     ] {
         script_env.push((name.to_string(), path.to_string_lossy().into_owned()));
     }
+    script_env.extend(
+        routes
+            .options
+            .iter()
+            .map(|o| ("OJ_ROUTER_OPTIONS".to_string(), o.clone())),
+    );
     let store = codegen_store(
         root,
         cache,
@@ -2946,17 +2977,21 @@ fn generate_route_tree(
         (crate::start_bundle::CLIENT_ROUTE_TREE, client.as_path()),
     ];
     let inputs: Vec<PathBuf> = list_route_files(&routes.dir).into_iter().collect();
-    match store.restore(&inputs, &outputs) {
-        Ok(stats) => {
-            println!(
-                "  oj start: route tree restored from cache (key {}…, {} route file(s) verified in {}ms)",
-                stats.key.get(..8).unwrap_or(&stats.key),
-                stats.keyed_files,
-                stats.elapsed_ms
-            );
-            return Ok(());
+    if routes.virtual_tree() {
+        println!("  oj start: route tree not cached (a virtual route config decides it)");
+    } else {
+        match store.restore(&inputs, &outputs) {
+            Ok(stats) => {
+                println!(
+                    "  oj start: route tree restored from cache (key {}…, {} route file(s) verified in {}ms)",
+                    stats.key.get(..8).unwrap_or(&stats.key),
+                    stats.keyed_files,
+                    stats.elapsed_ms
+                );
+                return Ok(());
+            }
+            Err(miss) => println!("  oj start: route tree cache miss ({miss})"),
         }
-        Err(miss) => println!("  oj start: route tree cache miss ({miss})"),
     }
     // A crawl that fails writes no client tree: none is left from an
     // earlier run for the client to load.
@@ -2979,7 +3014,9 @@ fn generate_route_tree(
         });
     }
     let inputs: Vec<PathBuf> = list_route_files(&routes.dir).into_iter().collect();
-    store.persist(&inputs, &outputs);
+    if !routes.virtual_tree() {
+        store.persist(&inputs, &outputs);
+    }
     Ok(())
 }
 
@@ -8080,6 +8117,29 @@ mod tests {
     // The state a failed generation is compared against covers every file
     // under the routes directory, as the generator reruns for any of them:
     // a `.jsx` route, a file that is no route at all, one added, one gone.
+    #[test]
+    fn virtual_config_files_are_named_as_the_generator_names_them() {
+        for name in [
+            "__virtual.ts",
+            "__virtual.js",
+            "__virtual.mts",
+            "__virtual.mjs",
+            "__virtual.cts",
+            "__virtual.cjs",
+            "x__virtual.ts",
+        ] {
+            assert!(is_virtual_config_file(name), "{name}");
+        }
+        for name in [
+            "__virtual.tsx",
+            "__virtual.d.ts",
+            "__virtual.ts.bak",
+            "virtual.ts",
+        ] {
+            assert!(!is_virtual_config_file(name), "{name}");
+        }
+    }
+
     #[test]
     fn route_files_state_moves_with_any_file_under_the_routes_directory() {
         let root = tmp("routes-state");

@@ -387,7 +387,7 @@ let startRouterPaths = null;
 
 // Wraps the router generator Start's router plugin imports (resolved the way
 // Start's own packages resolve it, so it is the same module instance) to
-// record the first run's paths. Returns the undo.
+// record the first run's paths and options. Returns the undo.
 async function recordStartRouterPaths() {
   startRouterPaths = null;
   const generator = await startRouterGenerator(appRoot);
@@ -397,13 +397,70 @@ async function recordStartRouterPaths() {
   proto.run = function (...args) {
     const c = this?.config;
     if (!startRouterPaths && typeof c?.routesDirectory === "string" && typeof c?.generatedRouteTree === "string") {
-      startRouterPaths = { routesDirectory: c.routesDirectory, generatedRouteTree: c.generatedRouteTree };
+      startRouterPaths = {
+        routesDirectory: c.routesDirectory,
+        generatedRouteTree: c.generatedRouteTree,
+        options: startRouterOptions(c),
+      };
+      // The generator read tsr.config.json (present or absent) through named
+      // fs imports the recorder cannot observe; its options are in `options`.
+      observedConfigReads.add(resolve(this.root ?? appRoot, "tsr.config.json"));
     }
     return run.apply(this, args);
   };
   return () => {
     proto.run = run;
   };
+}
+
+// The router generator's options that are data (config.js `configSchema`),
+// as Start's generator resolved them: the route tree generation passes them
+// inline, as Start does. oj owns `target`, `plugins` and `autoCodeSplitting`.
+const START_ROUTER_OPTIONS = [
+  "virtualRouteConfig",
+  "routeFilePrefix",
+  "routeFileIgnorePrefix",
+  "routeFileIgnorePattern",
+  "quoteStyle",
+  "semicolons",
+  "routeTreeFileHeader",
+  "indexToken",
+  "routeToken",
+  "pathParamsAllowedCharacters",
+  "disableTypes",
+  "addExtensions",
+  "enableRouteTreeFormatting",
+  "customScaffolding",
+  "tmpDir",
+  "importRoutesUsingAbsolutePaths",
+];
+
+function startRouterOptions(c) {
+  const options = {};
+  for (const k of START_ROUTER_OPTIONS) {
+    const v = c[k];
+    // A token RegExp in the schema's JSON form, which createTokenRegex reads alike.
+    if (v instanceof RegExp) options[k] = { regex: v.source, flags: v.flags };
+    else if (v !== undefined) {
+      // Recorded as the data it is; a value that is none (the schema allows
+      // none) is left out, never a throw inside Start's own generator run.
+      try {
+        const data = JSON.parse(JSON.stringify(v));
+        if (data !== undefined) options[k] = data;
+      } catch {}
+    }
+  }
+  // Start's footer (route-tree-footer.js) is its declare-module block, then
+  // the app's own `routeTreeFileFooter`: the app's part is kept.
+  try {
+    const footer = typeof c.routeTreeFileFooter === "function" ? c.routeTreeFileFooter() : c.routeTreeFileFooter;
+    if (Array.isArray(footer)) {
+      // A footer whose block cannot be told apart keeps none of it: oj writes the block.
+      const block = footer.findIndex((l) => /^declare module /m.test(l));
+      if (block >= 0) options.routeTreeFileFooter = footer.slice(block + 1).filter((l) => typeof l === "string");
+    }
+  } catch {}
+  return options;
 }
 
 const absDeps = (deps) => (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
@@ -1864,6 +1921,7 @@ export {
   extractEnvironmentDedupe,
   extractSsr,
   mergeConfigLite,
+  startRouterOptions,
   warnUnsupported,
 };
 

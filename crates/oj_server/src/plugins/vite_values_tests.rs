@@ -1629,6 +1629,31 @@ fn parse_reads_all_fields() {
 }
 
 #[test]
+fn parse_reads_the_start_router_paths_and_route_file_filters() {
+    let options = serde_json::json!({
+        "routeFileIgnorePattern": "\\.stories\\.",
+        "indexToken": { "regex": "hom(e)?", "flags": "" },
+        "virtualRouteConfig": "./routes.ts",
+        "routeTreeFileFooter": ["// app footer"]
+    });
+    let json = serde_json::json!({
+        "startRouter": {
+            "routesDirectory": "/app/src/pages",
+            "generatedRouteTree": "/app/src/tree.gen.ts",
+            "options": options
+        }
+    });
+    assert_eq!(
+        parse_vite_values(&json).start_router,
+        Some(oj_config::StartRouterPaths {
+            routes_directory: "/app/src/pages".into(),
+            generated_route_tree: "/app/src/tree.gen.ts".into(),
+            options: options.as_object().unwrap().clone(),
+        })
+    );
+}
+
+#[test]
 fn parse_tolerates_nulls_and_missing() {
     let v = parse_vite_values(&serde_json::json!({ "base": null, "port": null }));
     assert!(v.base.is_none());

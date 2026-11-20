@@ -77,8 +77,8 @@ pub struct ViteValues {
     /// The config has an editor's HMR gate plugin: oj's native gate stands
     /// in for it.
     pub editor_hmr_gate: bool,
-    /// The routes directory and route tree TanStack Start's router generator
-    /// ran with (`startRouter`).
+    /// The routes directory, route tree and options TanStack Start's router
+    /// generator ran with (`startRouter`).
     pub start_router: Option<oj_config::StartRouterPaths>,
     /// The import protection options Start was validated with
     /// (`startImportProtection`).
@@ -1303,6 +1303,10 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             Some(oj_config::StartRouterPaths {
                 routes_directory: v.get("routesDirectory")?.as_str()?.into(),
                 generated_route_tree: v.get("generatedRouteTree")?.as_str()?.into(),
+                options: v
+                    .get("options")
+                    .and_then(|o| o.as_object().cloned())
+                    .unwrap_or_default(),
             })
         }),
         start_import_protection: non_null(json, "startImportProtection"),
