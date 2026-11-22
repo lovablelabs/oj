@@ -40,8 +40,10 @@ restart, and one behind a rebuild or a hot update the editor's gate holds.
 For those it calls `register_client_without_output`, which creates the
 session with empty maps: every patch and lazy chunk then carries each factory
 the client may lack, and the delivery notifications record what it holds, as
-for any client. Drop it once `register_client` takes the build a client
-loaded.
+for any client. A client that already has a session (a request of its came
+before oj could tell what it loaded) keeps its record of what was delivered
+and loses the frozen output. Drop it once `register_client` takes the build a
+client loaded.
 
 `oj.patch` is the whole difference from the published 1.3.2 sources
 (`diff -ru` of `src/`); everything else under `src/` is verbatim. Not

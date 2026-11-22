@@ -832,6 +832,34 @@ impl DevBundler {
         }
     }
 
+    /// Whether the next run starts the engine over (see [`session_stale`]),
+    /// as far as can be told without waiting for a run in progress, which
+    /// tells by itself.
+    ///
+    /// The refresher asks while it waits for edits to pause: the pages
+    /// reload onto the new engine's output (see
+    /// [`DevBundler::rebundle_reloads_for_engine`]), so nothing they would
+    /// be patched with is worth the wait, and Vite's client reloads as soon
+    /// as the server it lost answers again (client.ts
+    /// `waitForSuccessfulPing`, then `location.reload()`).
+    pub(crate) async fn restart_due(&self) -> bool {
+        let Ok(session) = self.session.try_lock() else {
+            return false;
+        };
+        let Some(live) = session.as_ref() else {
+            return false;
+        };
+        let Ok(host) = self.host().await else {
+            return false;
+        };
+        let hot = self.hot_bundle() && host.is_none_or(|h| h.facts.server_hmr);
+        let host_engine = match host {
+            Some(h) => h.host.live_engine_generation().await,
+            None => 0,
+        };
+        live.stale(hot, self.style_epoch(), host_engine)
+    }
+
     async fn run(
         &self,
         session: &mut Option<HotSession>,
@@ -861,17 +889,9 @@ impl DevBundler {
             Some(h) => h.host.live_engine_generation().await,
             None => 0,
         };
-        let stale = session.as_ref().is_some_and(|s| {
-            session_stale(
-                hot,
-                s.epoch != epoch
-                    && s.styles
-                        .compiled_sheets
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                s.host_engine,
-                host_engine,
-            )
-        });
+        let stale = session
+            .as_ref()
+            .is_some_and(|s| s.stale(hot, epoch, host_engine));
         if stale {
             if let Some(old) = session.take() {
                 old.close(&self.engine).await;
@@ -1299,6 +1319,23 @@ async fn register(engine: &rolldown_dev::DevEngine, id: String, holds: bool) {
         engine.register_client(id).await;
     } else {
         engine.register_client_without_output(id).await;
+    }
+}
+
+impl HotSession {
+    /// [`session_stale`] of this session, against the bundle as it is now:
+    /// hot or not, its style epoch, the plugin host's engine.
+    fn stale(&self, hot: bool, epoch: u64, host_engine: u64) -> bool {
+        session_stale(
+            hot,
+            self.epoch != epoch
+                && self
+                    .styles
+                    .compiled_sheets
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            self.host_engine,
+            host_engine,
+        )
     }
 }
 

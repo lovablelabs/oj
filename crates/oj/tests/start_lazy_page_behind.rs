@@ -198,11 +198,30 @@ fn encoded(s: &str) -> String {
 /// route, given the document stamp and the hot changes it names: the
 /// answer, or the chunk the answer tells the page to take during a hold.
 fn route_code(dev: &Server, proxy: &str, client: &str, stamp: &str, has: u64) -> String {
-    let url = format!(
-        "/@oj-start/hmr/lazy?id={}&clientId={client}&n=1&g={stamp}&h={has}",
-        encoded(proxy)
-    );
-    let (status, body) = dev.request("GET", &url, &[]);
+    code_at(
+        dev,
+        &format!(
+            "/@oj-start/hmr/lazy?id={}&clientId={client}&n=1&g={stamp}&h={has}",
+            encoded(proxy)
+        ),
+    )
+}
+
+/// The same for a request made before the page knew its stamps (its bundle
+/// imported before the live-reload client, the document's last tag, ran):
+/// it names neither.
+fn route_code_unnamed(dev: &Server, proxy: &str, client: &str) -> String {
+    code_at(
+        dev,
+        &format!(
+            "/@oj-start/hmr/lazy?id={}&clientId={client}&n=1",
+            encoded(proxy)
+        ),
+    )
+}
+
+fn code_at(dev: &Server, url: &str) -> String {
+    let (status, body) = dev.request("GET", url, &[]);
     assert_eq!(status, 200, "{url}: {body}");
     let Some(at) = body.find("ojLazyWhileHeld(") else {
         return body;
@@ -308,6 +327,21 @@ async fn a_page_behind_a_held_hot_change_is_sent_what_the_change_made_part_of_th
     assert!(
         code.contains(BUTTON_CODE),
         "the page behind the held change got the route without the component:\n{code}"
+    );
+    // A page whose first request named no stamp (it asked before it knew
+    // them) was answered as one that loaded the newest output, with no way
+    // to tell. Its next request names them, and is answered as the page
+    // behind the change that it is.
+    let early = format!("{tag}.early");
+    let unnamed = route_code_unnamed(&dev, &proxy, &early);
+    assert!(
+        !unnamed.contains(BUTTON_CODE),
+        "a request that names no stamp is answered as a current page's:\n{unnamed}"
+    );
+    let named = route_code(&dev, &proxy, &early, &stamp, before);
+    assert!(
+        named.contains(BUTTON_CODE),
+        "the page that asked before it knew its stamps got the route without the component once it named them:\n{named}"
     );
     // The open page's own request names the changes it has.
     let asked = page

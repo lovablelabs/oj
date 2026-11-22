@@ -155,14 +155,18 @@ const LAZY_STUB = `class DevRuntime {
   }
 }`;
 
-function lazyRuntime(bus = {}) {
+// `bus` is the page's own `__ojStartHmr` (what live-reload.js adds to it
+// later, a test adds to `bus`); `globals` are further globals of the page.
+function lazyRuntime(bus = {}, globals = {}) {
   const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
+  bus.send ??= () => true;
   const page = {
     console: { debug() {}, error() {}, warn() {} },
-    __ojStartHmr: { send: () => true, ...bus },
+    __ojStartHmr: bus,
     setTimeout,
     clearTimeout,
     Date,
+    ...globals,
   };
   page.globalThis = page;
   vm.createContext(page);
@@ -181,6 +185,69 @@ test("an import() request names the hot changes the page has, once the live-relo
   assert.match(runtime.lazyChunkUrl(proxy), /&h=0$/);
   has = 3;
   assert.match(runtime.lazyChunkUrl(proxy), /&h=3$/);
+});
+
+// The live-reload client is the document's last tag, and the bundle can
+// import before it: that request names neither stamp, and is answered as a
+// page's that has all of the server's newest output. A page behind a change
+// lacks a module of it, and asks again once it can say what it has.
+test("an import() made before the page knows its stamps is asked again with them when its module cannot run", async () => {
+  const proxy = "/abs/src/note.ts?rolldown-lazy=1";
+  const page = (bus) => {
+    const listeners = [];
+    const runtime = lazyRuntime(bus, {
+      document: { readyState: "loading" },
+      addEventListener: (type, fn) => type === "load" && listeners.push(fn),
+    });
+    const asked = [];
+    runtime.ojImport = async (url) => void asked.push(url);
+    runtime.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+    return { runtime, asked, loaded: () => listeners.forEach((fn) => fn()) };
+  };
+  const settled = async (promise) => {
+    let done = false;
+    promise.then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 0));
+    return done;
+  };
+
+  // Everything the module needs is there: nothing is waited for.
+  const bus = {};
+  const runs = page(bus);
+  runs.runtime.isRunnableHere = () => true;
+  assert.ok(await settled(runs.runtime.ojAskedUnnamed(proxy)));
+  assert.deepEqual(runs.asked, []);
+
+  // A module is missing: asked again as live-reload.js names the stamps.
+  const behindBus = {};
+  const behind = page(behindBus);
+  behind.runtime.isRunnableHere = () => false;
+  const again = behind.runtime.ojAskedUnnamed(proxy);
+  assert.ok(!(await settled(again)), "it waits for the stamps");
+  assert.deepEqual(behind.asked, []);
+  behindBus.stamp = "1f-3";
+  behindBus.hotHas = () => 2;
+  behindBus.onStamps.splice(0).forEach((known) => known());
+  await again;
+  assert.equal(behind.asked.length, 1);
+  assert.match(behind.asked[0], /&g=1f-3&h=2$/);
+
+  // A document that finished loading with no live-reload client: the
+  // import fails as it did, with nothing to wait for.
+  const alone = page({});
+  alone.runtime.isRunnableHere = () => false;
+  const never = alone.runtime.ojAskedUnnamed(proxy);
+  alone.loaded();
+  await never;
+  assert.deepEqual(alone.asked, []);
+
+  // With the stamps known when it asks, the request named them: its answer
+  // is the server's for this page, and nothing follows it.
+  let followed = 0;
+  const named = lazyRuntime({ stamp: "1f-3" });
+  named.ojAskedUnnamed = async () => void followed++;
+  await assert.rejects(named.loadLazyChunk(proxy));
+  assert.equal(followed, 0);
 });
 
 test("an import() the server did not answer is asked for again, each request under a url of its own", async () => {

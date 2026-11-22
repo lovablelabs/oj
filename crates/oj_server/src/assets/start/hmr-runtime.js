@@ -375,6 +375,18 @@ class OjHmrClient {
   }
 }
 
+// Whether live-reload.js has run, once that is settled: it says so as it
+// runs, and a document that finished loading without it never will (the tag
+// was refused, or the document has none).
+function ojStampsKnown() {
+  if ("stamp" in __ojBus) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    (__ojBus.onStamps ??= []).push(() => resolve(true));
+    const loaded = () => resolve("stamp" in __ojBus);
+    if (typeof document === "undefined" || document.readyState === "complete") loaded();
+    else addEventListener("load", loaded, { once: true });
+  });
+}
 class OjDevRuntime extends DevRuntime {
   constructor(clientId) {
     super(clientId);
@@ -389,7 +401,24 @@ class OjDevRuntime extends DevRuntime {
   // its own for each request: the browser keeps a module by URL, a failed
   // one too.
   loadLazyChunk(proxyModuleId) {
-    return import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
+    // Before live-reload.js has run, the request names neither of the
+    // page's stamps (it is the last tag of the document, and the bundle
+    // can import while the document still streams).
+    const unnamed = !("stamp" in __ojBus);
+    const chunk = import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
+    return unnamed ? chunk.then(() => this.ojAskedUnnamed(proxyModuleId)) : chunk;
+  }
+  // The answer to a request that named no stamp was made for a page that
+  // has everything the server's newest output loads. A page behind a change
+  // (one that went out between its document and this request) lacks what
+  // that change made part of the output, and the module cannot run on it:
+  // it is asked for again once the page can say what it has, and answered
+  // then with all it lacks. Not waited for otherwise: the module of a page
+  // that is behind nothing runs as soon as its chunk is there.
+  async ojAskedUnnamed(proxyModuleId) {
+    const id = this.lazyTargets?.get(proxyModuleId);
+    if (id == null || this.isRunnableHere(id)) return;
+    if (await ojStampsKnown()) await this.ojImport(this.lazyChunkUrl(proxyModuleId));
   }
   lazyChunkUrl(proxyModuleId) {
     this.lazyAsked = (this.lazyAsked ?? 0) + 1;
@@ -436,6 +465,7 @@ class OjDevRuntime extends DevRuntime {
   // could not answer) has run nothing, so the next `import()` asks again:
   // the request is dropped, if it is still the one that failed.
   requestLazy(id, proxyModuleId, isNodeMode) {
+    (this.lazyTargets ??= new Map()).set(proxyModuleId, id);
     const pending = super.requestLazy(id, proxyModuleId, isNodeMode);
     const asked = this.lazyRequests.get(id);
     pending.catch(() => {

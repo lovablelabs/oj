@@ -2489,6 +2489,31 @@ fn load_inputs(state: &StartState, cache: &Path) {
 /// page's reload needs it at once and skips the wait.
 const REFRESH_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How often the refresher's wait asks whether the bundler is to start over.
+const RESTART_CHECK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The refresher's wait for edits to pause: [`REFRESH_PAUSE`], unless the
+/// run it waits to make starts the bundler over (the plugin host's engine
+/// was replaced, or a style input moved under the sheets it compiled). The
+/// pages reload onto that run's output whatever is edited meanwhile, so
+/// the wait ends there (false): they reload once the bundler is back, as
+/// Vite's client does once the server it lost answers again (client.ts
+/// `waitForSuccessfulPing`, then `location.reload()`), not a typing
+/// cadence later.
+async fn refresh_pause(bundler: &ClientBundler) -> bool {
+    let end = tokio::time::Instant::now() + REFRESH_PAUSE;
+    loop {
+        if bundler.restart_due().await {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= end {
+            return true;
+        }
+        tokio::time::sleep(RESTART_CHECK.min(end - now)).await;
+    }
+}
+
 /// Brings the client output current after hot updates, once edits pause or
 /// as soon as a document or a page's reload needs it.
 async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
@@ -2497,11 +2522,11 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         state.refresh_wake.notified().await;
         while !state.urgent.swap(false, SeqCst) {
             let patches = state.bundler.hot.generation();
-            tokio::select! {
-                _ = tokio::time::sleep(REFRESH_PAUSE) => {}
+            let paused = tokio::select! {
+                paused = refresh_pause(&state.bundler) => paused,
                 _ = state.refresh_wake.notified() => continue,
-            }
-            if state.bundler.hot.generation() == patches {
+            };
+            if !paused || state.bundler.hot.generation() == patches {
                 break;
             }
         }
