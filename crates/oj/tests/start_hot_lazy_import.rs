@@ -239,11 +239,19 @@ async fn took_in(dev: &Server, before: usize) {
 
 /// Imports the note from the layout's button until the page shows `text`:
 /// an import made before the bundler took an edit in is of the module from
-/// before it.
+/// before it. The page may be reloading meanwhile (a change that reached it
+/// as a rebuild): a document with no button yet is asked again.
 async fn notes_once_current(page: &Page, dev: &Server, text: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        load_note(page).await;
+        // Not `load_note`: its click throws on a document still loading,
+        // and an evaluation fails outright while the page navigates. One
+        // try, whose failure the next round makes up for.
+        page.poll(
+            "(document.querySelector('#load')?.click(), true)",
+            Duration::ZERO,
+        )
+        .await;
         if page
             .poll(
                 &format!("{NOTE_SHOWN} === {}", serde_json::to_string(text).unwrap()),
