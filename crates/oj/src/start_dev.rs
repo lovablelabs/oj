@@ -2500,10 +2500,12 @@ const RESTART_CHECK: std::time::Duration = std::time::Duration::from_millis(100)
 /// Vite's client does once the server it lost answers again (client.ts
 /// `waitForSuccessfulPing`, then `location.reload()`), not a typing
 /// cadence later.
-async fn refresh_pause(bundler: &ClientBundler) -> bool {
+async fn refresh_pause<Due: std::future::Future<Output = bool>>(
+    restart_due: impl Fn() -> Due,
+) -> bool {
     let end = tokio::time::Instant::now() + REFRESH_PAUSE;
     loop {
-        if bundler.restart_due().await {
+        if restart_due().await {
             return false;
         }
         let now = tokio::time::Instant::now();
@@ -2523,7 +2525,7 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         while !state.urgent.swap(false, SeqCst) {
             let patches = state.bundler.hot.generation();
             let paused = tokio::select! {
-                paused = refresh_pause(&state.bundler) => paused,
+                paused = refresh_pause(|| state.bundler.restart_due()) => paused,
                 _ = state.refresh_wake.notified() => continue,
             };
             if !paused || state.bundler.hot.generation() == patches {
@@ -4901,7 +4903,10 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
                     .bundler
                     .hot
                     .behind(crate::start_hot::hot_change_in(query));
-            tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed).await })
+            // Named by the request, or not yet known to the page (its
+            // live-reload client, the document's last tag, has not run).
+            let named = param("g").is_some() || param("h").is_some();
+            tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed, named).await })
         };
         let answer = match tokio::time::timeout_at(end, compile).await {
             Ok(Ok(answer)) => answer,
@@ -5983,6 +5988,35 @@ mod tests {
         );
         // A bundle built without the dev server's plugin host is never cached.
         assert!(bundler.cacheable());
+    }
+
+    /// The refresher waits out the pause for edits, and not for a bundler
+    /// that is to start over: that wait ends as soon as it is asked.
+    #[tokio::test(start_paused = true)]
+    async fn the_refreshers_pause_ends_when_the_bundler_is_to_start_over() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let began = tokio::time::Instant::now();
+        assert!(refresh_pause(|| async { false }).await, "edits paused");
+        assert_eq!(began.elapsed(), REFRESH_PAUSE);
+
+        let began = tokio::time::Instant::now();
+        assert!(!refresh_pause(|| async { true }).await);
+        assert_eq!(began.elapsed(), std::time::Duration::ZERO);
+
+        // Due part of the way through the pause.
+        let due = Arc::new(AtomicBool::new(false));
+        let later = Arc::clone(&due);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+            later.store(true, SeqCst);
+        });
+        let began = tokio::time::Instant::now();
+        assert!(!refresh_pause(|| async { due.load(SeqCst) }).await);
+        assert!(
+            began.elapsed() <= std::time::Duration::from_millis(450) + RESTART_CHECK,
+            "{:?}",
+            began.elapsed()
+        );
     }
 
     #[test]

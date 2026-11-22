@@ -327,17 +327,19 @@ impl DevEngine {
   /// before the engine, or one behind its latest rebuild). Its session starts with an empty
   /// ship map and an empty top-level-evaluated map, so nothing is taken for a copy it
   /// holds: a patch or lazy chunk carries every factory it may lack, and the delivery
-  /// notifications record what it then holds. A client that has a session (it was taken
-  /// for one that loaded the output before the server could tell) keeps what was delivered
-  /// to it and loses the output it was taken to have evaluated.
+  /// notifications record what it then holds. Like `register_client`, a no-op for a client
+  /// that has a session.
   pub async fn register_client_without_output(&self, client_id: String) {
-    self
-      .clients
-      .lock()
-      .await
-      .entry(client_id)
-      .and_modify(|session| session.top_level_evaluated = Arc::default())
-      .or_default();
+    self.clients.lock().await.entry(client_id).or_default();
+  }
+
+  /// oj: the client was registered as one that loaded the newest output before the server
+  /// could tell, and did not. Its session loses the frozen top-level-evaluated map and
+  /// keeps the record of what was delivered to it. A no-op for a client with no session.
+  pub async fn forget_client_output(&self, client_id: &str) {
+    if let Some(session) = self.clients.lock().await.get_mut(client_id) {
+      session.top_level_evaluated = Arc::default();
+    }
   }
 
   /// Client-disconnect signal: drops the session together with any

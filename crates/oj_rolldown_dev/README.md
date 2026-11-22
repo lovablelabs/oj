@@ -10,6 +10,8 @@ Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
   lazy compilation is on (`experimental.devMode.lazy`).
 - `DevEngine::register_client_without_output` registers a client whose
   session starts with nothing held (see below).
+- `DevEngine::forget_client_output` drops the frozen output of a client
+  that was registered before oj could tell what it loaded (see below).
 
 Upstream queues a rebuild after every lazy compile. With rolldown's lazy
 compilation, a module behind an `import()` stays out of the graph until a
@@ -40,10 +42,14 @@ restart, and one behind a rebuild or a hot update the editor's gate holds.
 For those it calls `register_client_without_output`, which creates the
 session with empty maps: every patch and lazy chunk then carries each factory
 the client may lack, and the delivery notifications record what it holds, as
-for any client. A client that already has a session (a request of its came
-before oj could tell what it loaded) keeps its record of what was delivered
-and loses the frozen output. Drop it once `register_client` takes the build a
-client loaded.
+for any client. A request can also come before oj can tell what its page
+loaded (the page names what it has only once its live-reload client ran): it
+is registered with `register_client`, and if the page then turns out to be
+behind, `forget_client_output` empties the frozen map of its session and
+keeps the record of what was delivered. Only such a session is emptied: one
+frozen for a page that had loaded the output stays right when the page falls
+behind later, since what a later change adds is not in it. Drop both once
+`register_client` takes the build a client loaded.
 
 `oj.patch` is the whole difference from the published 1.3.2 sources
 (`diff -ru` of `src/`); everything else under `src/` is verbatim. Not
