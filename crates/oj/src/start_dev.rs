@@ -2242,6 +2242,9 @@ async fn rebundle_worker(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
                 .is_some();
+        // An engine that started under open pages: they reload onto its
+        // output, which this run wrote.
+        let forced = (fresh && state.bundler.take_engine_started_under_pages()) || forced;
         let server_signals =
             worker_hit || engine_hit || served.iter().any(|p| state.ssr.graph_knows_file(p));
         let unbundled = !pages_run_bundle && !bundled;
@@ -2514,6 +2517,7 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         .await
         .map_err(anyhow::Error::from)
         .and_then(|r| r);
+        let pinned_ok = pinned.is_ok();
         match pinned {
             Ok(pinned) => install_bundle(&state, &cache, pinned),
             // The rebundle that fixes it reports the error to the pages;
@@ -2527,7 +2531,10 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take_if(|mark| *mark < started)
             .is_some();
-        if wanted {
+        // The refresh started an engine (the plugin host's was replaced)
+        // under open pages: they reload onto its output, now in place.
+        let restarted = pinned_ok && state.bundler.take_engine_started_under_pages();
+        if wanted || restarted {
             state.reloads.bump();
         }
     }

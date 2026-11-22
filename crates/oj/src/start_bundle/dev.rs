@@ -93,6 +93,9 @@ pub(crate) struct DevBundler {
     /// Whether an engine ever ran in this dev server: until one does, the
     /// bundle the pages run is the one on disk (built or restored at boot).
     engine_started: std::sync::atomic::AtomicBool,
+    /// An engine started while pages were open, and they have not been
+    /// reloaded for it yet (see [`DevBundler::take_engine_started_under_pages`]).
+    engine_started_under_pages: std::sync::atomic::AtomicBool,
     /// The running engine's tag, which the runtime id of every page of its
     /// bundles starts with (see [`DevBundler::runs_engine_output`]).
     engine_tag: Mutex<String>,
@@ -153,6 +156,7 @@ impl DevBundler {
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(PageSockets::default()),
             engine_started: std::sync::atomic::AtomicBool::new(false),
+            engine_started_under_pages: std::sync::atomic::AtomicBool::new(false),
             engine_tag: Mutex::default(),
             restored_modules: Mutex::default(),
             fn_externals: Arc::default(),
@@ -348,15 +352,41 @@ impl DevBundler {
             return false;
         }
         let behind = self.hot.connected(id);
-        if let Some(engine) = self
-            .engine
-            .get()
-            .filter(|_| !another_run && self.holds_engine_output(id, owed))
-        {
+        // A page of another run reloads as it connects: nothing is made
+        // for it.
+        if let Some(engine) = self.engine.get().filter(|_| !another_run) {
+            let holds = self.holds_engine_output(id, owed);
             let id = id.to_string();
-            pages.then(async move { engine.register_client(id).await });
+            pages.then(async move { register(&engine, id, holds).await });
         }
         behind
+    }
+
+    /// The open pages this run of the dev server rendered.
+    fn pages_of_this_run(&self) -> Vec<String> {
+        let pages = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ids = pages.ids();
+        ids.retain(|id| !pages.another_run.contains(id));
+        ids
+    }
+
+    /// Whether an engine started while pages were open, once: the caller
+    /// reloads the pages. They run the bundle of another engine (the one a
+    /// boot restored, or the engine before a restart), whose modules carry
+    /// that engine's version stamps, so a patch of this one may be dropped
+    /// by the page's runtime as older than what it holds. A rebundle for an
+    /// edit reloads them with its output anyway; the output refresher, which
+    /// starts an engine when the plugin host's was replaced, has no edit to
+    /// reload for. Vite's client reloads the page when the dev server it
+    /// lost is back (client.ts: "server connection lost. Polling for
+    /// restart...", then `location.reload()`), which is what a restart of
+    /// the server (server/index.ts `restartServer`) is to an open page.
+    pub(crate) fn take_engine_started_under_pages(&self) -> bool {
+        self.engine_started_under_pages
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether the page `id` runs a bundle the running engine made (its
@@ -385,8 +415,9 @@ impl DevBundler {
     /// taken for one the page has, and an `import()` of a module that
     /// imports it would fail with `No factory registered for module`, for
     /// as long as the editor's gate holds the page's reload. Such a page is
-    /// left unknown to the engine, which then sends it every module an
-    /// answer needs, and no patch: it is reloaded onto the engine's bundle.
+    /// told to the engine as one that holds nothing of its output (see
+    /// [`register`]): it is sent every module an answer or a patch needs
+    /// that it was not sent before.
     /// Under Vite the page's `import()` is a request for the module, and
     /// each of its imports another, whatever the page loaded before.
     fn holds_engine_output(&self, id: &str, owed: bool) -> bool {
@@ -487,15 +518,17 @@ impl DevBundler {
         // Known to the engine before it compiles for it: what the page
         // already holds is left out of the answer. (The page's socket
         // registers it too; a request can come first.) A page that does not
-        // run the engine's output is left unknown: its answer carries every
-        // module it needs (see `holds_engine_output`).
-        if self.holds_engine_output(client, owed) {
-            on_rolldown(
-                &self.start.rolldown,
-                engine.register_client(client.to_string()),
-            )
-            .await;
-        }
+        // run the engine's output is known as one that holds none of it
+        // (see `holds_engine_output`).
+        on_rolldown(
+            &self.start.rolldown,
+            register(
+                &engine,
+                client.to_string(),
+                self.holds_engine_output(client, owed),
+            ),
+        )
+        .await;
         let result = on_rolldown(
             &self.start.rolldown,
             engine.compile_lazy_entry(proxy.to_string(), client.to_string()),
@@ -858,16 +891,17 @@ impl DevBundler {
                 Arc::clone(&self.hot),
                 declared,
                 &self.engine,
-                // The pages of this engine's bundles: none yet, as its
-                // first output is still to be written. The pages open now
-                // run another bundle, and reload onto this one.
-                || {
-                    let mut pages = self.pages();
-                    pages.retain(|id| self.runs_engine_output(id));
-                    pages
-                },
+                // The pages open now run another bundle (this engine's
+                // first output is still to be written): they are told to
+                // the engine as holding none of its output, and reload onto
+                // it (see `take_engine_started_under_pages`).
+                || self.pages_of_this_run(),
             )
             .await?;
+            if !self.pages_of_this_run().is_empty() {
+                self.engine_started_under_pages
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             self.engine_started
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut live = live;
@@ -1200,6 +1234,19 @@ impl DevBundler {
 enum Run {
     Hot { css: Vec<String> },
     Output { files: usize },
+}
+
+/// Tells the engine of the page `id`. One that `holds` its newest output is
+/// sent only what that output does not evaluate as it loads; any other is
+/// taken to hold nothing, and the engine records what each answer and patch
+/// then gives it (rolldown's delivery notification), so a second `import()`
+/// is not sent the first one's modules again.
+async fn register(engine: &rolldown_dev::DevEngine, id: String, holds: bool) {
+    if holds {
+        engine.register_client(id).await;
+    } else {
+        engine.register_client_without_output(id).await;
+    }
 }
 
 /// Whether a hot session is done for: the bundle is no longer hot, a style

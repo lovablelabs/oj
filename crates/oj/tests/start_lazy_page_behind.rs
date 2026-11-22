@@ -319,3 +319,138 @@ async fn a_page_behind_a_held_hot_change_is_sent_what_the_change_made_part_of_th
     );
     page.close().await;
 }
+
+/// What a page's socket said, until a frame `done` accepts or `within` is
+/// over.
+async fn frames_until(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    within: Duration,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> Vec<serde_json::Value> {
+    use futures_util::StreamExt;
+    let mut said = Vec::new();
+    let read = async {
+        while let Some(Ok(message)) = socket.next().await {
+            let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
+                continue;
+            };
+            let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let last = done(&frame);
+            said.push(frame);
+            if last {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(within, read).await;
+    said
+}
+
+/// A page that runs the bundler's bundle but that the bundler cannot take
+/// for one that loaded its newest output (here its document's stamp is from
+/// before a rebuild, as a document a service worker keeps serving is): it
+/// is sent every module its first `import()` needs, and from then on it is
+/// a page like any other. A second `import()` is not sent the same modules
+/// again, and an edit reaches it as a hot update, where it used to be left
+/// out of every update and reloaded for each.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_the_bundler_takes_to_hold_nothing_is_sent_each_module_once_and_patched_in_place() {
+    use futures_util::SinkExt;
+    let Some(app) = behind_app("behind-then-known") else {
+        return;
+    };
+    let dir = app.0.clone();
+    let dev = Server::oj_dev(&dir);
+    let (before, _) = document(&dev);
+    let tag = engine_tag(&dev);
+    let proxy = about_proxy(&dev);
+
+    // A rebuild with no page open: documents from before it are owed a
+    // reload from here on.
+    write(&dir, ROOT, &root(true));
+    until(&dev, "the edit never rebuilt the bundle", || {
+        dev.output().contains("oj start: rebuilt")
+    });
+    until_the_newest_output_has_the_button(&dev, &proxy, &tag);
+    let (_, has) = document(&dev);
+
+    // The page: this bundler's tag, the old document's stamp.
+    let id = format!("{tag}.stale");
+    let url = format!(
+        "ws://127.0.0.1:{}/@oj-start/hmr?g={before}&h={has}",
+        dev.port
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.expect("dial");
+    let hello = serde_json::json!({ "type": "oj:client", "id": id }).to_string();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(hello.into()))
+        .await
+        .unwrap();
+
+    let first = route_code(&dev, &proxy, &id, &before, has);
+    assert!(
+        first.contains(BUTTON_CODE),
+        "the page got the route without the component:\n{first}"
+    );
+    // The page ran the answer and says so, as the answer's last statement
+    // has it do.
+    let delivered = first
+        .rsplit_once("payloadDelivered(\"")
+        .expect("the answer reports its delivery")
+        .1;
+    let delivered = &delivered[..delivered.find('"').unwrap()];
+    let ack = serde_json::json!({ "type": "oj:delivered", "filename": delivered }).to_string();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(ack.into()))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let again = route_code(&dev, &proxy, &id, &before, has);
+        if !again.contains(BUTTON_CODE) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the page was sent the component again after it reported it:\n{again}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // An edit of the component: a hot update for this page, which the
+    // change's end names among the pages it reached.
+    write(
+        &dir,
+        "src/components/button.tsx",
+        &BUTTON.replace("button:", "button edited:"),
+    );
+    let said = frames_until(&mut socket, Duration::from_secs(60), |frame| {
+        frame["type"] == "oj:change"
+            && frame["clients"]
+                .as_array()
+                .is_some_and(|clients| clients.iter().any(|c| c == id.as_str()))
+    })
+    .await;
+    let patched = said.iter().any(|frame| {
+        frame["type"] == "oj:hmr"
+            && frame["changedIds"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|i| i == "src/components/button.tsx"))
+    });
+    let reached = said
+        .last()
+        .is_some_and(|frame| frame["type"] == "oj:change");
+    assert!(
+        patched && reached,
+        "the edit did not reach the page as a hot update: {said:?}\n{}",
+        dev.output()
+            .lines()
+            .filter(|l| l.contains("oj start:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
