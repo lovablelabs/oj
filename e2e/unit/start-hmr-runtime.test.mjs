@@ -245,9 +245,54 @@ test("an import() made before the page knows its stamps is asked again with them
   // is the server's for this page, and nothing follows it.
   let followed = 0;
   const named = lazyRuntime({ stamp: "1f-3" });
+  named.ojImport = async () => {};
   named.ojAskedUnnamed = async () => void followed++;
-  await assert.rejects(named.loadLazyChunk(proxy));
+  await named.loadLazyChunk(proxy);
   assert.equal(followed, 0);
+  // Without them, the check of what arrived follows the chunk.
+  const unnamed = lazyRuntime();
+  unnamed.ojImport = async () => {};
+  unnamed.ojAskedUnnamed = async () => void followed++;
+  await unnamed.loadLazyChunk(proxy);
+  assert.equal(followed, 1);
+});
+
+// The whole path, as a page behind a change takes it: its `import()` asks
+// before the stamps are known, the answer lacks the module the change made
+// part of the entry, the live-reload client runs, the second answer brings
+// the module, and the import resolves having thrown nothing.
+test("an import() of a page behind a change, made before its stamps are known, resolves once it can name them", async () => {
+  const proxy = "/abs/src/note.ts?rolldown-lazy=1";
+  const bus = {};
+  const runtime = lazyRuntime(bus, { document: { readyState: "loading" }, addEventListener() {} });
+  runtime.isRunnableHere = (id) => id === "src/note.ts" && runtime.factories.has("src/dep.ts");
+  const note = () => {
+    // Its static import first, as a module's factory runs it.
+    const dep = runtime.initModule("src/dep.ts");
+    runtime.moduleCache.set("src/note.ts", { note: "note+" + dep.dep });
+  };
+  const asked = [];
+  runtime.ojImport = async (url) => {
+    asked.push(url);
+    runtime.registerFactory("src/note.ts", note);
+    // Only a request that names what the page has is answered with the
+    // module the page lacks.
+    if (/[?&]h=/.test(url)) {
+      runtime.registerFactory("src/dep.ts", () => runtime.moduleCache.set("src/dep.ts", { dep: "dep" }));
+    }
+  };
+  const imported = runtime.requestLazy("src/note.ts", proxy);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(asked.length, 1, "it waits for the stamps");
+  assert.ok(!/[?&][gh]=/.test(asked[0]), asked[0]);
+
+  // live-reload.js runs.
+  bus.stamp = "1f-3";
+  bus.hotHas = () => 2;
+  bus.onStamps.splice(0).forEach((known) => known());
+  assert.deepEqual(await imported, { note: "note+dep" });
+  assert.equal(asked.length, 2);
+  assert.match(asked[1], /&g=1f-3&h=2$/);
 });
 
 test("an import() the server did not answer is asked for again, each request under a url of its own", async () => {

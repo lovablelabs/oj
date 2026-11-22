@@ -99,6 +99,9 @@ pub(crate) struct DevBundler {
     /// The running engine's tag, which the runtime id of every page of its
     /// bundles starts with (see [`DevBundler::runs_engine_output`]).
     engine_tag: Mutex<String>,
+    /// The pages told to the engine as holding its newest output on a
+    /// request that could not say what they have (see [`DevBundler::told`]).
+    unnamed: Mutex<HashSet<String>>,
     /// The modules of the bundle a boot restored from the cache, by chunk
     /// (see [`DevBundler::lazy_chunk`]); read when first asked.
     restored_modules: Mutex<Option<HashMap<String, String>>>,
@@ -158,6 +161,7 @@ impl DevBundler {
             engine_started: std::sync::atomic::AtomicBool::new(false),
             engine_reload: std::sync::atomic::AtomicU8::new(ENGINE_RELOAD_NONE),
             engine_tag: Mutex::default(),
+            unnamed: Mutex::default(),
             restored_modules: Mutex::default(),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
@@ -355,9 +359,10 @@ impl DevBundler {
         // A page of another run reloads as it connects: nothing is made
         // for it.
         if let Some(engine) = self.engine.get().filter(|_| !another_run) {
-            let holds = self.holds_engine_output(id, owed);
+            // A socket names what its page has.
+            let told = self.told(id, self.holds_engine_output(id, owed), true);
             let id = id.to_string();
-            pages.then(async move { register(&engine, id, holds).await });
+            pages.then(async move { register(&engine, id, told).await });
         }
         behind
     }
@@ -472,6 +477,44 @@ impl DevBundler {
         !owed && self.runs_engine_output(id)
     }
 
+    /// What the engine is told of the page `id`, which `holds` its newest
+    /// output or not, as far as this request or socket can say.
+    ///
+    /// A request made before the page's live-reload client ran names
+    /// neither the document's stamp nor the hot changes the page has
+    /// (`named` is false): the page is taken to hold the output, on faith.
+    /// If a later request or its socket says it is behind, the output the
+    /// engine froze for it is one it never loaded, and is forgotten. A
+    /// page told as holding the output by a request that named its stamps
+    /// did load it: when it falls behind later (a hot change the editor's
+    /// gate holds), what the engine froze for it is still what it has, and
+    /// the change's new modules are not in it.
+    fn told(&self, id: &str, holds: bool, named: bool) -> Told {
+        let mut unnamed = self
+            .unnamed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match (holds, named) {
+            (true, false) => {
+                unnamed.insert(id.to_string());
+                Told::Holds
+            }
+            (true, true) => {
+                unnamed.remove(id);
+                Told::Holds
+            }
+            (false, _) if unnamed.remove(id) => Told::NeverHeld,
+            (false, _) => Told::HoldsNothing,
+        }
+    }
+
+    fn untold(&self, id: &str) {
+        self.unnamed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
     pub(crate) fn page_gone(&self, id: &str) {
         let mut pages = self
             .clients
@@ -482,6 +525,7 @@ impl DevBundler {
         }
         pages.another_run.remove(id);
         self.hot.forget(id);
+        self.untold(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.remove_client(&id).await });
@@ -505,7 +549,16 @@ impl DevBundler {
     ///
     /// `owed`: a reload is owed to the page (its document is from before a
     /// rebuild).
-    pub(crate) async fn lazy_chunk(&self, proxy: &str, client: &str, owed: bool) -> LazyAnswer {
+    ///
+    /// `owed`: the page is behind the bundle; `named`: its request said
+    /// what it has (see [`DevBundler::told`]).
+    pub(crate) async fn lazy_chunk(
+        &self,
+        proxy: &str,
+        client: &str,
+        owed: bool,
+        named: bool,
+    ) -> LazyAnswer {
         // Only the id of an `import()`'s boundary: the engine would scan
         // any other module of the graph it is given as if it had changed.
         if !self.hot_bundle() || rolldown_common::lazy_proxy_target(proxy).is_none() {
@@ -573,7 +626,7 @@ impl DevBundler {
             register(
                 &engine,
                 client.to_string(),
-                self.holds_engine_output(client, owed),
+                self.told(client, self.holds_engine_output(client, owed), named),
             ),
         )
         .await;
@@ -700,6 +753,7 @@ impl DevBundler {
             return;
         }
         self.hot.forget(id);
+        self.untold(id);
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             pages.then(async move { engine.remove_client(&id).await });
@@ -843,21 +897,40 @@ impl DevBundler {
     /// as the server it lost answers again (client.ts
     /// `waitForSuccessfulPing`, then `location.reload()`).
     pub(crate) async fn restart_due(&self) -> bool {
-        let Ok(session) = self.session.try_lock() else {
-            return false;
-        };
-        let Some(live) = session.as_ref() else {
-            return false;
+        // Read and let go of: a run that starts meanwhile is not kept
+        // waiting for the plugin host below.
+        let (epoch, compiled, host_engine_then) = {
+            let Ok(session) = self.session.try_lock() else {
+                return false;
+            };
+            let Some(live) = session.as_ref() else {
+                return false;
+            };
+            (
+                live.epoch,
+                live.styles
+                    .compiled_sheets
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                live.host_engine,
+            )
         };
         let Ok(host) = self.host().await else {
             return false;
         };
         let hot = self.hot_bundle() && host.is_none_or(|h| h.facts.server_hmr);
         let host_engine = match host {
-            Some(h) => h.host.live_engine_generation().await,
+            // A host found dead is respawned by the run, not by this
+            // question, and its engine is then another.
+            Some(h) if *h.host.host_gone_updates().borrow() => return true,
+            Some(h) => h.host.engine_generation(),
             None => 0,
         };
-        live.stale(hot, self.style_epoch(), host_engine)
+        session_stale(
+            hot,
+            epoch != self.style_epoch() && compiled,
+            host_engine_then,
+            host_engine,
+        )
     }
 
     async fn run(
@@ -1314,12 +1387,27 @@ const ENGINE_RELOAD_BY_NEXT: u8 = 2;
 /// taken to hold nothing, and the engine records what each answer and patch
 /// then gives it (rolldown's delivery notification), so a second `import()`
 /// is not sent the first one's modules again.
-async fn register(engine: &rolldown_dev::DevEngine, id: String, holds: bool) {
-    if holds {
-        engine.register_client(id).await;
-    } else {
-        engine.register_client_without_output(id).await;
+async fn register(engine: &rolldown_dev::DevEngine, id: String, told: Told) {
+    match told {
+        Told::Holds => engine.register_client(id).await,
+        Told::HoldsNothing => engine.register_client_without_output(id).await,
+        Told::NeverHeld => {
+            engine.forget_client_output(&id).await;
+            // One the engine has forgotten since is told anew.
+            engine.register_client_without_output(id).await;
+        }
     }
+}
+
+/// What the engine is told of a page (see [`DevBundler::told`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Told {
+    /// It loaded the engine's newest output.
+    Holds,
+    /// It holds nothing of that output.
+    HoldsNothing,
+    /// It was told as holding the output on faith, and did not.
+    NeverHeld,
 }
 
 impl HotSession {
@@ -1692,6 +1780,30 @@ pub(crate) mod tests {
     /// Who reloads the pages for an engine that started: the run that
     /// started it, with its own output, and never another run in its place
     /// while it is still on its way.
+    /// Only a page told as holding the output by a request that could not
+    /// say what it has is un-told of it later: one that said so did load
+    /// it, and keeps what the engine froze for it when it falls behind.
+    #[test]
+    fn only_a_page_taken_on_faith_loses_the_output_it_was_told_to_hold() {
+        use super::Told;
+        let bundler = DevBundler::for_tests(std::path::Path::new("/app"));
+        // Asked before it knew its stamps, then found behind: never held.
+        assert_eq!(bundler.told("early", true, false), Told::Holds);
+        assert_eq!(bundler.told("early", false, true), Told::NeverHeld);
+        assert_eq!(bundler.told("early", false, true), Told::HoldsNothing);
+        // Its stamps confirmed it current before it fell behind.
+        assert_eq!(bundler.told("confirmed", true, false), Told::Holds);
+        assert_eq!(bundler.told("confirmed", true, true), Told::Holds);
+        assert_eq!(bundler.told("confirmed", false, true), Told::HoldsNothing);
+        // Current from its first word, behind a held change later.
+        assert_eq!(bundler.told("named", true, true), Told::Holds);
+        assert_eq!(bundler.told("named", false, true), Told::HoldsNothing);
+        // Gone, then another page under no such id: nothing is kept.
+        assert_eq!(bundler.told("gone", true, false), Told::Holds);
+        bundler.untold("gone");
+        assert_eq!(bundler.told("gone", false, true), Told::HoldsNothing);
+    }
+
     #[test]
     fn the_reload_for_an_engine_start_is_made_once_by_the_run_that_owes_it() {
         let tmp = tempfile::tempdir().unwrap();

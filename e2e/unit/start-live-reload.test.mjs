@@ -20,6 +20,8 @@ function loadPage({
   ping = 0,
   hostname = "localhost",
   storage = new Map(),
+  // What the bundle's runtime left on the shared bus before this script ran.
+  bus = {},
   // What `fetch` answers (a Response-like), or throws: the dev server's
   // answer to the page's own request.
   fetch = async () => ({ ok: true }),
@@ -110,13 +112,13 @@ function loadPage({
       if (i >= 0) timers.splice(i, 1);
     },
     setInterval: (fn, ms) => intervals.push({ fn, ms }),
-    __ojStartHmr: {
+    __ojStartHmr: Object.assign(bus, {
       runtime: {
         clientId: "c1",
         hmr: { notify: async (event, data) => log.push(["notify", event, data && { ...data }]) },
         ojApply: (msg) => log.push(["apply", msg.change]),
       },
-    },
+    }),
   };
   page.window = { addEventListener() {}, scrollX: 0, scrollY: 0 };
   page.globalThis = page;
@@ -199,6 +201,18 @@ function loadPage({
     elapse: () => timers.splice(0).forEach((fn) => fn()),
   };
 }
+
+// The bundle can import() before this script, the document's last tag, has
+// run: its runtime then waits on the bus to be told the stamps are there
+// (hmr-runtime.js `ojStampsKnown`).
+test("a runtime waiting for the page's stamps is told as soon as they are on the bus", () => {
+  const seen = [];
+  const bus = { onStamps: [() => seen.push([bus.stamp, bus.hotHas()]), () => seen.push("second")] };
+  loadPage({ stamp: '"1f-3"', hot: "2", bus });
+  // Told while the script ran, each once, with both stamps readable.
+  assert.deepEqual(seen, [["1f-3", 2], "second"]);
+  assert.deepEqual(bus.onStamps, []);
+});
 
 test("a plugin's custom frame reaches the page's hot.on listeners without a reload", async () => {
   const { log, open, receive } = loadPage();

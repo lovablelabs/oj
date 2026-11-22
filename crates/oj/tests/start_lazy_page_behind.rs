@@ -328,6 +328,24 @@ async fn a_page_behind_a_held_hot_change_is_sent_what_the_change_made_part_of_th
         code.contains(BUTTON_CODE),
         "the page behind the held change got the route without the component:\n{code}"
     );
+    // The open page loaded the bundler's output, and said so as its socket
+    // opened: what the bundler froze for it then is still what it has. Behind
+    // the held change, it is sent the component, and not again the modules
+    // of the entry it loaded (a page that holds nothing is sent those too).
+    let open_page = page
+        .eval::<String>("globalThis.__rolldown_runtime__.clientId")
+        .await;
+    let loaded = route_code(&dev, &proxy, &open_page, &stamp, before);
+    assert!(
+        loaded.contains(BUTTON_CODE),
+        "the open page behind the held change got the route without the component:\n{loaded}"
+    );
+    assert!(
+        loaded.len() < code.len(),
+        "the open page was sent the entry it loaded again: {} bytes, {} for a page that holds nothing",
+        loaded.len(),
+        code.len()
+    );
     // A page whose first request named no stamp (it asked before it knew
     // them) was answered as one that loaded the newest output, with no way
     // to tell. Its next request names them, and is answered as the page

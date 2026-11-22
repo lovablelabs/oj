@@ -405,7 +405,7 @@ class OjDevRuntime extends DevRuntime {
     // page's stamps (it is the last tag of the document, and the bundle
     // can import while the document still streams).
     const unnamed = !("stamp" in __ojBus);
-    const chunk = import(/* @vite-ignore */ this.lazyChunkUrl(proxyModuleId));
+    const chunk = this.ojImport(this.lazyChunkUrl(proxyModuleId));
     return unnamed ? chunk.then(() => this.ojAskedUnnamed(proxyModuleId)) : chunk;
   }
   // The answer to a request that named no stamp was made for a page that
