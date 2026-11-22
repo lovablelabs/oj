@@ -264,6 +264,10 @@ class OjHmrClient {
     const changedIds = new Set();
     const announced = new Set();
     let update = null;
+    // An update the server sent for an invalidation (`applyInvalidate`)
+    // carries it on: one that comes back to the module that invalidated
+    // reloads, as it does when the page re-runs the importers itself.
+    let by;
     while (this.pending.length) {
       const frames = this.pending.splice(0);
       for (const { seq, changedIds: ids } of frames) {
@@ -275,16 +279,20 @@ class OjHmrClient {
       this.wake();
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
-      const next = this.compute([...changedIds]);
+      const resent = this.resent;
+      if (resent && [...changedIds].every((id) => resent.ids.has(id))) by = resent.by;
+      else by = undefined;
+      this.resent = undefined;
+      const next = this.compute([...changedIds], by);
       if (next?.reload) return this.requestReload(next.reload);
       if (next) {
         update = next;
         const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
         for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
         if (fresh.length) {
-          await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+          await this.notify("vite:beforeUpdate", this.payload(fresh, by));
           // A module a listener imported meanwhile runs here now.
-          const again = this.compute([...changedIds]);
+          const again = this.compute([...changedIds], by);
           if (again?.reload) return this.requestReload(again.reload);
           update = again ?? update;
         }
@@ -309,10 +317,10 @@ class OjHmrClient {
         }
       }
     }
-    if (update) await this.apply(update);
+    if (update) await this.apply(update, by);
     this.applied = this.lastSeq;
     this.wake();
-    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
+    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries, by));
   }
 
   async applyInvalidate(id) {
@@ -328,6 +336,20 @@ class OjHmrClient {
     const update = this.compute(importers, firstInvalidatedBy);
     if (!update) return;
     if (update.reload) return this.requestReload(update.reload);
+    // The page runs a module again from its factory, and holds none for a
+    // module of its first bundle (a patch or a lazy chunk registers one):
+    // the server is asked for those, and sends them as an update, which
+    // re-runs the same importers. Vite's client hands the invalidation to
+    // its server the same way (`vite:invalidate`, answered with an update
+    // for the importers).
+    const missing = update.updateSet.filter((m) => !this.runtime.hasFactory(m));
+    if (missing.length) {
+      if (!__ojBus.send || !__ojBus.send({ type: "oj:invalidate", path: id, modules: missing })) {
+        return this.requestReload(`no factory for module ${missing[0]}`);
+      }
+      this.resent = { by: firstInvalidatedBy, ids: new Set(missing) };
+      return;
+    }
     const payload = this.payload(update.boundaries, firstInvalidatedBy);
     await this.notify("vite:beforeUpdate", payload);
     if (this.beforeApply() === "reload") return;

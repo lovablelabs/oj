@@ -105,6 +105,8 @@ pub(crate) struct HotUpdates {
     /// pages' (see [`HotUpdates::tell_editor`]).
     editor: std::sync::OnceLock<Editor>,
     parked_editor: Mutex<Vec<String>>,
+    /// Files the engine was asked to send again (see [`HotUpdates::resend`]).
+    resent: Mutex<std::collections::HashSet<String>>,
 }
 
 impl HotUpdates {
@@ -124,6 +126,7 @@ impl HotUpdates {
             parked: Mutex::new(Vec::new()),
             editor: std::sync::OnceLock::new(),
             parked_editor: Mutex::new(Vec::new()),
+            resent: Mutex::default(),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -176,6 +179,37 @@ impl HotUpdates {
     /// How the bundler's engine tells the gate of the files it saw change.
     pub(crate) fn set_holder(&self, holder: Holder) {
         let _ = self.holder.set(holder);
+    }
+
+    /// The engine is asked to send `files` again, for a page that invalidated
+    /// a module (see `DevBundler::resend`): no edit, so the update it makes
+    /// for them is nothing the editor's gate holds.
+    pub(crate) fn resend(&self, files: &[String]) {
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(files.iter().cloned());
+    }
+
+    /// Whether the engine was asked to send `file` again.
+    pub(crate) fn resending(&self, file: &str) -> bool {
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(file)
+    }
+
+    /// The files of an engine update that are edits: `changed` without the
+    /// ones it was asked to send again, each of which is taken once.
+    pub(crate) fn edits(&self, changed: Vec<String>) -> Vec<String> {
+        let mut resent = self
+            .resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        changed
+            .into_iter()
+            .filter(|file| !resent.remove(file))
+            .collect()
     }
 
     /// The engine saw `files` change: the gate, if there is one, holds them.
@@ -524,6 +558,9 @@ pub(crate) enum PageMessage {
     Delivered(String),
     /// The page found no boundary for an update and needs a reload.
     ReloadNeeded,
+    /// A module of the page called `import.meta.hot.invalidate()` and the
+    /// page cannot run these importers again from what it holds.
+    Invalidate(Vec<String>),
     /// `import.meta.hot.send(event, data)`, the data as JSON.
     Custom { event: String, data: String },
 }
@@ -537,6 +574,13 @@ pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
             .map(PageMessage::Client),
         "oj:delivered" => field("filename").map(PageMessage::Delivered),
         "oj:reload-needed" => Some(PageMessage::ReloadNeeded),
+        "oj:invalidate" => Some(PageMessage::Invalidate(
+            v.get("modules")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect(),
+        )),
         "custom" => Some(PageMessage::Custom {
             event: field("event")?,
             data: v
@@ -890,5 +934,37 @@ mod tests {
         hot.discard();
         hot.release();
         assert_eq!(heard().len(), 3, "a flush that reloads drops it");
+    }
+
+    // A file the engine is asked to send again is no edit: its update is
+    // taken out of what the gate holds, once.
+    #[test]
+    fn a_file_sent_again_is_not_one_of_an_updates_edits() {
+        let hot = HotUpdates::new("");
+        assert!(!hot.resending("/app/src/a.tsx"));
+        hot.resend(&["/app/src/a.tsx".to_string()]);
+        assert!(hot.resending("/app/src/a.tsx"));
+        let changed = || vec!["/app/src/a.tsx".to_string(), "/app/src/b.tsx".to_string()];
+        assert_eq!(hot.edits(changed()), ["/app/src/b.tsx"]);
+        assert!(!hot.resending("/app/src/a.tsx"));
+        assert_eq!(
+            hot.edits(changed()),
+            changed(),
+            "the next change of it is an edit"
+        );
+    }
+
+    #[test]
+    fn a_page_names_the_importers_it_cannot_run_again() {
+        assert_eq!(
+            page_message(
+                r#"{"type":"oj:invalidate","path":"src/a.tsx","modules":["src/app.tsx","src/b.tsx"]}"#
+            ),
+            Some(PageMessage::Invalidate(vec![
+                "src/app.tsx".to_string(),
+                "src/b.tsx".to_string()
+            ]))
+        );
+        assert_eq!(page_message(r#"{"type":"oj:invalidate"}"#), None);
     }
 }

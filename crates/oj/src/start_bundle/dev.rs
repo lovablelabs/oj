@@ -760,6 +760,41 @@ impl DevBundler {
         }
     }
 
+    /// A page's module called `import.meta.hot.invalidate()`, and the page
+    /// holds no factory for `modules`, the importers that take the update
+    /// over (they came with its first bundle; only a patch or a lazy chunk
+    /// registers one). The engine sends them again, as an update the page
+    /// applies like any other: Vite's server answers `vite:invalidate` with
+    /// an update for the importers (server/environment.ts
+    /// `invalidateModule`). False when it cannot (no engine, or a module
+    /// with no file behind it): the page reloads instead.
+    pub(crate) fn resend(&self, modules: &[String]) -> bool {
+        let Some(engine) = self.engine.get() else {
+            return false;
+        };
+        let mut files: Vec<PathBuf> = Vec::new();
+        for module in modules {
+            let path = module.split(['?', '#']).next().unwrap_or(module);
+            let file = self.start.root.join(path);
+            if path.is_empty() || !file.is_file() {
+                return false;
+            }
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+        if files.is_empty() {
+            return false;
+        }
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        self.hot.resend(&names);
+        engine.resend_files(files);
+        true
+    }
+
     /// A page ran a patch (Vite's payloadDeliveredAck).
     pub(crate) fn patch_delivered(&self, filename: &str) {
         if let Some(engine) = self.engine.get() {
@@ -1231,6 +1266,7 @@ impl DevBundler {
         plugins.push(Pluginable::new_shared(NodeBuiltinShims {
             production: false,
         }));
+        plugins.push(Pluginable::new_shared(ResendModules(Arc::clone(&self.hot))));
         if refresh {
             let jsx = oj_config::jsx_settings(&start.config);
             let jsx = oj_compiler::JsxConfig {
@@ -1424,6 +1460,37 @@ impl HotSession {
             self.host_engine,
             host_engine,
         )
+    }
+}
+
+/// Keeps the modules of a file a page asked to be sent again
+/// ([`DevBundler::resend`]) in the engine's update. The engine drops a
+/// changed module whose output renders as it did before, so that no client
+/// re-runs code it holds; a module its `hotUpdate` hook names is kept as it
+/// is, and this names the file's own modules.
+struct ResendModules(Arc<crate::start_hot::HotUpdates>);
+
+impl std::fmt::Debug for ResendModules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResendModules")
+    }
+}
+
+impl rolldown_plugin::Plugin for ResendModules {
+    fn name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("oj:resend-modules")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::HotUpdate
+    }
+
+    async fn hot_update(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        args: &rolldown_plugin::HookHotUpdateArgs,
+    ) -> rolldown_plugin::HookHotUpdateReturn {
+        Ok(self.0.resending(&args.file).then(|| args.modules.clone()))
     }
 }
 

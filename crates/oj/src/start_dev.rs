@@ -4517,6 +4517,11 @@ async fn start_hmr_socket(
                             }
                             Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
                             Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
+                            Some(PageMessage::Invalidate(modules)) => {
+                                if !h.bundler.resend(&modules) {
+                                    (h.reload_needed)();
+                                }
+                            }
                             Some(PageMessage::Custom { .. }) | None => {}
                         }
                     }

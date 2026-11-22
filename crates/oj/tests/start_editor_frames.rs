@@ -22,10 +22,11 @@
 //! importers re-run in place, as under Vite. The refresh wrapper imports
 //! the module itself to compare exports, and the page's runtime counted
 //! that import among the importers: the invalidation came back to where it
-//! started, and every such edit reloaded the page. (The importers re-run
-//! from the modules the page holds: a lazily loaded chunk's, as a split
-//! route component's, or a hot update's. One that is only in the page's
-//! first bundle still reloads.)
+//! started, and every such edit reloaded the page. An importer the page
+//! holds no factory for (it came with the page's first bundle; a patch or a
+//! lazy chunk registers one) is asked of the dev server, which sends it as
+//! an update, as Vite's server answers `vite:invalidate` with an update for
+//! the importers.
 //! The browser tests skip without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
 
 #[path = "../../oj_server/tests/dev/browser.rs"]
@@ -357,7 +358,7 @@ async fn an_edit_to_a_component_file_with_another_export_updates_in_place() {
         widget.replace("titles}</span>", "titles}<Mixed /></span>")
     );
     assert!(rendering.contains("<Mixed />"), "the widget's span moved");
-    std::fs::write(root.join(WIDGET), &rendering).unwrap();
+    std::fs::write(root.join(WIDGET), rendering).unwrap();
 
     let dev = Server::oj_dev_with(&root, GATE);
     let page = Page::open(&dev.url("/")).await;
@@ -370,14 +371,10 @@ async fn an_edit_to_a_component_file_with_another_export_updates_in_place() {
         .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     page.eval::<bool>("(window.__mark = 'kept', true)").await;
-    // The page holds the widget as a module it can run again once a hot
-    // update brought it (as it holds a lazily loaded chunk's modules).
-    write_held(&dev, &root, &rendering, "jsxwidget:").await;
-    flush(&dev);
-    page.wait_for(&format!("{SHOWN}.includes('jsxwidget:')"), WAIT)
-        .await;
     let mut editor = editor_socket(&dev).await;
 
+    // The widget came with the page's first bundle: the page has no factory
+    // to run it again from, and the server sends it.
     std::fs::write(root.join(MIXED), mixed("mixed:two")).unwrap();
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
@@ -406,6 +403,38 @@ async fn an_edit_to_a_component_file_with_another_export_updates_in_place() {
         !frames.iter().any(|f| f["type"] == "full-reload"),
         "the editor heard a reload: {frames:?}\n{}",
         dev.output()
+    );
+
+    // The widget is a module the page can run again now: a second edit of
+    // the mixed file re-runs it from what the page holds.
+    std::fs::write(root.join(MIXED), mixed("mixed:three")).unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let (_, status) = dev.request("GET", "/__hmr_gate", &[]);
+        if status.contains("/src/widgets/mixed.jsx\":") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the gate never held the second edit\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    flush(&dev);
+    page.wait_for(&format!("{SHOWN}.includes('mixed:three')"), WAIT)
+        .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded for the second edit\n{}",
+        dev.output()
+    );
+    // Nothing the server sent again for the page is left held by the gate.
+    let (_, status) = dev.request("GET", "/__hmr_gate", &[]);
+    assert!(
+        !status.contains("glob-widget.jsx"),
+        "the gate holds a file no edit wrote: {status}"
     );
     page.close().await;
 }

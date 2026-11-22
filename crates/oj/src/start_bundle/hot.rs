@@ -128,6 +128,8 @@ impl HotSession {
         experimental.dev_mode = Some(rolldown_common::DevModeOptions {
             lazy: Some(false),
             implement: Some(runtime),
+            // For `ResendModules`, the one plugin of the bundle with the hook.
+            hot_update: Some(true),
             ..Default::default()
         });
         // Vite turns this off for its bundled dev too (vitejs/vite#21843).
@@ -480,6 +482,9 @@ fn on_hmr_updates(
     // the bundler, before a page's `import()` can be compiled against them.
     // The dev server's own watcher reports the same files later (it waits
     // for a quiet moment), which left a patch made meanwhile unheld.
+    // Not the files a page asked to be sent again: nothing wrote them, the
+    // editor flushes nothing for them, and no rebundle waits to hear of them.
+    let changed = hot.edits(changed);
     hot.hold(&changed);
     let kind = if updates
         .iter()

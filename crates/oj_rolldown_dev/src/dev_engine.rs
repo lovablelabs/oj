@@ -520,6 +520,22 @@ impl DevEngine {
     Arc::clone(self.bundler.lock().await.options())
   }
 
+  /// Has `files` handled as changed, with nothing written: their modules are
+  /// compiled again and sent to the clients that run them, as an edit's
+  /// are. For a host whose client needs a module it loaded but holds no
+  /// factory for (one of its first output's), to run it again.
+  pub fn resend_files(&self, files: Vec<std::path::PathBuf>) {
+    let events = files
+      .into_iter()
+      .map(|path| {
+        rolldown_fs_watcher::FsEvent::new(path, rolldown_common::WatcherChangeKind::Update)
+      })
+      .collect::<Vec<_>>();
+    if !events.is_empty() {
+      let _ = self.coordinator_sender.send(CoordinatorMsg::WatchEvent(events));
+    }
+  }
+
   #[cfg(feature = "testing")]
   pub async fn ensure_task_with_changed_files(
     &self,
