@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-11-22
+
 ### Fixed
 
 - Dev server: a file a plugin watches from a module's `load` or `transform` (`this.addWatchFile`) is one of that module's imports, as in Vite (`_addedImports`: importAnalysis adds it to a JS module's imported urls, css-analysis to a sheet's as a file-only entry), and an edit to it updates the module: the sheet swaps, an accepting module is re-imported, and only a chain with no boundary reloads. Any edit to a plugin-watched file sent `full-reload`. `@tailwindcss/vite` watches every source it scans from the sheet's transform, so in a Tailwind app nearly every edit did. A file watched from anywhere else (`buildStart`) sends nothing, as Vite finds no module for it. Only a sheet's watch file is a node of its own beside the module the file may also be; for any other module it is the file's own url, so a watched file that is a self-accepting module takes its edit itself.
