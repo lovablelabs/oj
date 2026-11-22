@@ -505,3 +505,73 @@ async fn a_route_visited_while_the_first_edit_after_a_restored_boot_is_held_rend
         server_lines(&dev)
     );
 }
+
+/// The names of the client bundle's chunks, as the dev server lists them.
+fn chunk_names(root: &Path) -> Vec<String> {
+    let index = std::fs::read_to_string(root.join(".oj-cache/v1/start/client-chunks.json"))
+        .expect("client-chunks.json");
+    let index: serde_json::Value = serde_json::from_str(&index).unwrap();
+    index["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The first edit after a boot on the cached bundle starts the bundler. The
+/// chunks the edit did not change keep their names, so a page reloading
+/// onto the new bundle revalidates them instead of fetching each anew: what
+/// tells the bundler's pages from others is in the entry, whose name is
+/// fixed, not in the runtime's chunk, which every other chunk imports by a
+/// name made from its content.
+#[test]
+fn the_first_edit_after_a_restored_boot_renames_only_the_chunks_it_changed() {
+    let Some(app) = new_import_app("new-static-chunk-names") else {
+        return;
+    };
+    let root = app.0.clone();
+    let dev = restored(&root);
+    let before = chunk_names(&root);
+    assert!(
+        before.iter().any(|n| n.starts_with("about-")),
+        "the lazy route has chunks of its own: {before:?}"
+    );
+
+    write(&root, INDEX, &index("", "home edited"));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !dev.output().contains("oj start: rebuilt") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit never rebuilt the bundle\n{}",
+            dev.output()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let after = chunk_names(&root);
+    let renamed: Vec<&String> = before
+        .iter()
+        .filter(|n| !n.starts_with("routes-") && !after.contains(n))
+        .collect();
+    assert!(
+        renamed.is_empty(),
+        "an edit of the home route renamed {renamed:?}: {before:?} -> {after:?}"
+    );
+    // The entry names the bundler that made it, and the dev server answers
+    // for that name.
+    let (_, entry) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    let tag: String = entry
+        .split_once("/@oj-start/engine.js?t=")
+        .expect("the entry imports its engine's tag")
+        .1
+        .chars()
+        .take_while(char::is_ascii_hexdigit)
+        .collect();
+    let (status, module) = dev.request("GET", &format!("/@oj-start/engine.js?t={tag}"), &[]);
+    assert!(
+        status == 200 && module.contains(&format!("__ojEngine = \"{tag}\"")),
+        "{status} {module}"
+    );
+    let (status, _) = dev.request("GET", "/@oj-start/engine.js?t=not-a-tag", &[]);
+    assert_eq!(status, 404);
+}

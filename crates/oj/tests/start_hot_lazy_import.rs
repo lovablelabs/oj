@@ -1620,28 +1620,15 @@ fn proxy_of(dev: &Server, module: &str) -> String {
     entry[start..end].to_string()
 }
 
-/// The running engine's tag, as the client bundle's runtime carries it: the
-/// start of the runtime id of every page of that bundle.
+/// The running engine's tag, as the client entry's first import names it:
+/// the start of the runtime id of every page of that bundle.
 fn engine_tag(dev: &Server) -> String {
     let (_, entry) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
-    let tag_in = |code: &str| {
-        let after = &code[code.find("new OjDevRuntime(")? + "new OjDevRuntime(".len()..];
-        let tag: String = after
-            .trim_start_matches(['`', '$', '{', '"'])
-            .chars()
-            .take_while(char::is_ascii_hexdigit)
-            .collect();
-        (!tag.is_empty()).then_some(tag)
-    };
-    // The runtime is in the entry, or in the chunk the entry imports it from.
-    tag_in(&entry)
-        .or_else(|| {
-            let at = entry.find("rolldown-runtime")?;
-            let end = at + entry[at..].find('"')?;
-            let (_, runtime) = dev.request("GET", &format!("/@oj-start/{}", &entry[at..end]), &[]);
-            tag_in(&runtime)
-        })
-        .expect("the client bundle's runtime names its engine")
+    let after = entry
+        .split_once("/@oj-start/engine.js?t=")
+        .expect("the client entry imports its engine's tag")
+        .1;
+    after.chars().take_while(char::is_ascii_hexdigit).collect()
 }
 
 fn encoded(s: &str) -> String {
