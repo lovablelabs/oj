@@ -1152,7 +1152,6 @@ pub(crate) async fn decide(
     }
     let mut messages: Vec<String> = Vec::new();
     let mut updates: Vec<serde_json::Value> = Vec::new();
-    let plugin_watched = plugin_watched_files(state).await;
 
     let source_changed = paths.iter().any(|p| {
         gate_relevant(p)
@@ -1219,7 +1218,7 @@ pub(crate) async fn decide(
         messages.extend(hook_messages);
         updates.extend(hook_updates);
         if let Flow::Next = flow {
-            flow = decide_file(state, path, &plugin_watched, timestamp, &mut updates);
+            flow = decide_file(state, path, timestamp, &mut updates);
         }
         if let Flow::Reload(frame) = flow {
             messages.push(frame);
@@ -1233,24 +1232,13 @@ pub(crate) async fn decide(
     messages
 }
 
-/// Files plugins asked to watch (`addWatchFile`, `server.watcher.add`), canonicalized
-/// (memoized); a change to one reloads the page.
-async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<PathBuf> {
-    let mut raw: Vec<String> = match &state.plugins {
-        Some(host) => host.watch_files().await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    raw.extend(
-        state
-            .plugin_watched
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned()),
-    );
-    raw.into_iter()
-        .map(|p| canonicalize_memo(state, &p))
-        .collect()
+/// The graph node of a file a plugin watched from a module's load or
+/// transform (`this.addWatchFile`): Vite's file-only entry
+/// (`moduleGraph.createFileOnlyEntry`), a node of its own beside the module
+/// the same file may also be, imported by the module that watched it.
+pub(crate) fn watch_node(state: &ServerState, file: &Path) -> PathBuf {
+    let file = canonicalize_memo(state, &file.to_string_lossy());
+    PathBuf::from(format!("/@oj-watch{}", file.display()))
 }
 
 /// Vite resolves through rolldown's native `vite_resolve` plugin, whose
@@ -1661,24 +1649,16 @@ fn plugin_filtered_update(
     }
 }
 
-/// The non-plugin decision for a path: plugin-watched files, `<link>`
+/// The non-plugin decision for a path: the modules that watched it, `<link>`
 /// stylesheets, html pages, then a graph walk to the accepting boundaries.
 fn decide_file(
     state: &ServerState,
-    path: &PathBuf,
-    plugin_watched: &std::collections::HashSet<PathBuf>,
+    path: &Path,
     timestamp: u64,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
-    if !plugin_watched.is_empty() {
-        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        if plugin_watched.contains(&canon) {
-            println!(
-                "oj: change {} -> full-reload (plugin watch)",
-                path.display()
-            );
-            return Flow::Reload(full_reload_frame("plugin-watch", None, Some(path)));
-        }
+    if let Flow::Reload(frame) = watchers_update(state, path, timestamp, updates) {
+        return Flow::Reload(frame);
     }
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -1766,6 +1746,57 @@ fn decide_file(
         }
         Err(reason) => {
             println!("oj: change {url} -> full-reload ({reason})");
+            Flow::Reload(full_reload_frame(&reason, None, Some(path)))
+        }
+    }
+}
+
+/// A file plugins watched from a module's load or transform updates that
+/// module, as Vite's `handleHMRUpdate` takes the file's modules
+/// (`getModulesByFile`: its file-only entry among them) and walks up from
+/// each: Tailwind watches every source it scans from the sheet's transform,
+/// so an edit to one swaps the sheet. A file watched from anywhere else
+/// (`buildStart`, `server.watcher.add`) is in no module's imports and
+/// updates nothing by itself; neither reloads the page for being watched.
+/// The file may be a module too, which the caller decides next.
+fn watchers_update(
+    state: &ServerState,
+    path: &Path,
+    timestamp: u64,
+    updates: &mut Vec<serde_json::Value>,
+) -> Flow {
+    let node = watch_node(state, path);
+    let targets = {
+        let g = state.graph.lock().unwrap();
+        if !g.contains(&node) {
+            return Flow::Next;
+        }
+        g.update_targets(&node)
+    };
+    match targets {
+        Ok(targets) => {
+            let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
+            println!(
+                "oj: change {} -> update {boundaries:?} (watched by)",
+                path.display()
+            );
+            stamp_chains(state, &[&node], timestamp);
+            for t in &targets {
+                let boundary = t.boundary.display().to_string();
+                let entry = if is_style_url(&boundary) && link_loaded(state, &boundary) {
+                    update_entry("css-update", &boundary, timestamp)
+                } else {
+                    update_entry_for(t, timestamp, None)
+                };
+                // The watcher may be the file's own boundary as a module.
+                if !updates.contains(&entry) {
+                    updates.push(entry);
+                }
+            }
+            Flow::Next
+        }
+        Err(reason) => {
+            println!("oj: change {} -> full-reload ({reason})", path.display());
             Flow::Reload(full_reload_frame(&reason, None, Some(path)))
         }
     }

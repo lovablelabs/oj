@@ -318,7 +318,12 @@ class OjHmrClient {
   async applyInvalidate(id) {
     if (this.reloadPending) return;
     const firstInvalidatedBy = this.firstInvalidatedBy ?? id;
-    const importers = this.runtime.getImporters(id).filter((p) => this.runtime.isExecuted(p));
+    // Not the module itself, as Vite's server leaves self-imports out of an
+    // invalidation's importers (server/environment.ts `invalidateModule`): a
+    // Fast Refresh module imports itself to compare its exports
+    // (@vitejs/plugin-react's `import(import.meta.url)`), and walking up
+    // from it would find the invalidation back where it started and reload.
+    const importers = this.runtime.getImporters(id).filter((p) => p !== id && this.runtime.isExecuted(p));
     if (!importers.length) return this.requestReload(`no importers to handle the invalidation of ${id}`);
     const update = this.compute(importers, firstInvalidatedBy);
     if (!update) return;

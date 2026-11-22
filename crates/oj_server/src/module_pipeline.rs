@@ -1971,24 +1971,30 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
             insert_allow_root(&mut allow, PathBuf::from(p));
         }
     }
-    if !module.watch_files.is_empty() {
-        let mut watched = state.plugin_watched.lock().unwrap();
-        for p in &module.watch_files {
-            let p = PathBuf::from(p);
-            // Vite's addWatchFile goes through ensureWatchedFile too: an
-            // outside-root watch file otherwise never produces an event.
-            ensure_watched_file(state, &p);
-            watched.insert(p);
-        }
+    for p in &module.watch_files {
+        // Vite's addWatchFile goes through ensureWatchedFile too: an
+        // outside-root watch file otherwise never produces an event.
+        ensure_watched_file(state, Path::new(p));
     }
     let mut graph = state.graph.lock().unwrap();
     let local = |s: &&String| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s);
-    let local_imports: Vec<PathBuf> = module
+    let mut local_imports: Vec<PathBuf> = module
         .imports
         .iter()
         .filter(local)
         .map(|s| import_node(s))
         .collect();
+    // A file the module's plugins watched while loading or transforming it
+    // is one of its imports, as in Vite (`_addedImports`: importAnalysis
+    // adds them to a JS module's imported urls, css-analysis to a sheet's as
+    // file-only entries), so an edit to it updates the module. After the
+    // real imports: `named` below pairs those by position.
+    local_imports.extend(
+        module
+            .watch_files
+            .iter()
+            .map(|p| crate::hmr::watch_node(state, Path::new(p))),
+    );
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     // The url each import is named by, which a page's preload of it asks for
     // (`/src/a.md?raw`, never the bare file). Not a pre-bundled dependency's:

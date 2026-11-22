@@ -20,6 +20,8 @@ use tokio::sync::watch;
 
 /// Whether the editor's gate holds the pages' reload.
 pub(crate) type Held = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Hears of each reload as it is published to the pages.
+pub(crate) type Published = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) struct Epochs {
     /// This server's id in page stamps: a stamp from another run of the dev
@@ -28,6 +30,8 @@ pub(crate) struct Epochs {
     latest: Mutex<u64>,
     published: watch::Sender<u64>,
     held: Option<Held>,
+    /// See [`Epochs::on_publish`].
+    on_publish: std::sync::OnceLock<Published>,
 }
 
 impl Epochs {
@@ -41,7 +45,15 @@ impl Epochs {
             latest: Mutex::new(0),
             published: watch::channel(0).0,
             held,
+            on_publish: std::sync::OnceLock::new(),
         }
+    }
+
+    /// `heard` runs each time a reload is published to the pages: once per
+    /// reload they are told of (a held one at its flush), never for a count
+    /// that only moved behind the gate.
+    pub(crate) fn on_publish(&self, heard: Published) {
+        let _ = self.on_publish.set(heard);
     }
 
     /// A change the pages must reload for. True when it reached them now,
@@ -84,11 +96,17 @@ impl Epochs {
     }
 
     fn publish_locked(&self, latest: u64) -> bool {
-        self.published.send_if_modified(|p| {
+        let moved = self.published.send_if_modified(|p| {
             let moved = *p < latest;
             *p = latest.max(*p);
             moved
-        })
+        });
+        if moved {
+            if let Some(heard) = self.on_publish.get() {
+                heard();
+            }
+        }
+        moved
     }
 
     /// The stamp of a document rendered now.
@@ -564,5 +582,39 @@ mod tests {
             timing.runs_cover_reloads(),
             "the seen change's run covers the reload"
         );
+    }
+
+    // The editor hears one reload per reload the pages are told of: when it
+    // is published, not while the gate holds it, and not again for a flush
+    // with nothing new.
+    #[test]
+    fn a_reload_is_heard_when_it_is_published_to_the_pages() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let held = Arc::new(AtomicBool::new(false));
+        let epochs = Epochs::new(Some({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        }));
+        let heard = Arc::new(AtomicUsize::new(0));
+        epochs.on_publish({
+            let heard = Arc::clone(&heard);
+            Arc::new(move || {
+                heard.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        let heard = || heard.load(Ordering::SeqCst);
+
+        assert!(epochs.bump());
+        assert_eq!(heard(), 1, "no hold: published now");
+
+        held.store(true, Ordering::SeqCst);
+        assert!(!epochs.bump());
+        assert!(!epochs.bump());
+        assert_eq!(heard(), 1, "held: the pages were told nothing");
+        held.store(false, Ordering::SeqCst);
+        assert!(epochs.flushed());
+        assert_eq!(heard(), 2, "the flush publishes both as one reload");
+        assert!(!epochs.flushed());
+        assert_eq!(heard(), 2, "a flush with nothing new publishes nothing");
     }
 }

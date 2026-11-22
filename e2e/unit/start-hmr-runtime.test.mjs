@@ -119,6 +119,25 @@ test("hot.invalidate notifies vite:invalidate and re-runs the importers in place
   assert.deepEqual(runtime.log, ["run src/app.tsx"], "re-run in place, no reload");
 });
 
+// A component file with an export Fast Refresh cannot take (a helper beside
+// the components) invalidates itself on every edit. It is also one of its own
+// importers: the refresh wrapper imports the module to compare its exports.
+test("hot.invalidate leaves the module's import of itself out of its importers, as Vite's server", async () => {
+  const importers = GRAPH["src/a.tsx"];
+  GRAPH["src/a.tsx"] = ["src/a.tsx", ...importers];
+  try {
+    const runtime = loadRuntime();
+    runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+    const self = runtime.hooks.createModuleHotContext("src/a.tsx");
+    self.accept();
+    self.invalidate("export is incompatible");
+    await settle(runtime);
+    assert.deepEqual(runtime.log, ["run src/app.tsx"], "the importer re-ran in place, no reload");
+  } finally {
+    GRAPH["src/a.tsx"] = importers;
+  }
+});
+
 test("an update that throws is logged and the page keeps running, as Vite's warnFailedUpdate", async () => {
   const runtime = loadRuntime();
   runtime.hooks.createModuleHotContext("src/app.tsx").accept(() => {

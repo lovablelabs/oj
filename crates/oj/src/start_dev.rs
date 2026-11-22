@@ -503,6 +503,23 @@ pub async fn start_dev(
             .clone()
             .map(|gate| -> crate::start_reloads::Held { Arc::new(move || gate.reload_is_held()) }),
     ));
+    // The editor reads Vite's client channel (oj_server's /__ws), which in
+    // Vite carries what the pages are told: a reload published to them is a
+    // `full-reload` frame there, as an update they take in place is an
+    // `update` one (`editor_update_frame`). Start's own socket tells the
+    // pages; without these the editor would only hear the inner server's
+    // module graph, which a page on the bundle does not run. A full-reload
+    // gate's flush sends its own frame.
+    if !built
+        .hmr_gate
+        .as_ref()
+        .is_some_and(|gate| gate.full_reload())
+    {
+        let editor = built.reload_tx.clone();
+        reloads.on_publish(Arc::new(move || {
+            let _ = editor.send(EDITOR_RELOAD_FRAME.to_string());
+        }));
+    }
     // When a gate flush takes effect against the rebundle runs, and whether
     // the boot's revalidation below still owes the pages a reload.
     let flush_timing = Arc::new(crate::start_reloads::FlushTiming::default());
@@ -685,6 +702,12 @@ pub async fn start_dev(
     bundler.set_hot_enabled(hot_under_gate(
         built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
     ));
+    {
+        let editor = built.reload_tx.clone();
+        bundler.hot.set_editor(Arc::new(move |frame| {
+            let _ = editor.send(frame);
+        }));
+    }
     if let Some(gate) = built.hmr_gate.clone() {
         let holder = gate.clone();
         bundler
@@ -2266,11 +2289,18 @@ async fn rebundle_worker(
         } else {
             Vec::new()
         };
-        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
-            state
-                .bundler
-                .hot
-                .refresh_styles(state.css_host.is_some(), &added);
+        // An edited sheet the pages link is re-linked too, as Vite's
+        // `css-update` swaps it.
+        let relink = state.css_host.is_some() || served.iter().any(|p| is_style_input(p));
+        if hot && !reload && (relink || !added.is_empty()) {
+            state.bundler.hot.refresh_styles(relink, &added);
+        }
+        // The pages took the change in place: the editor hears an update,
+        // released with the pages' own frames.
+        if hot && !reload {
+            if let Some(frame) = editor_update_frame(&root, &served) {
+                state.bundler.hot.tell_editor(frame);
+            }
         }
         // The hold was taken at the watcher event. A flush that came while this
         // run built released it, and the reload reaches the pages now, with
@@ -2323,6 +2353,45 @@ async fn rebundle_worker(
             );
         }
     }
+}
+
+/// What the editor's socket hears when the pages reload: Vite's
+/// `FullReloadPayload` for every page.
+const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*"}"#;
+
+/// Vite's `update` payload for the files a run changed and the pages took in
+/// place, for the editor's socket: one entry per file, a stylesheet's a
+/// `css-update`, stamped now. The pages never read it (their patches came on
+/// Start's socket); the editor counts it, and reads the stamp as the time
+/// the server sent the update. `None` with no file to name.
+fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let mut files: Vec<&PathBuf> = changed.iter().filter(|p| watch_relevant(p)).collect();
+    files.sort();
+    files.dedup();
+    let updates: Vec<serde_json::Value> = files
+        .iter()
+        .map(|file| {
+            let path = match file.strip_prefix(root) {
+                Ok(rel) => format!("/{}", rel.display()),
+                Err(_) => format!("/@fs{}", file.display()),
+            };
+            let style = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(oj_server::is_style_ext);
+            serde_json::json!({
+                "type": if style { "css-update" } else { "js-update" },
+                "path": path,
+                "acceptedPath": path,
+                "timestamp": timestamp,
+            })
+        })
+        .collect();
+    (!updates.is_empty())
+        .then(|| serde_json::json!({ "type": "update", "updates": updates }).to_string())
 }
 
 /// A gate flush taking effect: the parked reloads publish, and the parked
@@ -9456,6 +9525,50 @@ mod tests {
         assert!(
             !reloads_browser(base),
             "a change outside every graph reloads nothing"
+        );
+    }
+
+    // Vite's `update` payload, one entry per changed file: what the editor
+    // counts, with the stamp it reads the server's send time from.
+    #[test]
+    fn the_editors_update_names_each_changed_file_once() {
+        let root = Path::new("/app");
+        let frame = editor_update_frame(
+            root,
+            &[
+                PathBuf::from("/app/src/b.tsx"),
+                PathBuf::from("/app/src/styles.css"),
+                PathBuf::from("/app/src/b.tsx"),
+                PathBuf::from("/outside/lib.ts"),
+                // Regenerated beside the edit, never an update of its own.
+                PathBuf::from("/app/src/routeTree.gen.ts"),
+            ],
+        )
+        .expect("files to name");
+        let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(frame["type"], "update");
+        let entries: Vec<(&str, &str)> = frame["updates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| (u["type"].as_str().unwrap(), u["path"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("js-update", "/src/b.tsx"),
+                ("css-update", "/src/styles.css"),
+                ("js-update", "/@fs/outside/lib.ts"),
+            ]
+        );
+        for update in frame["updates"].as_array().unwrap() {
+            assert_eq!(update["acceptedPath"], update["path"]);
+            assert!(update["timestamp"].as_u64().is_some_and(|t| t > 0));
+        }
+        assert_eq!(
+            editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]),
+            None,
+            "nothing to name, no frame"
         );
     }
 }

@@ -464,7 +464,6 @@ struct ServerState {
     /// The ssr environment's container on `plugins`, opened at boot as Vite's
     /// createServer creates every environment before it listens.
     plugins_ssr: Option<std::sync::Arc<PluginHost>>,
-    plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     /// The files the ssr pipeline compiled: the ssr environment's module
     /// graph, which its hotUpdate reads.
     ssr_modules: Mutex<std::collections::HashSet<PathBuf>>,
@@ -2469,7 +2468,6 @@ impl DevServer {
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr,
-            plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
             ssr_modules: Mutex::default(),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),

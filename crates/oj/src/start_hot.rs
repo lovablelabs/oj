@@ -64,6 +64,8 @@ const KEPT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Tells the editor's gate of files that changed.
 pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
+/// Takes a frame for the editor's socket (see [`HotUpdates::tell_editor`]).
+pub(crate) type Editor = Arc<dyn Fn(String) + Send + Sync>;
 
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
@@ -99,6 +101,10 @@ pub(crate) struct HotUpdates {
     /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
     holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
+    /// The editor's socket, and the frames for it the gate holds with the
+    /// pages' (see [`HotUpdates::tell_editor`]).
+    editor: std::sync::OnceLock<Editor>,
+    parked_editor: Mutex<Vec<String>>,
 }
 
 impl HotUpdates {
@@ -116,6 +122,8 @@ impl HotUpdates {
             unheard: Mutex::default(),
             holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
+            editor: std::sync::OnceLock::new(),
+            parked_editor: Mutex::new(Vec::new()),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -177,6 +185,36 @@ impl HotUpdates {
         }
     }
 
+    /// Where frames for the editor go: the socket it reads beside the
+    /// pages' (Vite's client channel, which carries its `update` frames).
+    pub(crate) fn set_editor(&self, editor: Editor) {
+        let _ = self.editor.set(editor);
+    }
+
+    /// An update the pages take in place, told to the editor as Vite's
+    /// client channel tells it (`frame`: an `update` payload). It goes when
+    /// the pages' own frames do: at once, or held by the gate until its
+    /// flush, and dropped with them when that flush reloads the pages
+    /// instead (the reload is what the editor hears then).
+    pub(crate) fn tell_editor(&self, frame: String) {
+        let Some(editor) = self.editor.get() else {
+            return;
+        };
+        // The pages' lock: a release drains both lists under it.
+        let _parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.gate.get().is_some_and(|held| held()) {
+            self.parked_editor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+        } else {
+            editor(frame);
+        }
+    }
+
     /// The gate flushed: send what it held, in order. Sent under the lock, so
     /// a frame made after the flush cannot overtake them (a patch sequence
     /// gap reloads the page).
@@ -188,6 +226,15 @@ impl HotUpdates {
         for frame in parked.drain(..) {
             self.sent(&frame);
             let _ = self.tx.send(frame);
+        }
+        let held: Vec<String> = self
+            .parked_editor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        if let Some(editor) = self.editor.get() {
+            held.into_iter().for_each(|frame| editor(frame));
         }
     }
 
@@ -263,7 +310,12 @@ impl HotUpdates {
 
     /// The gate flushed with a page reload: the parked frames are moot.
     pub(crate) fn discard(&self) {
-        self.parked
+        let mut parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        parked.clear();
+        self.parked_editor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
@@ -792,5 +844,51 @@ mod tests {
         assert_eq!(page_message(r#"{"type":"custom","data":1}"#), None);
         assert_eq!(page_message(r#"{"type":"oj:client","id":""}"#), None);
         assert_eq!(page_message("ping"), None);
+    }
+
+    // The editor hears of an update when the pages do: at once with no
+    // hold, at the flush with one, and not at all when that flush reloads
+    // the pages instead (the reload is what it hears then).
+    #[test]
+    fn the_editor_hears_an_update_when_the_gate_lets_the_pages_have_it() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hot = HotUpdates::new("");
+        // No editor socket: nothing to tell, nothing kept.
+        hot.tell_editor("lost".into());
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        hot.set_editor({
+            let heard = Arc::clone(&heard);
+            Arc::new(move |frame| heard.lock().unwrap().push(frame))
+        });
+        let held = Arc::new(AtomicBool::new(false));
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        let heard = || heard.lock().unwrap().clone();
+
+        hot.tell_editor("first".into());
+        assert_eq!(heard(), ["first"], "no hold: at once");
+
+        held.store(true, Ordering::SeqCst);
+        hot.tell_editor("second".into());
+        hot.tell_editor("third".into());
+        assert_eq!(heard(), ["first"], "held with the pages' frames");
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(
+            heard(),
+            ["first", "second", "third"],
+            "in order, at the flush"
+        );
+        hot.release();
+        assert_eq!(heard().len(), 3, "once");
+
+        held.store(true, Ordering::SeqCst);
+        hot.tell_editor("moot".into());
+        held.store(false, Ordering::SeqCst);
+        hot.discard();
+        hot.release();
+        assert_eq!(heard().len(), 3, "a flush that reloads drops it");
     }
 }

@@ -109,11 +109,17 @@ pub(crate) async fn css_post(
     let is_dep = is_dep_module(url, file);
     let t = plugin_transform_phase(state, file, id, code, is_dep, Some("post")).await?;
     if !t.watch_files.is_empty() {
-        let mut watched = state.plugin_watched.lock().unwrap();
+        // The sheet's imports, as its compile's watch files are
+        // (`register_in_graph`).
+        let sheet = crate::module_pipeline::graph_url(url);
         for p in &t.watch_files {
-            let p = PathBuf::from(p);
-            ensure_watched_file(state, &p);
-            watched.insert(p);
+            ensure_watched_file(state, Path::new(p));
+            let node = crate::hmr::watch_node(state, Path::new(p));
+            state
+                .graph
+                .lock()
+                .unwrap()
+                .add_import(Path::new(sheet), &node);
         }
     }
     state

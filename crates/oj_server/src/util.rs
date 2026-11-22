@@ -123,8 +123,8 @@ pub(crate) fn allow_root(set: &Mutex<std::collections::HashSet<PathBuf>>, root: 
     insert_allow_root(&mut set.lock().unwrap(), root);
 }
 
-/// Successful canonicalizations memoized on the server: plugin watch lists
-/// re-canonicalize hundreds of stable paths per save. Failures retry (a watched
+/// Successful canonicalizations memoized on the server: a module's plugin
+/// watch list re-canonicalizes hundreds of stable paths each time it is served. Failures retry (a watched
 /// file can appear later); a retargeted symlink keeps its first resolution.
 pub(crate) fn canonicalize_memo(state: &ServerState, p: &str) -> PathBuf {
     if let Some(hit) = state.canon_memo.lock().unwrap().get(p) {

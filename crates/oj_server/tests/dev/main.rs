@@ -91,6 +91,7 @@ mod plugin_parse;
 mod plugin_react_native;
 mod plugin_skip;
 mod plugin_watch_change;
+mod plugin_watch_file_hmr;
 mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
