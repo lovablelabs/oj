@@ -155,11 +155,11 @@ const LAZY_STUB = `class DevRuntime {
   }
 }`;
 
-function lazyRuntime() {
+function lazyRuntime(bus = {}) {
   const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
   const page = {
     console: { debug() {}, error() {}, warn() {} },
-    __ojStartHmr: { send: () => true },
+    __ojStartHmr: { send: () => true, ...bus },
     setTimeout,
     clearTimeout,
     Date,
@@ -169,6 +169,19 @@ function lazyRuntime() {
   vm.runInContext(`${LAZY_STUB}\n${source}`, page);
   return page.__rolldown_runtime__;
 }
+
+test("an import() request names the hot changes the page has, once the live-reload client says them", () => {
+  const proxy = "/abs/src/note.ts?rolldown-lazy=1";
+  // Before live-reload.js has run: nothing to name.
+  assert.ok(!/[?&]h=/.test(lazyRuntime().lazyChunkUrl(proxy)));
+  let has = null;
+  const runtime = lazyRuntime({ hotHas: () => has });
+  assert.ok(!/[?&]h=/.test(runtime.lazyChunkUrl(proxy)), "a page with no hot client names none");
+  has = 0;
+  assert.match(runtime.lazyChunkUrl(proxy), /&h=0$/);
+  has = 3;
+  assert.match(runtime.lazyChunkUrl(proxy), /&h=3$/);
+});
 
 test("an import() the server did not answer is asked for again, each request under a url of its own", async () => {
   const runtime = lazyRuntime();

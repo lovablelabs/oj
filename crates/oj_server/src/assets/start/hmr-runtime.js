@@ -396,7 +396,12 @@ class OjDevRuntime extends DevRuntime {
     // With the document's stamp: a page another run of the dev server
     // rendered is told to reload, not answered as one of this run's.
     const run = __ojBus.stamp == null ? "" : `&g=${encodeURIComponent(__ojBus.stamp)}`;
-    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}${run}`;
+    // With the hot changes the page has, as its socket names them: a page
+    // behind one (its patch held by the editor's gate, or missed while its
+    // socket was down) lacks what that change made part of the bundle.
+    const has = __ojBus.hotHas?.();
+    const hot = has == null ? "" : `&h=${has}`;
+    return `${__OJ_DEV_BASE__}/@oj-start/hmr/lazy?id=${encodeURIComponent(proxyModuleId)}&clientId=${this.clientId}&n=${this.lazyAsked}${run}${hot}`;
   }
   // A module with top-level `await` is an async factory, which rolldown's
   // runtime starts and does not wait for: its promise is kept, so an
