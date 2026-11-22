@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev, under the editor's HMR gate: an open page whose reload the gate holds can `import()` a module that imports one an edit made part of the app's entry since the page loaded. A dev server that started on its cached client bundle, a page open on it, then the editor's first edit, held: `__root.tsx` now imports `components/ui/button`, or a package no client module imported before, or a file the edit created. A click on a link to a route that imports the same module, or the route's preload, failed with `No factory registered for module src/components/ui/button.tsx` and the page went blank until the flush reloaded it, while a new tab was fine. The bundler leaves out of each answer the modules its newest output evaluates as it loads, taking every page it knows to have loaded that output; the page had loaded the bundle from before the edit, where the module was no part of the entry. A page is now told to the bundler as one of its output's only when it runs a bundle the running bundler made and no reload is owed to it; any other page is sent every module an answer needs, until it reloads. Under Vite the page's `import()` is a request for the module and each of its imports is another, whatever the page loaded before.
+
 ## [0.4.18] - 2026-11-20
 
 ### Changed

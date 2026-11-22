@@ -1612,6 +1612,30 @@ fn proxy_of(dev: &Server, module: &str) -> String {
     entry[start..end].to_string()
 }
 
+/// The running engine's tag, as the client bundle's runtime carries it: the
+/// start of the runtime id of every page of that bundle.
+fn engine_tag(dev: &Server) -> String {
+    let (_, entry) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    let tag_in = |code: &str| {
+        let after = &code[code.find("new OjDevRuntime(")? + "new OjDevRuntime(".len()..];
+        let tag: String = after
+            .trim_start_matches(['`', '$', '{', '"'])
+            .chars()
+            .take_while(char::is_ascii_hexdigit)
+            .collect();
+        (!tag.is_empty()).then_some(tag)
+    };
+    // The runtime is in the entry, or in the chunk the entry imports it from.
+    tag_in(&entry)
+        .or_else(|| {
+            let at = entry.find("rolldown-runtime")?;
+            let end = at + entry[at..].find('"')?;
+            let (_, runtime) = dev.request("GET", &format!("/@oj-start/{}", &entry[at..end]), &[]);
+            tag_in(&runtime)
+        })
+        .expect("the client bundle's runtime names its engine")
+}
+
 fn encoded(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -1786,13 +1810,25 @@ fn a_request_for_a_module_starts_no_build_and_answers_a_page_with_no_socket() {
     let builds = |dev: &Server| dev.output().matches("client bundling").count();
     let built = builds(&dev);
 
-    let (status, body) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
+    // A page of the engine's bundle: its runtime id starts with the
+    // engine's tag.
+    let page = format!("{}.no-socket", engine_tag(&dev));
+    let (status, body) = dev.request("GET", &lazy_url(&proxy, &page), &[]);
     assert_eq!(status, 200, "{body}");
-    let (status, _) = dev.request("POST", &lazy_url(&proxy, "no-socket"), &[]);
+    let (status, _) = dev.request("POST", &lazy_url(&proxy, &page), &[]);
     assert_eq!(status, 405, "only a GET is answered");
     assert!(
         body.contains("note v1") && body.len() < 4096,
         "the module without what the entry already holds: {} bytes",
+        body.len()
+    );
+    // A page of some other bundle holds nothing the engine knows of: its
+    // answer carries the package too.
+    let (status, whole) = dev.request("GET", &lazy_url(&proxy, "no-socket"), &[]);
+    assert!(
+        status == 200 && whole.contains("note v1") && whole.len() > body.len(),
+        "{status}: {} bytes against {}",
+        whole.len(),
         body.len()
     );
 

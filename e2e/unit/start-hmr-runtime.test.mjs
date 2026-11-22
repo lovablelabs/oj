@@ -22,7 +22,12 @@ const STUB = `class DevRuntime {
   loadExports() { return {}; }
 }`;
 
-function loadRuntime(source = readFileSync(asset("start/hmr-runtime.js"), "utf8"), bus = {}) {
+// The runtime with the engine's tag in it, as the dev server writes it.
+function runtimeSource() {
+  return readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_ENGINE__", '"engine"');
+}
+
+function loadRuntime(source = runtimeSource(), bus = {}) {
   const log = [];
   const page = {
     GRAPH,
@@ -45,6 +50,10 @@ function loadRuntime(source = readFileSync(asset("start/hmr-runtime.js"), "utf8"
 }
 
 const settle = (runtime) => runtime.hmr.queue;
+
+test("the runtime's id starts with the tag of the engine that made its bundle", () => {
+  assert.match(loadRuntime().clientId, /^engine\.[0-9a-z]+$/);
+});
 
 test("a re-run module's hot.on listeners replace its old ones, as Vite's HMRContext", async () => {
   const runtime = loadRuntime();
@@ -150,7 +159,7 @@ const LAZY_STUB = `class DevRuntime {
 }`;
 
 function lazyRuntime() {
-  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '"/app"');
+  const source = runtimeSource().replaceAll("__OJ_DEV_BASE__", '"/app"');
   const page = {
     console: { debug() {}, error() {}, warn() {} },
     __ojStartHmr: { send: () => true },
@@ -254,7 +263,7 @@ test("a page that is about to reload, or that the update never reaches, does not
 
   // The bound, on a clock the test turns.
   const warned = [];
-  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '""');
+  const source = runtimeSource().replaceAll("__OJ_DEV_BASE__", '""');
   const timers = [];
   const page = {
     console: { debug() {}, error() {}, warn: (m) => warned.push(m) },
@@ -296,7 +305,7 @@ const HELD_STUB = `class DevRuntime {
 }`;
 
 function heldRuntime() {
-  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8").replaceAll("__OJ_DEV_BASE__", '""');
+  const source = runtimeSource().replaceAll("__OJ_DEV_BASE__", '""');
   const page = { console: { debug() {}, error() {} }, __ojStartHmr: {}, queueMicrotask, setTimeout, Date };
   page.globalThis = page;
   vm.createContext(page);
@@ -384,7 +393,7 @@ function rolldownRuntimeFile() {
 
 function loadRealRuntime(file) {
   const common = readFileSync(file, "utf8").replaceAll("export class", "class");
-  const source = readFileSync(asset("start/hmr-runtime.js"), "utf8")
+  const source = runtimeSource()
     .replaceAll("__OJ_DEV_BASE__", '""')
     .replaceAll("import(/* @vite-ignore */", "__import(");
   const log = [];

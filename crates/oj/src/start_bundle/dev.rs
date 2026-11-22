@@ -93,6 +93,9 @@ pub(crate) struct DevBundler {
     /// Whether an engine ever ran in this dev server: until one does, the
     /// bundle the pages run is the one on disk (built or restored at boot).
     engine_started: std::sync::atomic::AtomicBool,
+    /// The running engine's tag, which the runtime id of every page of its
+    /// bundles starts with (see [`DevBundler::runs_engine_output`]).
+    engine_tag: Mutex<String>,
     /// The modules of the bundle a boot restored from the cache, by chunk
     /// (see [`DevBundler::lazy_chunk`]); read when first asked.
     restored_modules: Mutex<Option<HashMap<String, String>>>,
@@ -150,6 +153,7 @@ impl DevBundler {
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(PageSockets::default()),
             engine_started: std::sync::atomic::AtomicBool::new(false),
+            engine_tag: Mutex::default(),
             restored_modules: Mutex::default(),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
@@ -327,9 +331,11 @@ impl DevBundler {
     /// `another_run`: its document was served by another run of the dev
     /// server.
     ///
+    /// `owed`: a reload is owed to it (see [`DevBundler::holds_engine_output`]).
+    ///
     /// Whether the page is behind a hot update already: one made for it
     /// before its socket opened (see [`HotUpdates::connected`]).
-    pub(crate) fn page_connected(&self, id: &str, another_run: bool) -> bool {
+    pub(crate) fn page_connected(&self, id: &str, another_run: bool, owed: bool) -> bool {
         let mut pages = self
             .clients
             .lock()
@@ -342,11 +348,48 @@ impl DevBundler {
             return false;
         }
         let behind = self.hot.connected(id);
-        if let Some(engine) = self.engine.get() {
+        if let Some(engine) = self
+            .engine
+            .get()
+            .filter(|_| !another_run && self.holds_engine_output(id, owed))
+        {
             let id = id.to_string();
             pages.then(async move { engine.register_client(id).await });
         }
         behind
+    }
+
+    /// Whether the page `id` runs a bundle the running engine made (its
+    /// runtime id starts with the engine's tag).
+    fn runs_engine_output(&self, id: &str) -> bool {
+        let tag = self
+            .engine_tag
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !tag.is_empty()
+            && id
+                .strip_prefix(tag.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+
+    /// Whether the engine may take the page `id` to have run its newest
+    /// output, which is what registering a page with it says: the engine
+    /// then leaves out of every patch and every `import()` answer the
+    /// modules that output evaluates as it loads (rolldown's
+    /// `DevEngine::register_client`). That is true of a page that loaded
+    /// the output. It is not of a page on a bundle from before the engine
+    /// (the one a boot restored from the cache, or an earlier engine's),
+    /// nor of one a reload is owed to (`owed`: its document is from before
+    /// a rebuild): a module an edit made part of the entry since would be
+    /// taken for one the page has, and an `import()` of a module that
+    /// imports it would fail with `No factory registered for module`, for
+    /// as long as the editor's gate holds the page's reload. Such a page is
+    /// left unknown to the engine, which then sends it every module an
+    /// answer needs, and no patch: it is reloaded onto the engine's bundle.
+    /// Under Vite the page's `import()` is a request for the module, and
+    /// each of its imports another, whatever the page loaded before.
+    fn holds_engine_output(&self, id: &str, owed: bool) -> bool {
+        !owed && self.runs_engine_output(id)
     }
 
     pub(crate) fn page_gone(&self, id: &str) {
@@ -379,7 +422,10 @@ impl DevBundler {
     ///
     /// Nothing here starts a bundle: a request cannot make the dev server
     /// build.
-    pub(crate) async fn lazy_chunk(&self, proxy: &str, client: &str) -> LazyAnswer {
+    ///
+    /// `owed`: a reload is owed to the page (its document is from before a
+    /// rebuild).
+    pub(crate) async fn lazy_chunk(&self, proxy: &str, client: &str, owed: bool) -> LazyAnswer {
         // Only the id of an `import()`'s boundary: the engine would scan
         // any other module of the graph it is given as if it had changed.
         if !self.hot_bundle() || rolldown_common::lazy_proxy_target(proxy).is_none() {
@@ -439,12 +485,16 @@ impl DevBundler {
         }
         // Known to the engine before it compiles for it: what the page
         // already holds is left out of the answer. (The page's socket
-        // registers it too; a request can come first.)
-        on_rolldown(
-            &self.start.rolldown,
-            engine.register_client(client.to_string()),
-        )
-        .await;
+        // registers it too; a request can come first.) A page that does not
+        // run the engine's output is left unknown: its answer carries every
+        // module it needs (see `holds_engine_output`).
+        if self.holds_engine_output(client, owed) {
+            on_rolldown(
+                &self.start.rolldown,
+                engine.register_client(client.to_string()),
+            )
+            .await;
+        }
         let result = on_rolldown(
             &self.start.rolldown,
             engine.compile_lazy_entry(proxy.to_string(), client.to_string()),
@@ -471,6 +521,19 @@ impl DevBundler {
                 }
             }
         }
+    }
+
+    /// A tag for the engine about to start, kept as the running engine's.
+    fn new_engine_tag(&self) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let tag = format!("{nanos:x}");
+        *self
+            .engine_tag
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = tag.clone();
+        tag
     }
 
     /// The chunk of the bundle on disk that holds the module `proxy` stands
@@ -745,6 +808,10 @@ impl DevBundler {
                 .replace(
                     "__OJ_DEV_BASE__",
                     &serde_json::Value::String(start.dev_url_base()).to_string(),
+                )
+                .replace(
+                    "__OJ_ENGINE__",
+                    &serde_json::Value::String(self.new_engine_tag()).to_string(),
                 );
             let declared = declared_externals(host, &self.fn_externals);
             let live = HotSession::start(
@@ -759,7 +826,14 @@ impl DevBundler {
                 Arc::clone(&self.hot),
                 declared,
                 &self.engine,
-                || self.pages(),
+                // The pages of this engine's bundles: none yet, as its
+                // first output is still to be written. The pages open now
+                // run another bundle, and reload onto this one.
+                || {
+                    let mut pages = self.pages();
+                    pages.retain(|id| self.runs_engine_output(id));
+                    pages
+                },
             )
             .await?;
             self.engine_started

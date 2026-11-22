@@ -195,7 +195,8 @@ impl HotSession {
         let _ = oj_server::rolldown_runtime::on_rolldown(rolldown, engine.run()).await;
         // Published before the pages are read: a page connecting from here on
         // registers itself, one connected before is in the live set
-        // (registering twice keeps the first session).
+        // (registering twice keeps the first session). `clients` names the
+        // pages that run this engine's output, and no others.
         slot.set(Some(Arc::clone(&engine)));
         for id in clients() {
             engine.register_client(id).await;

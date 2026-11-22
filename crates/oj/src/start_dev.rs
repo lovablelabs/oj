@@ -4061,8 +4061,17 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                 let has = crate::start_hot::hot_change_in(parts.uri.query());
                 let hot = state.bundler.hot_enabled().then(|| {
                     let weak = Arc::downgrade(&state);
+                    let owed = {
+                        let weak = weak.clone();
+                        let query = parts.uri.query().map(str::to_string);
+                        Arc::new(move || {
+                            weak.upgrade()
+                                .is_some_and(|state| state.reloads.owed(query.as_deref()))
+                        })
+                    };
                     HotPage {
                         has,
+                        owed,
                         another_run: state.reloads.another_run(parts.uri.query()),
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
@@ -4174,6 +4183,8 @@ struct HotPage {
     has: Option<u64>,
     /// Its document was served by another run of the dev server.
     another_run: bool,
+    /// Whether a reload is owed to it now (see [`crate::start_reloads::Epochs::owed`]).
+    owed: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -4374,7 +4385,7 @@ async fn start_hmr_socket(
                                 // opened (the bundler knew the page from an
                                 // `import()` it made first) reached no
                                 // socket: the page reloads onto it.
-                                if h.bundler.page_connected(&id, h.another_run)
+                                if h.bundler.page_connected(&id, h.another_run, (h.owed)())
                                     && socket
                                         .send(Message::Text(HOT_BEHIND_FRAME.into()))
                                         .await
@@ -4832,7 +4843,8 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         // the cap all the same; the task ends on its own.
         let compile = {
             let (bundler, id, client) = (Arc::clone(&state.bundler), id.clone(), client.clone());
-            tokio::spawn(async move { bundler.lazy_chunk(&id, &client).await })
+            let owed = state.reloads.owed(query);
+            tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed).await })
         };
         let answer = match tokio::time::timeout_at(end, compile).await {
             Ok(Ok(answer)) => answer,
@@ -6157,6 +6169,7 @@ mod tests {
                                 reload_needed: Arc::new(|| {}),
                                 has: None,
                                 another_run: false,
+                                owed: Arc::new(|| false),
                             });
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
