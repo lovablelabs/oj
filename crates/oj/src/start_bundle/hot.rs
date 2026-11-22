@@ -128,6 +128,8 @@ impl HotSession {
         experimental.dev_mode = Some(rolldown_common::DevModeOptions {
             lazy: Some(false),
             implement: Some(runtime),
+            // For `ResendModules`, the one plugin of the bundle with the hook.
+            hot_update: Some(true),
             ..Default::default()
         });
         // Vite turns this off for its bundled dev too (vitejs/vite#21843).
@@ -234,6 +236,32 @@ impl HotSession {
             .map(|g| g.call.matcher())
             .collect();
         let under_a_glob = |p: &str| globs.iter().any(|g| g.is_match(&p.replace('\\', "/")));
+        // A sheet the bundle only names by its url (`./app.css?url`, as a
+        // route's `links` do): the module is that url, which an edit to the
+        // sheet does not change, and the page links the sheet itself. Vite
+        // answers such an edit with a `css-update` for the linked sheet and
+        // no reload; here the pages re-link their sheets, and the bundle has
+        // nothing to rebuild.
+        let linked_only = |p: &str| {
+            crate::start_dev::is_style_input(Path::new(p))
+                && self.engine.get_module_info(p).is_none()
+                && self.engine.get_module_info(&format!("{p}?url")).is_some()
+        };
+        let all: Vec<String> = changed
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let linked = all.iter().filter(|p| linked_only(p)).count();
+        if linked > 0 && linked == all.len() {
+            // With no page open nothing re-links: the next document does.
+            return Ok(true);
+        }
+        let changed: Vec<PathBuf> = changed
+            .iter()
+            .filter(|p| !linked_only(&p.to_string_lossy()))
+            .cloned()
+            .collect();
+        let changed = changed.as_slice();
         let known: Vec<String> = changed
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
@@ -445,6 +473,9 @@ fn on_hmr_updates(
         Err(errs) => {
             // A failed update reaches the page through the rebundle that follows.
             *events.error.lock().unwrap() = Some(BundleError::from_diagnostics(&errs.into_vec()));
+            // Of files a page asked for, no rebundle follows: the page gives
+            // up waiting and reloads, and the files are no longer asked for.
+            hot.resend_failed();
             return;
         }
     };
@@ -454,6 +485,9 @@ fn on_hmr_updates(
     // the bundler, before a page's `import()` can be compiled against them.
     // The dev server's own watcher reports the same files later (it waits
     // for a quiet moment), which left a patch made meanwhile unheld.
+    // Not the files a page asked to be sent again: nothing wrote them, the
+    // editor flushes nothing for them, and no rebundle waits to hear of them.
+    let changed = hot.edits(changed);
     hot.hold(&changed);
     let kind = if updates
         .iter()

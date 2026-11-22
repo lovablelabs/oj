@@ -62,8 +62,15 @@ const KEPT_PREFIX: &str = "lazy_held_";
 /// How much the kept answers may hold together.
 const KEPT_BYTES: usize = 32 * 1024 * 1024;
 
+/// How long a file the engine was asked to send again counts as that: the
+/// engine answers within a build, and the page that asked gives up sooner
+/// (hmr-runtime.js `RESEND_WAIT`).
+const RESEND_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Tells the editor's gate of files that changed.
 pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
+/// Takes a frame for the editor's socket (see [`HotUpdates::tell_editor`]).
+pub(crate) type Editor = Arc<dyn Fn(String) + Send + Sync>;
 
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
@@ -99,6 +106,12 @@ pub(crate) struct HotUpdates {
     /// Takes the gate's hold for changed files (see [`HotUpdates::hold`]).
     holder: std::sync::OnceLock<Holder>,
     parked: Mutex<Vec<Arc<Frame>>>,
+    /// The editor's socket, and the frames for it the gate holds with the
+    /// pages' (see [`HotUpdates::tell_editor`]).
+    editor: std::sync::OnceLock<Editor>,
+    parked_editor: Mutex<Vec<String>>,
+    /// Files the engine was asked to send again (see [`HotUpdates::resend`]).
+    resent: Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl HotUpdates {
@@ -116,6 +129,9 @@ impl HotUpdates {
             unheard: Mutex::default(),
             holder: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
+            editor: std::sync::OnceLock::new(),
+            parked_editor: Mutex::new(Vec::new()),
+            resent: Mutex::default(),
             changes: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -170,10 +186,85 @@ impl HotUpdates {
         let _ = self.holder.set(holder);
     }
 
+    /// The engine is asked to send `files` again, for a page that invalidated
+    /// a module (see `DevBundler::resend`): no edit, so the update it makes
+    /// for them is nothing the editor's gate holds.
+    pub(crate) fn resend(&self, files: &[String]) {
+        let now = std::time::Instant::now();
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(files.iter().map(|file| (file.clone(), now)));
+    }
+
+    /// Whether the engine was asked to send `file` again, not long ago: an
+    /// update that never came for it (the engine names the file another
+    /// way) must not make the file's next edit pass for one.
+    pub(crate) fn resending(&self, file: &str) -> bool {
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(file)
+            .is_some_and(|asked| asked.elapsed() < RESEND_WINDOW)
+    }
+
+    /// The engine's update failed: it names no file, so nothing asked for
+    /// stays asked for, and the next change of each is an edit.
+    pub(crate) fn resend_failed(&self) {
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// The files of an engine update that are edits: `changed` without the
+    /// ones it was asked to send again, each of which is taken once.
+    pub(crate) fn edits(&self, changed: Vec<String>) -> Vec<String> {
+        let mut resent = self
+            .resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resent.retain(|_, asked| asked.elapsed() < RESEND_WINDOW);
+        changed
+            .into_iter()
+            .filter(|file| resent.remove(file).is_none())
+            .collect()
+    }
+
     /// The engine saw `files` change: the gate, if there is one, holds them.
     pub(crate) fn hold(&self, files: &[String]) {
         if let Some(holder) = self.holder.get() {
             holder(files);
+        }
+    }
+
+    /// Where frames for the editor go: the socket it reads beside the
+    /// pages' (Vite's client channel, which carries its `update` frames).
+    pub(crate) fn set_editor(&self, editor: Editor) {
+        let _ = self.editor.set(editor);
+    }
+
+    /// An update the pages take in place, told to the editor as Vite's
+    /// client channel tells it (`frame`: an `update` payload). It goes when
+    /// the pages' own frames do: at once, or held by the gate until its
+    /// flush, and dropped with them when that flush reloads the pages
+    /// instead (the reload is what the editor hears then).
+    pub(crate) fn tell_editor(&self, frame: String) {
+        let Some(editor) = self.editor.get() else {
+            return;
+        };
+        // The pages' lock: a release drains both lists under it.
+        let _parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.gate.get().is_some_and(|held| held()) {
+            self.parked_editor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+        } else {
+            editor(frame);
         }
     }
 
@@ -188,6 +279,15 @@ impl HotUpdates {
         for frame in parked.drain(..) {
             self.sent(&frame);
             let _ = self.tx.send(frame);
+        }
+        let held: Vec<String> = self
+            .parked_editor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        if let Some(editor) = self.editor.get() {
+            held.into_iter().for_each(|frame| editor(frame));
         }
     }
 
@@ -263,7 +363,12 @@ impl HotUpdates {
 
     /// The gate flushed with a page reload: the parked frames are moot.
     pub(crate) fn discard(&self) {
-        self.parked
+        let mut parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        parked.clear();
+        self.parked_editor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
@@ -472,6 +577,9 @@ pub(crate) enum PageMessage {
     Delivered(String),
     /// The page found no boundary for an update and needs a reload.
     ReloadNeeded,
+    /// A module of the page called `import.meta.hot.invalidate()` and the
+    /// page cannot run these importers again from what it holds.
+    Invalidate(Vec<String>),
     /// `import.meta.hot.send(event, data)`, the data as JSON.
     Custom { event: String, data: String },
 }
@@ -485,6 +593,13 @@ pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
             .map(PageMessage::Client),
         "oj:delivered" => field("filename").map(PageMessage::Delivered),
         "oj:reload-needed" => Some(PageMessage::ReloadNeeded),
+        "oj:invalidate" => Some(PageMessage::Invalidate(
+            v.get("modules")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect(),
+        )),
         "custom" => Some(PageMessage::Custom {
             event: field("event")?,
             data: v
@@ -792,5 +907,89 @@ mod tests {
         assert_eq!(page_message(r#"{"type":"custom","data":1}"#), None);
         assert_eq!(page_message(r#"{"type":"oj:client","id":""}"#), None);
         assert_eq!(page_message("ping"), None);
+    }
+
+    // The editor hears of an update when the pages do: at once with no
+    // hold, at the flush with one, and not at all when that flush reloads
+    // the pages instead (the reload is what it hears then).
+    #[test]
+    fn the_editor_hears_an_update_when_the_gate_lets_the_pages_have_it() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hot = HotUpdates::new("");
+        // No editor socket: nothing to tell, nothing kept.
+        hot.tell_editor("lost".into());
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        hot.set_editor({
+            let heard = Arc::clone(&heard);
+            Arc::new(move |frame| heard.lock().unwrap().push(frame))
+        });
+        let held = Arc::new(AtomicBool::new(false));
+        hot.set_gate({
+            let held = Arc::clone(&held);
+            Arc::new(move || held.load(Ordering::SeqCst))
+        });
+        let heard = || heard.lock().unwrap().clone();
+
+        hot.tell_editor("first".into());
+        assert_eq!(heard(), ["first"], "no hold: at once");
+
+        held.store(true, Ordering::SeqCst);
+        hot.tell_editor("second".into());
+        hot.tell_editor("third".into());
+        assert_eq!(heard(), ["first"], "held with the pages' frames");
+        held.store(false, Ordering::SeqCst);
+        hot.release();
+        assert_eq!(
+            heard(),
+            ["first", "second", "third"],
+            "in order, at the flush"
+        );
+        hot.release();
+        assert_eq!(heard().len(), 3, "once");
+
+        held.store(true, Ordering::SeqCst);
+        hot.tell_editor("moot".into());
+        held.store(false, Ordering::SeqCst);
+        hot.discard();
+        hot.release();
+        assert_eq!(heard().len(), 3, "a flush that reloads drops it");
+    }
+
+    // A file the engine is asked to send again is no edit: its update is
+    // taken out of what the gate holds, once.
+    #[test]
+    fn a_file_sent_again_is_not_one_of_an_updates_edits() {
+        let hot = HotUpdates::new("");
+        assert!(!hot.resending("/app/src/a.tsx"));
+        hot.resend(&["/app/src/a.tsx".to_string()]);
+        assert!(hot.resending("/app/src/a.tsx"));
+        let changed = || vec!["/app/src/a.tsx".to_string(), "/app/src/b.tsx".to_string()];
+        assert_eq!(hot.edits(changed()), ["/app/src/b.tsx"]);
+        assert!(!hot.resending("/app/src/a.tsx"));
+        assert_eq!(
+            hot.edits(changed()),
+            changed(),
+            "the next change of it is an edit"
+        );
+
+        // An update that failed names no file: nothing stays asked for.
+        hot.resend(&["/app/src/a.tsx".to_string()]);
+        hot.resend_failed();
+        assert!(!hot.resending("/app/src/a.tsx"));
+        assert_eq!(hot.edits(changed()), changed());
+    }
+
+    #[test]
+    fn a_page_names_the_importers_it_cannot_run_again() {
+        assert_eq!(
+            page_message(
+                r#"{"type":"oj:invalidate","path":"src/a.tsx","modules":["src/app.tsx","src/b.tsx"]}"#
+            ),
+            Some(PageMessage::Invalidate(vec![
+                "src/app.tsx".to_string(),
+                "src/b.tsx".to_string()
+            ]))
+        );
+        assert_eq!(page_message(r#"{"type":"oj:invalidate"}"#), None);
     }
 }

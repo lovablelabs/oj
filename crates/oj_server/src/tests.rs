@@ -3005,11 +3005,11 @@ fn a_page_preloads_what_its_scripts_import_statically() {
         ("/src/about.js", &["/src/a.js", "/src/only-about.js"]),
     ]);
     assert_eq!(
-        static_preloads(&graph, &["/src/main.js".to_string()]),
+        static_preloads(&graph, &Default::default(), &["/src/main.js".to_string()]),
         ["/src/b.js", "/src/data.json", "/src/style.css", "/src/a.js"]
     );
     assert_eq!(
-        static_preloads(&graph, &["/src/about.js".to_string()]),
+        static_preloads(&graph, &Default::default(), &["/src/about.js".to_string()]),
         [
             "/src/a.js",
             "/src/only-about.js",
@@ -3021,7 +3021,11 @@ fn a_page_preloads_what_its_scripts_import_statically() {
         "another page reaches what its own imports reach, the root's entry included"
     );
     assert_eq!(
-        static_preloads(&graph, &["/src/unknown.js".to_string()]),
+        static_preloads(
+            &graph,
+            &Default::default(),
+            &["/src/unknown.js".to_string()]
+        ),
         Vec::<String>::new(),
         "a script the graph does not know yet preloads nothing"
     );
@@ -3055,7 +3059,7 @@ fn a_page_preloads_a_queried_import_under_the_urls_naming_it() {
         .into_iter(),
     );
     assert_eq!(
-        static_preloads(&graph, &["/src/main.js".to_string()]),
+        static_preloads(&graph, &Default::default(), &["/src/main.js".to_string()]),
         [
             "/src/a.md?raw",
             "/src/b.js",

@@ -1971,24 +1971,63 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
             insert_allow_root(&mut allow, PathBuf::from(p));
         }
     }
-    if !module.watch_files.is_empty() {
-        let mut watched = state.plugin_watched.lock().unwrap();
-        for p in &module.watch_files {
-            let p = PathBuf::from(p);
-            // Vite's addWatchFile goes through ensureWatchedFile too: an
-            // outside-root watch file otherwise never produces an event.
-            ensure_watched_file(state, &p);
-            watched.insert(p);
-        }
+    for p in &module.watch_files {
+        // Vite's addWatchFile goes through ensureWatchedFile too: an
+        // outside-root watch file otherwise never produces an event.
+        ensure_watched_file(state, Path::new(p));
     }
     let mut graph = state.graph.lock().unwrap();
     let local = |s: &&String| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s);
-    let local_imports: Vec<PathBuf> = module
+    let mut local_imports: Vec<PathBuf> = module
         .imports
         .iter()
         .filter(local)
         .map(|s| import_node(s))
         .collect();
+    // A file the module's plugins watched while loading or transforming it
+    // is one of its imports, as in Vite (`_addedImports`). For a sheet it is
+    // a file-only entry, a node of its own beside the module the file may
+    // also be (css.ts `createFileOnlyEntry`); for any other module
+    // importAnalysis adds the file's url to the imported urls, so it is the
+    // node of that url, the file's own module when it is one. After the real
+    // imports: `named` below pairs those by position.
+    let sheet = crate::css_serve::is_style_url(url);
+    let post_watch = state
+        .post_watch
+        .lock()
+        .unwrap()
+        .get(url)
+        .cloned()
+        .unwrap_or_default();
+    if !module.watch_files.is_empty() || !post_watch.is_empty() {
+        // One pass, whatever the list's length: Tailwind's sheet watches
+        // every source of the app, and is registered each time it is served.
+        let mut have: std::collections::HashSet<PathBuf> = local_imports.iter().cloned().collect();
+        let mut watch_only = Vec::new();
+        for file in module.watch_files.iter().chain(&post_watch) {
+            let node = if sheet {
+                crate::hmr::watch_node(state, Path::new(file))
+            } else {
+                crate::hmr::watch_url_node(state, Path::new(file))
+            };
+            if node != Path::new(url) && have.insert(node.clone()) {
+                local_imports.push(node.clone());
+                if !sheet {
+                    watch_only.push(node);
+                }
+            }
+        }
+        if !sheet {
+            state
+                .watch_edges
+                .lock()
+                .unwrap()
+                .set(Path::new(url), watch_only);
+        }
+    } else if !sheet {
+        let mut edges = state.watch_edges.lock().unwrap();
+        edges.set(Path::new(url), Vec::new());
+    }
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     // The url each import is named by, which a page's preload of it asks for
     // (`/src/a.md?raw`, never the bare file). Not a pre-bundled dependency's:
@@ -2001,6 +2040,12 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
         .filter(|(s, _)| !s.starts_with("/@oj-deps/"))
         .map(|(s, node)| (node.as_path(), s.as_str()));
     graph.set_import_urls(Path::new(url), named);
+    // Not a sheet's watch files: no page holds one (Vite's css-analysis
+    // ignores what `updateModuleInfo` returns for its file-only entries).
+    let pruned: Vec<PathBuf> = pruned
+        .into_iter()
+        .filter(|p| !crate::hmr::is_watch_node(p))
+        .collect();
     if !pruned.is_empty() {
         // Dropped deps nothing imports any more: the client runs their `hot.prune`
         // callbacks, stamped so a re-import re-runs them (Vite's handlePrunedModules).

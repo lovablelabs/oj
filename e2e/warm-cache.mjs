@@ -61,10 +61,14 @@ try {
 
   const original = fs.readFileSync(WATCHED, "utf8");
   const ws = new WebSocket(`ws://localhost:${PORT}/__ws`);
-  const gotReload = new Promise((resolve) => {
+  // The watch file is one of App.tsx's imports (Vite's `_addedImports`), so
+  // its edit updates App.tsx, a Fast Refresh boundary.
+  const gotUpdate = new Promise((resolve) => {
     ws.addEventListener("message", (e) => {
       try {
-        if (JSON.parse(e.data).type === "full-reload") resolve(true);
+        const frame = JSON.parse(e.data);
+        if (frame.type === "full-reload") resolve("full-reload");
+        if (frame.type === "update") resolve(frame.updates.map((u) => `${u.type} ${u.path}`).join(", "));
       } catch {}
     });
   });
@@ -73,13 +77,13 @@ try {
     ws.addEventListener("error", reject);
   });
   fs.writeFileSync(WATCHED, "warm-v2\n");
-  const reloaded = await Promise.race([gotReload, sleep(8000).then(() => false)]);
+  const sent = await Promise.race([gotUpdate, sleep(8000).then(() => "nothing")]);
   fs.writeFileSync(WATCHED, original);
   ws.close();
-  if (!reloaded) {
-    fail("warm: addWatchFile watch lost on cache hit (no full-reload on plugin-watched.txt edit)");
+  if (sent !== "js-update /src/App.tsx") {
+    fail(`warm: addWatchFile watch lost on cache hit (plugin-watched.txt edit sent ${sent}, not App.tsx's update)`);
   }
-  console.log("warm-cache: addWatchFile re-applied -> full reload on watched-file edit");
+  console.log("warm-cache: addWatchFile re-applied -> App.tsx updates on watched-file edit");
 } finally {
   srv.kill("SIGKILL");
   killPort();

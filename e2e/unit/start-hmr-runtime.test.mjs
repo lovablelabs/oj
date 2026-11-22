@@ -16,7 +16,7 @@ const STUB = `class DevRuntime {
   constructor(id) { this.clientId = id; }
   isExecuted(id) { return id in GRAPH; }
   getImporters(id) { return GRAPH[id] || []; }
-  hasFactory(id) { return id in GRAPH; }
+  hasFactory(id) { return id in GRAPH && !NO_FACTORY.has(id); }
   removeModuleCache(id) { this.hooks.onModuleCacheRemoval(id); }
   initModule(id) { log.push("run " + id); }
   loadExports() { return {}; }
@@ -26,6 +26,10 @@ function loadRuntime(source = readFileSync(asset("start/hmr-runtime.js"), "utf8"
   const log = [];
   const page = {
     GRAPH,
+    // Modules of the page's first bundle: executed, with no factory.
+    NO_FACTORY: new Set(bus.noFactory ?? []),
+    // The page's timers, run by the test.
+    setTimeout: (fn) => (bus.timers ?? []).push(fn),
     log,
     // Set by the entry's first import, before the runtime runs.
     __ojEngine: "engine",
@@ -117,6 +121,130 @@ test("hot.invalidate notifies vite:invalidate and re-runs the importers in place
   assert.equal(events[1][1].isWithinCircularImport, false);
   assert.deepEqual(events[2], ["after", "src/app.tsx"]);
   assert.deepEqual(runtime.log, ["run src/app.tsx"], "re-run in place, no reload");
+});
+
+// A component file with an export Fast Refresh cannot take (a helper beside
+// the components) invalidates itself on every edit. It is also one of its own
+// importers: the refresh wrapper imports the module to compare its exports.
+test("hot.invalidate leaves the module's import of itself out of its importers, as Vite's server", async () => {
+  const importers = GRAPH["src/a.tsx"];
+  GRAPH["src/a.tsx"] = ["src/a.tsx", ...importers];
+  try {
+    const runtime = loadRuntime();
+    runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+    const self = runtime.hooks.createModuleHotContext("src/a.tsx");
+    self.accept();
+    self.invalidate("export is incompatible");
+    await settle(runtime);
+    assert.deepEqual(runtime.log, ["run src/app.tsx"], "the importer re-ran in place, no reload");
+  } finally {
+    GRAPH["src/a.tsx"] = importers;
+  }
+});
+
+// The page runs a module again from its factory, and has none for a module of
+// its first bundle. Vite's client hands an invalidation to its server, which
+// answers with an update for the importers (server/environment.ts).
+test("hot.invalidate asks the server for an importer the page has no factory for", async () => {
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate("export is incompatible");
+  await settle(runtime);
+  // Through JSON: the message is an object of the page's realm.
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.log)), [
+    { type: "oj:invalidate", path: "src/a.tsx", modules: ["src/app.tsx"] },
+  ]);
+});
+
+// Vite reloads when the importers cannot take the update. The server's may
+// never come: the importer on disk does not compile, or the bundler has no
+// module under the name the page gave.
+test("a page that asked for an importer reloads when no update comes for it", async () => {
+  const timers = [];
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], timers });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+  await settle(runtime);
+  assert.equal(timers.length, 1);
+  // Another edit's update first: the page is still asking.
+  runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/other.tsx"] });
+  await settle(runtime);
+  assert.ok(runtime.hmr.resent, "still waiting for its answer");
+  timers[0]();
+  assert.equal(runtime.hmr.resent, undefined);
+  const last = runtime.log.at(-1);
+  assert.equal(last.type, "oj:reload-needed");
+  assert.match(last.reason, /sent no update for src\/app\.tsx/);
+});
+
+test("a page whose importer arrived does not reload when its wait ends", async () => {
+  const timers = [];
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], timers });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+  await settle(runtime);
+  runtime.hmr.resent = undefined; // answered
+  const before = runtime.log.length;
+  timers[0]();
+  assert.equal(runtime.log.length, before, "nothing asked of the server");
+});
+
+test("hot.invalidate reloads when the server cannot be asked for the importer", async () => {
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], send: () => false });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+  await settle(runtime);
+  assert.deepEqual(runtime.log, ["location.reload"]);
+});
+
+// A provider in the page's first bundle and a consumer in a lazy chunk both
+// import the module that invalidated: run apart, they would hold two copies
+// of what the module exports.
+test("the update sent for an invalidation re-runs every importer, not only the ones sent", async () => {
+  GRAPH["src/b.tsx"] = [];
+  const importers = GRAPH["src/a.tsx"];
+  GRAPH["src/a.tsx"] = ["src/app.tsx", "src/b.tsx"];
+  try {
+    const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
+    const app = runtime.hooks.createModuleHotContext("src/app.tsx");
+    app.accept();
+    runtime.hooks.createModuleHotContext("src/b.tsx").accept();
+    const announced = [];
+    app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => `${u.path} by ${u.firstInvalidatedBy}`)));
+    runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+    await settle(runtime);
+    assert.deepEqual(announced, [], "nothing runs until the server has sent the importer");
+    runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/app.tsx"] });
+    await settle(runtime);
+    assert.deepEqual(announced.sort(), ["src/app.tsx by src/a.tsx", "src/b.tsx by src/a.tsx"]);
+  } finally {
+    GRAPH["src/a.tsx"] = importers;
+    delete GRAPH["src/b.tsx"];
+  }
+});
+
+// The update the server sends for an invalidation carries who invalidated:
+// one that walks back to that module reloads, as Vite's server reloads for a
+// circular invalidation ('circular import invalidate').
+test("the update sent for an invalidation reloads when it comes back to the module that invalidated", async () => {
+  const graph = { ...GRAPH };
+  // src/a.tsx imports src/app.tsx too: a loop.
+  GRAPH["src/app.tsx"] = ["src/a.tsx"];
+  try {
+    const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
+    runtime.hooks.createModuleHotContext("src/a.tsx").accept();
+    runtime.hmr.resent = { id: "src/a.tsx", by: "src/a.tsx", ids: new Set(["src/app.tsx"]) };
+    runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/app.tsx"] });
+    await settle(runtime);
+    assert.deepEqual(
+      runtime.log.map((l) => (typeof l === "string" ? l : l.type)),
+      ["oj:reload-needed"],
+    );
+    assert.match(runtime.log[0].reason, /propagated back to src\/a\.tsx/);
+    assert.equal(runtime.hmr.resent, undefined, "taken once");
+  } finally {
+    GRAPH["src/app.tsx"] = graph["src/app.tsx"];
+  }
 });
 
 test("an update that throws is logged and the page keeps running, as Vite's warnFailedUpdate", async () => {

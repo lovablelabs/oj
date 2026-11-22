@@ -15,9 +15,20 @@ const FILE = path.join(__dirname, "..", "playground", "plugin-watched.txt");
     await page.goto("http://localhost:5199/", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("main", { state: "attached", timeout: 15000 });
     await page.evaluate(() => (window.__watch_marker = 77));
+    // The watch file is one of App.tsx's imports (Vite's `_addedImports`),
+    // so its edit updates App.tsx, a Fast Refresh boundary, in place.
+    const updated = new Promise((resolve) => {
+      page.on("console", (msg) => {
+        if (msg.text().includes("hot updated /src/App.tsx")) resolve(true);
+      });
+    });
     fs.writeFileSync(FILE, "watched-v2\n");
-    await page.waitForFunction(() => window.__watch_marker === undefined, { timeout: 15000 });
-    console.log("addWatchFile forced a full reload on a plain .txt change (marker dropped)");
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(false), 15000));
+    if (!(await Promise.race([updated, timeout]))) throw new Error("App.tsx was not updated for its watch file's edit");
+    if ((await page.evaluate(() => window.__watch_marker)) !== 77) {
+      throw new Error("the page reloaded for a watch file's edit (marker dropped)");
+    }
+    console.log("addWatchFile updated its module on a plain .txt change (marker intact)");
     const marker = path.join(__dirname, "..", "playground", ".oj-cache", "plugin-watchchange");
     const wc = fs.existsSync(marker) ? fs.readFileSync(marker, "utf8").trim() : "MISSING";
     if (!wc.includes("plugin-watched.txt")) throw new Error("watchChange did not fire for the edit: " + wc);

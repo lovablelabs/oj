@@ -3,7 +3,7 @@
 Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
 (source: [rolldown/rolldown](https://github.com/rolldown/rolldown)
 `67e2203c`, `crates/rolldown_dev`), maintained for
-[oj](https://github.com/lovablelabs/oj) and carrying two changes, in
+[oj](https://github.com/lovablelabs/oj) and carrying these changes, in
 `src/dev_engine.rs`:
 
 - `DevEngine::compile_lazy_entry` queues its rebuild only when rolldown's own
@@ -12,6 +12,8 @@ Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
   session starts with nothing held (see below).
 - `DevEngine::forget_client_output` drops the frozen output of a client
   that was registered before oj could tell what it loaded (see below).
+- `DevEngine::resend_files` has files handled as changed with nothing
+  written (see the end).
 
 Upstream queues a rebuild after every lazy compile. With rolldown's lazy
 compilation, a module behind an `import()` stays out of the graph until a
@@ -79,3 +81,12 @@ rolldown_dev = { package = "oj_rolldown_dev", version = "0.4.17" }
 ```
 
 Unless you need this change, depend on upstream `rolldown_dev` instead.
+
+`resend_files` queues the update a watcher event for the files would. A
+module that calls `import.meta.hot.invalidate()` hands its update to its
+importers, which the client runs again from the factories it holds. It holds
+none for a module of the output it first loaded (only a patch or a lazy
+chunk registers one), so the host asks for those importers here and they
+reach the client as any update does. Vite's dev server answers
+`vite:invalidate` the same way, with an update for the importers
+(server/environment.ts `invalidateModule`).

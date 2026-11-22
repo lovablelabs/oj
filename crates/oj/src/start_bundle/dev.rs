@@ -760,6 +760,44 @@ impl DevBundler {
         }
     }
 
+    /// A page's module called `import.meta.hot.invalidate()`, and the page
+    /// holds no factory for `modules`, the importers that take the update
+    /// over (they came with its first bundle; only a patch or a lazy chunk
+    /// registers one). The engine sends them again, as an update the page
+    /// applies like any other: Vite's server answers `vite:invalidate` with
+    /// an update for the importers (server/environment.ts
+    /// `invalidateModule`). False when it cannot (no engine, or a module
+    /// with no file behind it): the page reloads instead.
+    pub(crate) fn resend(&self, modules: &[String]) -> bool {
+        let Some(engine) = self.engine.get() else {
+            return false;
+        };
+        let mut files: Vec<PathBuf> = Vec::new();
+        for module in modules {
+            // The engine's own name for it: a page names a module by its id
+            // relative to the root (`../shared/x.ts` outside it), and a file
+            // the engine has no module for gets no update.
+            let Some(file) = resent_file(&self.start.root, module, |id| {
+                engine.get_module_info(id).is_some()
+            }) else {
+                return false;
+            };
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+        if files.is_empty() {
+            return false;
+        }
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        self.hot.resend(&names);
+        engine.resend_files(files);
+        true
+    }
+
     /// A page ran a patch (Vite's payloadDeliveredAck).
     pub(crate) fn patch_delivered(&self, filename: &str) {
         if let Some(engine) = self.engine.get() {
@@ -1231,6 +1269,7 @@ impl DevBundler {
         plugins.push(Pluginable::new_shared(NodeBuiltinShims {
             production: false,
         }));
+        plugins.push(Pluginable::new_shared(ResendModules(Arc::clone(&self.hot))));
         if refresh {
             let jsx = oj_config::jsx_settings(&start.config);
             let jsx = oj_compiler::JsxConfig {
@@ -1424,6 +1463,62 @@ impl HotSession {
             self.host_engine,
             host_engine,
         )
+    }
+}
+
+/// The file of `module`, a module id as a page names it (relative to
+/// `root`, with its query), when `known` says the engine has a module for
+/// it: under its whole id, or under its file's path. `..` segments are
+/// resolved as written, so a module outside the root is its absolute path,
+/// the engine's name for it.
+fn resent_file(root: &Path, module: &str, known: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let path = module.split(['?', '#']).next().unwrap_or(module);
+    if path.is_empty() || path.starts_with('\0') {
+        return None;
+    }
+    let mut file = PathBuf::new();
+    for part in root.join(path).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                file.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => file.push(other),
+        }
+    }
+    let name = file.to_string_lossy();
+    let id = format!("{name}{}", &module[path.len()..]);
+    (file.is_file() && (known(&id) || known(&name))).then_some(file)
+}
+
+/// Keeps the modules of a file a page asked to be sent again
+/// ([`DevBundler::resend`]) in the engine's update. The engine drops a
+/// changed module whose output renders as it did before, so that no client
+/// re-runs code it holds; a module its `hotUpdate` hook names is kept as it
+/// is, and this names the file's own modules.
+struct ResendModules(Arc<crate::start_hot::HotUpdates>);
+
+impl std::fmt::Debug for ResendModules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResendModules")
+    }
+}
+
+impl rolldown_plugin::Plugin for ResendModules {
+    fn name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("oj:resend-modules")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::HotUpdate
+    }
+
+    async fn hot_update(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        args: &rolldown_plugin::HookHotUpdateArgs,
+    ) -> rolldown_plugin::HookHotUpdateReturn {
+        Ok(self.0.resending(&args.file).then(|| args.modules.clone()))
     }
 }
 
@@ -2065,5 +2160,40 @@ pub(crate) mod tests {
             b"fresh"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A page asks for a module by its id; the engine is asked only for a
+    // file it has a module for, named as it names it.
+    #[test]
+    fn a_resent_module_is_a_file_the_engine_has_a_module_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(base.join("shared")).unwrap();
+        std::fs::write(root.join("src/a.tsx"), "").unwrap();
+        std::fs::write(root.join("src/unknown.tsx"), "").unwrap();
+        std::fs::write(base.join("shared/x.ts"), "").unwrap();
+        let inside = root.join("src/a.tsx");
+        let outside = base.join("shared/x.ts");
+        let split = format!("{}?tsr-split=component", inside.display());
+        let known = |id: &str| id == inside.to_string_lossy() || id == outside.to_string_lossy();
+        assert_eq!(resent_file(&root, "src/a.tsx", known), Some(inside.clone()));
+        // Under its whole id, query included.
+        assert_eq!(
+            resent_file(&root, "src/a.tsx?tsr-split=component", |id| id == split),
+            Some(inside.clone())
+        );
+        // Outside the root: the absolute path, not `<root>/../shared/x.ts`.
+        assert_eq!(
+            resent_file(&root, "../shared/x.ts", known),
+            Some(outside.clone())
+        );
+        // A file with no module in the engine, a file that is gone, a
+        // virtual module: no update would come.
+        assert_eq!(resent_file(&root, "src/unknown.tsx", known), None);
+        assert_eq!(resent_file(&root, "src/gone.tsx", |_| true), None);
+        assert_eq!(resent_file(&root, "\0virtual:x", |_| true), None);
+        assert_eq!(resent_file(&root, "", |_| true), None);
     }
 }
