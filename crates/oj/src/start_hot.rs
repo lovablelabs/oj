@@ -15,6 +15,18 @@ pub(crate) const PATCH_PREFIX: &str = "/@oj-start/hmr/";
 /// Where a page asks for the module behind an `import()`
 /// (`?id=<proxy id>&clientId=<runtime id>`).
 pub(crate) const LAZY_PATH: &str = "/@oj-start/hmr/lazy";
+/// The module the client entry imports first, `?t=<tag>`: it sets the tag
+/// of the engine that made the bundle, before the bundle's runtime reads it.
+pub(crate) const ENGINE_PATH: &str = "/@oj-start/engine.js";
+
+/// The module at [`ENGINE_PATH`] for the `t` in `query`: the tag is the
+/// request's own, so the entry of a bundle restored from the cache gets the
+/// tag of the engine that made it. `None` for anything but a tag.
+pub(crate) fn engine_module(query: Option<&str>) -> Option<String> {
+    let tag = query?.split('&').find_map(|pair| pair.strip_prefix("t="))?;
+    (!tag.is_empty() && tag.len() <= 32 && tag.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("globalThis.__ojEngine = \"{tag}\";\nexport {{}};\n"))
+}
 /// Patches a page fetches right after its frame; older ones only matter to a
 /// page far behind, which the sequence check reloads anyway.
 const KEPT_PATCHES: usize = 64;

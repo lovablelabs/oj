@@ -3976,6 +3976,20 @@ async fn serve_start_url(
     if path == crate::start_routes::PATH {
         return Some(routes_json(state, &req.method).await);
     }
+    if path == crate::start_hot::ENGINE_PATH {
+        return Some(match crate::start_hot::engine_module(req.uri.query()) {
+            // The tag is in the url: the answer never changes.
+            Some(module) => (
+                [
+                    (header::CONTENT_TYPE, "text/javascript"),
+                    (header::CACHE_CONTROL, "max-age=31536000, immutable"),
+                ],
+                module,
+            )
+                .into_response(),
+            None => (StatusCode::NOT_FOUND, "oj start: no such engine tag").into_response(),
+        });
+    }
     if path == crate::start_hot::LAZY_PATH {
         if req.method != Method::GET {
             return Some((StatusCode::METHOD_NOT_ALLOWED, "oj start: lazy: GET").into_response());

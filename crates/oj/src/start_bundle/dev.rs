@@ -523,6 +523,39 @@ impl DevBundler {
         }
     }
 
+    /// The client bundle's banner. A hot bundle's entry first imports the
+    /// module that sets its engine's tag (see `start_hot::ENGINE_PATH`): an
+    /// import in the entry alone, whose file name is fixed, so no chunk is
+    /// renamed for it, and ahead of the entry's own imports, so it has run
+    /// when the runtime makes the page's id.
+    fn client_banner(&self, hot: bool) -> AddonOutputOption {
+        let plain = self.start.client_banner();
+        let tag = self
+            .engine_tag
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if !hot || tag.is_empty() {
+            return AddonOutputOption::String(Some(plain));
+        }
+        let entry = format!(
+            "import {};{plain}",
+            serde_json::Value::String(format!(
+                "{}{}?t={tag}",
+                self.start.dev_url_base(),
+                crate::start_hot::ENGINE_PATH
+            ))
+        );
+        AddonOutputOption::Fn(Arc::new(move |chunk| {
+            let text = if chunk.is_entry {
+                entry.clone()
+            } else {
+                plain.clone()
+            };
+            Box::pin(async move { Ok(Some(text)) })
+        }))
+    }
+
     /// A tag for the engine about to start, kept as the running engine's.
     fn new_engine_tag(&self) -> String {
         let nanos = std::time::SystemTime::now()
@@ -802,16 +835,14 @@ impl DevBundler {
             }
         } else {
             eprintln!("{}: client bundling", oj_server::oj_brand());
+            // Before the parts: the entry's banner names the tag.
+            self.new_engine_tag();
             let parts = self.parts(host, true)?;
             let runtime = std::fs::read_to_string(start.cache.join("hmr-runtime.js"))
                 .map_err(|e| BundleError::from_message(format!("hmr-runtime.js: {e}")))?
                 .replace(
                     "__OJ_DEV_BASE__",
                     &serde_json::Value::String(start.dev_url_base()).to_string(),
-                )
-                .replace(
-                    "__OJ_ENGINE__",
-                    &serde_json::Value::String(self.new_engine_tag()).to_string(),
                 );
             let declared = declared_externals(host, &self.fn_externals);
             let live = HotSession::start(
@@ -1081,7 +1112,7 @@ impl DevBundler {
                 )
             }),
             format: Some(OutputFormat::Esm),
-            banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
+            banner: Some(self.client_banner(hot)),
             code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
             preserve_entry_signatures: Some(
                 policy

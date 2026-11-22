@@ -545,9 +545,12 @@ class OjDevRuntime extends DevRuntime {
 
 // The id starts with the tag of the engine that made this bundle: the dev
 // server tells a page that runs its engine's output from one that runs
-// another bundle (one restored from the cache, an earlier engine's).
+// another bundle (one restored from the cache, an earlier engine's). The
+// tag is set by the entry's first import, a module of its own: written
+// here, it would change this chunk's name, and with it the name of every
+// chunk that imports this one, each time an engine starts.
 globalThis.__rolldown_runtime__ ??= new OjDevRuntime(
-  `${__OJ_ENGINE__}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
+  `${globalThis.__ojEngine ?? ""}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
 );
 __ojBus.runtime = globalThis.__rolldown_runtime__;
 __ojBus.onRuntime?.(globalThis.__rolldown_runtime__);
