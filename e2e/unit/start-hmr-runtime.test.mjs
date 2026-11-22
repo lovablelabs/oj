@@ -28,6 +28,8 @@ function loadRuntime(source = readFileSync(asset("start/hmr-runtime.js"), "utf8"
     GRAPH,
     // Modules of the page's first bundle: executed, with no factory.
     NO_FACTORY: new Set(bus.noFactory ?? []),
+    // The page's timers, run by the test.
+    setTimeout: (fn) => (bus.timers ?? []).push(fn),
     log,
     // Set by the entry's first import, before the runtime runs.
     __ojEngine: "engine",
@@ -152,6 +154,39 @@ test("hot.invalidate asks the server for an importer the page has no factory for
   assert.deepEqual(JSON.parse(JSON.stringify(runtime.log)), [
     { type: "oj:invalidate", path: "src/a.tsx", modules: ["src/app.tsx"] },
   ]);
+});
+
+// Vite reloads when the importers cannot take the update. The server's may
+// never come: the importer on disk does not compile, or the bundler has no
+// module under the name the page gave.
+test("a page that asked for an importer reloads when no update comes for it", async () => {
+  const timers = [];
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], timers });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+  await settle(runtime);
+  assert.equal(timers.length, 1);
+  // Another edit's update first: the page is still asking.
+  runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/other.tsx"] });
+  await settle(runtime);
+  assert.ok(runtime.hmr.resent, "still waiting for its answer");
+  timers[0]();
+  assert.equal(runtime.hmr.resent, undefined);
+  const last = runtime.log.at(-1);
+  assert.equal(last.type, "oj:reload-needed");
+  assert.match(last.reason, /sent no update for src\/app\.tsx/);
+});
+
+test("a page whose importer arrived does not reload when its wait ends", async () => {
+  const timers = [];
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], timers });
+  runtime.hooks.createModuleHotContext("src/app.tsx").accept();
+  runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+  await settle(runtime);
+  runtime.hmr.resent = undefined; // answered
+  const before = runtime.log.length;
+  timers[0]();
+  assert.equal(runtime.log.length, before, "nothing asked of the server");
 });
 
 test("hot.invalidate reloads when the server cannot be asked for the importer", async () => {

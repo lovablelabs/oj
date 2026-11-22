@@ -317,7 +317,7 @@ pub(crate) fn preload_href(
 /// its import depth in round trips, which a preview pays on every cold load.
 pub(crate) fn static_preloads(
     graph: &oj_graph::ModuleGraph,
-    watch_edges: &std::collections::HashSet<(PathBuf, PathBuf)>,
+    watch_edges: &crate::WatchEdges,
     entries: &[String],
 ) -> Vec<String> {
     let skip = |url: &str| url.starts_with("/@oj/") || url.contains("html-proxy");
@@ -345,8 +345,7 @@ pub(crate) fn static_preloads(
         }
         for import in imports {
             // A file the module's plugins watched is an edge for HMR alone.
-            if skip(&import) || watch_edges.contains(&(PathBuf::from(&url), PathBuf::from(&import)))
-            {
+            if skip(&import) || watch_edges.contains(Path::new(&url), Path::new(&import)) {
                 continue;
             }
             let urls = match named.get(Path::new(&import)) {

@@ -470,6 +470,10 @@ function connect() {
     } catch {
       return;
     }
+    // What a Start app's pages were told on Start's own socket, said here
+    // for a tool that reads this channel: nothing a page on this client
+    // loaded, and its own updates come from the module graph it runs.
+    if (msg.ojStart) return;
     if (msg.type === "connected") {
       // Vite-protocol greeting; nothing to do.
     } else if (msg.type === "update") {

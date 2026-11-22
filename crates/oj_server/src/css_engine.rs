@@ -299,6 +299,19 @@ impl CssEngine {
             .0)
     }
 
+    /// [`CssEngine::compile_path`] with the files the compile read (an
+    /// `@import`ed partial, a PostCSS plugin's `dependency`).
+    pub async fn compile_path_tracked(
+        &self,
+        css: &str,
+        from: &Path,
+        options: serde_json::Value,
+        dev: bool,
+    ) -> Result<(String, CssDeps), String> {
+        self.request(css, from.to_string_lossy().into_owned(), options, dev)
+            .await
+    }
+
     async fn request(
         &self,
         css: &str,

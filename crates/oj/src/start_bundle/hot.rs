@@ -473,6 +473,9 @@ fn on_hmr_updates(
         Err(errs) => {
             // A failed update reaches the page through the rebundle that follows.
             *events.error.lock().unwrap() = Some(BundleError::from_diagnostics(&errs.into_vec()));
+            // Of files a page asked for, no rebundle follows: the page gives
+            // up waiting and reloads, and the files are no longer asked for.
+            hot.resend_failed();
             return;
         }
     };

@@ -169,6 +169,28 @@ mod proxy;
 use css_engine::CssEngine;
 use middleware::*;
 use oj_graph::ModuleGraph;
+
+/// See `ServerState::watch_edges`.
+#[derive(Default)]
+pub(crate) struct WatchEdges(HashMap<PathBuf, std::collections::HashSet<PathBuf>>);
+
+impl WatchEdges {
+    pub(crate) fn contains(&self, importer: &Path, node: &Path) -> bool {
+        self.0
+            .get(importer)
+            .is_some_and(|nodes| nodes.contains(node))
+    }
+
+    /// `importer`'s watch-only imports, replacing the ones it had.
+    pub(crate) fn set(&mut self, importer: &Path, nodes: Vec<PathBuf>) {
+        if nodes.is_empty() {
+            self.0.remove(importer);
+        } else {
+            self.0
+                .insert(importer.to_path_buf(), nodes.into_iter().collect());
+        }
+    }
+}
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
 pub use preview::*;
@@ -388,9 +410,10 @@ struct ServerState {
     /// cached post output runs no plugin to name them again.
     post_watch: Mutex<HashMap<String, Vec<String>>>,
     /// Imports that exist only because the importer's plugins watched the
-    /// file (importer, file's node): edges for HMR, which no page preloads
-    /// and the crawl does not count as modules.
-    watch_edges: Mutex<std::collections::HashSet<(PathBuf, PathBuf)>>,
+    /// file, by importer: edges for HMR, which no page preloads and the
+    /// crawl does not count as modules. Not a sheet's (its imports are
+    /// edges for HMR as a whole, and Tailwind's sheet watches every source).
+    watch_edges: Mutex<WatchEdges>,
     tailwind_sheets: css_serve::TailwindSheets,
     has_postcss: bool,
     scss_additional_data: Option<String>,
@@ -2403,7 +2426,7 @@ impl DevServer {
             tailwind_urls: Mutex::new(std::collections::HashSet::new()),
             css_post: Mutex::new(HashMap::new()),
             post_watch: Mutex::new(HashMap::new()),
-            watch_edges: Mutex::new(std::collections::HashSet::new()),
+            watch_edges: Mutex::new(WatchEdges::default()),
             tailwind_sheets: Default::default(),
             has_postcss: has_postcss_config(&root),
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),

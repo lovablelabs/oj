@@ -11,6 +11,10 @@
 
 var __ojBus = (globalThis.__ojStartHmr ??= {});
 
+// How long a page waits for the importers it asked the server for
+// (`applyInvalidate`) before it reloads instead.
+var RESEND_WAIT = 10000;
+
 class OjHotContext {
   constructor(client, id) {
     this.client = client;
@@ -283,9 +287,11 @@ class OjHmrClient {
       this.wake();
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
+      // Only its answer ends the wait: another edit's update, arriving
+      // first, leaves the page still asking.
       const resent = this.resent;
-      this.resent = undefined;
       if (resent && [...changedIds].every((id) => resent.ids.has(id))) {
+        this.resent = undefined;
         by = resent.by;
         roots = this.runtime.getImporters(resent.id).filter((p) => p !== resent.id && this.runtime.isExecuted(p));
       } else {
@@ -356,7 +362,17 @@ class OjHmrClient {
       if (!__ojBus.send || !__ojBus.send({ type: "oj:invalidate", path: id, modules: missing })) {
         return this.requestReload(`no factory for module ${missing[0]}`);
       }
-      this.resent = { id, by: firstInvalidatedBy, ids: new Set(missing) };
+      const asked = (this.resent = { id, by: firstInvalidatedBy, ids: new Set(missing) });
+      // The update may never come (the importer on disk does not compile,
+      // or the server's bundler has no module under that name): the page
+      // would stay on its old importers, where Vite reloads.
+      if (typeof setTimeout === "function") {
+        setTimeout(() => {
+          if (this.resent !== asked) return;
+          this.resent = undefined;
+          this.requestReload(`the server sent no update for ${missing[0]}`);
+        }, RESEND_WAIT);
+      }
       return;
     }
     const payload = this.payload(update.boundaries, firstInvalidatedBy);

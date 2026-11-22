@@ -1686,7 +1686,13 @@ fn decide_file(
         // A stylesheet nothing imports is loaded by a `<link>`: swap the link
         // rather than dispatching a JS update it has no handler for.
         // Nor imports its `?inline` module (a node of its own).
-        if link_loaded(state, &url) {
+        // One a page was served: a sheet the graph has never seen is on no
+        // page, and Vite finds no module for it.
+        let served = {
+            let g = state.graph.lock().unwrap();
+            g.contains(Path::new(&url)) || g.contains(Path::new(&format!("{url}?inline")))
+        };
+        if served && link_loaded(state, &url) {
             println!("oj: change {url} -> css-update");
             updates.push(update_entry("css-update", &url, timestamp));
             return Flow::Done;
@@ -1720,7 +1726,7 @@ fn decide_file(
                             .watch_edges
                             .lock()
                             .unwrap()
-                            .contains(&(p.clone(), PathBuf::from(&url)))
+                            .contains(p, Path::new(&url))
                 })
             })
     };

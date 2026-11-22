@@ -774,11 +774,14 @@ impl DevBundler {
         };
         let mut files: Vec<PathBuf> = Vec::new();
         for module in modules {
-            let path = module.split(['?', '#']).next().unwrap_or(module);
-            let file = self.start.root.join(path);
-            if path.is_empty() || !file.is_file() {
+            // The engine's own name for it: a page names a module by its id
+            // relative to the root (`../shared/x.ts` outside it), and a file
+            // the engine has no module for gets no update.
+            let Some(file) = resent_file(&self.start.root, module, |id| {
+                engine.get_module_info(id).is_some()
+            }) else {
                 return false;
-            }
+            };
             if !files.contains(&file) {
                 files.push(file);
             }
@@ -1463,6 +1466,31 @@ impl HotSession {
     }
 }
 
+/// The file of `module`, a module id as a page names it (relative to
+/// `root`, with its query), when `known` says the engine has a module for
+/// it: under its whole id, or under its file's path. `..` segments are
+/// resolved as written, so a module outside the root is its absolute path,
+/// the engine's name for it.
+fn resent_file(root: &Path, module: &str, known: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let path = module.split(['?', '#']).next().unwrap_or(module);
+    if path.is_empty() || path.starts_with('\0') {
+        return None;
+    }
+    let mut file = PathBuf::new();
+    for part in root.join(path).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                file.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => file.push(other),
+        }
+    }
+    let name = file.to_string_lossy();
+    let id = format!("{name}{}", &module[path.len()..]);
+    (file.is_file() && (known(&id) || known(&name))).then_some(file)
+}
+
 /// Keeps the modules of a file a page asked to be sent again
 /// ([`DevBundler::resend`]) in the engine's update. The engine drops a
 /// changed module whose output renders as it did before, so that no client
@@ -2132,5 +2160,40 @@ pub(crate) mod tests {
             b"fresh"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A page asks for a module by its id; the engine is asked only for a
+    // file it has a module for, named as it names it.
+    #[test]
+    fn a_resent_module_is_a_file_the_engine_has_a_module_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(base.join("shared")).unwrap();
+        std::fs::write(root.join("src/a.tsx"), "").unwrap();
+        std::fs::write(root.join("src/unknown.tsx"), "").unwrap();
+        std::fs::write(base.join("shared/x.ts"), "").unwrap();
+        let inside = root.join("src/a.tsx");
+        let outside = base.join("shared/x.ts");
+        let split = format!("{}?tsr-split=component", inside.display());
+        let known = |id: &str| id == inside.to_string_lossy() || id == outside.to_string_lossy();
+        assert_eq!(resent_file(&root, "src/a.tsx", known), Some(inside.clone()));
+        // Under its whole id, query included.
+        assert_eq!(
+            resent_file(&root, "src/a.tsx?tsr-split=component", |id| id == split),
+            Some(inside.clone())
+        );
+        // Outside the root: the absolute path, not `<root>/../shared/x.ts`.
+        assert_eq!(
+            resent_file(&root, "../shared/x.ts", known),
+            Some(outside.clone())
+        );
+        // A file with no module in the engine, a file that is gone, a
+        // virtual module: no update would come.
+        assert_eq!(resent_file(&root, "src/unknown.tsx", known), None);
+        assert_eq!(resent_file(&root, "src/gone.tsx", |_| true), None);
+        assert_eq!(resent_file(&root, "\0virtual:x", |_| true), None);
+        assert_eq!(resent_file(&root, "", |_| true), None);
     }
 }

@@ -228,6 +228,9 @@ async fn an_edit_the_pages_reload_for_is_a_full_reload_on_the_editors_socket() {
     let frame = next_decision(&mut editor, &dev).await;
     assert_eq!(frame["type"], "full-reload", "{frame}\n{}", dev.output());
     assert_eq!(frame["path"], "*", "{frame}");
+    // Marked as Start's: a page on oj's own client reads this channel too
+    // and must not reload for it.
+    assert_eq!(frame["ojStart"], true, "{frame}");
     let late = decisions(&mut editor, Duration::from_secs(2)).await;
     assert!(
         late.is_empty(),
@@ -373,6 +376,35 @@ async fn an_edit_to_a_sheet_linked_by_its_url_restyles_the_page_in_place() {
         !dev.logs("oj start: rebuilt"),
         "the bundle was rebuilt for a partial of a sheet it only names\n{}",
         dev.output()
+    );
+
+    // A sheet nothing links or reads changes no page: Vite finds no module
+    // for it and sends nothing.
+    let _ = decisions(&mut editor, Duration::from_millis(500)).await;
+    std::fs::write(root.join("styles/unused.css"), ".unused { color: red; }\n").unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let (_, status) = dev.request("GET", "/__hmr_gate", &[]);
+        if status.contains("/styles/unused.css\":") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the gate never held the unused sheet\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    flush(&dev);
+    let frames = decisions(&mut editor, Duration::from_secs(3)).await;
+    assert!(
+        frames.is_empty(),
+        "the editor heard of a sheet no page shows: {frames:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded for a sheet it does not show"
     );
     page.close().await;
 }

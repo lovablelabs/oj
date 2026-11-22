@@ -1999,26 +1999,34 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
         .get(url)
         .cloned()
         .unwrap_or_default();
-    let mut watch_only = Vec::new();
-    for file in module.watch_files.iter().chain(&post_watch) {
-        let node = if sheet {
-            crate::hmr::watch_node(state, Path::new(file))
-        } else {
-            crate::hmr::watch_url_node(state, Path::new(file))
-        };
-        if node != Path::new(url) && !local_imports.contains(&node) {
-            local_imports.push(node.clone());
-            watch_only.push(node);
+    if !module.watch_files.is_empty() || !post_watch.is_empty() {
+        // One pass, whatever the list's length: Tailwind's sheet watches
+        // every source of the app, and is registered each time it is served.
+        let mut have: std::collections::HashSet<PathBuf> = local_imports.iter().cloned().collect();
+        let mut watch_only = Vec::new();
+        for file in module.watch_files.iter().chain(&post_watch) {
+            let node = if sheet {
+                crate::hmr::watch_node(state, Path::new(file))
+            } else {
+                crate::hmr::watch_url_node(state, Path::new(file))
+            };
+            if node != Path::new(url) && have.insert(node.clone()) {
+                local_imports.push(node.clone());
+                if !sheet {
+                    watch_only.push(node);
+                }
+            }
         }
-    }
-    {
+        if !sheet {
+            state
+                .watch_edges
+                .lock()
+                .unwrap()
+                .set(Path::new(url), watch_only);
+        }
+    } else if !sheet {
         let mut edges = state.watch_edges.lock().unwrap();
-        edges.retain(|(importer, _)| importer != Path::new(url));
-        edges.extend(
-            watch_only
-                .into_iter()
-                .map(|node| (PathBuf::from(url), node)),
-        );
+        edges.set(Path::new(url), Vec::new());
     }
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     // The url each import is named by, which a page's preload of it asks for

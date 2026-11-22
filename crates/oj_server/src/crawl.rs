@@ -78,10 +78,9 @@ pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
             // Not a file only sheets inline or plugins watched: no module.
             !graph.node(p).is_some_and(|n| {
                 !n.importers.is_empty()
-                    && n.importers.iter().all(|i| {
-                        is_style_url(&i.to_string_lossy())
-                            || watch_edges.contains(&(i.clone(), p.clone()))
-                    })
+                    && n.importers
+                        .iter()
+                        .all(|i| is_style_url(&i.to_string_lossy()) || watch_edges.contains(i, p))
             })
         })
         .collect()

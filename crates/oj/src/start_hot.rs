@@ -62,6 +62,11 @@ const KEPT_PREFIX: &str = "lazy_held_";
 /// How much the kept answers may hold together.
 const KEPT_BYTES: usize = 32 * 1024 * 1024;
 
+/// How long a file the engine was asked to send again counts as that: the
+/// engine answers within a build, and the page that asked gives up sooner
+/// (hmr-runtime.js `RESEND_WAIT`).
+const RESEND_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Tells the editor's gate of files that changed.
 pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 /// Takes a frame for the editor's socket (see [`HotUpdates::tell_editor`]).
@@ -106,7 +111,7 @@ pub(crate) struct HotUpdates {
     editor: std::sync::OnceLock<Editor>,
     parked_editor: Mutex<Vec<String>>,
     /// Files the engine was asked to send again (see [`HotUpdates::resend`]).
-    resent: Mutex<std::collections::HashSet<String>>,
+    resent: Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl HotUpdates {
@@ -185,18 +190,31 @@ impl HotUpdates {
     /// a module (see `DevBundler::resend`): no edit, so the update it makes
     /// for them is nothing the editor's gate holds.
     pub(crate) fn resend(&self, files: &[String]) {
+        let now = std::time::Instant::now();
         self.resent
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(files.iter().cloned());
+            .extend(files.iter().map(|file| (file.clone(), now)));
     }
 
-    /// Whether the engine was asked to send `file` again.
+    /// Whether the engine was asked to send `file` again, not long ago: an
+    /// update that never came for it (the engine names the file another
+    /// way) must not make the file's next edit pass for one.
     pub(crate) fn resending(&self, file: &str) -> bool {
         self.resent
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(file)
+            .get(file)
+            .is_some_and(|asked| asked.elapsed() < RESEND_WINDOW)
+    }
+
+    /// The engine's update failed: it names no file, so nothing asked for
+    /// stays asked for, and the next change of each is an edit.
+    pub(crate) fn resend_failed(&self) {
+        self.resent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// The files of an engine update that are edits: `changed` without the
@@ -206,9 +224,10 @@ impl HotUpdates {
             .resent
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resent.retain(|_, asked| asked.elapsed() < RESEND_WINDOW);
         changed
             .into_iter()
-            .filter(|file| !resent.remove(file))
+            .filter(|file| resent.remove(file).is_none())
             .collect()
     }
 
@@ -952,6 +971,12 @@ mod tests {
             changed(),
             "the next change of it is an edit"
         );
+
+        // An update that failed names no file: nothing stays asked for.
+        hot.resend(&["/app/src/a.tsx".to_string()]);
+        hot.resend_failed();
+        assert!(!hot.resending("/app/src/a.tsx"));
+        assert_eq!(hot.edits(changed()), changed());
     }
 
     #[test]

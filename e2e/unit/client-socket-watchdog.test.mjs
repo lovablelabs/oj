@@ -122,6 +122,24 @@ test("a socket silent past the deadline is dropped, and the page reloads once th
   );
 });
 
+// A Start app's dev server says on this channel what its pages were told on
+// Start's own socket, for a tool that reads it. A page on this client (a
+// harness page beside a Start app) runs the client module graph, not the
+// bundle those frames are about.
+test("frames about a Start app's bundle pages are not this page's", async () => {
+  const page = loadPage();
+  page.ws().emit("open");
+  page.ws().emit("message", { data: '{"type":"full-reload","path":"*","ojStart":true}' });
+  page.ws().emit("message", {
+    data: '{"type":"update","ojStart":true,"updates":[{"type":"js-update","path":"/src/a.tsx","acceptedPath":"/src/a.tsx","timestamp":1}]}',
+  });
+  await page.settle();
+  assert.deepEqual(page.log, [], "no reload, no re-import");
+  page.ws().emit("message", { data: '{"type":"full-reload","path":"*"}' });
+  await page.settle();
+  assert.deepEqual(page.log, [["reload"]], "the graph's own reload is still the page's");
+});
+
 test("the server's pings keep an idle socket", async () => {
   const page = loadPage({ ping: 1000 });
   page.ws().emit("open");

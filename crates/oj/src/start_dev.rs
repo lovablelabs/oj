@@ -94,6 +94,10 @@ struct StartState {
     /// `server.ws.on(event)` listeners.
     to_plugins: ToPlugins,
     css_host: Option<Arc<oj_server::css_engine::CssEngine>>,
+    /// The files the sheets the pages link read as they were compiled (a
+    /// partial a sheet `@import`s): an edit to one changes a sheet a page
+    /// shows, although no module of the bundle names it.
+    sheet_deps: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     /// The dev mode (`oj dev --mode`), handed to every node script respawn.
     mode: String,
     /// The HMR gate, when the editor drives it: rebuilds still happen at once, the
@@ -759,6 +763,7 @@ pub async fn start_dev(
         },
         gate: built.hmr_gate.clone(),
         css_host,
+        sheet_deps: std::sync::Mutex::default(),
         mode: mode.clone(),
         runner_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         content: {
@@ -2295,21 +2300,22 @@ async fn rebundle_worker(
         if hot && !reload && (relink || !added.is_empty()) {
             state.bundler.hot.refresh_styles(relink, &added);
         }
-        // A sheet that is no input of the bundle (a partial a linked sheet
-        // `@import`s): the run had nothing to rebuild and nothing to reload
-        // for, and the pages still show the sheet as it was. Vite holds the
-        // partial as a dep of the linked sheet and swaps that sheet
-        // (`css-update`); the pages re-link theirs.
-        let restyled = !hot
-            && !reload
-            && !unbundled
-            && failure.is_none()
-            && served.iter().any(|p| {
-                watch_relevant(p)
-                    && p.extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(oj_server::is_style_ext)
-            });
+        // A sheet that is no input of the bundle but that a sheet the pages
+        // link read (a partial it `@import`s): the run had nothing to
+        // rebuild and nothing to reload for, and the pages still show the
+        // sheet as it was. Vite holds the partial as a dep of the linked
+        // sheet and swaps that sheet (`css-update`); the pages re-link
+        // theirs. A sheet nothing reads changes no page, and says nothing,
+        // as Vite finds no module for it.
+        let mut restyled = false;
+        if !hot && !reload && !unbundled && failure.is_none() {
+            for file in &served {
+                if linked_sheet_reads(&state, file).await {
+                    restyled = true;
+                    break;
+                }
+            }
+        }
         if restyled {
             state.bundler.hot.refresh_styles(true, &[]);
         }
@@ -2376,8 +2382,11 @@ async fn rebundle_worker(
 }
 
 /// What the editor's socket hears when the pages reload: Vite's
-/// `FullReloadPayload` for every page.
-const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*"}"#;
+/// `FullReloadPayload` for every page. `ojStart` marks it, and the update
+/// frames, as the word of Start's own socket: a page on oj's client reads
+/// this channel too (a harness page, a worker-rendered document), runs the
+/// client module graph, and is told what to do by that graph alone.
+const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*","ojStart":true}"#;
 
 /// Vite's `update` payload for the files a run changed and the pages took in
 /// place, for the editor's socket: one entry per file, a stylesheet's a
@@ -2410,8 +2419,9 @@ fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
             })
         })
         .collect();
-    (!updates.is_empty())
-        .then(|| serde_json::json!({ "type": "update", "updates": updates }).to_string())
+    (!updates.is_empty()).then(|| {
+        serde_json::json!({ "type": "update", "updates": updates, "ojStart": true }).to_string()
+    })
 }
 
 /// A gate flush taking effect: the parked reloads publish, and the parked
@@ -3944,13 +3954,56 @@ fn app_uses_tailwind(root: &Path) -> bool {
 }
 
 async fn compile_css(
+    state: &StartState,
     host: &Arc<oj_server::css_engine::CssEngine>,
     source: &str,
     path: &Path,
 ) -> Option<String> {
-    host.compile_path(source, path, serde_json::Value::Null, true)
+    let (css, deps) = host
+        .compile_path_tracked(source, path, serde_json::Value::Null, true)
         .await
-        .ok()
+        .ok()?;
+    let mut known = state
+        .sheet_deps
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known.extend(
+        deps.files
+            .into_iter()
+            .filter(|dep| dep != path)
+            .map(|dep| std::fs::canonicalize(&dep).unwrap_or(dep)),
+    );
+    Some(css)
+}
+
+/// Whether `file` is a stylesheet one of the pages' linked sheets read when
+/// it was compiled: by the CSS engine ([`compile_css`]), or by the app's
+/// plugins, which name what a sheet reads with `addWatchFile`.
+async fn linked_sheet_reads(state: &StartState, file: &Path) -> bool {
+    let sheet = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(oj_server::is_style_ext);
+    if !sheet || !watch_relevant(file) {
+        return false;
+    }
+    let real = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    if state
+        .sheet_deps
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&real)
+    {
+        return true;
+    }
+    let Some(host) = state.bundler.plugin_host().await else {
+        return false;
+    };
+    host.watch_files()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|watched| Path::new(watched) == file || Path::new(watched) == real)
 }
 
 #[derive(Debug, PartialEq)]
@@ -5367,7 +5420,7 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
         }
     };
     let compiled = match state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
-        Some(host) => compile_css(host, &src, file).await,
+        Some(host) => compile_css(state, host, &src, file).await,
         None => None,
     };
     if compiled.is_none() && !pipeline && slots.is_none() {
@@ -9572,6 +9625,7 @@ mod tests {
         .expect("files to name");
         let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
         assert_eq!(frame["type"], "update");
+        assert_eq!(frame["ojStart"], true, "not for a page on oj's client");
         let entries: Vec<(&str, &str)> = frame["updates"]
             .as_array()
             .unwrap()
