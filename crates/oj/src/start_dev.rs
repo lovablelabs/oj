@@ -2243,8 +2243,8 @@ async fn rebundle_worker(
                 .take()
                 .is_some();
         // An engine that started under open pages: they reload onto its
-        // output, which this run wrote.
-        let forced = (fresh && state.bundler.take_engine_started_under_pages()) || forced;
+        // output, when this run wrote it.
+        let forced = state.bundler.rebundle_reloads_for_engine(fresh) || forced;
         let server_signals =
             worker_hit || engine_hit || served.iter().any(|p| state.ssr.graph_knows_file(p));
         let unbundled = !pages_run_bundle && !bundled;
@@ -2533,7 +2533,7 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
             .is_some();
         // The refresh started an engine (the plugin host's was replaced)
         // under open pages: they reload onto its output, now in place.
-        let restarted = pinned_ok && state.bundler.take_engine_started_under_pages();
+        let restarted = pinned_ok && state.bundler.refresh_reloads_for_engine();
         if wanted || restarted {
             state.reloads.bump();
         }

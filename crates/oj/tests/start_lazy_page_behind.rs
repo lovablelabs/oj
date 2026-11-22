@@ -421,8 +421,12 @@ async fn a_page_the_bundler_takes_to_hold_nothing_is_sent_each_module_once_and_p
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    // What the socket said so far, the reload its stale stamp was owed as
+    // it connected included.
+    frames_until(&mut socket, Duration::from_secs(2), |_| false).await;
+
     // An edit of the component: a hot update for this page, which the
-    // change's end names among the pages it reached.
+    // change's end names among the pages it reached, and no reload.
     write(
         &dir,
         "src/components/button.tsx",
@@ -444,8 +448,9 @@ async fn a_page_the_bundler_takes_to_hold_nothing_is_sent_each_module_once_and_p
     let reached = said
         .last()
         .is_some_and(|frame| frame["type"] == "oj:change");
+    let reloaded = said.iter().any(|frame| frame["type"] == "oj:behind");
     assert!(
-        patched && reached,
+        patched && reached && !reloaded,
         "the edit did not reach the page as a hot update: {said:?}\n{}",
         dev.output()
             .lines()
