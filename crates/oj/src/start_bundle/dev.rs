@@ -93,6 +93,9 @@ pub(crate) struct DevBundler {
     /// Whether an engine ever ran in this dev server: until one does, the
     /// bundle the pages run is the one on disk (built or restored at boot).
     engine_started: std::sync::atomic::AtomicBool,
+    /// Whether an engine started that pages are still to be reloaded for,
+    /// and by whom (see [`DevBundler::rebundle_reloads_for_engine`]).
+    engine_reload: std::sync::atomic::AtomicU8,
     /// The running engine's tag, which the runtime id of every page of its
     /// bundles starts with (see [`DevBundler::runs_engine_output`]).
     engine_tag: Mutex<String>,
@@ -153,6 +156,7 @@ impl DevBundler {
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(PageSockets::default()),
             engine_started: std::sync::atomic::AtomicBool::new(false),
+            engine_reload: std::sync::atomic::AtomicU8::new(ENGINE_RELOAD_NONE),
             engine_tag: Mutex::default(),
             restored_modules: Mutex::default(),
             fn_externals: Arc::default(),
@@ -348,15 +352,89 @@ impl DevBundler {
             return false;
         }
         let behind = self.hot.connected(id);
-        if let Some(engine) = self
-            .engine
-            .get()
-            .filter(|_| !another_run && self.holds_engine_output(id, owed))
-        {
+        // A page of another run reloads as it connects: nothing is made
+        // for it.
+        if let Some(engine) = self.engine.get().filter(|_| !another_run) {
+            let holds = self.holds_engine_output(id, owed);
             let id = id.to_string();
-            pages.then(async move { engine.register_client(id).await });
+            pages.then(async move { register(&engine, id, holds).await });
         }
         behind
+    }
+
+    /// The open pages this run of the dev server rendered.
+    fn pages_of_this_run(&self) -> Vec<String> {
+        let pages = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ids = pages.ids();
+        ids.retain(|id| !pages.another_run.contains(id));
+        ids
+    }
+
+    /// A rebundle run ended, with fresh output written (`fresh`) or not.
+    /// Whether the pages reload for an engine that started: the run's own,
+    /// or one whose reload was left for the next fresh output.
+    ///
+    /// A page open across an engine's start runs the bundle of what came
+    /// before: the one a boot restored from the cache, or the engine before
+    /// a restart. From that engine it may hold modules (those a hot update
+    /// or an `import()` gave it) under that engine's version stamps, and
+    /// the page's runtime drops a module of the new engine whose stamp is
+    /// lower, so a hot update of the new engine cannot be relied on to
+    /// reach it. It reloads onto the new engine's output instead. Vite's
+    /// client reloads the page when the dev server it lost is back
+    /// (client.ts: "server connection lost. Polling for restart...", then
+    /// `location.reload()`), which is what a restart of the server
+    /// (server/index.ts `restartServer`) is to an open page.
+    ///
+    /// The reload is the starting run's to make, with its output: a
+    /// rebundle's own (`fresh`), or the refresher's when the refresher
+    /// started the engine (the plugin host's was replaced, and no edit is
+    /// there to reload for). A rebundle that started one and wrote no
+    /// output (it failed after the start) leaves it to whichever writes the
+    /// next: the edit that fixes it may reach the pages as a hot update,
+    /// which reloads nothing. The refresher never takes the reload of a
+    /// rebundle still on its way, which would reload the pages twice.
+    pub(crate) fn rebundle_reloads_for_engine(&self, fresh: bool) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        if fresh {
+            return self.engine_reload.swap(ENGINE_RELOAD_NONE, SeqCst) != ENGINE_RELOAD_NONE;
+        }
+        let _ = self.engine_reload.compare_exchange(
+            ENGINE_RELOAD_BY_RUN,
+            ENGINE_RELOAD_BY_NEXT,
+            SeqCst,
+            SeqCst,
+        );
+        false
+    }
+
+    /// The refresher wrote fresh output. Whether the pages reload for an
+    /// engine that started (see [`DevBundler::rebundle_reloads_for_engine`]).
+    pub(crate) fn refresh_reloads_for_engine(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.engine_reload
+            .compare_exchange(ENGINE_RELOAD_BY_NEXT, ENGINE_RELOAD_NONE, SeqCst, SeqCst)
+            .is_ok()
+    }
+
+    /// An engine started in a run of the refresher (`refresh`) or of a
+    /// rebundle. Pages are owed a reload for it when any is open, and when
+    /// it replaces an engine (`restart`): a page of that engine's bundle
+    /// whose socket is down just now is one too, and reloads as it comes
+    /// back.
+    fn owe_engine_reload(&self, refresh: bool, restart: bool) {
+        if restart || !self.pages_of_this_run().is_empty() {
+            let by = if refresh {
+                ENGINE_RELOAD_BY_NEXT
+            } else {
+                ENGINE_RELOAD_BY_RUN
+            };
+            self.engine_reload
+                .store(by, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Whether the page `id` runs a bundle the running engine made (its
@@ -385,8 +463,9 @@ impl DevBundler {
     /// taken for one the page has, and an `import()` of a module that
     /// imports it would fail with `No factory registered for module`, for
     /// as long as the editor's gate holds the page's reload. Such a page is
-    /// left unknown to the engine, which then sends it every module an
-    /// answer needs, and no patch: it is reloaded onto the engine's bundle.
+    /// told to the engine as one that holds nothing of its output (see
+    /// [`register`]): it is sent every module an answer or a patch needs
+    /// that it was not sent before.
     /// Under Vite the page's `import()` is a request for the module, and
     /// each of its imports another, whatever the page loaded before.
     fn holds_engine_output(&self, id: &str, owed: bool) -> bool {
@@ -487,15 +566,17 @@ impl DevBundler {
         // Known to the engine before it compiles for it: what the page
         // already holds is left out of the answer. (The page's socket
         // registers it too; a request can come first.) A page that does not
-        // run the engine's output is left unknown: its answer carries every
-        // module it needs (see `holds_engine_output`).
-        if self.holds_engine_output(client, owed) {
-            on_rolldown(
-                &self.start.rolldown,
-                engine.register_client(client.to_string()),
-            )
-            .await;
-        }
+        // run the engine's output is known as one that holds none of it
+        // (see `holds_engine_output`).
+        on_rolldown(
+            &self.start.rolldown,
+            register(
+                &engine,
+                client.to_string(),
+                self.holds_engine_output(client, owed),
+            ),
+        )
+        .await;
         let result = on_rolldown(
             &self.start.rolldown,
             engine.compile_lazy_entry(proxy.to_string(), client.to_string()),
@@ -751,6 +832,34 @@ impl DevBundler {
         }
     }
 
+    /// Whether the next run starts the engine over (see [`session_stale`]),
+    /// as far as can be told without waiting for a run in progress, which
+    /// tells by itself.
+    ///
+    /// The refresher asks while it waits for edits to pause: the pages
+    /// reload onto the new engine's output (see
+    /// [`DevBundler::rebundle_reloads_for_engine`]), so nothing they would
+    /// be patched with is worth the wait, and Vite's client reloads as soon
+    /// as the server it lost answers again (client.ts
+    /// `waitForSuccessfulPing`, then `location.reload()`).
+    pub(crate) async fn restart_due(&self) -> bool {
+        let Ok(session) = self.session.try_lock() else {
+            return false;
+        };
+        let Some(live) = session.as_ref() else {
+            return false;
+        };
+        let Ok(host) = self.host().await else {
+            return false;
+        };
+        let hot = self.hot_bundle() && host.is_none_or(|h| h.facts.server_hmr);
+        let host_engine = match host {
+            Some(h) => h.host.live_engine_generation().await,
+            None => 0,
+        };
+        live.stale(hot, self.style_epoch(), host_engine)
+    }
+
     async fn run(
         &self,
         session: &mut Option<HotSession>,
@@ -780,17 +889,9 @@ impl DevBundler {
             Some(h) => h.host.live_engine_generation().await,
             None => 0,
         };
-        let stale = session.as_ref().is_some_and(|s| {
-            session_stale(
-                hot,
-                s.epoch != epoch
-                    && s.styles
-                        .compiled_sheets
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                s.host_engine,
-                host_engine,
-            )
-        });
+        let stale = session
+            .as_ref()
+            .is_some_and(|s| s.stale(hot, epoch, host_engine));
         if stale {
             if let Some(old) = session.take() {
                 old.close(&self.engine).await;
@@ -858,18 +959,17 @@ impl DevBundler {
                 Arc::clone(&self.hot),
                 declared,
                 &self.engine,
-                // The pages of this engine's bundles: none yet, as its
-                // first output is still to be written. The pages open now
-                // run another bundle, and reload onto this one.
-                || {
-                    let mut pages = self.pages();
-                    pages.retain(|id| self.runs_engine_output(id));
-                    pages
-                },
+                // The pages open now run another bundle (this engine's
+                // first output is still to be written): they are told to
+                // the engine as holding none of its output, and reload onto
+                // it (see `rebundle_reloads_for_engine`).
+                || self.pages_of_this_run(),
             )
             .await?;
-            self.engine_started
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let restart = self
+                .engine_started
+                .swap(true, std::sync::atomic::Ordering::SeqCst);
+            self.owe_engine_reload(refresh, restart);
             let mut live = live;
             live.host_engine = host_engine;
             *session = Some(live);
@@ -1200,6 +1300,43 @@ impl DevBundler {
 enum Run {
     Hot { css: Vec<String> },
     Output { files: usize },
+}
+
+/// No engine start is waiting for a reload.
+const ENGINE_RELOAD_NONE: u8 = 0;
+/// The rebundle run that started the engine reloads the pages at its end.
+const ENGINE_RELOAD_BY_RUN: u8 = 1;
+/// Whichever writes the next fresh output reloads them.
+const ENGINE_RELOAD_BY_NEXT: u8 = 2;
+
+/// Tells the engine of the page `id`. One that `holds` its newest output is
+/// sent only what that output does not evaluate as it loads; any other is
+/// taken to hold nothing, and the engine records what each answer and patch
+/// then gives it (rolldown's delivery notification), so a second `import()`
+/// is not sent the first one's modules again.
+async fn register(engine: &rolldown_dev::DevEngine, id: String, holds: bool) {
+    if holds {
+        engine.register_client(id).await;
+    } else {
+        engine.register_client_without_output(id).await;
+    }
+}
+
+impl HotSession {
+    /// [`session_stale`] of this session, against the bundle as it is now:
+    /// hot or not, its style epoch, the plugin host's engine.
+    fn stale(&self, hot: bool, epoch: u64, host_engine: u64) -> bool {
+        session_stale(
+            hot,
+            self.epoch != epoch
+                && self
+                    .styles
+                    .compiled_sheets
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            self.host_engine,
+            host_engine,
+        )
+    }
 }
 
 /// Whether a hot session is done for: the bundle is no longer hot, a style
@@ -1551,6 +1688,53 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    /// Who reloads the pages for an engine that started: the run that
+    /// started it, with its own output, and never another run in its place
+    /// while it is still on its way.
+    #[test]
+    fn the_reload_for_an_engine_start_is_made_once_by_the_run_that_owes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundler = DevBundler::for_tests(tmp.path());
+        // No engine started: nothing to reload for.
+        assert!(!bundler.refresh_reloads_for_engine());
+        assert!(!bundler.rebundle_reloads_for_engine(true));
+        // A first engine with no page open owes none.
+        bundler.owe_engine_reload(false, false);
+        assert!(!bundler.rebundle_reloads_for_engine(true));
+
+        // A rebundle restarts the engine: the refresher, finishing first,
+        // leaves the reload to it, and the rebundle makes it once.
+        bundler.owe_engine_reload(false, true);
+        assert!(!bundler.refresh_reloads_for_engine());
+        assert!(bundler.rebundle_reloads_for_engine(true));
+        assert!(!bundler.rebundle_reloads_for_engine(true));
+        assert!(!bundler.refresh_reloads_for_engine());
+
+        // A rebundle that started one and wrote no output leaves it to the
+        // next fresh output, the refresher's included.
+        bundler.owe_engine_reload(false, true);
+        assert!(!bundler.rebundle_reloads_for_engine(false));
+        assert!(bundler.refresh_reloads_for_engine());
+        assert!(!bundler.refresh_reloads_for_engine());
+        bundler.owe_engine_reload(false, true);
+        assert!(!bundler.rebundle_reloads_for_engine(false));
+        assert!(bundler.rebundle_reloads_for_engine(true));
+
+        // The refresher restarts the engine: its own reload, or a rebundle's
+        // that writes fresh output before it.
+        bundler.owe_engine_reload(true, true);
+        assert!(bundler.refresh_reloads_for_engine());
+        bundler.owe_engine_reload(true, true);
+        assert!(!bundler.rebundle_reloads_for_engine(false));
+        assert!(bundler.rebundle_reloads_for_engine(true));
+        assert!(!bundler.refresh_reloads_for_engine());
+
+        // A page open at the first engine's start is owed one too.
+        bundler.page_connected("page", false, false);
+        bundler.owe_engine_reload(false, false);
+        assert!(bundler.rebundle_reloads_for_engine(true));
+    }
 
     /// Engine calls run in the order they were queued, however long each
     /// takes: a slow first call (rolldown's register waits on a lock) is

@@ -3,11 +3,13 @@
 Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
 (source: [rolldown/rolldown](https://github.com/rolldown/rolldown)
 `67e2203c`, `crates/rolldown_dev`), maintained for
-[oj](https://github.com/lovablelabs/oj) and carrying one change, in
+[oj](https://github.com/lovablelabs/oj) and carrying two changes, in
 `src/dev_engine.rs`:
 
 - `DevEngine::compile_lazy_entry` queues its rebuild only when rolldown's own
   lazy compilation is on (`experimental.devMode.lazy`).
+- `DevEngine::register_client_without_output` registers a client whose
+  session starts with nothing held (see below).
 
 Upstream queues a rebuild after every lazy compile. With rolldown's lazy
 compilation, a module behind an `import()` stays out of the graph until a
@@ -28,6 +30,21 @@ the file is fixed, before the engine has handled the fix itself, would load
 it and change the graph with no update made for it. oj asks for no compile
 while `DevEngine::get_bundle_state` reports `last_build_errored`.
 
+`register_client` freezes into a client's session the modules the engine's
+newest output evaluates as it loads, on the premise that the client loaded
+that output (upstream notes the gap: "A client that loaded an output older
+than the latest rebuild gets the newer map ... the reload fallback covers
+that window until the hello carries a build id"). oj knows which pages did
+not: one on a bundle restored from its cache or made by an engine before a
+restart, and one behind a rebuild or a hot update the editor's gate holds.
+For those it calls `register_client_without_output`, which creates the
+session with empty maps: every patch and lazy chunk then carries each factory
+the client may lack, and the delivery notifications record what it holds, as
+for any client. A client that already has a session (a request of its came
+before oj could tell what it loaded) keeps its record of what was delivered
+and loses the frozen output. Drop it once `register_client` takes the build a
+client loaded.
+
 `oj.patch` is the whole difference from the published 1.3.2 sources
 (`diff -ru` of `src/`); everything else under `src/` is verbatim. Not
 carried over from the published crate: `examples/` and the dev-dependencies
@@ -39,7 +56,8 @@ only it used. `rustfmt.toml` and `LICENSE` are the upstream repository's (MIT).
   (`patch -p1 < oj.patch`), update the versions in `Cargo.toml`, and
   regenerate the patch.
 - Drop the fork once a rolldown_dev release can skip the rebuild (an option,
-  or a check that the compile changed nothing): delete this directory and its
+  or a check that the compile changed nothing) and can register a client by
+  the build it loaded: delete this directory and its
   workspace member entry, point the workspace's `rolldown_dev` dependency
   back at the registry (`rolldown_dev = "=<version>"`), and remove the
   `--exclude oj_rolldown_dev` in the Makefile. The test

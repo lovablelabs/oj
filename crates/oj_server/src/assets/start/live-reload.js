@@ -258,6 +258,10 @@
   // Sent with each request for a module behind an `import()`: which run of
   // the dev server rendered this document.
   bus.stamp = stamp;
+  // The bundle's runtime may have asked for a module before this script ran,
+  // naming neither stamp, and waits to ask again (hmr-runtime.js
+  // `ojAskedUnnamed`).
+  for (const known of bus.onStamps?.splice(0) ?? []) known();
   // For the answer to an `import()` made by a page another run of the dev
   // server rendered (the same reload its socket is told to make, under the
   // same guard); whether it reloads.

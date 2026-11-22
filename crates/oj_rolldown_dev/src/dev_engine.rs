@@ -323,6 +323,23 @@ impl DevEngine {
       .or_insert_with(|| ClientSession { top_level_evaluated, ..ClientSession::default() });
   }
 
+  /// oj: a client that did not load this engine's newest output (a page on a bundle from
+  /// before the engine, or one behind its latest rebuild). Its session starts with an empty
+  /// ship map and an empty top-level-evaluated map, so nothing is taken for a copy it
+  /// holds: a patch or lazy chunk carries every factory it may lack, and the delivery
+  /// notifications record what it then holds. A client that has a session (it was taken
+  /// for one that loaded the output before the server could tell) keeps what was delivered
+  /// to it and loses the output it was taken to have evaluated.
+  pub async fn register_client_without_output(&self, client_id: String) {
+    self
+      .clients
+      .lock()
+      .await
+      .entry(client_id)
+      .and_modify(|session| session.top_level_evaluated = Arc::default())
+      .or_default();
+  }
+
   /// Client-disconnect signal: drops the session together with any
   /// rendered-but-undelivered payloads addressed to it.
   pub async fn remove_client(&self, client_id: &str) {

@@ -575,3 +575,102 @@ fn the_first_edit_after_a_restored_boot_renames_only_the_chunks_it_changed() {
     let (status, _) = dev.request("GET", "/@oj-start/engine.js?t=not-a-tag", &[]);
     assert_eq!(status, 404);
 }
+
+/// The bundler starts over in a run of the refresher: an edit reached the
+/// page as a hot update, and before the refresher brought the output
+/// current a style input moved under a sheet the bundler had compiled (a
+/// file no module imports, so no rebundle runs for it). The refresher's run
+/// is then the one that starts the new bundler, and the page, which holds
+/// modules of the one before, reloads onto its output: once, and without
+/// waiting for the next edit. Vite's client reloads when the server it lost
+/// answers again (client.ts `waitForSuccessfulPing`, then
+/// `location.reload()`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_reloads_once_when_the_refresher_starts_the_bundler_over() {
+    let Some(app) = new_import_app("refresher-restart") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let styled = |shown: &str| {
+        index(
+            "import styles from \"./home.module.css\";\n",
+            &format!("{{styles.home ? \"{shown}\" : \"unstyled\"}}"),
+        )
+    };
+    write(
+        &root,
+        "src/routes/home.module.css",
+        ".home { color: red; }\n",
+    );
+    write(&root, INDEX, &styled("zero"));
+    let dev = Server::oj_dev(&root);
+    let page = Page::open(&dev.url("/")).await;
+    let ready = format!("self.__ojHydrated === true && {HOT_CLIENT}");
+    page.wait_for(&ready, WAIT).await;
+
+    // An edit first, so that a bundler runs (a boot can serve a bundle it
+    // restored from the cache, with none running): whether that reloads the
+    // page or patches it is not this test's.
+    let shows = |text: &str| format!("{SHOWN} === \"{text}\" && {ready}");
+    write(&root, INDEX, &styled("one"));
+    page.wait_for(&shows("one"), WAIT).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    page.wait_for(&shows("one"), WAIT).await;
+    page.eval::<bool>("(window.__mark = 'kept', true)").await;
+    let bundlings = |dev: &Server| dev.output().matches("client bundling").count();
+    let before = bundlings(&dev);
+
+    // The hot update, then the style input no module imports.
+    write(&root, INDEX, &styled("two"));
+    page.wait_for(&format!("{SHOWN} === \"two\""), WAIT).await;
+    assert_eq!(
+        page.eval::<String>("String(window.__mark)").await,
+        "kept",
+        "the edit reloaded the page\n{}",
+        server_lines(&dev)
+    );
+    assert_eq!(bundlings(&dev), before, "{}", server_lines(&dev));
+    write(&root, "src/unused.scss", "$unused: 1;\n");
+    let moved = std::time::Instant::now();
+
+    let reloaded = page
+        .poll(
+            &format!("window.__mark === undefined && {}", shows("two")),
+            Duration::from_secs(40),
+        )
+        .await;
+    assert!(
+        reloaded,
+        "the page never reloaded onto the new bundler's output: mark {:?}, shows {:?}\n{}",
+        page.eval::<String>("String(window.__mark)").await,
+        page.eval::<String>(SHOWN).await,
+        server_lines(&dev)
+    );
+    let took = moved.elapsed();
+    assert_eq!(
+        bundlings(&dev),
+        before + 1,
+        "one bundler started, in the refresher's run\n{}",
+        server_lines(&dev)
+    );
+    assert!(
+        !server_lines(&dev).contains("unused.scss"),
+        "a rebundle ran for the style input\n{}",
+        server_lines(&dev)
+    );
+
+    // Once: no second reload follows.
+    page.eval::<bool>("(window.__mark = 'again', true)").await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        page.eval::<String>("String(window.__mark)").await,
+        "again",
+        "the page reloaded twice\n{}",
+        server_lines(&dev)
+    );
+    assert_eq!(bundlings(&dev), before + 1, "{}", server_lines(&dev));
+    eprintln!("reloaded {took:?} after the style input moved");
+}
