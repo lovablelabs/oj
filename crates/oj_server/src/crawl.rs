@@ -55,7 +55,11 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
         // What the app's page preloads next boot, before this crawl is done.
         let preloads = {
             let graph = state.graph.lock().unwrap();
-            crate::html::static_preloads(&graph, &html_entries(&state.root))
+            crate::html::static_preloads(
+                &graph,
+                &state.watch_edges.lock().unwrap(),
+                &html_entries(&state.root),
+            )
         };
         save_graph_snapshot(&state.root, &preloads);
         let _ = done_tx.send(true);
@@ -66,15 +70,18 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
 /// file-only entries): those are HMR edges, never served as modules.
 pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
     let graph = state.graph.lock().unwrap();
+    let watch_edges = state.watch_edges.lock().unwrap();
     graph
         .module_paths()
         .into_iter()
         .filter(|p| {
+            // Not a file only sheets inline or plugins watched: no module.
             !graph.node(p).is_some_and(|n| {
                 !n.importers.is_empty()
-                    && n.importers
-                        .iter()
-                        .all(|i| is_style_url(&i.to_string_lossy()))
+                    && n.importers.iter().all(|i| {
+                        is_style_url(&i.to_string_lossy())
+                            || watch_edges.contains(&(i.clone(), p.clone()))
+                    })
             })
         })
         .collect()

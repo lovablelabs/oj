@@ -383,6 +383,14 @@ struct ServerState {
     /// what they were given: they run once per change, as Vite's module
     /// transform, not per request.
     css_post: Mutex<HashMap<String, (u64, String)>>,
+    /// The files each sheet's "post" plugins watched, by the sheet's graph
+    /// url: its imports like its compile's watch files, kept here because a
+    /// cached post output runs no plugin to name them again.
+    post_watch: Mutex<HashMap<String, Vec<String>>>,
+    /// Imports that exist only because the importer's plugins watched the
+    /// file (importer, file's node): edges for HMR, which no page preloads
+    /// and the crawl does not count as modules.
+    watch_edges: Mutex<std::collections::HashSet<(PathBuf, PathBuf)>>,
     tailwind_sheets: css_serve::TailwindSheets,
     has_postcss: bool,
     scss_additional_data: Option<String>,
@@ -2394,6 +2402,8 @@ impl DevServer {
             svelte: tokio::sync::OnceCell::new(),
             tailwind_urls: Mutex::new(std::collections::HashSet::new()),
             css_post: Mutex::new(HashMap::new()),
+            post_watch: Mutex::new(HashMap::new()),
+            watch_edges: Mutex::new(std::collections::HashSet::new()),
             tailwind_sheets: Default::default(),
             has_postcss: has_postcss_config(&root),
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),

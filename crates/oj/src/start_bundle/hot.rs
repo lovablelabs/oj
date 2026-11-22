@@ -240,8 +240,8 @@ impl HotSession {
         // route's `links` do): the module is that url, which an edit to the
         // sheet does not change, and the page links the sheet itself. Vite
         // answers such an edit with a `css-update` for the linked sheet and
-        // no reload; here the pages re-link it (`linked_sheet_changed`), and
-        // the bundle has nothing to rebuild.
+        // no reload; here the pages re-link their sheets, and the bundle has
+        // nothing to rebuild.
         let linked_only = |p: &str| {
             crate::start_dev::is_style_input(Path::new(p))
                 && self.engine.get_module_info(p).is_none()

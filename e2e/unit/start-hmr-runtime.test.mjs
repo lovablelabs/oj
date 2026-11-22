@@ -162,6 +162,32 @@ test("hot.invalidate reloads when the server cannot be asked for the importer", 
   assert.deepEqual(runtime.log, ["location.reload"]);
 });
 
+// A provider in the page's first bundle and a consumer in a lazy chunk both
+// import the module that invalidated: run apart, they would hold two copies
+// of what the module exports.
+test("the update sent for an invalidation re-runs every importer, not only the ones sent", async () => {
+  GRAPH["src/b.tsx"] = [];
+  const importers = GRAPH["src/a.tsx"];
+  GRAPH["src/a.tsx"] = ["src/app.tsx", "src/b.tsx"];
+  try {
+    const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
+    const app = runtime.hooks.createModuleHotContext("src/app.tsx");
+    app.accept();
+    runtime.hooks.createModuleHotContext("src/b.tsx").accept();
+    const announced = [];
+    app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => `${u.path} by ${u.firstInvalidatedBy}`)));
+    runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+    await settle(runtime);
+    assert.deepEqual(announced, [], "nothing runs until the server has sent the importer");
+    runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/app.tsx"] });
+    await settle(runtime);
+    assert.deepEqual(announced.sort(), ["src/app.tsx by src/a.tsx", "src/b.tsx by src/a.tsx"]);
+  } finally {
+    GRAPH["src/a.tsx"] = importers;
+    delete GRAPH["src/b.tsx"];
+  }
+});
+
 // The update the server sends for an invalidation carries who invalidated:
 // one that walks back to that module reloads, as Vite's server reloads for a
 // circular invalidation ('circular import invalidate').
@@ -172,7 +198,7 @@ test("the update sent for an invalidation reloads when it comes back to the modu
   try {
     const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
     runtime.hooks.createModuleHotContext("src/a.tsx").accept();
-    runtime.hmr.resent = { by: "src/a.tsx", ids: new Set(["src/app.tsx"]) };
+    runtime.hmr.resent = { id: "src/a.tsx", by: "src/a.tsx", ids: new Set(["src/app.tsx"]) };
     runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/app.tsx"] });
     await settle(runtime);
     assert.deepEqual(

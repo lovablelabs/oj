@@ -265,9 +265,13 @@ class OjHmrClient {
     const announced = new Set();
     let update = null;
     // An update the server sent for an invalidation (`applyInvalidate`)
-    // carries it on: one that comes back to the module that invalidated
-    // reloads, as it does when the page re-runs the importers itself.
+    // carries it on: every importer of the module that invalidated re-runs,
+    // the ones the page had a factory for with the ones just sent (run
+    // apart, a provider and its consumers would hold two copies of what
+    // they share), and one that comes back to that module reloads, as it
+    // does when the page re-runs the importers itself.
     let by;
+    let roots;
     while (this.pending.length) {
       const frames = this.pending.splice(0);
       for (const { seq, changedIds: ids } of frames) {
@@ -280,10 +284,15 @@ class OjHmrClient {
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
       const resent = this.resent;
-      if (resent && [...changedIds].every((id) => resent.ids.has(id))) by = resent.by;
-      else by = undefined;
       this.resent = undefined;
-      const next = this.compute([...changedIds], by);
+      if (resent && [...changedIds].every((id) => resent.ids.has(id))) {
+        by = resent.by;
+        roots = this.runtime.getImporters(resent.id).filter((p) => p !== resent.id && this.runtime.isExecuted(p));
+      } else {
+        by = undefined;
+        roots = undefined;
+      }
+      const next = this.compute(roots ?? [...changedIds], by);
       if (next?.reload) return this.requestReload(next.reload);
       if (next) {
         update = next;
@@ -292,7 +301,7 @@ class OjHmrClient {
         if (fresh.length) {
           await this.notify("vite:beforeUpdate", this.payload(fresh, by));
           // A module a listener imported meanwhile runs here now.
-          const again = this.compute([...changedIds], by);
+          const again = this.compute(roots ?? [...changedIds], by);
           if (again?.reload) return this.requestReload(again.reload);
           update = again ?? update;
         }
@@ -347,7 +356,7 @@ class OjHmrClient {
       if (!__ojBus.send || !__ojBus.send({ type: "oj:invalidate", path: id, modules: missing })) {
         return this.requestReload(`no factory for module ${missing[0]}`);
       }
-      this.resent = { by: firstInvalidatedBy, ids: new Set(missing) };
+      this.resent = { id, by: firstInvalidatedBy, ids: new Set(missing) };
       return;
     }
     const payload = this.payload(update.boundaries, firstInvalidatedBy);

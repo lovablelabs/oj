@@ -315,7 +315,11 @@ pub(crate) fn preload_href(
 /// Vite's dev page carries no modulepreload: it walks the same imports one
 /// round trip per level. Over HTTP/2 with latency that waterfall costs a page
 /// its import depth in round trips, which a preview pays on every cold load.
-pub(crate) fn static_preloads(graph: &oj_graph::ModuleGraph, entries: &[String]) -> Vec<String> {
+pub(crate) fn static_preloads(
+    graph: &oj_graph::ModuleGraph,
+    watch_edges: &std::collections::HashSet<(PathBuf, PathBuf)>,
+    entries: &[String],
+) -> Vec<String> {
     let skip = |url: &str| url.starts_with("/@oj/") || url.contains("html-proxy");
     let mut seen: std::collections::HashSet<String> = entries.iter().cloned().collect();
     let mut listed = seen.clone();
@@ -340,7 +344,9 @@ pub(crate) fn static_preloads(graph: &oj_graph::ModuleGraph, entries: &[String])
             named.entry(path).or_default().push(url);
         }
         for import in imports {
-            if skip(&import) {
+            // A file the module's plugins watched is an edge for HMR alone.
+            if skip(&import) || watch_edges.contains(&(PathBuf::from(&url), PathBuf::from(&import)))
+            {
                 continue;
             }
             let urls = match named.get(Path::new(&import)) {
@@ -412,7 +418,11 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
     let base = state.base.as_deref().unwrap_or("/");
     let paths = if *state.crawl_done.borrow() {
         let entries = page_module_entries(&html, base);
-        static_preloads(&state.graph.lock().unwrap(), &entries)
+        static_preloads(
+            &state.graph.lock().unwrap(),
+            &state.watch_edges.lock().unwrap(),
+            &entries,
+        )
     } else if file == state.root.join("index.html") {
         state.preload_snapshot.clone()
     } else {

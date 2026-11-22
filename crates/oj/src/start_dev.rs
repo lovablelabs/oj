@@ -2295,9 +2295,27 @@ async fn rebundle_worker(
         if hot && !reload && (relink || !added.is_empty()) {
             state.bundler.hot.refresh_styles(relink, &added);
         }
+        // A sheet that is no input of the bundle (a partial a linked sheet
+        // `@import`s): the run had nothing to rebuild and nothing to reload
+        // for, and the pages still show the sheet as it was. Vite holds the
+        // partial as a dep of the linked sheet and swaps that sheet
+        // (`css-update`); the pages re-link theirs.
+        let restyled = !hot
+            && !reload
+            && !unbundled
+            && failure.is_none()
+            && served.iter().any(|p| {
+                watch_relevant(p)
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(oj_server::is_style_ext)
+            });
+        if restyled {
+            state.bundler.hot.refresh_styles(true, &[]);
+        }
         // The pages took the change in place: the editor hears an update,
         // released with the pages' own frames.
-        if hot && !reload {
+        if (hot || restyled) && !reload {
             if let Some(frame) = editor_update_frame(&root, &served) {
                 state.bundler.hot.tell_editor(frame);
             }
@@ -2337,6 +2355,8 @@ async fn rebundle_worker(
             eprintln!("  oj start: client bundle failed, the pages keep the last bundle: {reason}");
         } else if hot && !reload {
             println!("  oj start: hot updated");
+        } else if restyled {
+            println!("  oj start: stylesheets re-linked, no rebundle");
         } else if unbundled && !reload {
             println!("  oj start: client updates left to the page's module graph, no rebundle");
         } else if !reload {

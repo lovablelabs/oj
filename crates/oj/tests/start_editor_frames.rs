@@ -241,7 +241,18 @@ const WIDGET_OUTLINE: &str =
     "getComputedStyle(document.querySelector('[data-testid=\"glob-jsx\"]')).outlineColor";
 
 fn linked_sheet(rgb: &str) -> String {
-    format!("[data-testid=\"glob-jsx\"] {{ outline: 3px solid {rgb}; }}\n")
+    format!(
+        "@import \"./linked-part.css\";\n[data-testid=\"glob-jsx\"] {{ outline: 3px solid {rgb}; }}\n"
+    )
+}
+
+/// The partial the linked sheet imports: no module of the bundle.
+const PARTIAL: &str = "styles/linked-part.css";
+const WIDGET_OFFSET: &str =
+    "getComputedStyle(document.querySelector('[data-testid=\"glob-jsx\"]')).outlineOffset";
+
+fn partial(px: u32) -> String {
+    format!("[data-testid=\"glob-jsx\"] {{ outline-offset: {px}px; }}\n")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -255,6 +266,7 @@ async fn an_edit_to_a_sheet_linked_by_its_url_restyles_the_page_in_place() {
     let root = app.0.clone();
     // The root route links a sheet of the app's by its url, as a Start
     // template's `import appCss from "../styles.css?url"` does.
+    std::fs::write(root.join(PARTIAL), partial(1)).unwrap();
     std::fs::write(root.join(LINKED), linked_sheet("rgb(1, 2, 3)")).unwrap();
     let route = root.join("src/routes/__root.tsx");
     let source = std::fs::read_to_string(&route).unwrap();
@@ -327,6 +339,39 @@ async fn an_edit_to_a_sheet_linked_by_its_url_restyles_the_page_in_place() {
     assert!(
         !dev.logs("oj start: rebuilt"),
         "the bundle was rebuilt for a sheet it only names\n{}",
+        dev.output()
+    );
+
+    // The partial the sheet imports: a dep of the linked sheet in Vite,
+    // which swaps the sheet for it too.
+    page.wait_for(&format!("{WIDGET_OFFSET} === '1px'"), WAIT)
+        .await;
+    std::fs::write(root.join(PARTIAL), partial(2)).unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let (_, status) = dev.request("GET", "/__hmr_gate", &[]);
+        if status.contains("/styles/linked-part.css\":") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the gate never held the partial's edit\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    flush(&dev);
+    page.wait_for(&format!("{WIDGET_OFFSET} === '2px'"), WAIT)
+        .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded for an edit to a partial of the linked sheet\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.logs("oj start: rebuilt"),
+        "the bundle was rebuilt for a partial of a sheet it only names\n{}",
         dev.output()
     );
     page.close().await;

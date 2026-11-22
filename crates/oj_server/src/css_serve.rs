@@ -108,13 +108,25 @@ pub(crate) async fn css_post(
     }
     let is_dep = is_dep_module(url, file);
     let t = plugin_transform_phase(state, file, id, code, is_dep, Some("post")).await?;
-    if !t.watch_files.is_empty() {
-        // The sheet's imports, as its compile's watch files are
-        // (`register_in_graph`).
+    // The sheet's imports, as its compile's watch files are: kept for
+    // `register_in_graph`, which sets the sheet's imports each time it is
+    // served, a cached post output included.
+    {
         let sheet = crate::module_pipeline::graph_url(url);
+        let mut post_watch = state.post_watch.lock().unwrap();
+        if t.watch_files.is_empty() {
+            post_watch.remove(sheet);
+        } else {
+            post_watch.insert(sheet.to_string(), t.watch_files.clone());
+        }
+        drop(post_watch);
         for p in &t.watch_files {
             ensure_watched_file(state, Path::new(p));
-            let node = crate::hmr::watch_node(state, Path::new(p));
+            let node = if is_style_url(sheet) {
+                crate::hmr::watch_node(state, Path::new(p))
+            } else {
+                crate::hmr::watch_url_node(state, Path::new(p))
+            };
             state
                 .graph
                 .lock()

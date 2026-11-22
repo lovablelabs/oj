@@ -9,6 +9,13 @@
 //! boundary reloads. Tailwind watches every source it scans this way. A file
 //! watched from outside a transform (`buildStart`) is in no module's imports
 //! and its edit sends nothing. Being watched never reloads the page.
+//!
+//! Only a sheet's watch file is a file-only entry, a node beside the module
+//! the file may also be (css.ts `createFileOnlyEntry`): for any other module
+//! importAnalysis adds the file's url to the imported urls, so a watched
+//! file that is a self-accepting module takes its own edit and the watcher
+//! is not reached. The edges are for HMR alone: no page preloads a watched
+//! file, and no `prune` frame names one.
 
 use axum::body::Body;
 use axum::http::Request;
@@ -46,8 +53,16 @@ export default {{
       }}
       if (id.endsWith("/src/plain.js")) {{
         this.addWatchFile(at("src/plain.txt"));
+        // A module too, and self-accepting.
+        this.addWatchFile(at("src/widget.js"));
         return code.replace("__PLAIN__", read("src/plain.txt"));
       }}
+    }},
+  }}, {{
+    name: "post-watcher",
+    enforce: "post",
+    transform(code, id) {{
+      if (id.split("?")[0].endsWith("/src/style.css")) this.addWatchFile(at("src/post.txt"));
     }},
   }}],
 }};
@@ -67,6 +82,7 @@ async fn boot() -> (App, Server) {
         ("src/tokens.txt", "token-v1\n"),
         ("src/note.txt", "note-v1\n"),
         ("src/plain.txt", "plain-v1\n"),
+        ("src/post.txt", "post-v1\n"),
         (
             "src/main.js",
             "import \"./accepting.js\";\nimport \"./plain.js\";\nimport \"./widget.js\";\n",
@@ -190,11 +206,19 @@ async fn a_file_watched_by_a_module_with_no_boundary_above_it_reloads() {
     app.write(&[("src/plain.txt", "plain-v2\n")]);
     let frame = next_decision(&mut socket).await;
     assert_eq!(frame["type"], "full-reload", "{frame}");
+    // Vite invalidates the file's modules before it decides: the page that
+    // reloads gets the watcher transformed again.
+    let module = server.text("/src/plain.js").await;
+    assert!(module.contains("plain-v2"), "{module}");
     close(socket).await;
 }
 
-/// The watched file is a module too: Vite's `getModulesByFile` holds both
-/// its module node and its file-only entry, and each walks up on its own.
+/// The watched file is a module too. A sheet watches it: Vite's
+/// `getModulesByFile` holds both its module node and its file-only entry,
+/// and each walks up on its own. So does a module with no boundary above it
+/// (`plain.js`), for which the file is its own url's node: the
+/// self-accepting module takes the edit, the watcher is not reached, and the
+/// page does not reload. Each boundary is named once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_watched_file_that_is_a_module_updates_itself_and_its_watcher() {
     let (app, server) = boot().await;
@@ -237,6 +261,63 @@ async fn a_file_watched_outside_a_transform_sends_nothing() {
     assert_eq!(
         updates(&frame),
         [entry("js-update", "/src/accepting.js")],
+        "{frame}"
+    );
+    close(socket).await;
+}
+
+fn preloads(html: &str) -> Vec<String> {
+    regex::Regex::new(r#"<link rel="modulepreload" href="([^"]+)""#)
+        .unwrap()
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// A watched file is an edge for HMR, not something the page loads: Vite's
+/// dev server preloads nothing, and oj's preloads are the page's imports.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_preloads_no_watched_file() {
+    let (app, server) = boot().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    let html = server.text("/").await;
+    let links = preloads(&html);
+    assert!(
+        links.contains(&"/src/accepting.js".to_string()),
+        "the page's own imports are preloaded: {links:?}"
+    );
+    assert!(
+        !links
+            .iter()
+            .any(|l| l.contains(".txt") || l.contains("@oj-watch")),
+        "{links:?}"
+    );
+    assert!(!html.contains("@oj-watch"), "{html}");
+}
+
+/// A "post" plugin's watch file stays the sheet's import however often the
+/// sheet is served: a cached post output runs no plugin to name it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_transforms_watch_file_survives_the_sheet_being_served_again() {
+    let (app, server) = boot().await;
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
+    linked_sheet(&server).await;
+    linked_sheet(&server).await;
+
+    app.write(&[("src/post.txt", "post-v2\n")]);
+    // The first frame that says anything of the graph: no `prune` of a
+    // watch file ahead of the update.
+    let frame = frame_matching(&mut socket, "a prune, an update or a full-reload", |f| {
+        f["type"] == "prune" || f["type"] == "update" || f["type"] == "full-reload"
+    })
+    .await;
+    assert_eq!(frame["type"], "update", "{frame}");
+    assert_eq!(
+        updates(&frame),
+        [entry("css-update", "/src/style.css")],
         "{frame}"
     );
     close(socket).await;

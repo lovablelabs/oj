@@ -1238,7 +1238,26 @@ pub(crate) async fn decide(
 /// the same file may also be, imported by the module that watched it.
 pub(crate) fn watch_node(state: &ServerState, file: &Path) -> PathBuf {
     let file = canonicalize_memo(state, &file.to_string_lossy());
-    PathBuf::from(format!("/@oj-watch{}", file.display()))
+    PathBuf::from(format!("{WATCH_NODE}{}", file.display()))
+}
+
+const WATCH_NODE: &str = "/@oj-watch";
+
+/// Whether a graph node is a sheet's watch file ([`watch_node`]).
+pub(crate) fn is_watch_node(node: &Path) -> bool {
+    node.starts_with(WATCH_NODE)
+}
+
+/// The graph node of a file a module other than a sheet watched: the node of
+/// the file's url, as Vite's importAnalysis adds `normalizeUrl(file)` to the
+/// module's imported urls. The file's own module when it is one, so a
+/// self-accepting watched module takes its edit itself.
+pub(crate) fn watch_url_node(state: &ServerState, file: &Path) -> PathBuf {
+    if file.starts_with(&state.root) {
+        return PathBuf::from(url_of(&state.root, file));
+    }
+    let real = canonicalize_memo(state, &file.to_string_lossy());
+    PathBuf::from(url_of(&state.root, &real))
 }
 
 /// Vite resolves through rolldown's native `vite_resolve` plugin, whose
@@ -1685,8 +1704,9 @@ fn decide_file(
         ));
     }
     let url = url_of(&state.root, path);
-    // Any other file updates only as a stylesheet's dep: a PostCSS plugin's
-    // `dependency` sits in Vite's graph whatever its extension.
+    // Any other file updates only as something's dep: a PostCSS plugin's
+    // `dependency` sits in Vite's graph whatever its extension, and so does
+    // a file a module's plugins watched.
     let css_dep = || {
         state
             .graph
@@ -1694,9 +1714,14 @@ fn decide_file(
             .unwrap()
             .node(Path::new(&url))
             .is_some_and(|n| {
-                n.importers
-                    .iter()
-                    .any(|p| is_style_url(&p.to_string_lossy()))
+                n.importers.iter().any(|p| {
+                    is_style_url(&p.to_string_lossy())
+                        || state
+                            .watch_edges
+                            .lock()
+                            .unwrap()
+                            .contains(&(p.clone(), PathBuf::from(&url)))
+                })
             })
     };
     // An imported asset is a URL module: its importers re-import it under a new
@@ -1734,17 +1759,27 @@ fn decide_file(
             }
             // A dep of a `<link>`-loaded sheet (its `url()` asset, an
             // `@import`) swaps the link, as Vite's css-analysis updates it.
-            updates.extend(targets.iter().map(|t| {
+            for t in &targets {
                 let sheet = t.boundary.display().to_string();
-                if is_style_url(&sheet) && sheet != url && link_loaded(state, &sheet) {
+                let entry = if is_style_url(&sheet) && sheet != url && link_loaded(state, &sheet) {
                     update_entry("css-update", &sheet, timestamp)
                 } else {
                     update_entry_for(t, timestamp, None)
+                };
+                // Once: a sheet that watched the file named the same
+                // boundary already (`watchers_update`).
+                if !updates.contains(&entry) {
+                    updates.push(entry);
                 }
-            }));
+            }
             Flow::Done
         }
         Err(reason) => {
+            // As Vite invalidates the file's modules before it decides: the
+            // page that reloads gets them transformed again.
+            let mut seeds = vec![Path::new(&url)];
+            seeds.extend(inline.as_deref().map(Path::new));
+            stamp_chains(state, &seeds, timestamp);
             println!("oj: change {url} -> full-reload ({reason})");
             Flow::Reload(full_reload_frame(&reason, None, Some(path)))
         }
@@ -1773,6 +1808,10 @@ fn watchers_update(
         }
         g.update_targets(&node)
     };
+    // Whatever the outcome, as Vite invalidates a changed file's modules
+    // before it decides between an update and a reload: the watchers
+    // transform again, for the page that reloads too.
+    stamp_chains(state, &[&node], timestamp);
     match targets {
         Ok(targets) => {
             let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
@@ -1780,7 +1819,6 @@ fn watchers_update(
                 "oj: change {} -> update {boundaries:?} (watched by)",
                 path.display()
             );
-            stamp_chains(state, &[&node], timestamp);
             for t in &targets {
                 let boundary = t.boundary.display().to_string();
                 let entry = if is_style_url(&boundary) && link_loaded(state, &boundary) {
