@@ -543,6 +543,11 @@ class OjDevRuntime extends DevRuntime {
   }
 }
 
-globalThis.__rolldown_runtime__ ??= new OjDevRuntime(Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+// The id starts with the tag of the engine that made this bundle: the dev
+// server tells a page that runs its engine's output from one that runs
+// another bundle (one restored from the cache, an earlier engine's).
+globalThis.__rolldown_runtime__ ??= new OjDevRuntime(
+  `${__OJ_ENGINE__}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
+);
 __ojBus.runtime = globalThis.__rolldown_runtime__;
 __ojBus.onRuntime?.(globalThis.__rolldown_runtime__);

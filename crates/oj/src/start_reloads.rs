@@ -129,6 +129,20 @@ impl Epochs {
         })
     }
 
+    /// Whether `query` carries the stamp of a document rendered before a
+    /// change the pages must reload for, published or held: the page runs
+    /// the bundle from before that change until its reload.
+    pub(crate) fn owed(&self, query: Option<&str>) -> bool {
+        let Some(has) = stamp_in(query).and_then(|s| self.count_of(&s)) else {
+            return false;
+        };
+        let latest = *self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        has < latest
+    }
+
     #[cfg(test)]
     pub(crate) fn receivers(&self) -> usize {
         self.published.receiver_count()
@@ -313,6 +327,27 @@ mod tests {
         let hold = Arc::new(AtomicBool::new(false));
         let h = Arc::clone(&hold);
         (Epochs::new(Some(Arc::new(move || h.load(SeqCst)))), hold)
+    }
+
+    // A document from before a rebuild is owed its reload whether the
+    // reload went out or the editor's gate holds it: until it reloads, the
+    // page runs the bundle from before the rebuild.
+    #[test]
+    fn a_page_is_owed_a_reload_published_or_held() {
+        let (epochs, hold) = gated();
+        let before = format!("g={}", epochs.stamp());
+        assert!(!epochs.owed(Some(&before)));
+        hold.store(true, SeqCst);
+        assert!(!epochs.bump(), "the gate holds the reload");
+        assert!(epochs.owed(Some(&before)), "held");
+        assert!(!epochs.owed(Some(&format!("g={}", epochs.stamp()))));
+        hold.store(false, SeqCst);
+        assert!(epochs.flushed());
+        assert!(epochs.owed(Some(&before)), "published");
+        // No stamp, or another run's: nothing this run's counts say.
+        assert!(!epochs.owed(Some("h=0")));
+        assert!(!epochs.owed(Some("g=1-0")));
+        assert!(!epochs.owed(None));
     }
 
     fn query(stamp: &str) -> String {
