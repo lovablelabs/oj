@@ -380,7 +380,8 @@ impl DevBundler {
     /// the output. It is not of a page on a bundle from before the engine
     /// (the one a boot restored from the cache, or an earlier engine's),
     /// nor of one a reload is owed to (`owed`: its document is from before
-    /// a rebuild): a module an edit made part of the entry since would be
+    /// a rebuild, or it is behind a hot change, held by the editor's gate
+    /// or missed): a module an edit made part of the entry since would be
     /// taken for one the page has, and an `import()` of a module that
     /// imports it would fail with `No factory registered for module`, for
     /// as long as the editor's gate holds the page's reload. Such a page is

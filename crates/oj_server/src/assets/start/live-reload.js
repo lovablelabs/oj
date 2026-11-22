@@ -223,6 +223,9 @@
   const applied = (msg) => {
     if (typeof msg.change === "number" && (hotHas == null || msg.change > hotHas)) hotHas = msg.change;
   };
+  // For the bundle's runtime, which names them on each `import()` it asks
+  // the server for (hmr-runtime.js `lazyChunkUrl`).
+  bus.hotHas = () => hotHas;
   // A change's end frame (oj:change): does this page still need it? Named
   // among the clients it covered, it has it (patched, or nothing to patch).
   // Left out, it needs it, unless its document was rendered after the

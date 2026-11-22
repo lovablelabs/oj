@@ -4399,7 +4399,11 @@ async fn start_hmr_socket(
                                 // opened (the bundler knew the page from an
                                 // `import()` it made first) reached no
                                 // socket: the page reloads onto it.
-                                if h.bundler.page_connected(&id, h.another_run, (h.owed)())
+                                if h.bundler.page_connected(
+                                    &id,
+                                    h.another_run,
+                                    (h.owed)() || h.bundler.hot.behind(h.has),
+                                )
                                     && socket
                                         .send(Message::Text(HOT_BEHIND_FRAME.into()))
                                         .await
@@ -4857,7 +4861,14 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         // the cap all the same; the task ends on its own.
         let compile = {
             let (bundler, id, client) = (Arc::clone(&state.bundler), id.clone(), client.clone());
-            let owed = state.reloads.owed(query);
+            // Behind a reload, or behind a hot change (one the gate holds,
+            // or one its socket missed): either way the bundler's newest
+            // output is not what the page runs.
+            let owed = state.reloads.owed(query)
+                || state
+                    .bundler
+                    .hot
+                    .behind(crate::start_hot::hot_change_in(query));
             tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed).await })
         };
         let answer = match tokio::time::timeout_at(end, compile).await {
