@@ -2265,9 +2265,12 @@ impl IncrState {
                 }
                 doomed.sort_unstable();
                 remove_positions(&mut self.sorted, &doomed);
-                for class in &classes {
-                    if let Some(entries) = owners.get_mut(class) {
-                        entries.retain(|&(rank, _)| !changed[rank as usize]);
+                let outgoing = self.files.iter().enumerate();
+                for (rank, file) in outgoing.filter(|&(rank, _)| changed[rank]) {
+                    for rule in file.rules.iter() {
+                        if let Some(entries) = owners.get_mut(&rule.class_name) {
+                            remove_owner_rank(entries, rank as u32);
+                        }
                     }
                 }
             }
@@ -2326,13 +2329,12 @@ impl IncrState {
         }
         if let Some(owners) = &mut self.owners {
             for class in classes {
-                let Entry::Occupied(mut entries) = owners.entry(class) else {
+                let Entry::Occupied(entries) = owners.entry(class) else {
                     return Err(None);
                 };
                 if entries.get().is_empty() {
                     entries.remove();
                 } else {
-                    entries.get_mut().sort_unstable();
                     fresh.push(entries.get()[0]);
                 }
             }
@@ -2372,6 +2374,8 @@ fn remove_positions<T>(items: &mut Vec<T>, ascending: &[usize]) {
     });
 }
 
+// A class's owners are kept sorted by input position, the first owner first:
+// a file's entries in the list are one run, and a new one has one place.
 fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) -> Option<()> {
     let rule = &files[entry.0 as usize].rules[entry.1 as usize];
     let entries = owners.entry(rule.class_name.clone()).or_default();
@@ -2386,8 +2390,15 @@ fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) 
             return None;
         }
     }
-    entries.push(entry);
+    let at = entries.partition_point(|&owner| owner < entry);
+    entries.insert(at, entry);
     Some(())
+}
+
+fn remove_owner_rank(entries: &mut Vec<(u32, u32)>, rank: u32) {
+    let start = entries.partition_point(|&(owner, _)| owner < rank);
+    let len = entries[start..].partition_point(|&(owner, _)| owner == rank);
+    entries.drain(start..start + len);
 }
 
 // Merges the sorted `fresh` entries into the sorted `kept`, in place and from
