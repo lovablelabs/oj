@@ -4053,9 +4053,9 @@ mod splice_tests {
                 })
                 .collect()
         };
-        let layouts: [(usize, &dyn Fn(usize) -> Vec<StylexRule>); 2] =
-            [(16, &file_rules), (64, &atoms)];
-        for (shared, (file_count, contents)) in [false, true].into_iter().zip(layouts) {
+        for shared in [false, true] {
+            let contents = |i: usize| if shared { atoms(i) } else { file_rules(i) };
+            let file_count = if shared { 64 } else { 16 };
             let mut registry = RuleRegistry::new();
             for i in 0..file_count {
                 registry.set_file_rules(&format!("f{i:02}.ts"), contents(i));
