@@ -275,7 +275,29 @@ class OjHmrClient {
     // they share), and one that comes back to that module reloads, as it
     // does when the page re-runs the importers itself.
     let by;
-    let roots;
+    let answer;
+    // What re-runs for the changes so far. An answer's importers walk up
+    // with who invalidated; an edit that came with it walks up as any edit
+    // does (one to the module that invalidated is no loop).
+    const compute = () => {
+      if (!answer) return this.compute([...changedIds]);
+      const importers = this.runtime
+        .getImporters(answer.id)
+        .filter((p) => p !== answer.id && this.runtime.isExecuted(p));
+      const asked = this.compute(importers, by);
+      if (asked?.reload) return asked;
+      const edits = [...changedIds].filter((id) => !answer.ids.has(id));
+      const edited = edits.length ? this.compute(edits) : null;
+      if (edited?.reload || !asked || !edited) return edited ?? asked;
+      const known = new Set(asked.boundaries.map((b) => `${b.boundary}\n${b.acceptedVia}`));
+      return {
+        boundaries: [
+          ...asked.boundaries,
+          ...edited.boundaries.filter((b) => !known.has(`${b.boundary}\n${b.acceptedVia}`)),
+        ],
+        updateSet: [...new Set([...asked.updateSet, ...edited.updateSet])],
+      };
+    };
     while (this.pending.length) {
       const frames = this.pending.splice(0);
       for (const { seq, changedIds: ids } of frames) {
@@ -287,18 +309,17 @@ class OjHmrClient {
       this.wake();
       // Over every change so far: a boundary found by an earlier batch is
       // found again, and re-run once at the end.
-      // Only its answer ends the wait: another edit's update, arriving
-      // first, leaves the page still asking.
+      // Its answer ends the wait, alone or with an edit made meanwhile (the
+      // bundler sends both as one update, and the page takes the updates
+      // waiting for it together): another edit's update, arriving first,
+      // leaves the page still asking.
       const resent = this.resent;
-      if (resent && [...changedIds].every((id) => resent.ids.has(id))) {
+      if (resent && [...resent.ids].every((id) => changedIds.has(id))) {
         this.resent = undefined;
+        answer = resent;
         by = resent.by;
-        roots = this.runtime.getImporters(resent.id).filter((p) => p !== resent.id && this.runtime.isExecuted(p));
-      } else {
-        by = undefined;
-        roots = undefined;
       }
-      const next = this.compute(roots ?? [...changedIds], by);
+      const next = compute();
       if (next?.reload) return this.requestReload(next.reload);
       if (next) {
         update = next;
@@ -307,7 +328,7 @@ class OjHmrClient {
         if (fresh.length) {
           await this.notify("vite:beforeUpdate", this.payload(fresh, by));
           // A module a listener imported meanwhile runs here now.
-          const again = this.compute(roots ?? [...changedIds], by);
+          const again = compute();
           if (again?.reload) return this.requestReload(again.reload);
           update = again ?? update;
         }
