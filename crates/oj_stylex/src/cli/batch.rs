@@ -11,7 +11,7 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
 use crate::api::{
-    FileContext, parse_program, transform_program, transform_program_rules, transform_source_in,
+    FileContext, compile_program, compile_rules, parse_program, transform_source_in,
     transform_source_rules_in,
 };
 use crate::cache::{CacheStatus, CacheStore, compile_through_cache_in};
@@ -873,11 +873,12 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
             }
         }),
         Backend::Ast => ARENA.with(|cell| {
-            // The rules of a source the gate turns away are none, parsed or
-            // not: as under the splice backend, it is not parsed to say so.
-            if rules_only && options.pre_gate().scan(source).is_none() {
+            // A source the gate turns away passes through as it does under
+            // the splice backend: unparsed, so whether it parses never
+            // decides its line, with or without the code.
+            let Some(sx_hit) = options.pre_gate().scan(source) else {
                 return Ok((Cow::Borrowed(source), Vec::new(), None));
-            }
+            };
             let mut allocator = cell.borrow_mut();
             allocator.reset();
             let mut program = {
@@ -885,10 +886,10 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
                 parse_program(&allocator, source, &filename)?
             };
             if rules_only {
-                let result = transform_program_rules(&program, &file, &options, fs)?;
+                let result = compile_rules(&program, sx_hit, &file, &options, fs)?;
                 return Ok((Cow::Borrowed(source), result.rules, None));
             }
-            let result = transform_program(&allocator, &mut program, &file, &options, fs)?;
+            let result = compile_program(&allocator, &mut program, sx_hit, &file, &options, fs)?;
             // Untouched programs pass through byte-identical, like the splice
             // backend; only modified ones go through codegen.
             let code = if result.modified {

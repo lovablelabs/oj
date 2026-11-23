@@ -191,13 +191,22 @@ pub fn transform_program<'a>(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<CompileResult, StylexError> {
-    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
-        return Ok(CompileResult {
-            modified: false,
-            rules: Vec::new(),
-            create_objects: Vec::new(),
-        });
-    };
+    match options.pre_gate().scan(ctx.source_text) {
+        Some(sx_hit) => compile_program(allocator, program, sx_hit, ctx, options, fs),
+        None => Ok(CompileResult::default()),
+    }
+}
+
+/// [`transform_program`] of a source the pre-gate let through, its scan
+/// having found `sx_hit`.
+pub(crate) fn compile_program<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    sx_hit: bool,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
     let Some(imports) = scan_unless_dormant(program, sx_hit, options)? else {
         return Ok(CompileResult {
             modified: false,
@@ -271,7 +280,9 @@ pub fn transform_program_rules(
     }
 }
 
-fn compile_rules(
+/// [`transform_program_rules`] of a source the pre-gate let through, its
+/// scan having found `sx_hit`.
+pub(crate) fn compile_rules(
     program: &Program<'_>,
     sx_hit: bool,
     ctx: &FileContext<'_>,
