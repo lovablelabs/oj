@@ -1,6 +1,6 @@
 {
   "header": {
-    "oracle": "@stylexjs/babel-plugin@0.19.0 via transformSync (enableMediaQueryOrder default ON)",
+    "oracle": "@stylexjs/babel-plugin@0.19.2 via transformSync (enableMediaQueryOrder default ON)",
     "generator": "conformance/src/gen-pins-mq.mjs",
     "corpus": "conformance/corpus/upstream/media-queries.json",
     "semantics": {
@@ -143,9 +143,8 @@
     },
     {
       "input": "@media screen, (max-width: 800px)",
-      "emitted": "@media (screen), (max-width: 800px)",
-      "className": "x8snq8c",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen, (max-width: 800px)",
+      "className": "xat8i7v"
     },
     {
       "input": "@media (max-width: 500px)",
@@ -173,21 +172,18 @@
     },
     {
       "input": "@media screen and (min-width: 900px)",
-      "emitted": "@media (screen) and (min-width: 900px)",
-      "className": "x1o6iy4e",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (min-width: 900px)",
+      "className": "x6w8ylb"
     },
     {
       "input": "@media print and (max-width: 500px)",
-      "emitted": "@media (print) and (max-width: 500px)",
-      "className": "xttp6q0",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media print and (max-width: 500px)",
+      "className": "xuv6cl9"
     },
     {
       "input": "@media screen and (min-width: 900px) and (not (print and (max-width: 500px)))",
-      "emitted": "@media ((screen) and (min-width: 900px) and (not (print))) or ((screen) and (min-width: 900px) and (not (max-width: 500px)))",
-      "className": "x1scftvq",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (min-width: 900px), screen and (min-width: 900px) and (not (max-width: 500px))",
+      "className": "x1prn0o7"
     },
     {
       "input": "@media (min-width: 600px)",
@@ -611,9 +607,8 @@
     },
     {
       "input": "@media screen and (min-width: 400px)",
-      "emitted": "@media (screen) and (min-width: 400px)",
-      "className": "x1tpp8w0",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (min-width: 400px)",
+      "className": "xn0t4pe"
     },
     {
       "input": "@media (min-height: 600px) and (orientation: landscape)",
@@ -622,9 +617,8 @@
     },
     {
       "input": "@media screen and (device-aspect-ratio: 16/9)",
-      "emitted": "@media (screen) and (device-aspect-ratio: 16 / 9)",
-      "className": "x1ueeiiv",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (device-aspect-ratio: 16 / 9)",
+      "className": "xkb55mp"
     },
     {
       "input": "@media (min-aspect-ratio: 3/2) and (max-aspect-ratio: 16/9)",
@@ -728,9 +722,8 @@
     },
     {
       "input": "@media (color) and (min-width: 400px), screen and (max-width: 700px)",
-      "emitted": "@media (color) and (min-width: 400px), (screen) and (max-width: 700px)",
-      "className": "x1hh8fll",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media (color) and (min-width: 400px), screen and (max-width: 700px)",
+      "className": "xqhewxs"
     },
     {
       "input": "@media not (not (not (min-width: 400px)))",
@@ -769,9 +762,8 @@
     },
     {
       "input": "@media screen and ((min-width: 500px) and ((max-width: 800px) and (color)))",
-      "emitted": "@media (screen) and (min-width: 500px) and (max-width: 800px) and (color)",
-      "className": "x1c688mb",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (min-width: 500px) and (max-width: 800px) and (color)",
+      "className": "xexs2ha"
     },
     {
       "input": "@media not (not (min-width: 400px))",
@@ -962,8 +954,8 @@
     },
     {
       "input": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) and (not (min-width: 400px))",
-      "emitted": "@media (min-width: 200.01px) and (max-width: 399.99px)",
-      "className": "x116rmls"
+      "emitted": "@media (min-width: 200.01px) and (max-width: 399.98px)",
+      "className": "x1ejo4x0"
     },
     {
       "input": "@media (min-width: 200.01px) and (max-width: 399.99px)",
@@ -1396,15 +1388,13 @@
     },
     {
       "input": "@media only screen, print",
-      "emitted": "@media only screen, (print)",
-      "className": "xqobod6",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media only screen, print",
+      "className": "xkyre4s"
     },
     {
       "input": "@media screen and (min-width: 400px) and (max-width: 700px)",
-      "emitted": "@media (screen) and (min-width: 400px) and (max-width: 700px)",
-      "className": "xwlictd",
-      "refixError": "Invalid media query syntax."
+      "emitted": "@media screen and (min-width: 400px) and (max-width: 700px)",
+      "className": "x16whzt5"
     },
     {
       "input": "@media (height < 600px)",
@@ -1555,11 +1545,11 @@
         "@media (min-width: 900px)"
       ],
       "emitted": [
-        "@media (min-width: 600px) and (max-width: 899.99px)",
+        "@media (min-width: 600px) and (max-width: 899.98px)",
         "@media (min-width: 900px)"
       ],
       "classNames": [
-        "xz6my08",
+        "x1nat5ly",
         "x978k1e"
       ]
     },
@@ -1570,13 +1560,13 @@
         "@media (min-width: 1200px)"
       ],
       "emitted": [
-        "@media (min-width: 600px) and (max-width: 899.99px)",
-        "@media (min-width: 900px) and (max-width: 1199.99px)",
+        "@media (min-width: 600px) and (max-width: 899.98px)",
+        "@media (min-width: 900px) and (max-width: 1199.98px)",
         "@media (min-width: 1200px)"
       ],
       "classNames": [
-        "xz6my08",
-        "x1w8e3jv",
+        "x1nat5ly",
+        "x185cqmm",
         "xi3agqs"
       ]
     },
@@ -1656,11 +1646,11 @@
         "@media (max-width: 700px)"
       ],
       "emitted": [
-        "@media (screen) and (min-width: 400px) and (not (max-width: 700px))",
+        "@media screen and (min-width: 400px) and (not (max-width: 700px))",
         "@media (max-width: 700px)"
       ],
       "classNames": [
-        "xityvhf",
+        "x1hw97a9",
         "x7xmfni"
       ]
     },
@@ -1670,11 +1660,11 @@
         "@media screen"
       ],
       "emitted": [
-        "@media (min-width: 600px) and (not (screen))",
+        "@media print and (min-width: 600px)",
         "@media screen"
       ],
       "classNames": [
-        "x16j0d4r",
+        "x10e5p",
         "xpe9tkb"
       ]
     },
@@ -1684,11 +1674,11 @@
         "@media not screen"
       ],
       "emitted": [
-        "@media (min-width: 600px) and (not not screen)",
+        "@media screen and (min-width: 600px)",
         "@media not screen"
       ],
       "classNames": [
-        "xkyavlj",
+        "x1cuve5b",
         "xp44bs9"
       ]
     },
@@ -1712,12 +1702,12 @@
         "@media screen, (max-width: 800px)"
       ],
       "emitted": [
-        "@media (min-width: 600px) and (not ((screen) or (max-width: 800px)))",
-        "@media (screen), (max-width: 800px)"
+        "@media print and (min-width: 600px) and (not (max-width: 800px))",
+        "@media screen, (max-width: 800px)"
       ],
       "classNames": [
-        "x1s4qpr0",
-        "x1boz0ro"
+        "x18bo767",
+        "xw9wakn"
       ]
     },
     {
@@ -1769,12 +1759,12 @@
         "@media (min-width: 400px)"
       ],
       "emitted": [
-        "@media (min-width: 200.01px) and (max-width: 399.99px)",
+        "@media (min-width: 200.01px) and (max-width: 399.98px)",
         "@media (max-width: 200px)",
         "@media (min-width: 400px)"
       ],
       "classNames": [
-        "x116rmls",
+        "x1ejo4x0",
         "x4q9i8o",
         "x19y91cv"
       ]
@@ -1799,11 +1789,11 @@
         "@media (min-width: 1000px)"
       ],
       "emitted": [
-        "@media (max-width: 499.99px) or ((min-width: 600.01px) and (max-width: 999.99px))",
+        "@media (max-width: 499.98px) or ((min-width: 600.01px) and (max-width: 999.98px))",
         "@media (min-width: 1000px)"
       ],
       "classNames": [
-        "xagon12",
+        "x40nhir",
         "xa5mmu"
       ]
     },
@@ -1813,11 +1803,11 @@
         "@media (min-width: 600px)"
       ],
       "emitted": [
-        "@media (print) and (not (min-width: 600px))",
+        "@media print and (not (min-width: 600px))",
         "@media (min-width: 600px)"
       ],
       "classNames": [
-        "xry8tdr",
+        "xst0kw6",
         "x116ee3a"
       ]
     },

@@ -3,8 +3,9 @@
 //! dev endpoints. oj claims the plugin by name and runs this in its place.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
+use memchr::memmem::Finder;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use serde_json::{Map, Value, json};
@@ -12,6 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
 use crate::assemble::{AssembleConfig, RuleRegistry};
 use crate::errors::ErrorCode;
+use crate::fxhash::FxHashSet;
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
 use crate::rules::StylexRule;
@@ -29,6 +31,9 @@ pub const CSS_UPDATE_EVENT: &str = "stylex:css-update";
 pub const RUNTIME_JS: &str = include_str!("assets/runtime.js");
 pub const CSS_ONLY_JS: &str = include_str!("assets/css-only.js");
 pub const DEV_RUNTIME_JS: &str = include_str!("assets/dev-runtime.js");
+
+/// The sources the transform gate reads whatever `importSources` lists.
+const BUILT_IN_IMPORT_SOURCES: [&str; 2] = ["stylex", "@stylexjs/stylex"];
 
 /// Options the plugin consumes itself; the rest go to the compiler.
 const PLUGIN_KEYS: &[&str] = &[
@@ -63,10 +68,14 @@ pub struct StylexPlugin {
     assemble: AssembleConfig,
     dev_mode: DevMode,
     lightningcss_options: Value,
-    import_sources: Vec<String>,
+    gate_needles: Vec<Finder<'static>>,
     root: PathBuf,
     fs: MemoFs,
     registry: Mutex<RuleRegistry>,
+    /// Module ids currently holding rules in `registry`. Never locked by
+    /// `stylesheet()`/`emit()`, so non-StyleX misses avoid contending on
+    /// `registry`. Strict lock order when both are held: `registry` -> `recorded`.
+    recorded: RwLock<FxHashSet<Box<str>>>,
     fingerprint: String,
     on_change: Mutex<Option<ChangeListener>>,
     warnings: Vec<String>,
@@ -122,7 +131,24 @@ impl StylexPlugin {
         let import_sources = user
             .get("importSources")
             .cloned()
-            .unwrap_or_else(|| json!(["stylex", "@stylexjs/stylex"]));
+            .unwrap_or_else(|| json!(BUILT_IN_IMPORT_SOURCES));
+        // The gate reads the built-in sources next to the listed ones (the
+        // compiler does too), so a module on `@stylexjs/stylex` compiles
+        // under a config that lists only its own source.
+        let mut gate_sources = BUILT_IN_IMPORT_SOURCES.map(String::from).to_vec();
+        for source in source_names(&import_sources) {
+            if !gate_sources.contains(&source) {
+                gate_sources.push(source);
+            }
+        }
+        let gate_needles = gate_sources
+            .iter()
+            .flat_map(|source| {
+                ['\'', '"']
+                    .into_iter()
+                    .map(move |quote| Finder::new(&format!("{quote}{source}{quote}")).into_owned())
+            })
+            .collect();
         let mut compiler: Map<String, Value> = user
             .iter()
             .filter(|(k, _)| !PLUGIN_KEYS.contains(&k.as_str()))
@@ -195,7 +221,7 @@ impl StylexPlugin {
                 .get("lightningcssOptions")
                 .cloned()
                 .unwrap_or(Value::Null),
-            import_sources: source_names(&import_sources),
+            gate_needles,
             options,
             assemble,
             dev_mode,
@@ -206,6 +232,7 @@ impl StylexPlugin {
                 MemoFs::snapshot()
             },
             registry: Mutex::new(RuleRegistry::new()),
+            recorded: RwLock::new(FxHashSet::default()),
             fingerprint,
             on_change: Mutex::new(None),
             warnings,
@@ -243,9 +270,22 @@ impl StylexPlugin {
     }
 
     /// The plugin's `transformInclude` and `shouldHandle`: a JS-like id whose
-    /// code imports one of the import sources.
+    /// code imports one of the import sources (the built-in ones included).
     pub fn handles(&self, id: &str, code: &str) -> bool {
-        is_js_like(id) && self.import_sources.iter().any(|s| imports_source(code, s))
+        is_js_like(id)
+            && self
+                .gate_needles
+                .iter()
+                .any(|finder| imports_needle(code, finder))
+    }
+
+    /// The transform's answer for a module [`Self::handles`] passes over:
+    /// the rules an earlier version of it recorded under `id` leave the
+    /// sheet, so an edit that drops a module's StyleX imports drops its
+    /// styles (the plugin's `clearCollectedRulesForId`). Whether the sheet
+    /// changed.
+    pub fn clear_module_rules(&self, id: &str) -> bool {
+        is_js_like(id) && self.set_module_rules(id, Vec::new())
     }
 
     /// Compiles `program` (the parse of `source`) in place; the module's rules.
@@ -292,13 +332,21 @@ impl StylexPlugin {
         if self.options.runtime_injection.is_some() {
             return false;
         }
+        if rules.is_empty() && !self.recorded.read().unwrap().contains(id) {
+            return false;
+        }
         let changed = {
             let mut registry = self.registry.lock().unwrap();
+            let mut recorded = self.recorded.write().unwrap();
             let before = registry.generation();
             if rules.is_empty() {
                 registry.remove_file(id);
+                recorded.remove(id);
             } else {
                 registry.set_file_rules(id, rules);
+                if !recorded.contains(id) {
+                    recorded.insert(id.into());
+                }
             }
             registry.generation() != before
         };
@@ -369,7 +417,7 @@ pub fn dependency_packages(user: &Value, root: &Path) -> Vec<String> {
     let import_sources = user
         .get("importSources")
         .cloned()
-        .unwrap_or_else(|| json!(["stylex", "@stylexjs/stylex"]));
+        .unwrap_or_else(|| json!(BUILT_IN_IMPORT_SOURCES));
     let mut targets: Vec<String> = source_names(&import_sources)
         .iter()
         .filter_map(|s| package_of(s))
@@ -488,6 +536,50 @@ fn require_target(target: &Value) -> Option<&str> {
     }
 }
 
+/// The plugin's `pickCssAssetFromRollupBundle` over the file names of the
+/// stylesheets a build emits, in bundle order (Rolldown's: by file name): the
+/// first `index.css`, bare or hashed, else the first `style.css`, else the
+/// first sheet. `None` with no stylesheet. (`cssInjectionTarget`, a function,
+/// never reaches oj.)
+pub fn pick_css_asset<S: AsRef<str>>(file_names: &[S]) -> Option<usize> {
+    let named = |stem: &str| {
+        file_names
+            .iter()
+            .position(|name| is_css_asset_named(name.as_ref(), stem))
+    };
+    named("index")
+        .or_else(|| named("style"))
+        .or((!file_names.is_empty()).then_some(0))
+}
+
+/// The plugin's `/(^|\/)<stem>(-[\w-]{8,})?\.css$/i` (`INDEX_CSS_RE`,
+/// `STYLE_CSS_RE`): `<stem>.css` in any directory, with or without the hash
+/// a bundler appends.
+fn is_css_asset_named(file_name: &str, stem: &str) -> bool {
+    let base = file_name.rsplit('/').next().unwrap_or(file_name).as_bytes();
+    let Some(split) = base.len().checked_sub(4) else {
+        return false;
+    };
+    let (base, extension) = base.split_at(split);
+    if !extension.eq_ignore_ascii_case(b".css") {
+        return false;
+    }
+    let Some((name, hash)) = base.split_at_checked(stem.len()) else {
+        return false;
+    };
+    name.eq_ignore_ascii_case(stem.as_bytes())
+        && match hash {
+            [] => true,
+            [b'-', hash @ ..] => {
+                hash.len() >= 8
+                    && hash
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            }
+            _ => false,
+        }
+}
+
 /// `importSources` entries as module names (`{ from, as }` keeps `from`).
 fn source_names(sources: &Value) -> Vec<String> {
     sources
@@ -527,28 +619,27 @@ fn is_js_like(id: &str) -> bool {
 
 /// The plugin's `containsStylexImport`: `from 's'`, `import('s')`,
 /// `require('s')`, or a line-leading `import 's'`, either quote.
-fn imports_source(code: &str, source: &str) -> bool {
-    for quote in ['\'', '"'] {
-        let needle = format!("{quote}{source}{quote}");
-        let mut at = 0;
-        while let Some(found) = code[at..].find(&needle) {
-            let start = at + found;
-            at = start + needle.len();
-            let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
-            if before.ends_with("from") {
+fn imports_needle(code: &str, finder: &Finder<'_>) -> bool {
+    let bytes = code.as_bytes();
+    let needle_len = finder.needle().len();
+    let mut at = 0;
+    while let Some(found) = finder.find(&bytes[at..]) {
+        let start = at + found;
+        at = start + needle_len;
+        let before = code[..start].trim_end_matches([' ', '\t', '\n', '\r']);
+        if before.ends_with("from") {
+            return true;
+        }
+        if let Some(call) = before.strip_suffix('(') {
+            let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
+            if call.ends_with("import") || call.ends_with("require") {
                 return true;
             }
-            if let Some(call) = before.strip_suffix('(') {
-                let call = call.trim_end_matches([' ', '\t', '\n', '\r']);
-                if call.ends_with("import") || call.ends_with("require") {
-                    return true;
-                }
-            }
-            if let Some(stmt) = before.strip_suffix("import") {
-                let line = stmt.rsplit('\n').next().unwrap_or(stmt);
-                if line.trim().is_empty() {
-                    return true;
-                }
+        }
+        if let Some(stmt) = before.strip_suffix("import") {
+            let line = stmt.rsplit('\n').next().unwrap_or(stmt);
+            if line.trim().is_empty() {
+                return true;
             }
         }
     }
@@ -582,7 +673,144 @@ mod tests {
         assert!(!p.handles("/a.js", "<div sx={x} />"));
         let custom = plugin(json!({ "importSources": [{ "from": "my-sx", "as": "css" }] }));
         assert!(custom.handles("/a.ts", "import { css } from 'my-sx';"));
-        assert!(!custom.handles("/a.ts", SRC));
+        assert!(!custom.handles("/a.ts", "import { css } from 'other-sx';"));
+    }
+
+    // StyleX 0.19.2 (#1849): `importSources` adds to the built-in sources at
+    // the gate instead of replacing them, so a module on `@stylexjs/stylex`
+    // (a dependency's, say) still compiles under a custom source.
+    #[test]
+    fn custom_import_sources_keep_the_built_in_ones() {
+        for sources in [
+            json!([{ "from": "my-sx", "as": "css" }]),
+            json!(["my-sx"]),
+            json!([]),
+        ] {
+            let p = plugin(json!({ "importSources": sources }));
+            assert!(p.handles("/a.ts", SRC), "{sources}");
+            assert!(
+                p.handles("/a.js", "const s = require('stylex');"),
+                "{sources}"
+            );
+            let out = p
+                .transform_source(Path::new("/app/src/a.ts"), SRC)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{sources}: the built-in source compiles"));
+            assert!(
+                !out.code.contains("stylex.create"),
+                "{sources}: {}",
+                out.code
+            );
+            assert_eq!(&*out.rules[0].ltr, ".x1e2nbdu{color:red}", "{sources}");
+        }
+        let custom = plugin(json!({ "importSources": [{ "from": "my-sx", "as": "css" }] }));
+        let out = custom
+            .transform_source(
+                Path::new("/app/src/b.ts"),
+                "import { css } from 'my-sx';\nexport const s = css.create({ root: { color: 'red' } });\n",
+            )
+            .unwrap()
+            .expect("the listed source compiles");
+        assert_eq!(&*out.rules[0].ltr, ".x1e2nbdu{color:red}");
+    }
+
+    // StyleX 0.19.2 (#2016): the transform clears a module it passes over,
+    // so a file that drops its StyleX imports drops its styles.
+    #[test]
+    fn a_module_that_drops_its_stylex_imports_leaves_the_sheet() {
+        let p = plugin(json!({}));
+        let rules = |file: &str, source: &str| {
+            p.transform_source(Path::new(file), source)
+                .unwrap()
+                .unwrap()
+                .rules
+        };
+        p.set_module_rules("/app/src/a.ts", rules("/app/src/a.ts", SRC));
+        p.set_module_rules(
+            "/app/src/b.ts?v=1",
+            rules("/app/src/b.ts", &SRC.replace("red", "blue")),
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&calls);
+        p.set_change_listener(std::sync::Arc::new(move || {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+
+        let plain = "export const styles = { root: 'plain' };\n";
+        assert!(!p.handles("/app/src/a.ts", plain));
+        assert!(p.clear_module_rules("/app/src/a.ts"));
+        assert_eq!(p.stylesheet().unwrap().unwrap(), ".xju2f9n{color:blue}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Nothing recorded, nothing to clear: no change, no notification.
+        assert!(!p.clear_module_rules("/app/src/a.ts"));
+        assert!(!p.clear_module_rules("/app/src/never.ts"));
+        // The plugin's transform only sees JS-like ids.
+        assert!(!p.clear_module_rules("/app/src/a.css"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Each query variant is a module of its own.
+        assert!(!p.clear_module_rules("/app/src/b.ts"));
+        assert!(p.clear_module_rules("/app/src/b.ts?v=1"));
+        assert_eq!(p.stylesheet().unwrap(), None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    // StyleX 0.19.2 (#1817): the sheet joins `index.css` or `style.css` under
+    // the hashed names bundlers give them, not only the bare ones.
+    #[test]
+    fn the_sheet_picks_index_then_style_then_the_first_stylesheet() {
+        assert_eq!(pick_css_asset::<&str>(&[]), None);
+        assert_eq!(pick_css_asset(&["assets/alpha-CcNWhK4e.css"]), Some(0));
+        assert_eq!(
+            pick_css_asset(&[
+                "assets/alpha-CcNWhK4e.css",
+                "assets/app-D9-TIKy6.css",
+                "assets/index-34yaTJdr.css",
+                "assets/index-CNE9Scto.css",
+                "assets/style-LN7DM7FI.css",
+            ]),
+            Some(2),
+            "the first index sheet"
+        );
+        assert_eq!(
+            pick_css_asset(&[
+                "assets/alpha-CcNWhK4e.css",
+                "assets/style-LN7DM7FI.css",
+                "assets/zed-D9-TIKy6.css",
+            ]),
+            Some(1),
+            "a style sheet without an index one"
+        );
+        assert_eq!(
+            pick_css_asset(&["assets/alpha-CcNWhK4e.css", "assets/app-D9-TIKy6.css"]),
+            Some(0),
+            "neither: the first sheet"
+        );
+        for (name, matches) in [
+            ("index.css", true),
+            ("assets/index.css", true),
+            ("a/b/INDEX.CSS", true),
+            ("assets/Index-AbCd_-12.css", true),
+            ("assets/index-abcdefghijkl.css", true),
+            // A hash under eight characters, or one with other characters.
+            ("assets/index-abcdefg.css", false),
+            ("assets/index-abcd.efgh.css", false),
+            ("assets/index-abcdéfgh.css", false),
+            ("assets/index-.css", false),
+            ("assets/index2-abcdefgh.css", false),
+            ("assets/reindex.css", false),
+            ("assets/index.css.map", false),
+            ("assets/index-abcdefgh/x.css", false),
+            ("assets\\index.css", false),
+            ("index", false),
+            (".css", false),
+            ("", false),
+        ] {
+            assert_eq!(is_css_asset_named(name, "index"), matches, "{name:?}");
+        }
+        assert!(is_css_asset_named("assets/style-BppDwkOu.css", "style"));
+        assert!(!is_css_asset_named("assets/styles-BppDwkOu.css", "style"));
     }
 
     #[test]
@@ -642,6 +870,27 @@ mod tests {
             !out.code.contains("a__styles"),
             "dev defaulted to false: {}",
             out.code
+        );
+    }
+
+    // StyleX 0.19.2 dropped `enableDebugClassNames`: a config that still sets
+    // it compiles as if it did not.
+    #[test]
+    fn removed_debug_class_names_option_is_ignored() {
+        let with = plugin(json!({ "debug": true, "enableDebugClassNames": true }));
+        assert!(with.warnings().is_empty(), "{:?}", with.warnings());
+        let without = plugin(json!({ "debug": true }));
+        let compile = |p: &StylexPlugin| {
+            p.transform_source(Path::new("/app/src/a.ts"), SRC)
+                .unwrap()
+                .unwrap()
+        };
+        let (a, b) = (compile(&with), compile(&without));
+        assert_eq!(a.code, b.code);
+        assert!(
+            a.code.contains("\"x1e2nbdu\"") && !a.code.contains("color-x"),
+            "class names stay hashed: {}",
+            a.code
         );
     }
 

@@ -154,6 +154,105 @@ async fn an_edit_replaces_the_modules_rules_and_notifies() {
     assert!(frame.contains(r#""type":"custom""#), "{frame}");
 }
 
+// StyleX 0.19.2: the plugin's transform clears the rules of a module it
+// passes over, so a file that drops its StyleX imports drops its styles,
+// whichever environment compiled it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_that_drops_its_stylex_imports_leaves_the_sheet() {
+    require_fixture!("vite");
+    let app = app("{}");
+    let server_only = |color: &str| {
+        format!(
+            "import * as stylex from \"@stylexjs/stylex\";\n\
+             export const s = stylex.props(stylex.create({{ x: {{ color: \"{color}\" }} }}).x);\n"
+        )
+    };
+    app.write(&[("src/server-only.ts", &server_only("teal"))]);
+    let server = app.serve().await;
+    let ssr_module = format!(
+        "/@ssr-module?id={}",
+        app.root.join("src/server-only.ts").display()
+    );
+    server.text("/src/main.ts").await;
+    server.text(&ssr_module).await;
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        css.contains("color: red") && css.contains("color: teal"),
+        "{css}"
+    );
+    let mut frames = server.built.reload_tx.subscribe();
+
+    std::thread::sleep(Duration::from_millis(20));
+    app.write(&[("src/main.ts", "export const title = \"plain\";\n")]);
+    let main = server.text("/src/main.ts").await;
+    assert!(main.contains("plain"), "{main}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        !css.contains("color: red"),
+        "the client module's rule is gone:\n{css}"
+    );
+    assert!(css.contains("color: teal"), "{css}");
+    let update = async {
+        loop {
+            if frames.recv().await.unwrap().contains("stylex:css-update") {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), update)
+        .await
+        .expect("the emptied module sends the update event");
+
+    app.write(&[("src/server-only.ts", "export const s = \"plain\";\n")]);
+    let module = server.text(&ssr_module).await;
+    assert!(module.contains("plain"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        !css.contains("color: teal"),
+        "the server module's rule is gone:\n{css}"
+    );
+}
+
+// StyleX 0.19.2: `importSources` adds to the built-in sources at the
+// plugin's gate, so modules on `@stylexjs/stylex` still compile.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_import_sources_keep_the_built_in_ones() {
+    require_fixture!("vite");
+    let app = app("{ importSources: [{ from: \"my-sx\", as: \"css\" }] }");
+    app.write(&[
+        (
+            "node_modules/my-sx/package.json",
+            r#"{"name":"my-sx","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/my-sx/index.js",
+            "export const css = { props: () => ({ className: \"\" }) };\n",
+        ),
+        (
+            "src/custom.ts",
+            "import { css } from \"my-sx\";\n\
+             export const c = css.props(css.create({ x: { color: \"teal\" } }).x).className;\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.ts").await;
+    assert!(
+        !main.contains("stylex.create"),
+        "the built-in source compiles:\n{main}"
+    );
+    server.text("/src/tokens.stylex.ts").await;
+    let custom = server.text("/src/custom.ts").await;
+    assert!(
+        !custom.contains("css.create"),
+        "the listed source compiles:\n{custom}"
+    );
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        css.contains("color: red") && css.contains("rebeccapurple") && css.contains("color: teal"),
+        "{css}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn css_only_mode_serves_its_shim_and_no_page_tags() {
     require_fixture!("vite");
@@ -516,13 +615,20 @@ async fn a_plugin_loaded_client_module_feeds_the_sheet() {
     app.write(&[
         (
             "vite.config.js",
-            "import stylex from \"@stylexjs/unplugin\";\n\
+            "import fs from \"node:fs\";\n\
+             import stylex from \"@stylexjs/unplugin\";\n\
+             const source = new URL(\"./sx-source.txt\", import.meta.url);\n\
              const sx = {\n\
                name: \"sx\",\n\
                resolveId(id) { if (id === \"virtual:sx\") return \"\\0virtual-sx.ts\"; },\n\
-               load(id) { if (id === \"\\0virtual-sx.ts\") return \"import * as stylex from '@stylexjs/stylex';\\nexport const c = stylex.props(stylex.create({ x: { color: 'maroon' } }).x).className;\\n\"; },\n\
+               load(id) { if (id === \"\\0virtual-sx.ts\") return fs.readFileSync(source, \"utf8\"); },\n\
              };\n\
              export default { plugins: [stylex.vite({}), sx] };\n",
+        ),
+        (
+            "sx-source.txt",
+            "import * as stylex from '@stylexjs/stylex';\n\
+             export const c = stylex.props(stylex.create({ x: { color: 'maroon' } }).x).className;\n",
         ),
         ("src/main.ts", "import { c } from \"virtual:sx\";\nexport const both = c;\n"),
     ]);
@@ -537,6 +643,13 @@ async fn a_plugin_loaded_client_module_feeds_the_sheet() {
     assert!(!module.contains("stylex.create"), "{module}");
     let css = server.text("/virtual:stylex.css").await;
     assert!(css.contains("color: maroon"), "{css}");
+
+    // Loaded again without its StyleX import, its rule leaves the sheet.
+    app.write(&[("sx-source.txt", "export const c = \"plain\";\n")]);
+    let module = server.text(&url).await;
+    assert!(module.contains("plain"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(!css.contains("color: maroon"), "{css}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -618,40 +731,48 @@ async fn a_relative_base_or_unknown_dev_mode_still_boots() {
 // the plugin's transform there, as every environment's do under Vite, from
 // its boot-time imports on (Cloudflare's configureServer loads the worker),
 // and their rules feed the same sheet, leaving it with the module's.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runner_environments_modules_compile_and_feed_the_sheet() {
-    require_fixture!("vite");
+const WORKER: &str = "import * as stylex from \"@stylexjs/stylex\";\n\
+export const s = stylex.props(stylex.create({ x: { color: \"teal\" } }).x);\n";
+
+/// An app whose config adds a `worker` runner environment, loaded at boot
+/// (`/__boot`) and again, afresh, on every `/__worker` request.
+fn runner_app(options: &str) -> App {
     let app = app("{}");
     app.write(&[
-        (
-            "src/worker.ts",
-            "import * as stylex from \"@stylexjs/stylex\";\n\
-             export const s = stylex.props(stylex.create({ x: { color: \"teal\" } }).x);\n",
-        ),
+        ("src/worker.ts", WORKER),
         (
             "vite.config.js",
-            "import stylex from \"@stylexjs/unplugin\";\n\
-             import { DevEnvironment } from \"vite\";\n\
+            &format!(
+                "import stylex from \"@stylexjs/unplugin\";\n\
+             import {{ DevEnvironment }} from \"vite\";\n\
              let boot = null;\n\
-             const runner = {\n\
+             const runner = {{\n\
                name: \"runner-env\",\n\
-               config: () => ({ environments: { worker: { consumer: \"server\", dev: {\n\
-                 createEnvironment: (name, config) => new DevEnvironment(name, config, { hot: true }),\n\
-               } } } }),\n\
-               async configureServer(server) {\n\
+               config: () => ({{ environments: {{ worker: {{ consumer: \"server\", dev: {{\n\
+                 createEnvironment: (name, config) => new DevEnvironment(name, config, {{ hot: true }}),\n\
+               }} }} }} }}),\n\
+               async configureServer(server) {{\n\
                  const worker = server.environments.worker;\n\
                  boot = (await worker.transformRequest(\"/src/worker.ts\"))?.code ?? \"\";\n\
-                 server.middlewares.use(async (req, res, next) => {\n\
+                 server.middlewares.use(async (req, res, next) => {{\n\
                    if (req.url === \"/__boot\") return res.end(boot);\n\
                    if (req.url !== \"/__worker\") return next();\n\
                    worker.moduleGraph.invalidateAll();\n\
                    res.end((await worker.transformRequest(\"/src/worker.ts\"))?.code ?? \"\");\n\
-                 });\n\
-               },\n\
-             };\n\
-             export default { plugins: [stylex.vite({}), runner] };\n",
+                 }});\n\
+               }},\n\
+             }};\n\
+             export default {{ plugins: [stylex.vite({options}), runner] }};\n"
+            ),
         ),
     ]);
+    app
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_environments_modules_compile_and_feed_the_sheet() {
+    require_fixture!("vite");
+    let app = runner_app("{}");
     let server = app.serve().await;
     crate::plugin_middleware::middleware_ready(&server).await;
     assert!(
@@ -676,4 +797,42 @@ async fn a_runner_environments_modules_compile_and_feed_the_sheet() {
     );
     let css = server.text("/virtual:stylex.css").await;
     assert!(!css.contains("color: teal"), "{css}");
+}
+
+// StyleX 0.19.2 in a runner environment: the built-in sources pass the gate
+// under a custom `importSources`, and a module that drops its StyleX imports
+// drops its rules.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_environment_follows_the_plugins_gate() {
+    require_fixture!("vite");
+    let app = runner_app("{ importSources: [{ from: \"my-sx\", as: \"css\" }] }");
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    assert!(
+        server.built.plugin_serve.runner_environments(),
+        "the worker environment never came up"
+    );
+    let boot = server.text("/__boot").await;
+    assert!(
+        boot.contains("worker__") && !boot.contains("stylex.create"),
+        "the built-in source compiles:\n{boot}"
+    );
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: teal"), "{css}");
+
+    app.write(&[("src/worker.ts", "export const s = \"plain\";\n")]);
+    let module = server.text("/__worker").await;
+    assert!(module.contains("plain"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        !css.contains("color: teal"),
+        "the module's rule is gone:\n{css}"
+    );
+
+    // And back: the module compiles again.
+    app.write(&[("src/worker.ts", WORKER)]);
+    let module = server.text("/__worker").await;
+    assert!(module.contains("worker__"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: teal"), "{css}");
 }

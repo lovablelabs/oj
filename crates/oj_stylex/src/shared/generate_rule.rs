@@ -167,11 +167,6 @@ fn encode_memo_key(
     } else {
         'r'
     });
-    key.push(if options.debug && options.enable_debug_class_names {
-        'D'
-    } else {
-        'd'
-    });
     key.push(match options.style_resolution {
         crate::options::StyleResolution::PropertySpecificity => 'p',
         crate::options::StyleResolution::ApplicationOrder => 'a',
@@ -354,16 +349,7 @@ fn convert_style_to_class_name_uncached(
         }
     }
     let hashed = hash(&hash_input);
-    let debug_name = options.debug && options.enable_debug_class_names;
-    let mut class_name = String::with_capacity(
-        options.class_name_prefix.len()
-            + hashed.len()
-            + if debug_name { property.len() + 1 } else { 0 },
-    );
-    if debug_name {
-        class_name.push_str(property);
-        class_name.push('-');
-    }
+    let mut class_name = String::with_capacity(options.class_name_prefix.len() + hashed.len());
     class_name.push_str(&options.class_name_prefix);
     class_name.push_str(&hashed);
 

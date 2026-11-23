@@ -72,10 +72,13 @@ impl Plugin for StylexTransform {
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
         let id = args.id;
-        if rolldown_common::is_lazy_proxy(id)
-            || id.starts_with('\0')
-            || !self.plugin.handles(id, args.code)
-        {
+        if rolldown_common::is_lazy_proxy(id) || id.starts_with('\0') {
+            return Ok(None);
+        }
+        if !self.plugin.handles(id, args.code) {
+            // A rebuilt module that dropped its StyleX imports: the rules its
+            // last compile recorded leave the sheet.
+            self.plugin.clear_module_rules(id);
             return Ok(None);
         }
         let file = id.split('?').next().unwrap_or(id);

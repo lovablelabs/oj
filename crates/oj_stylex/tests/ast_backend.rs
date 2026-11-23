@@ -156,6 +156,42 @@ fn create_dynamic_arrow_with_unit_wrapper_and_conditional_chunk() {
 }
 
 #[test]
+fn create_dynamic_arrow_guards_single_class_props() {
+    // stylex 0.19.2 (#1731): one `arg !== undefined && {…}` element per
+    // single-class conditional prop, between the static and conditional chunks.
+    let out = ab(&format!(
+        "{IMP}export const styles = stylex.create({{\n\
+           root: (w, c, p) => ({{ color: 'red', width: w, backgroundColor: c, height: p.h, opacity: {{ default: c, ':hover': w }} }}),\n\
+         }});\n"
+    ));
+    for guard in [
+        "w !== void 0 && {",
+        "c !== void 0 && {",
+        "p.h !== void 0 && {",
+    ] {
+        let printed = guard.replace("void 0", "undefined");
+        assert!(
+            out.ast_code.contains(&printed),
+            "missing `{printed}`: {}",
+            out.ast_code
+        );
+    }
+    assert!(
+        out.ast_code.contains("w != null ? \"x5lhr3w\" : \"\""),
+        "guarded class falls back to an empty string: {}",
+        out.ast_code
+    );
+    // dev/debug css tags are cloned onto every guard.
+    ab_with(
+        &format!(
+            "{IMP}export const styles = stylex.create({{ root: (w, h) => ({{ width: w, height: h }}) }});\n"
+        ),
+        "src/input.tsx",
+        &options(serde_json::json!({ "dev": true })),
+    );
+}
+
+#[test]
 fn create_non_program_level_hoists_a_uid() {
     let out = ab(&format!(
         "{IMP}export function make() {{ return stylex.create({{ a: {{ color: 'red' }} }}); }}\n"

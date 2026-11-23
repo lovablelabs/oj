@@ -240,7 +240,6 @@ pub fn define_vars_core(
 ) -> Result<DefineVarsOutput, StylexError> {
     let export_id = gen_file_based_identifier(canonical_file_name, export_name, None);
     let var_group_hash = format!("{}{}", options.class_name_prefix, hash(&export_id));
-    let debug_names = options.debug && options.enable_debug_class_names;
 
     let mut js_output = JsObjectMap::new();
     let mut typed: EsKeyedMap<(Option<String>, String)> = EsKeyedMap::new();
@@ -254,15 +253,7 @@ pub fn define_vars_core(
                 export_name,
                 Some(key),
             ));
-            if debug_names {
-                format!(
-                    "{}-{}{hashed}",
-                    var_safe_key(key),
-                    options.class_name_prefix
-                )
-            } else {
-                format!("{}{hashed}", options.class_name_prefix)
-            }
+            format!("{}{hashed}", options.class_name_prefix)
         };
         let css_value = match as_css_type_js(value) {
             Some((syntax, inner)) => {
@@ -492,23 +483,6 @@ pub fn get_default_value(value: &JsValue) -> Result<Option<String>, StylexError>
         }
         JsValue::Bool(_) | JsValue::Callable(_) => Err(StylexError::invalid_define_vars_value()),
     }
-}
-
-// parity: `(key[0] in 0-9 ? '_'+key : key).replace(/[^a-zA-Z0-9]/g, '_')`.
-fn var_safe_key(key: &str) -> String {
-    let prefixed: std::borrow::Cow<'_, str> =
-        if key.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            format!("_{key}").into()
-        } else {
-            key.into()
-        };
-    prefixed
-        .encode_utf16()
-        .map(|unit| match char::from_u32(u32::from(unit)) {
-            Some(c) if c.is_ascii_alphanumeric() => c,
-            _ => '_',
-        })
-        .collect()
 }
 
 #[cfg(test)]

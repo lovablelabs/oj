@@ -1,4 +1,4 @@
-// parity: stylex-0.19.0 packages/@stylexjs/babel-plugin/src/index.js processStylexRules
+// parity: stylex-0.19.2 packages/@stylexjs/babel-plugin/src/index.js processStylexRules
 
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -7,8 +7,10 @@ use std::hash::{BuildHasher, BuildHasherDefault};
 use std::sync::{Arc, Weak};
 
 use crate::fxhash::{FxHashMap, FxHashSet};
-use crate::jsrt::{ASCII_LOCALE_KEYS, locale_key, utf16_cmp};
+use crate::jsrt::{ASCII_LOCALE_KEYS, is_js_whitespace, locale_key, utf16_cmp};
 use crate::rules::StylexRule;
+use crate::shared::media_query::{WidthBound, WidthBoundKind, width_sort_bound};
+use crate::shared::priorities::get_priority;
 use crate::timings::{self, Stage};
 
 const LOGICAL_FLOAT_START_VAR: &str = "--stylex-logical-start";
@@ -249,12 +251,13 @@ fn collect_resolved_consts(
     Ok(consts)
 }
 
-fn rule_has_logical_float(r: &StylexRule) -> bool {
+// Read from the const-substituted text, as upstream's getLogicalFloatVars is.
+fn text_has_logical_float(ltr: &str, rtl: Option<&str>) -> bool {
     fn has(text: &str) -> bool {
         text.contains("--stylex-logical-")
             && (text.contains(LOGICAL_FLOAT_START_VAR) || text.contains(LOGICAL_FLOAT_END_VAR))
     }
-    has(&r.ltr) || r.rtl.as_deref().is_some_and(has)
+    has(ltr) || rtl.is_some_and(has)
 }
 
 fn logical_float_block(has_logical_float: bool) -> String {
@@ -339,28 +342,79 @@ fn push_chunk(out: &mut String, ltr: &str, rtl: Option<&str>, index: usize, cfg:
     }
 }
 
+// One non-constant rule as upstream sorts and prints it: constants substituted
+// and the priority of a constant at-rule wrapper re-priced, both before the sort.
+#[derive(Clone)]
+struct Prepped<'a> {
+    rule: &'a StylexRule,
+    ltr: Option<String>,
+    rtl: Option<String>,
+    priority: f64,
+    width: Option<Arc<WidthSortKey>>,
+}
+
+impl<'a> Prepped<'a> {
+    fn new(rule: &'a StylexRule, legacy: bool, consts: &PreparedConsts) -> Self {
+        let ltr = substitute_consts(&rule.ltr, &consts.list);
+        let rtl = rule
+            .rtl
+            .as_deref()
+            .and_then(|text| substitute_consts(text, &consts.list));
+        // The legacy class-name sort never reads the width key.
+        let width = if legacy {
+            None
+        } else {
+            width_sort_key(ltr.as_deref().unwrap_or(&rule.ltr))
+        };
+        Prepped {
+            rule,
+            priority: adjust_const_at_rule_priority(&rule.ltr, rule.priority, consts),
+            ltr,
+            rtl,
+            width,
+        }
+    }
+
+    fn ltr(&self) -> &str {
+        self.ltr.as_deref().unwrap_or(&self.rule.ltr)
+    }
+
+    fn rtl(&self) -> Option<&str> {
+        self.rtl.as_deref().or(self.rule.rtl.as_deref())
+    }
+}
+
+fn compare_priorities(a: f64, b: f64) -> Option<Ordering> {
+    let diff = a - b;
+    if diff == 0.0 {
+        None
+    } else if diff < 0.0 {
+        Some(Ordering::Less)
+    } else {
+        Some(Ordering::Greater)
+    }
+}
+
 fn compare_rules(
-    a: &StylexRule,
-    b: &StylexRule,
+    a: &Prepped<'_>,
+    b: &Prepped<'_>,
     cfg: &AssembleConfig,
     cmp: Comparator,
 ) -> Ordering {
-    let diff = a.priority - b.priority;
-    if diff != 0.0 {
-        return if diff < 0.0 {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        };
+    if let Some(by_priority) = compare_priorities(a.priority, b.priority) {
+        return by_priority;
     }
     if cfg.use_legacy_classnames_sort {
-        cmp(&a.class_name, &b.class_name)
-    } else {
-        match cmp(decl_slice(&a.ltr), decl_slice(&b.ltr)) {
-            Ordering::Equal => cmp(&a.ltr, &b.ltr),
-            other => other,
-        }
+        return cmp(&a.rule.class_name, &b.rule.class_name);
     }
+    let (rule_a, rule_b) = (a.ltr(), b.ltr());
+    cmp(
+        declared_property_name(rule_a),
+        declared_property_name(rule_b),
+    )
+    .then_with(|| compare_width_sort_keys(a.width.as_deref(), b.width.as_deref(), cmp))
+    .then_with(|| cmp(decl_slice(rule_a), decl_slice(rule_b)))
+    .then_with(|| cmp(rule_a, rule_b))
 }
 
 fn assemble_impl(
@@ -379,52 +433,35 @@ fn assemble_impl(
     let non_const: Vec<&StylexRule> = rules.iter().filter(|r| !is_const_rule(r)).collect();
     drop(consts_timer);
 
-    let sorted: Vec<&StylexRule> = match custom_cmp {
+    let legacy = cfg.use_legacy_classnames_sort;
+    let sorted: Vec<Prepped<'_>> = match custom_cmp {
         Some(cmp) => {
+            let subst_timer = timings::start(Stage::AssembleSubst);
+            let mut items: Vec<Prepped<'_>> = non_const
+                .iter()
+                .map(|rule| Prepped::new(rule, legacy, &prepared_consts))
+                .collect();
+            drop(subst_timer);
             let _t = timings::start(Stage::AssembleSort);
-            let mut refs = non_const;
-            refs.sort_by(|a, b| compare_rules(a, b, cfg, cmp));
-            refs
+            items.sort_by(|a, b| compare_rules(a, b, cfg, cmp));
+            items
         }
-        None => keyed_order(non_const, cfg.use_legacy_classnames_sort),
+        None => keyed_order(non_const, legacy, &prepared_consts),
     };
 
-    // Logical-float detection reads the pre-substitution rule text.
-    let logical_float_vars = logical_float_block(sorted.iter().any(|r| rule_has_logical_float(r)));
-
-    let subst_timer = timings::start(Stage::AssembleSubst);
-    let substituted: Vec<(Option<String>, Option<String>)> = if prepared_consts.is_empty() {
-        Vec::new()
-    } else {
+    let logical_float_vars = logical_float_block(
         sorted
             .iter()
-            .map(|r| {
-                (
-                    substitute_consts(&r.ltr, &prepared_consts),
-                    r.rtl
-                        .as_deref()
-                        .and_then(|t| substitute_consts(t, &prepared_consts)),
-                )
-            })
-            .collect()
-    };
-    drop(subst_timer);
-    let text_of = |i: usize| -> (&str, Option<&str>) {
-        let rule = sorted[i];
-        let (ltr, rtl) = match substituted.get(i) {
-            Some((ltr, rtl)) => (ltr.as_deref(), rtl.as_deref()),
-            None => (None, None),
-        };
-        (ltr.unwrap_or(&rule.ltr), rtl.or(rule.rtl.as_deref()))
-    };
+            .any(|item| text_has_logical_float(item.ltr(), item.rtl())),
+    );
 
     let _render_timer = timings::start(Stage::AssembleRender);
     // Consecutive runs of floor(priority/1000); input is priority-sorted so runs
     // are the priority bands.
     let mut bands: Vec<(usize, usize)> = Vec::new();
     let mut last_level = -1.0f64;
-    for (i, rule) in sorted.iter().enumerate() {
-        let level = (rule.priority / 1000.0).floor();
+    for (i, item) in sorted.iter().enumerate() {
+        let level = (item.priority / 1000.0).floor();
         match bands.last_mut() {
             Some(band) if level == last_level => band.1 = i + 1,
             _ => {
@@ -443,7 +480,7 @@ fn assemble_impl(
 
     let text_bytes: usize = sorted
         .iter()
-        .map(|r| r.ltr.len() + r.rtl.as_ref().map_or(0, |t| t.len() + 40) + 1)
+        .map(|item| item.ltr().len() + item.rtl().map_or(0, |t| t.len() + 40) + 1)
         .sum();
     let mut out = String::with_capacity(
         logical_float_vars.len() + header.len() + text_bytes + 32 * bands.len(),
@@ -451,54 +488,247 @@ fn assemble_impl(
     out.push_str(&logical_float_vars);
     out.push_str(&header);
 
+    // With layers on, a band prints its priority-0 rules bare and the rest
+    // inside the band's @layer; each part dedupes on its own.
+    let parts: &[BandPart] = if use_layers_on {
+        &[BandPart::Unlayered, BandPart::Layered]
+    } else {
+        &[BandPart::Whole]
+    };
     let mut slots: Vec<usize> = Vec::new();
     let mut slot_of: FxHashMap<&str, usize> = FxHashMap::default();
     for (index, &(start, end)) in bands.iter().enumerate() {
-        // Last-wins dedupe by className, first-occurrence order (JS Map semantics).
-        slots.clear();
-        slot_of.clear();
-        for (offset, rule) in sorted[start..end].iter().enumerate() {
-            let i = start + offset;
-            match slot_of.entry(&rule.class_name) {
-                Entry::Vacant(vacant) => {
-                    vacant.insert(slots.len());
-                    slots.push(i);
-                }
-                Entry::Occupied(occupied) => slots[*occupied.get()] = i,
-            }
-        }
-
         if index > 0 {
             out.push('\n');
         }
-        let wrap = use_layers_on && sorted[start].priority > 0.0;
-        if wrap {
-            out.push_str("@layer ");
-            out.push_str(&layer_name(layer_prefix, index));
-            out.push_str("{\n");
-        }
-        for (j, &i) in slots.iter().enumerate() {
-            if j > 0 {
+        let mut printed_part = false;
+        for &part in parts {
+            // Last-wins dedupe by className, first-occurrence order (JS Map semantics).
+            slots.clear();
+            slot_of.clear();
+            for (offset, item) in sorted[start..end].iter().enumerate() {
+                if BandPart::of(use_layers_on, item.priority) != Some(part) {
+                    continue;
+                }
+                let i = start + offset;
+                match slot_of.entry(&item.rule.class_name) {
+                    Entry::Vacant(vacant) => {
+                        vacant.insert(slots.len());
+                        slots.push(i);
+                    }
+                    Entry::Occupied(occupied) => slots[*occupied.get()] = i,
+                }
+            }
+            if part != BandPart::Whole && slots.is_empty() {
+                continue;
+            }
+            if printed_part {
                 out.push('\n');
             }
-            let (ltr, rtl) = text_of(i);
-            // Empty rtl is falsy upstream and behaves exactly like absent.
-            push_chunk(&mut out, ltr, rtl.filter(|s| !s.is_empty()), index, cfg);
-        }
-        if wrap {
-            out.push_str("\n}");
+            printed_part = true;
+            if part == BandPart::Layered {
+                out.push_str("@layer ");
+                out.push_str(&layer_name(layer_prefix, index));
+                out.push_str("{\n");
+            }
+            for (j, &i) in slots.iter().enumerate() {
+                if j > 0 {
+                    out.push('\n');
+                }
+                let item = &sorted[i];
+                // Empty rtl is falsy upstream and behaves exactly like absent.
+                let rtl = item.rtl().filter(|s| !s.is_empty());
+                push_chunk(&mut out, item.ltr(), rtl, index, cfg);
+            }
+            if part == BandPart::Layered {
+                out.push_str("\n}");
+            }
         }
     }
     Ok(out)
 }
 
+// How one priority band is cut for printing. Upstream filters `pri === 0` and
+// `pri > 0`, so under layers a rule that is neither is not printed at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BandPart {
+    Whole,
+    Unlayered,
+    Layered,
+}
+
+impl BandPart {
+    // The part a rule of this priority prints in; None = not printed.
+    fn of(use_layers_on: bool, priority: f64) -> Option<BandPart> {
+        if !use_layers_on {
+            Some(BandPart::Whole)
+        } else if priority > 0.0 {
+            Some(BandPart::Layered)
+        } else if priority == 0.0 {
+            Some(BandPart::Unlayered)
+        } else {
+            None
+        }
+    }
+}
+
+// rule.slice(rule.lastIndexOf('{') + 1) up to its first ':' (a miss keeps the
+// whole declaration; a lastIndexOf miss keeps the whole rule).
+fn declared_property_name(rule: &str) -> &str {
+    let (start, len) = declared_name_range(rule);
+    &rule[start..start + len]
+}
+
+fn declared_name_range(rule: &str) -> (usize, usize) {
+    let start = rule.rfind('{').map_or(0, |i| i + 1);
+    let len = rule[start..].find(':').unwrap_or(rule.len() - start);
+    (start, len)
+}
+
+// The single px width bound of a rule's one `@media` wrapper, with the wrapper
+// chain it sits in; same-property rules order by it before their text.
+#[derive(Debug, PartialEq)]
+struct WidthSortKey {
+    context: Box<str>,
+    bound: WidthBound,
+}
+
+thread_local! {
+    // The key is a pure function of the at-rule prefix, and a stylesheet
+    // repeats the same few wrappers on most of its conditional rules.
+    static WIDTH_KEY_MEMO: std::cell::RefCell<FxHashMap<Box<str>, Option<Arc<WidthSortKey>>>> =
+        std::cell::RefCell::new(FxHashMap::default());
+}
+
+const WIDTH_KEY_MEMO_CAP: usize = 1 << 14;
+
+// parity: getWidthSortKey. The at-rule prefix is every leading `@…{` wrapper,
+// which is what atRulePreludes walks.
+fn width_sort_key(rule: &str) -> Option<Arc<WidthSortKey>> {
+    let bytes = rule.as_bytes();
+    let mut prefix_len = 0;
+    while bytes.get(prefix_len) == Some(&b'@') {
+        match rule[prefix_len..].find('{') {
+            Some(brace) => prefix_len += brace + 1,
+            None => break,
+        }
+    }
+    if prefix_len == 0 {
+        return None;
+    }
+    let prefix = &rule[..prefix_len];
+    if !prefix.contains("@media ") {
+        return None;
+    }
+    if let Some(hit) = WIDTH_KEY_MEMO.with(|memo| memo.borrow().get(prefix).cloned()) {
+        return hit;
+    }
+    let key = width_sort_key_for_chain(prefix).map(Arc::new);
+    WIDTH_KEY_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= WIDTH_KEY_MEMO_CAP {
+            memo.clear();
+        }
+        memo.insert(prefix.into(), key.clone());
+    });
+    key
+}
+
+// parity: widthSortKeyForChain over atRulePreludes.
+fn width_sort_key_for_chain(prefix: &str) -> Option<WidthSortKey> {
+    let preludes: Vec<&str> = prefix
+        .split_terminator('{')
+        .map(|prelude| prelude.trim_end_matches(is_js_whitespace))
+        .collect();
+    let mut media = preludes
+        .iter()
+        .enumerate()
+        .filter(|(_, prelude)| prelude.starts_with("@media "));
+    let (media_index, prelude) = media.next()?;
+    if media.next().is_some() {
+        return None;
+    }
+    let bound = width_sort_bound(prelude)?;
+    let context: Vec<&str> = preludes
+        .iter()
+        .enumerate()
+        .map(|(i, prelude)| if i == media_index { "@media" } else { prelude })
+        .collect();
+    Some(WidthSortKey {
+        context: context.join("{").into(),
+        bound,
+    })
+}
+
+// parity: compareWidthSortKeys — keyless rules last, then by wrapper chain,
+// min-width ascending before max-width descending.
+fn compare_width_sort_keys(
+    a: Option<&WidthSortKey>,
+    b: Option<&WidthSortKey>,
+    cmp: Comparator,
+) -> Ordering {
+    let (a, b) = match (a, b) {
+        (None, None) => return Ordering::Equal,
+        (None, Some(_)) => return Ordering::Greater,
+        (Some(_), None) => return Ordering::Less,
+        (Some(a), Some(b)) => (a, b),
+    };
+    if a.context != b.context {
+        return cmp(&a.context, &b.context);
+    }
+    let by_value = |x: f64, y: f64| x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+    match (a.bound.kind, b.bound.kind) {
+        (WidthBoundKind::Min, WidthBoundKind::Min) => by_value(a.bound.value, b.bound.value),
+        (WidthBoundKind::Max, WidthBoundKind::Max) => by_value(b.bound.value, a.bound.value),
+        (WidthBoundKind::Min, WidthBoundKind::Max) => Ordering::Less,
+        (WidthBoundKind::Max, WidthBoundKind::Min) => Ordering::Greater,
+    }
+}
+
+// parity: adjustConstAtRulePriority. A rule wrapped in a constant placeholder
+// (`var(--hash){…}`) was priced as an unknown key; once the constant is known
+// to be an at-rule, that share is swapped for the at-rule's own.
+fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedConsts) -> f64 {
+    if consts.at_rule_shares.is_empty() {
+        return priority;
+    }
+    let mut adjusted = priority;
+    let mut from = 0;
+    while let Some((start, end)) = find_var_ref(ltr, from) {
+        from = end;
+        if ltr.as_bytes().get(end) != Some(&b'{') {
+            continue;
+        }
+        let placeholder = &ltr[start..end];
+        if let Some(&(placeholder_share, at_rule_share)) = consts.at_rule_shares.get(placeholder)
+            && adjusted >= placeholder_share
+        {
+            adjusted += at_rule_share - placeholder_share;
+        }
+    }
+    adjusted
+}
+
 // localeCompare levels of one string laid out [primary n][secondary n][tertiary n];
-// the declaration slice is its last `decl` chars, so that key is each level's suffix.
+// the declaration slice is its last `decl` chars, so that key is each level's suffix,
+// and the declared property name is the `name` (start, len) char range inside it.
 enum RuleKey {
-    Verified { n: usize, decl: usize, buf: Vec<u8> },
-    DeclOnly { decl: usize, buf: Vec<u8> },
+    Verified {
+        n: usize,
+        decl: usize,
+        name: Option<(usize, usize)>,
+        buf: Vec<u8>,
+    },
+    // `buf` covers the declaration slice alone.
+    DeclOnly {
+        decl: usize,
+        name: Option<(usize, usize)>,
+        buf: Vec<u8>,
+    },
     Fallback,
 }
+
+const NO_SEGMENTS: Segments<'static> = [&[], &[], &[]];
 
 type Segments<'a> = [&'a [u8]; 3];
 
@@ -509,15 +739,17 @@ fn cmp_segments(a: Segments<'_>, b: Segments<'_>) -> Ordering {
 }
 
 impl RuleKey {
-    fn for_rule(r: &StylexRule, legacy: bool) -> RuleKey {
+    // `ltr` is the const-substituted rule text, the one upstream sorts on.
+    fn for_text(class_name: &str, ltr: &str, legacy: bool) -> RuleKey {
         if legacy {
-            RuleKey::derive(&r.class_name, 0)
+            RuleKey::derive(class_name, 0, None)
         } else {
-            RuleKey::derive(&r.ltr, decl_slice(&r.ltr).len())
+            RuleKey::derive(ltr, decl_slice(ltr).len(), Some(declared_name_range(ltr)))
         }
     }
 
-    fn derive(s: &str, decl_bytes: usize) -> RuleKey {
+    // `name` is the declared property name's (start, len) byte range in `s`.
+    fn derive(s: &str, decl_bytes: usize, name: Option<(usize, usize)>) -> RuleKey {
         let decl_start = s.len() - decl_bytes;
         if s.is_ascii() {
             let n = s.len();
@@ -535,6 +767,7 @@ impl RuleKey {
             return RuleKey::Verified {
                 n,
                 decl: decl_bytes,
+                name,
                 buf,
             };
         }
@@ -553,6 +786,12 @@ impl RuleKey {
         RuleKey::Verified {
             n,
             decl: s[decl_start..].chars().count(),
+            name: name.map(|(start, len)| {
+                (
+                    s[..start].chars().count(),
+                    s[start..start + len].chars().count(),
+                )
+            }),
             buf,
         }
     }
@@ -563,8 +802,12 @@ impl RuleKey {
         if at >= decl_start || decl_start == s.len() {
             return RuleKey::Fallback;
         }
-        match RuleKey::derive(&s[decl_start..], s.len() - decl_start) {
-            RuleKey::Verified { n, buf, .. } => RuleKey::DeclOnly { decl: n, buf },
+        // The slice holds the declared name only when it opens with the brace
+        // (a rule without one is its own name, unverified char included).
+        let slice = &s[decl_start..];
+        let name = slice.starts_with('{').then(|| declared_name_range(slice));
+        match RuleKey::derive(slice, slice.len(), name) {
+            RuleKey::Verified { n, name, buf, .. } => RuleKey::DeclOnly { decl: n, name, buf },
             _ => RuleKey::Fallback,
         }
     }
@@ -575,16 +818,38 @@ impl RuleKey {
 
     fn decl_segments(&self) -> Option<Segments<'_>> {
         match self {
-            RuleKey::Verified { n, decl, buf } => Some([
+            RuleKey::Verified { n, decl, buf, .. } => Some([
                 &buf[n - decl..*n],
                 &buf[2 * n - decl..2 * n],
                 &buf[3 * n - decl..],
             ]),
-            RuleKey::DeclOnly { decl, buf } => {
+            RuleKey::DeclOnly { decl, buf, .. } => {
                 Some([&buf[..*decl], &buf[*decl..2 * decl], &buf[2 * decl..]])
             }
             RuleKey::Fallback => None,
         }
+    }
+
+    fn name_segments(&self) -> Option<Segments<'_>> {
+        let (n, (start, len), buf) = match self {
+            RuleKey::Verified {
+                n,
+                name: Some(name),
+                buf,
+                ..
+            } => (*n, *name, buf),
+            RuleKey::DeclOnly {
+                decl,
+                name: Some(name),
+                buf,
+            } => (*decl, *name, buf),
+            _ => return None,
+        };
+        Some([
+            &buf[start..start + len],
+            &buf[n + start..n + start + len],
+            &buf[2 * n + start..2 * n + start + len],
+        ])
     }
 
     fn full_segments(&self) -> Option<Segments<'_>> {
@@ -595,99 +860,147 @@ impl RuleKey {
     }
 
     // Equal primary sequences imply equal char counts, so the secondary and
-    // tertiary segment comparisons are always aligned.
-    fn cmp_verified(&self, other: &RuleKey) -> Ordering {
-        match (self, other) {
-            (
-                RuleKey::Verified {
-                    n: na,
-                    decl: da,
-                    buf: ba,
-                },
-                RuleKey::Verified {
-                    n: nb,
-                    decl: db,
-                    buf: bb,
-                },
-            ) => ba[na - da..*na]
-                .cmp(&bb[nb - db..*nb])
-                .then_with(|| ba[2 * na - da..2 * na].cmp(&bb[2 * nb - db..2 * nb]))
-                .then_with(|| ba[3 * na - da..].cmp(&bb[3 * nb - db..]))
-                .then_with(|| ba[..*na].cmp(&bb[..*nb]))
-                .then_with(|| ba[*na..2 * na].cmp(&bb[*nb..2 * nb]))
-                .then_with(|| ba[2 * na..].cmp(&bb[2 * nb..])),
-            _ => unreachable!("cmp_verified on a fallback collation key"),
-        }
+    // tertiary segment comparisons are always aligned. The order of the steps
+    // is upstream's: declared name, width bound, declaration, whole rule (the
+    // legacy class-name key has neither a name nor a declaration).
+    fn cmp_verified(
+        &self,
+        other: &RuleKey,
+        width: Option<&WidthSortKey>,
+        other_width: Option<&WidthSortKey>,
+    ) -> Ordering {
+        let (Some(decl), Some(other_decl), Some(full), Some(other_full)) = (
+            self.decl_segments(),
+            other.decl_segments(),
+            self.full_segments(),
+            other.full_segments(),
+        ) else {
+            unreachable!("cmp_verified on a fallback collation key")
+        };
+        cmp_segments(
+            self.name_segments().unwrap_or(NO_SEGMENTS),
+            other.name_segments().unwrap_or(NO_SEGMENTS),
+        )
+        .then_with(|| compare_width_sort_keys(width, other_width, default_locale_cmp))
+        .then_with(|| cmp_segments(decl, other_decl))
+        .then_with(|| cmp_segments(full, other_full))
     }
 
     // default_locale_cmp semantics per step: either side unverified → UTF-16 order.
     fn cmp_with_fallback(
         &self,
         other: &RuleKey,
-        a: &StylexRule,
-        b: &StylexRule,
+        a: &Prepped<'_>,
+        b: &Prepped<'_>,
         legacy: bool,
     ) -> Ordering {
         if legacy {
             return match (self.full_segments(), other.full_segments()) {
                 (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-                _ => utf16_cmp(&a.class_name, &b.class_name),
+                _ => utf16_cmp(&a.rule.class_name, &b.rule.class_name),
             };
+        }
+        // A name can be verified where its declaration is not, so a missing
+        // key defers to the comparator instead of assuming UTF-16 order.
+        let name = match (self.name_segments(), other.name_segments()) {
+            (Some(ka), Some(kb)) => cmp_segments(ka, kb),
+            _ => default_locale_cmp(
+                declared_property_name(a.ltr()),
+                declared_property_name(b.ltr()),
+            ),
+        };
+        if name != Ordering::Equal {
+            return name;
+        }
+        let width =
+            compare_width_sort_keys(a.width.as_deref(), b.width.as_deref(), default_locale_cmp);
+        if width != Ordering::Equal {
+            return width;
         }
         let decl = match (self.decl_segments(), other.decl_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(decl_slice(&a.ltr), decl_slice(&b.ltr)),
+            _ => utf16_cmp(decl_slice(a.ltr()), decl_slice(b.ltr())),
         };
         if decl != Ordering::Equal {
             return decl;
         }
         match (self.full_segments(), other.full_segments()) {
             (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(&a.ltr, &b.ltr),
+            _ => utf16_cmp(a.ltr(), b.ltr()),
         }
     }
 }
 
+fn rule_identity(r: &StylexRule) -> (&str, &str, Option<&str>, u64) {
+    (
+        &r.class_name,
+        &r.ltr,
+        r.rtl.as_deref(),
+        r.priority.to_bits(),
+    )
+}
+
 // Keys derived once per rule; the stable index sort and the per-pair fallback
 // keep comparator semantics identical.
-fn keyed_order(non_const: Vec<&StylexRule>, legacy: bool) -> Vec<&StylexRule> {
+fn keyed_order<'a>(
+    non_const: Vec<&'a StylexRule>,
+    legacy: bool,
+    consts: &PreparedConsts,
+) -> Vec<Prepped<'a>> {
     let dedupe_timer = timings::start(Stage::AssembleDedupe);
-    let mut unique = dedupe_keep_first(&non_const);
+    let unique = dedupe_keep_first(&non_const);
     drop(dedupe_timer);
-    let keys_timer = timings::start(Stage::AssembleKeys);
-    let mut keys: Vec<RuleKey> = unique
+    let subst_timer = timings::start(Stage::AssembleSubst);
+    let items: Vec<Prepped<'a>> = unique
         .iter()
-        .map(|r| RuleKey::for_rule(r, legacy))
+        .map(|rule| Prepped::new(rule, legacy, consts))
         .collect();
-    // Dropping duplicates is order-neutral only under a consistent total order
-    // (verified keys, finite priorities); otherwise sort the full input as before.
-    if keys
+    drop(subst_timer);
+    let keys_timer = timings::start(Stage::AssembleKeys);
+    let keys: Vec<RuleKey> = items
         .iter()
-        .zip(&unique)
-        .any(|(k, r)| !k.verified() || !r.priority.is_finite())
-    {
-        unique = non_const;
-        keys = unique
+        .map(|item| RuleKey::for_text(&item.rule.class_name, item.ltr(), legacy))
+        .collect();
+    drop(keys_timer);
+
+    // Dropping duplicates is order-neutral only under a consistent total order
+    // (verified keys, finite priorities); otherwise sort the full input as before,
+    // mapping each rule to its already-prepared representative in `unique`.
+    let fallback = unique.len() != non_const.len()
+        && keys
             .iter()
-            .map(|r| RuleKey::for_rule(r, legacy))
+            .zip(&items)
+            .any(|(key, item)| !key.verified() || !item.priority.is_finite());
+    let _sort_timer = timings::start(Stage::AssembleSort);
+    let cmp_rep = |ia: u32, ib: u32| {
+        let (a, b) = (&items[ia as usize], &items[ib as usize]);
+        compare_priorities(a.priority, b.priority).unwrap_or_else(|| {
+            keys[ia as usize].cmp_with_fallback(&keys[ib as usize], a, b, legacy)
+        })
+    };
+    if fallback {
+        let mut rep_of: FxHashMap<(&str, &str, Option<&str>, u64), u32> =
+            FxHashMap::with_capacity_and_hasher(unique.len(), Default::default());
+        for (i, r) in unique.iter().enumerate() {
+            rep_of.entry(rule_identity(r)).or_insert(i as u32);
+        }
+        let mut order: Vec<u32> = non_const
+            .iter()
+            .map(|r| rep_of[&rule_identity(r)])
+            .collect();
+        order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
+        return order
+            .into_iter()
+            .map(|i| items[i as usize].clone())
             .collect();
     }
-    drop(keys_timer);
-    let _sort_timer = timings::start(Stage::AssembleSort);
-    let mut order: Vec<u32> = (0..unique.len() as u32).collect();
-    order.sort_by(|&ia, &ib| {
-        let (a, b) = (unique[ia as usize], unique[ib as usize]);
-        let diff = a.priority - b.priority;
-        if diff != 0.0 {
-            return if diff < 0.0 {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            };
-        }
-        keys[ia as usize].cmp_with_fallback(&keys[ib as usize], a, b, legacy)
-    });
-    order.into_iter().map(|i| unique[i as usize]).collect()
+    let mut order: Vec<u32> = (0..items.len() as u32).collect();
+    order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
+    let mut items: Vec<Option<Prepped<'a>>> = items.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .map(|i| items[i as usize].take().expect("each index sorts once"))
+        .collect()
 }
 
 // Keep-first is output-neutral (copies sort Equal, adjacent); a class with two
@@ -696,14 +1009,7 @@ fn dedupe_keep_first<'a>(rules: &[&'a StylexRule]) -> Vec<&'a StylexRule> {
     let mut seen: FxHashSet<(&str, &str, Option<&str>, u64)> = FxHashSet::default();
     let first: Vec<bool> = rules
         .iter()
-        .map(|r| {
-            seen.insert((
-                &r.class_name,
-                &r.ltr,
-                r.rtl.as_deref(),
-                r.priority.to_bits(),
-            ))
-        })
+        .map(|r| seen.insert(rule_identity(r)))
         .collect();
     if seen.len() == rules.len() {
         return rules.to_vec();
@@ -756,8 +1062,10 @@ fn resolve_constant(
         };
         visited.push(ref_name.clone());
         let replacement = resolve_constant(&ref_val.clone(), consts, visited)?;
+        // The replacement is inserted verbatim (a function replacer upstream):
+        // `$&` and friends in a constant's value are plain text.
         let needle = result[start..end].to_string();
-        result = js_replace_first(&result, &needle, &replacement.to_js_string());
+        result = result.replacen(&needle, &replacement.to_js_string(), 1);
         visited.retain(|v| *v != ref_name);
         scan_from = 0;
     }
@@ -795,34 +1103,52 @@ struct PreparedConst {
     key_rewrite: Option<(String, String)>,
 }
 
-fn prepare_consts(consts: &[(String, ConstVal)]) -> Vec<PreparedConst> {
-    consts
-        .iter()
-        .map(|(var_ref, const_val)| {
-            let replacement = const_val.to_js_string();
-            // A const resolving to var(...) also rewrites `--constName:` declaration
-            // keys so the target variable stays overridable. Trims are ES TrimString.
-            let key_rewrite =
-                (replacement.starts_with("var(") && replacement.ends_with(')')).then(|| {
-                    let inside = crate::jsrt::js_trim(&replacement[4..replacement.len() - 1]);
-                    let target_name = match inside.find(',') {
-                        Some(ci) => crate::jsrt::js_trim(&inside[..ci]),
-                        None => inside,
-                    };
-                    let const_name = &var_ref[4..var_ref.len() - 1];
-                    (format!("{const_name}:"), format!("{target_name}:"))
-                });
-            PreparedConst {
-                var_ref: var_ref.clone(),
-                replacement,
-                key_rewrite,
-            }
-        })
-        .collect()
+struct PreparedConsts {
+    list: Vec<PreparedConst>,
+    // For string constants that are at-rules: placeholder -> (placeholder share,
+    // at-rule share) for O(1) priority re-pricing.
+    at_rule_shares: FxHashMap<Box<str>, (f64, f64)>,
 }
 
-// The contains gates only skip js_replace_all calls that would be identity
-// copies; a hit re-probes for var(-- because replacements can add/remove refs.
+fn prepare_consts(consts: &[(String, ConstVal)]) -> PreparedConsts {
+    let mut list = Vec::with_capacity(consts.len());
+    let mut at_rule_shares: FxHashMap<Box<str>, (f64, f64)> = FxHashMap::default();
+    for (var_ref, const_val) in consts {
+        let replacement = const_val.to_js_string();
+        // A const resolving to var(...) also rewrites `--constName:` declaration
+        // keys so the target variable stays overridable. Trims are ES TrimString.
+        let key_rewrite =
+            (replacement.starts_with("var(") && replacement.ends_with(')')).then(|| {
+                let inside = crate::jsrt::js_trim(&replacement[4..replacement.len() - 1]);
+                let target_name = match inside.find(',') {
+                    Some(ci) => crate::jsrt::js_trim(&inside[..ci]),
+                    None => inside,
+                };
+                let const_name = &var_ref[4..var_ref.len() - 1];
+                (format!("{const_name}:"), format!("{target_name}:"))
+            });
+        if let ConstVal::Str(value) = const_val
+            && value.starts_with('@')
+        {
+            at_rule_shares.insert(
+                var_ref.as_str().into(),
+                (get_priority(var_ref), get_priority(value)),
+            );
+        }
+        list.push(PreparedConst {
+            var_ref: var_ref.clone(),
+            replacement,
+            key_rewrite,
+        });
+    }
+    PreparedConsts {
+        list,
+        at_rule_shares,
+    }
+}
+
+// The contains gates only skip replacements that would be identity copies; a
+// hit re-probes for var(-- because replacements can add/remove refs.
 /// `None` when no const reference matched: callers keep sharing the rule's
 /// Arc'd text instead of materializing an identical String.
 fn substitute_consts(text: &str, consts: &[PreparedConst]) -> Option<String> {
@@ -834,7 +1160,9 @@ fn substitute_consts(text: &str, consts: &[PreparedConst]) -> Option<String> {
     for c in consts {
         let cur = out.as_deref().unwrap_or(text);
         if has_ref && cur.contains(c.var_ref.as_str()) {
-            let next = js_replace_all(cur, &c.var_ref, &c.replacement);
+            // Verbatim, like the function replacer upstream passes; only the
+            // key rewrite below still reads `$` patterns in its replacement.
+            let next = cur.replace(c.var_ref.as_str(), &c.replacement);
             has_ref = next.contains("var(--");
             out = Some(next);
         }
@@ -886,17 +1214,6 @@ fn js_substitution(out: &mut Vec<u8>, full: &str, pos: usize, matched: &str, rep
     }
 }
 
-fn js_replace_first(s: &str, needle: &str, replacement: &str) -> String {
-    let Some(pos) = s.find(needle) else {
-        return s.to_string();
-    };
-    let mut out = Vec::with_capacity(s.len());
-    out.extend_from_slice(&s.as_bytes()[..pos]);
-    js_substitution(&mut out, s, pos, needle, replacement);
-    out.extend_from_slice(&s.as_bytes()[pos + needle.len()..]);
-    String::from_utf8(out).expect("byte-splices preserve UTF-8")
-}
-
 fn js_replace_all(s: &str, needle: &str, replacement: &str) -> String {
     debug_assert!(!needle.is_empty());
     let mut out = Vec::with_capacity(s.len());
@@ -912,15 +1229,20 @@ fn js_replace_all(s: &str, needle: &str, replacement: &str) -> String {
 }
 
 // :not(#\#) polyfill; inserted before the first '::' when present, else before
-// the last '{'; @keyframes exempt (only @keyframes — @property etc. are not).
+// the last '{'; @keyframes and @position-try are exempt (@property etc. are not).
 fn add_specificity_level(selector: &str, index: usize) -> String {
     let mut out = String::with_capacity(selector.len() + 9 * index);
     push_specificity_level(&mut out, selector, index);
     out
 }
 
+// Rules that take neither the specificity bump nor a direction ancestor.
+fn is_selector_exempt(rule: &str) -> bool {
+    rule.starts_with("@keyframes") || rule.starts_with("@position-try")
+}
+
 fn push_specificity_level(out: &mut String, selector: &str, index: usize) {
-    if selector.starts_with("@keyframes") {
+    if is_selector_exempt(selector) {
         out.push_str(selector);
         return;
     }
@@ -948,16 +1270,16 @@ fn push_split(out: &mut String, selector: &str, split_at: usize, index: usize) {
 }
 
 // Split point of a rule that renders as plain slices (no rtl, no theme pair,
-// not @keyframes); None routes the rule through push_chunk.
+// not exempt from the bump); None routes the rule through push_chunk.
 fn plain_split(ltr: &str, rtl: Option<&str>) -> Option<usize> {
-    if rtl.is_some_and(|t| !t.is_empty()) || ltr.contains(", .") || ltr.starts_with("@keyframes") {
+    if rtl.is_some_and(|t| !t.is_empty()) || ltr.contains(", .") || is_selector_exempt(ltr) {
         return None;
     }
     Some(specificity_split(ltr))
 }
 
 fn add_ancestor_selector(selector: &str, ancestor_selector: &str) -> String {
-    if selector.starts_with("@keyframes") {
+    if is_selector_exempt(selector) {
         return selector.to_string();
     }
     if !selector.starts_with('@') {
@@ -1057,12 +1379,22 @@ impl std::hash::Hasher for IdentityHasher {
 struct PreparedRule {
     class_name: Arc<str>,
     class_hash: u64,
+    // The sort priority: the rule's own, re-priced for a constant at-rule wrapper.
     priority: f64,
+    // key and width are read from the const-substituted ltr.
     key: RuleKey,
+    width: Option<Arc<WidthSortKey>>,
     // ltr/rtl carry the const substitutions; unchanged text shares the rule's Arc.
     ltr: Arc<str>,
     rtl: Option<Arc<str>>,
     plain_split: Option<usize>,
+}
+
+impl PreparedRule {
+    fn cmp_verified(&self, other: &PreparedRule) -> Ordering {
+        self.key
+            .cmp_verified(&other.key, self.width.as_deref(), other.width.as_deref())
+    }
 }
 
 struct FilePrep {
@@ -1122,20 +1454,21 @@ fn prefer_shared_preparation(files: &BTreeMap<String, Vec<StylexRule>>) -> bool 
     total >= 256 && seen.len() * 2 <= total
 }
 
-fn prepare_rule(r: &StylexRule, legacy: bool, consts: &[PreparedConst]) -> PreparedRule {
-    let ltr = substitute_consts(&r.ltr, consts)
+fn prepare_rule(r: &StylexRule, legacy: bool, consts: &PreparedConsts) -> PreparedRule {
+    let ltr = substitute_consts(&r.ltr, &consts.list)
         .map(Arc::from)
         .unwrap_or_else(|| r.ltr.clone());
     let rtl = r.rtl.as_ref().map(|t| {
-        substitute_consts(t, consts)
+        substitute_consts(t, &consts.list)
             .map(Arc::from)
             .unwrap_or_else(|| t.clone())
     });
     PreparedRule {
         class_name: r.class_name.clone(),
         class_hash: class_hash64(&r.class_name),
-        priority: r.priority,
-        key: RuleKey::for_rule(r, legacy),
+        priority: adjust_const_at_rule_priority(&r.ltr, r.priority, consts),
+        key: RuleKey::for_text(&r.class_name, &ltr, legacy),
+        width: if legacy { None } else { width_sort_key(&ltr) },
         plain_split: plain_split(&ltr, rtl.as_deref()),
         ltr,
         rtl,
@@ -1145,7 +1478,7 @@ fn prepare_rule(r: &StylexRule, legacy: bool, consts: &[PreparedConst]) -> Prepa
 fn prepare_file(
     rules: &[StylexRule],
     legacy: bool,
-    consts: &[PreparedConst],
+    consts: &PreparedConsts,
     pool: &mut Option<PreparedPool>,
 ) -> FilePrep {
     let mut prep = FilePrep {
@@ -1163,7 +1496,6 @@ fn prepare_file(
             prep.const_decls.push(const_decl(r));
             continue;
         }
-        prep.logical_float |= rule_has_logical_float(r);
         match &mut prep.rules {
             PreparedRules::Inline(rules) => rules.push(prepare_rule(r, legacy, consts)),
             PreparedRules::Shared(rules) => {
@@ -1189,6 +1521,7 @@ fn prepare_file(
         }
         let prepared = &prep.rules[prep.rules.len() - 1];
         prep.safe &= prepared.priority.is_finite() && prepared.key.verified();
+        prep.logical_float |= text_has_logical_float(&prepared.ltr, prepared.rtl.as_deref());
     }
     prep
 }
@@ -1198,15 +1531,9 @@ fn prepare_file(
 fn entry_cmp(files: &[FilePrep], a: (u32, u32), b: (u32, u32)) -> Ordering {
     let pa = &files[a.0 as usize].rules[a.1 as usize];
     let pb = &files[b.0 as usize].rules[b.1 as usize];
-    let diff = pa.priority - pb.priority;
-    if diff != 0.0 {
-        return if diff < 0.0 {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        };
-    }
-    pa.key.cmp_verified(&pb.key).then_with(|| a.cmp(&b))
+    compare_priorities(pa.priority, pb.priority)
+        .unwrap_or_else(|| pa.cmp_verified(pb))
+        .then_with(|| a.cmp(&b))
 }
 
 type RuleOwners = FxHashMap<Arc<str>, Vec<(u32, u32)>>;
@@ -1216,7 +1543,7 @@ struct IncrState {
     dirty: BTreeSet<String>,
     structural: bool,
     consts: Vec<(String, ConstVal)>,
-    prepared_consts: Vec<PreparedConst>,
+    prepared_consts: PreparedConsts,
     paths: Vec<String>,
     files: Vec<FilePrep>,
     pool: Option<PreparedPool>,
@@ -1500,7 +1827,7 @@ fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) 
         let previous = &files[rank as usize].rules[seq as usize];
         // Conflicting class definitions retain upstream's first-slot/last-value semantics.
         if previous.priority != rule.priority
-            || previous.key.cmp_verified(&rule.key) != Ordering::Equal
+            || previous.cmp_verified(rule) != Ordering::Equal
             || previous.ltr != rule.ltr
             || previous.rtl != rule.rtl
         {
@@ -1537,32 +1864,42 @@ fn render(state: &IncrState) -> String {
     let IncrState {
         cfg, files, sorted, ..
     } = state;
+    let (use_layers_on, _, _, layer_prefix) = layer_parts(cfg);
 
+    // One band's rules: with layers on, `bare` is its priority-0 part and
+    // `layered` the rest; with layers off the whole band is `bare`.
+    #[derive(Default)]
     struct GroupMeta {
-        first_priority: f64,
-        emit: Vec<(u32, u32)>,
+        bare: Vec<(u32, u32)>,
+        layered: Vec<(u32, u32)>,
     }
     let mut groups: Vec<GroupMeta> = Vec::new();
-    let mut slots: Vec<(u32, u32)> = Vec::new();
     let mut slot_map: SlotMap = SlotMap::default();
     let mut last_band = 0.0f64;
-    let mut first_priority = 0.0f64;
-    let mut open = false;
+    let mut in_layered = false;
     for &(rank, seq) in sorted.iter() {
         let p = &files[rank as usize].rules[seq as usize];
         let band = (p.priority / 1000.0).floor();
-        if !open || band != last_band {
-            if open {
-                groups.push(GroupMeta {
-                    first_priority,
-                    emit: std::mem::take(&mut slots),
-                });
-            }
+        if groups.is_empty() || band != last_band {
+            groups.push(GroupMeta::default());
             slot_map.clear();
-            open = true;
             last_band = band;
-            first_priority = p.priority;
+            in_layered = false;
         }
+        let group = groups.last_mut().expect("a band is open");
+        // Priorities are finite and ascending here, so a band's priority-0
+        // rules all precede its layered ones: one dedupe scope per part.
+        let slots = match BandPart::of(use_layers_on, p.priority) {
+            Some(BandPart::Layered) => {
+                if !in_layered {
+                    slot_map.clear();
+                    in_layered = true;
+                }
+                &mut group.layered
+            }
+            Some(_) => &mut group.bare,
+            None => continue,
+        };
         // JS Map semantics: a repeated class keeps its first slot, latest value wins.
         match slot_map.entry(p.class_hash) {
             std::collections::hash_map::Entry::Vacant(vacant) => {
@@ -1587,14 +1924,7 @@ fn render(state: &IncrState) -> String {
             }
         }
     }
-    if open {
-        groups.push(GroupMeta {
-            first_priority,
-            emit: slots,
-        });
-    }
 
-    let (use_layers_on, _, _, layer_prefix) = layer_parts(cfg);
     let header = if use_layers_on {
         layers_header(cfg, groups.len())
     } else {
@@ -1609,30 +1939,39 @@ fn render(state: &IncrState) -> String {
         if index > 0 {
             out.push('\n');
         }
-        let wrap = use_layers_on && group.first_priority > 0.0;
-        if wrap {
-            out.push_str("@layer ");
-            out.push_str(&layer_name(layer_prefix, index));
-            out.push_str("{\n");
-        }
-        for (j, &(rank, seq)) in group.emit.iter().enumerate() {
-            if j > 0 {
+        let mut printed_part = false;
+        for (emit, wrap) in [(&group.bare, false), (&group.layered, true)] {
+            if emit.is_empty() {
+                continue;
+            }
+            if printed_part {
                 out.push('\n');
             }
-            let p = &files[rank as usize].rules[seq as usize];
-            match p.plain_split {
-                Some(_) if use_layers_on || cfg.legacy_disable_layers || index == 0 => {
-                    out.push_str(&p.ltr);
+            printed_part = true;
+            if wrap {
+                out.push_str("@layer ");
+                out.push_str(&layer_name(layer_prefix, index));
+                out.push_str("{\n");
+            }
+            for (j, &(rank, seq)) in emit.iter().enumerate() {
+                if j > 0 {
+                    out.push('\n');
                 }
-                Some(split) => push_split(&mut out, &p.ltr, split, index),
-                None => {
-                    let rtl = p.rtl.as_deref().filter(|s| !s.is_empty());
-                    push_chunk(&mut out, &p.ltr, rtl, index, cfg);
+                let p = &files[rank as usize].rules[seq as usize];
+                match p.plain_split {
+                    Some(_) if use_layers_on || cfg.legacy_disable_layers || index == 0 => {
+                        out.push_str(&p.ltr);
+                    }
+                    Some(split) => push_split(&mut out, &p.ltr, split, index),
+                    None => {
+                        let rtl = p.rtl.as_deref().filter(|s| !s.is_empty());
+                        push_chunk(&mut out, &p.ltr, rtl, index, cfg);
+                    }
                 }
             }
-        }
-        if wrap {
-            out.push_str("\n}");
+            if wrap {
+                out.push_str("\n}");
+            }
         }
     }
     out
@@ -1669,6 +2008,79 @@ mod preparation_tests {
         assert!(registry.incr[0].owners.as_ref().unwrap().is_empty());
     }
 
+    // Swapping a file that declares no constants must be answered by the
+    // splice path, with the 0.19.2 order (re-priced constant wrappers, width
+    // bounds) and layer parts (priority 0 bare) intact.
+    #[test]
+    fn incremental_splice_keeps_repriced_order_and_layer_parts() {
+        let rule = |class_name: &str, ltr: &str, priority: f64| StylexRule {
+            class_name: class_name.into(),
+            ltr: ltr.into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority,
+        };
+        let breakpoint = StylexRule {
+            class_name: "xbp".into(),
+            ltr: "".into(),
+            rtl: None,
+            const_key: Some("xbp".into()),
+            const_val: Some(Box::new(serde_json::json!("@media (min-width: 768px)"))),
+            priority: 0.0,
+        };
+        let configs = [
+            AssembleConfig::default(),
+            AssembleConfig::from_json(&serde_json::json!({"useLayers": true})).unwrap(),
+        ];
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules(
+            "a.ts",
+            vec![
+                breakpoint,
+                rule("xvars", ":root, .xvars{--xa:red;}", 0.0),
+                rule(
+                    "xvars-1lveb7",
+                    "@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}",
+                    0.1,
+                ),
+            ],
+        );
+        registry.set_file_rules(
+            "b.ts",
+            vec![
+                rule("xa", "var(--xbp){.xa.xa{color:red}}", 6000.0),
+                rule(
+                    "xb",
+                    "@media (min-width: 1024px){.xb.xb{color:red}}",
+                    3200.0,
+                ),
+            ],
+        );
+        registry.set_file_rules("c.ts", vec![rule("xc", ".xc{color:red}", 3000.0)]);
+        for cfg in &configs {
+            registry.emit(cfg).unwrap();
+        }
+        registry.set_file_rules(
+            "c.ts",
+            vec![
+                rule("xkf-B", "@keyframes xkf-B{from{opacity:0;}}", 0.0),
+                rule("xd", "var(--xbp){.xd.xd{color:blue}}", 6000.0),
+                rule("xe", "@media (min-width: 640px){.xe.xe{color:red}}", 3200.0),
+                rule("xf", "@media (max-width: 639px){.xf.xf{color:red}}", 3200.0),
+            ],
+        );
+        let want = [
+            ":root, .xvars{--xa:red;}\n@keyframes xkf-B{from{opacity:0;}}\n@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}\n@media (min-width: 640px){.xe.xe:not(#\\#){color:red}}\n@media (min-width: 768px){.xd.xd:not(#\\#){color:blue}}\n@media (min-width: 768px){.xa.xa:not(#\\#){color:red}}\n@media (min-width: 1024px){.xb.xb:not(#\\#){color:red}}\n@media (max-width: 639px){.xf.xf:not(#\\#){color:red}}",
+            "\n@layer priority1, priority2;\n:root, .xvars{--xa:red;}\n@keyframes xkf-B{from{opacity:0;}}\n@layer priority1{\n@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}\n}\n@layer priority2{\n@media (min-width: 640px){.xe.xe{color:red}}\n@media (min-width: 768px){.xd.xd{color:blue}}\n@media (min-width: 768px){.xa.xa{color:red}}\n@media (min-width: 1024px){.xb.xb{color:red}}\n@media (max-width: 639px){.xf.xf{color:red}}\n}",
+        ];
+        for (cfg, want) in configs.iter().zip(want) {
+            let spliced = registry.try_incremental(cfg).expect("the splice path");
+            assert_eq!(spliced, want);
+            assert_eq!(Ok(spliced), assemble(&registry.all_rules(), cfg));
+        }
+    }
+
     #[test]
     fn edits_that_remove_repetition_switch_back_to_inline_storage() {
         let rule = |i: usize| StylexRule {
@@ -1694,5 +2106,38 @@ mod preparation_tests {
             assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
         }
         assert!(registry.incr[0].pool.is_none());
+    }
+
+    #[test]
+    fn keyed_order_fallback_matches_direct_comparator_with_duplicates() {
+        let mk = |class_name: &str, ltr: &str, priority: f64| StylexRule {
+            class_name: class_name.into(),
+            ltr: ltr.into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority,
+        };
+        // Non-ASCII triggers unverified keys and NaN triggers non-finite priority,
+        // both alongside duplicate rules so `unique.len() != non_const.len()`.
+        let rules = vec![
+            mk("xa", ".xa{content:\"café\"}", 3000.0),
+            mk("xb", ".xb{color:red}", 3000.0),
+            mk("xa", ".xa{content:\"café\"}", 3000.0),
+            mk("xc", ".xc{content:\"naïve\"}", f64::NAN),
+            mk("xb", ".xb{color:red}", 3000.0),
+            mk("xd", ".xd{color:blue}", 3000.0),
+        ];
+        for legacy in [false, true] {
+            let cfg = AssembleConfig {
+                use_legacy_classnames_sort: legacy,
+                ..AssembleConfig::default()
+            };
+            assert_eq!(
+                assemble(&rules, &cfg),
+                assemble_with_comparator(&rules, &cfg, default_locale_cmp),
+                "legacy={legacy}"
+            );
+        }
     }
 }

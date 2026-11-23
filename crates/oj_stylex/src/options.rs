@@ -21,7 +21,6 @@ pub struct CompilerOptions {
     pub unstable_module_resolution: Option<Value>,
     pub treeshake_compensation: Option<Value>,
     pub sx_prop_name: Option<Value>,
-    pub enable_debug_class_names: Option<Value>,
     pub enable_debug_data_prop: Option<Value>,
     pub enable_dev_class_names: Option<Value>,
     pub enable_font_size_px_to_rem: Option<Value>,
@@ -117,7 +116,6 @@ pub struct ResolvedOptions {
     pub dev: bool,
     pub debug: bool,
     pub test: bool,
-    pub enable_debug_class_names: bool,
     pub enable_debug_data_prop: bool,
     pub enable_dev_class_names: bool,
     pub enable_font_size_px_to_rem: bool,
@@ -210,7 +208,6 @@ impl CompilerOptions {
                 "unstable_moduleResolution" => &mut opts.unstable_module_resolution,
                 "treeshakeCompensation" => &mut opts.treeshake_compensation,
                 "sxPropName" => &mut opts.sx_prop_name,
-                "enableDebugClassNames" => &mut opts.enable_debug_class_names,
                 "enableDebugDataProp" => &mut opts.enable_debug_data_prop,
                 "enableDevClassNames" => &mut opts.enable_dev_class_names,
                 "enableFontSizePxToRem" => &mut opts.enable_font_size_px_to_rem,
@@ -241,11 +238,6 @@ impl CompilerOptions {
     pub fn resolve(&self) -> Result<ResolvedOptions, StylexError> {
         let dev = bool_opt("options.dev", &self.dev)?.unwrap_or(false);
         let debug = bool_opt("options.debug", &self.debug)?.unwrap_or(dev);
-        let enable_debug_class_names = bool_opt(
-            "options.enableDebugClassNames",
-            &self.enable_debug_class_names,
-        )?
-        .unwrap_or(false);
         let enable_debug_data_prop =
             bool_opt("options.enableDebugDataProp", &self.enable_debug_data_prop)?.unwrap_or(debug);
         let enable_dev_class_names =
@@ -439,7 +431,6 @@ impl CompilerOptions {
             dev,
             debug,
             test,
-            enable_debug_class_names,
             enable_debug_data_prop,
             enable_dev_class_names,
             enable_font_size_px_to_rem,

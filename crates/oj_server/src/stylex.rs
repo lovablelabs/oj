@@ -91,6 +91,9 @@ pub(crate) fn runner_transform(
         return Ok(None);
     };
     if !plugin.handles(id, code) {
+        // An edit dropped the module's StyleX imports: its rules leave the
+        // sheet, as they do when it compiles to nothing.
+        plugin.clear_module_rules(id);
         return Ok(None);
     }
     let file = Path::new(id.split('?').next().unwrap_or(id));

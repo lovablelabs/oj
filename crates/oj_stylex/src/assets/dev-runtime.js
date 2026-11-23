@@ -1,4 +1,4 @@
-// Ported verbatim from @stylexjs/unplugin 0.19.0 (lib/consts.js, DEV_RUNTIME_SCRIPT).
+// Ported verbatim from @stylexjs/unplugin 0.19.2 (lib/consts.js, DEV_RUNTIME_SCRIPT).
 // Copyright (c) Meta Platforms, Inc. and affiliates. MIT License.
 const STYLE_ID = "__stylex_virtual__";
 const DEV_CSS_PATH = "/virtual:stylex.css";
@@ -20,7 +20,18 @@ function disableLink() {
     const links = [...document.querySelectorAll('link[rel="stylesheet"]')];
     for (const l of links) {
       if (typeof l.href === "string" && l.href.includes(DEV_CSS_PATH)) {
-        l.disabled = true;
+        // Keep server-rendered link attributes unchanged during hydration.
+        if (l.sheet) {
+          l.sheet.disabled = true;
+        } else {
+          l.addEventListener(
+            "load",
+            () => {
+              if (l.sheet) l.sheet.disabled = true;
+            },
+            { once: true },
+          );
+        }
       }
     }
   } catch {
