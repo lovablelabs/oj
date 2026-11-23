@@ -191,8 +191,9 @@ impl FsProvider for StdFs {
 pub struct MemoFs {
     /// Live: how long a timestamp must have stood to vouch for what it stamps.
     settle: Option<Duration>,
-    /// How many answers a map holds before it is emptied to make room; a
-    /// snapshot, whose answers must not be worked out twice, has no such end.
+    /// How many answers a map holds before it drops half of them to make
+    /// room; a snapshot, whose answers must not be worked out twice, has no
+    /// such end.
     cap: usize,
     /// The walks up the tree, by every directory one has started in or
     /// passed: to the nearest package, to the importer's package scope, and
@@ -220,11 +221,11 @@ type PathMap<V> = RwLock<FxHashMap<Box<[u8]>, V>>;
 /// How many answers each map of a live fs holds. The fs of a dev server lives
 /// as long as the server does and is asked about paths without end: files
 /// come, go and are renamed, and every half-typed import is a specifier of its
-/// own. A map that is full is emptied and fills again with what is still being
-/// asked for. A pass over an app leaves the fullest map an answer for each
-/// module that is imported, so only an app of several tens of thousands of
-/// modules fills one by itself; its later passes then work out again what the
-/// map had no room to keep.
+/// own. A map that is full drops half of what it keeps and fills again with
+/// what is still being asked for. A pass over an app leaves the fullest map an
+/// answer for each module that is imported, so only an app of several tens of
+/// thousands of modules fills one by itself; its later passes then work out
+/// again what the map had no room to keep, and find the rest kept.
 const LIVE_CACHE_CAP: usize = 1 << 16;
 
 /// How long a live fs waits before it trusts a timestamp: a change made within
@@ -553,6 +554,25 @@ impl ResolveMemos {
         self.kept = 0;
     }
 
+    /// [`halve`] over the specifiers of every directory and config together,
+    /// dropping the configs and directories left with none.
+    fn halve(&mut self) {
+        let mut seen = 0usize;
+        let mut kept = 0;
+        self.by_dir.retain(|_, memos| {
+            memos.retain_mut(|memo| {
+                memo.by_specifier.retain(|_, _| {
+                    seen += 1;
+                    seen % 2 == 0
+                });
+                kept += memo.by_specifier.len();
+                !memo.by_specifier.is_empty()
+            });
+            !memos.is_empty()
+        });
+        self.kept = kept;
+    }
+
     /// Keeps `answer`, in the place of the one kept before if there is one.
     fn keep(
         &mut self,
@@ -601,6 +621,19 @@ impl ResolveMemos {
             }
         }
     }
+}
+
+/// Drops every other entry in the map's own order, the first among them: a
+/// map of n keeps n / 2, rounded down. That order follows the keys' hashes,
+/// so the half kept is spread over the keys. A pass that asks for a few more
+/// answers than fit, in the order of the pass before, finds about half of
+/// them kept, where emptying the map would leave it none.
+fn halve<V>(map: &mut FxHashMap<Box<[u8]>, V>) {
+    let mut seen = 0usize;
+    map.retain(|_, _| {
+        seen += 1;
+        seen % 2 == 0
+    });
 }
 
 fn path_key(p: &Path) -> &[u8] {
@@ -707,11 +740,12 @@ impl MemoFs {
     }
 
     /// Keeps `value` under `key`; a map with no room for one key more is
-    /// emptied first. What was dropped is worked out again when next asked
-    /// for, as it would have been had it never been kept.
+    /// [`halve`]d first. What was dropped is worked out again when next asked
+    /// for, as it would have been had it never been kept. Room is made at
+    /// most once per `cap / 2` new keys, so keeping is amortised O(1).
     fn keep<V>(&self, map: &mut FxHashMap<Box<[u8]>, V>, key: &[u8], value: V) {
         if map.len() >= self.cap && !map.contains_key(key) {
-            map.clear();
+            halve(map);
         }
         map.insert(key.into(), value);
     }
@@ -1017,7 +1051,7 @@ impl View<'_> {
             return resolved;
         }
         if memos.kept >= self.fs.cap && !held {
-            memos.clear();
+            memos.halve();
         }
         let kept = Checked {
             value: resolved.clone(),
@@ -3468,7 +3502,7 @@ mod tests {
     }
 
     #[test]
-    fn memo_live_empties_a_full_map_and_goes_on_answering() {
+    fn memo_live_halves_a_full_map_and_goes_on_answering() {
         assert_eq!(MemoFs::live().cap, LIVE_CACHE_CAP);
         assert_eq!(MemoFs::snapshot().cap, usize::MAX);
 
@@ -3489,8 +3523,8 @@ mod tests {
                 come_to_rest();
             }
             // The fixture asks every map for more than one answer (all but
-            // `manifests` and `hashes` for more than two), so each has been
-            // emptied on the way.
+            // `manifests` and `hashes` for more than two), so each has made
+            // room on the way.
             let unbounded = kept_counts(&roomy);
             for ((map, held), (_, wanted)) in kept_counts(&capped).into_iter().zip(unbounded) {
                 assert!(wanted > 1, "{map}: {wanted} answers to keep");
@@ -3523,6 +3557,65 @@ mod tests {
             );
             for (map, held) in kept_counts(&capped) {
                 assert!(held <= cap, "{map}: {held} kept under {cap}");
+            }
+        }
+    }
+
+    /// Passes over an app a little too large for the cap, each asking in the
+    /// order the one before did: an emptied map would have dropped every
+    /// answer by the time the next pass asks for it again.
+    #[test]
+    fn memo_live_keeps_about_half_of_a_pass_just_over_the_cap() {
+        const CAP: usize = 64;
+        let modules = CAP + CAP / 8;
+        let root = live_fixture("over-cap");
+        for i in 0..modules {
+            put(&root, &format!("src/mods/m{i}.ts"), "");
+        }
+        let aliases: Arc<AliasMap> = Arc::new(vec![(
+            "@m/*".to_string(),
+            vec![format!("{}/src/mods/*", root.display())],
+        )]);
+        let aliased = ResolveConfig {
+            aliases: Some(&aliases),
+            root_dir: None,
+        };
+        let importer = root.join("src/mods/index.ts");
+        let dir = path_key(root.join("src/mods").as_path()).to_vec();
+        let capped = MemoFs {
+            cap: CAP,
+            ..MemoFs::settling(Some(TEST_SETTLE))
+        };
+        come_to_rest();
+        for pass in 0..4 {
+            let (mut relative_kept, mut aliased_kept) = (0, 0);
+            let session = capped.session();
+            for i in 0..modules {
+                let relative = format!("./m{i}");
+                let target = relative_target(importer.parent().unwrap(), &relative).unwrap();
+                relative_kept += usize::from(read_lock(&capped.relative).contains_key(&target[..]));
+                let found = session.resolve_import(&relative, &importer, ResolveConfig::default());
+                assert_eq!(found, Some(root.join(format!("src/mods/m{i}.ts"))));
+
+                let alias = format!("@m/m{i}");
+                aliased_kept += usize::from(
+                    read_lock(&capped.resolve)
+                        .get(&dir, aliased)
+                        .is_some_and(|memo| memo.by_specifier.contains_key(&alias)),
+                );
+                let found = session.resolve_import(&alias, &importer, aliased);
+                assert_eq!(found, Some(root.join(format!("src/mods/m{i}.ts"))));
+            }
+            for (map, held) in kept_counts(&capped) {
+                assert!(held <= CAP, "{map}: {held} kept under {CAP}");
+            }
+            if pass > 0 {
+                for (map, kept) in [("relative", relative_kept), ("resolve", aliased_kept)] {
+                    assert!(
+                        kept >= modules / 4,
+                        "pass {pass}: {map} kept {kept} of {modules} answers"
+                    );
+                }
             }
         }
     }
