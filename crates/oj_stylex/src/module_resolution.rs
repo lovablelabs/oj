@@ -563,7 +563,7 @@ impl ResolveMemos {
             memos.retain_mut(|memo| {
                 memo.by_specifier.retain(|_, _| {
                     seen += 1;
-                    seen % 2 == 0
+                    seen.is_multiple_of(2)
                 });
                 kept += memo.by_specifier.len();
                 !memo.by_specifier.is_empty()
@@ -632,7 +632,7 @@ fn halve<V>(map: &mut FxHashMap<Box<[u8]>, V>) {
     let mut seen = 0usize;
     map.retain(|_, _| {
         seen += 1;
-        seen % 2 == 0
+        seen.is_multiple_of(2)
     });
 }
 
