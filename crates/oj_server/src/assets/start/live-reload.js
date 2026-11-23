@@ -541,6 +541,18 @@
         applied(msg);
         return;
       }
+      // A module that declares a server function was patched in place: the
+      // router loads its matches again, as the route module's accept handler
+      // does under Vite (`router._refreshRoute`), so a loader that calls the
+      // function shows what the edited handler answers.
+      if (msg && msg.type === "oj:routes") {
+        const router = self.__TSR_ROUTER__;
+        if (router && typeof router._refreshRoute === "function") {
+          await Promise.resolve(router._refreshRoute()).catch((err) => console.error("[oj]", err));
+        }
+        applied(msg);
+        return;
+      }
       // A change went out to the pages it names. Named, this page has it
       // (its patch came first, or it had nothing to patch). Left out, its
       // client was not there for it (registered while it was being built):
