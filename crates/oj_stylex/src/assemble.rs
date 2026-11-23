@@ -1735,7 +1735,15 @@ fn prefer_shared_preparation(files: &BTreeMap<String, Vec<StylexRule>>) -> bool 
     total >= 256 && seen.len() * 2 <= total
 }
 
+#[cfg(test)]
+thread_local! {
+    // Rules prepared on this thread: tests weigh the splice paths by it.
+    static PREPARED_RULES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn prepare_rule(r: &StylexRule, legacy: bool, consts: &ConstTable) -> PreparedRule {
+    #[cfg(test)]
+    PREPARED_RULES.with(|count| count.set(count.get() + 1));
     let ltr = substitute_consts(&r.ltr, consts)
         .map(Arc::from)
         .unwrap_or_else(|| r.ltr.clone());
@@ -2053,21 +2061,17 @@ enum Slot {
     Added(usize),
 }
 
-fn splice_layout(
-    paths: &[String],
-    changed: &[bool],
-    incoming: &[(&String, FilePrep)],
-) -> Vec<Slot> {
+fn splice_layout(paths: &[String], changed: &[bool], incoming: &[&String]) -> Vec<Slot> {
     let mut slots = Vec::with_capacity(paths.len() + incoming.len());
     let mut next = 0;
     for (rank, path) in paths.iter().enumerate() {
-        while next < incoming.len() && incoming[next].0 < path {
+        while next < incoming.len() && incoming[next] < path {
             slots.push(Slot::Added(next));
             next += 1;
         }
         if !changed[rank] {
             slots.push(Slot::Kept(rank));
-        } else if next < incoming.len() && incoming[next].0 == path {
+        } else if next < incoming.len() && incoming[next] == path {
             slots.push(Slot::Edited(rank, next));
             next += 1;
         }
@@ -2152,10 +2156,10 @@ impl IncrState {
         let legacy = self.cfg.use_legacy_classnames_sort;
         let dirty = std::mem::take(&mut self.dirty);
 
-        // The old slots that are edited or removed, and the preparations
-        // coming in (edited and added files), in path order.
+        // The old slots that are edited or removed, and the files coming in
+        // (edited and added), in path order.
         let mut changed = vec![false; self.files.len()];
-        let mut incoming: Vec<(&String, FilePrep)> = Vec::with_capacity(dirty.len());
+        let mut incoming: Vec<&String> = Vec::with_capacity(dirty.len());
         let mut layout_changed = false;
         let mut consts_touched = false;
         for path in &dirty {
@@ -2163,31 +2167,9 @@ impl IncrState {
             let old_decls: &[ConstDecl] = old.map_or(&[], |rank| &self.files[rank].const_decls);
             match files.get(path) {
                 Some(rules) => {
-                    let prep = prepare_file(rules, legacy, &self.table, &mut self.pool);
-                    if !prep.safe {
-                        // With the constants as the state has them, this is
-                        // the file a rebuild would stop at, prepared against
-                        // an equal table: every file before it is safe. That
-                        // holds only if no dirty file, this one and the ones
-                        // not looked at yet included, declares other
-                        // constants than it did.
-                        let consts_kept = !consts_touched
-                            && dirty.range::<String, _>(path..).all(|path| {
-                                let rules = files.get(path).map_or(&[][..], Vec::as_slice);
-                                let old = self.paths.binary_search(path).ok();
-                                declares(
-                                    rules,
-                                    old.map_or(&[], |rank| &self.files[rank].const_decls),
-                                )
-                            });
-                        return Err(consts_kept.then(|| Blocker::File {
-                            path: path.clone(),
-                            consts: Arc::clone(&self.table),
-                        }));
-                    }
-                    consts_touched |= prep.const_decls != old_decls;
+                    consts_touched |= !declares(rules, old_decls);
                     layout_changed |= old.is_none();
-                    incoming.push((path, prep));
+                    incoming.push(path);
                 }
                 None => {
                     if old.is_none() {
@@ -2207,18 +2189,38 @@ impl IncrState {
             Vec::new()
         };
 
-        // The rules were prepared against the state's constants: the splice
-        // stands only if the dirty files leave the resolved constants as they
-        // were. Files that declare the constants they declared before (most
-        // edits: none) cannot change them, and skip the resolution.
+        // The incoming rules are prepared against the state's constants: the
+        // splice stands only if the dirty files leave the resolved constants
+        // as they were, which is settled before any of them is prepared.
+        // Files that declare the constants they declared before (most edits:
+        // none) cannot change them, and skip the resolution.
         if consts_touched {
-            let raw = layout.iter().flat_map(|slot| match *slot {
-                Slot::Kept(rank) => self.files[rank].const_decls.iter().cloned(),
-                Slot::Edited(_, at) | Slot::Added(at) => incoming[at].1.const_decls.iter().cloned(),
+            let raw = layout.iter().flat_map(|slot| {
+                let (kept, rules): (&[ConstDecl], &[StylexRule]) = match *slot {
+                    Slot::Kept(rank) => (&self.files[rank].const_decls, &[]),
+                    Slot::Edited(_, at) | Slot::Added(at) => (&[], &files[incoming[at]]),
+                };
+                kept.iter().cloned().chain(const_decls(rules))
             });
             if collect_resolved_consts(raw).map_err(|_| None)? != self.consts {
                 return Err(None);
             }
+        }
+
+        let mut prepared: Vec<(&String, FilePrep)> = Vec::with_capacity(incoming.len());
+        for path in incoming {
+            let prep = prepare_file(&files[path], legacy, &self.table, &mut self.pool);
+            if !prep.safe {
+                // With the constants as the state has them, this is the file
+                // a rebuild would stop at, prepared against an equal table:
+                // every file before it is safe. That holds only if no dirty
+                // file declares other constants than it did.
+                return Err((!consts_touched).then(|| Blocker::File {
+                    path: path.clone(),
+                    consts: Arc::clone(&self.table),
+                }));
+            }
+            prepared.push((path, prep));
         }
 
         // Drop the sort entries of the edited and removed slots. With owners
@@ -2231,7 +2233,7 @@ impl IncrState {
                     .iter()
                     .zip(&self.files)
                     .filter_map(|(changed, file)| changed.then_some(file));
-                for file in outgoing.chain(incoming.iter().map(|(_, prep)| prep)) {
+                for file in outgoing.chain(prepared.iter().map(|(_, prep)| prep)) {
                     classes.extend(file.rules.iter().map(|rule| rule.class_name.clone()));
                 }
                 let mut doomed = Vec::with_capacity(classes.len());
@@ -2273,7 +2275,7 @@ impl IncrState {
                         self.files.push(old_files[rank].take().ok_or(None)?);
                     }
                     Slot::Added(at) => {
-                        self.paths.push(incoming[at].0.clone());
+                        self.paths.push(prepared[at].0.clone());
                         self.files.push(FilePrep::empty(self.pool.is_some(), 0, 0));
                     }
                 }
@@ -2292,7 +2294,7 @@ impl IncrState {
 
         // Install the incoming preparations and splice their entries in.
         let mut fresh: Vec<(u32, u32)> = Vec::new();
-        for (path, prep) in incoming {
+        for (path, prep) in prepared {
             let rank = self.paths.binary_search(path).map_err(|_| None)?;
             let old = std::mem::replace(&mut self.files[rank], prep);
             retire(&mut self.pool, old);
@@ -3558,6 +3560,39 @@ mod splice_tests {
         assert_spliced(&mut registry, "add beside constants");
         registry.remove_file("more.ts");
         assert_spliced(&mut registry, "remove beside constants");
+    }
+
+    // Dirty files prepared against constants they change would be thrown
+    // away: the splice settles the constants from the raw rules first, so
+    // the rebuild is the only preparation the change costs.
+    #[test]
+    fn a_constant_change_is_settled_before_any_file_is_prepared() {
+        let cfg = AssembleConfig::default();
+        let tokens = |px: u32| {
+            let mut rules = file_rules(0);
+            rules.push(constant("xgap", serde_json::json!(format!("{px}px"))));
+            rules
+        };
+        let prepared = || PREPARED_RULES.with(std::cell::Cell::get);
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("tokens.ts", tokens(4));
+        for i in 1..4 {
+            registry.set_file_rules(&format!("f{i}.ts"), file_rules(i));
+        }
+        registry.emit(&cfg).unwrap();
+
+        registry.set_file_rules("f1.ts", file_rules(5));
+        registry.set_file_rules("tokens.ts", tokens(8));
+        let before = prepared();
+        assert!(matches!(registry.try_incremental(&cfg), Err(None)));
+        assert_eq!(prepared(), before);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let rule_count = registry
+            .files()
+            .flat_map(|(_, rules)| rules)
+            .filter(|rule| !is_const_rule(rule))
+            .count();
+        assert_eq!(prepared() - before, rule_count as u64);
     }
 
     #[test]
