@@ -2,6 +2,7 @@
 //! rules feed one stylesheet, served at the plugin's endpoint, and a changed
 //! sheet tells the plugin's runtimes to refetch it.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock, PoisonError, RwLock, Weak};
@@ -214,7 +215,7 @@ pub(crate) fn pre_transform(
     ))
 }
 
-/// Stores a served module's rules under its id (see [`module_id`]).
+/// Stores a served module's rules under its id (see [`write_module_id`]).
 pub(crate) fn record(state: &ServerState, url: &str, rules: &[StylexRule]) {
     if let Some(plugin) = &state.stylex {
         record_url(plugin, &state.root, url, rules);
@@ -222,7 +223,19 @@ pub(crate) fn record(state: &ServerState, url: &str, rules: &[StylexRule]) {
 }
 
 fn record_url(plugin: &StylexPlugin, root: &Path, url: &str, rules: &[StylexRule]) {
-    plugin.record_module_rules(&module_id(root, url), rules);
+    thread_local! {
+        /// The id of the module being recorded: most served modules have no
+        /// rules and are answered by the plugin's filter, so their id is
+        /// written over the last one's and costs no allocation.
+        static ID: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+    // Taken out for the call, not borrowed across it: the plugin's change
+    // listener runs inside.
+    let mut id = ID.take();
+    id.clear();
+    write_module_id(&mut id, root, url);
+    plugin.record_module_rules(&id, rules);
+    ID.set(id);
 }
 
 /// Stores a module's rules under `id`, Vite's module id: the plugin keys its
@@ -234,15 +247,23 @@ pub(crate) fn record_id(state: &ServerState, id: &str, rules: &[StylexRule]) {
     }
 }
 
-/// A served url's module id: the file's absolute path with the query kept,
-/// minus the HMR timestamp and a dependency's `v=` version (which the SSR id
-/// of the same file never carries); oj's own `/@` urls stay as they are.
+#[cfg(test)]
 fn module_id(root: &Path, url: &str) -> String {
+    let mut id = String::new();
+    write_module_id(&mut id, root, url);
+    id
+}
+
+/// Appends a served url's module id to `id`: the file's absolute path with
+/// the query kept, minus the HMR timestamp and a dependency's `v=` version
+/// (which the SSR id of the same file never carries); oj's own `/@` urls stay
+/// as they are.
+fn write_module_id(id: &mut String, root: &Path, url: &str) {
     let (path, query) = match url.split_once('?') {
         Some((path, query)) => (path, Some(query)),
         None => (url, None),
     };
-    let mut id = String::with_capacity(root.as_os_str().len() + url.len());
+    id.reserve(root.as_os_str().len() + url.len());
     if let Some(path) = path.strip_prefix("/@fs/") {
         id.push('/');
         id.push_str(path);
@@ -267,7 +288,6 @@ fn module_id(root: &Path, url: &str) -> String {
         id.push_str(kv);
         separator = '&';
     }
-    id
 }
 
 /// The plugin's dev routes: the stylesheet and, in `full` mode, the plain
@@ -319,7 +339,8 @@ const TARGETS_RECHECK: Duration = UPDATE_COALESCE;
 /// each open tab refetch it.
 ///
 /// A request reads it through [`DevSheet::fetch`]: a rebuild blocks, on the
-/// sheet's assembly, on lightningcss and on a rebuild another request began.
+/// sheet's assembly, on lightningcss and on a rebuild another caller began,
+/// so it runs on the blocking pool, one request's at a time.
 #[derive(Default)]
 pub(crate) struct DevSheet {
     /// Whether `lightningcssOptions` names the targets, which then never
@@ -330,7 +351,11 @@ pub(crate) struct DevSheet {
     /// The sheet polls are answered with, and the store generation and
     /// targets it was built from.
     served: RwLock<Option<(u64, TargetsStamp, Bytes)>>,
-    /// Held across a rebuild: tabs refetching at once wait for one.
+    /// Held by the request whose rebuild is on the blocking pool: the tabs
+    /// refetching at once wait for it here, and park no thread of the pool.
+    rebuilding: tokio::sync::Mutex<()>,
+    /// Held across a rebuild: callers of [`DevSheet::css`] at once wait for
+    /// one.
     built: Mutex<Option<Built>>,
 }
 
@@ -344,12 +369,19 @@ struct Built {
 impl DevSheet {
     /// The sheet for a request. A poll that finds nothing new is answered
     /// where it stands; a rebuild runs on the blocking pool, so the tabs
-    /// that refetch at once park none of the runtime's workers on it.
+    /// that refetch at once park none of the runtime's workers on it. They
+    /// take turns at it, so only the first holds a thread of the pool: the
+    /// others find its sheet when their turn comes.
     pub(crate) async fn fetch(
         self: &Arc<Self>,
         root: &Path,
         plugin: &Arc<StylexPlugin>,
     ) -> Result<Bytes, String> {
+        if let Some(css) = self.current(root, plugin) {
+            return Ok(css);
+        }
+        let _gate = self.rebuilding.lock().await;
+        // The request that held the gate has built what this one came for.
         if let Some(css) = self.current(root, plugin) {
             return Ok(css);
         }
@@ -630,6 +662,51 @@ mod tests {
         // A poll that finds nothing new is answered where it stands.
         assert_eq!(sheet.current(root, &p).unwrap().as_ptr(), css.as_ptr());
         assert_eq!(sheet.fetch(root, &p).await.unwrap().as_ptr(), css.as_ptr());
+    }
+
+    #[test]
+    fn tabs_waiting_for_a_rebuild_take_no_thread_of_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // The pool's one thread is taken: a fetch that asked for one
+            // would not be answered before it is given back.
+            let (give_back, given_back) = std::sync::mpsc::channel::<()>();
+            let taken = tokio::task::spawn_blocking(move || {
+                let _ = given_back.recv();
+            });
+            // Another request's rebuild is under way.
+            let gate = sheet.rebuilding.lock().await;
+            let tabs: Vec<_> = (0..8)
+                .map(|_| {
+                    let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+                    tokio::spawn(async move { sheet.fetch(&root, &p).await })
+                })
+                .collect();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(tabs.iter().all(|tab| !tab.is_finished()));
+
+            let built = sheet.css(root, &p).unwrap();
+            drop(gate);
+            for tab in tabs {
+                let css = tokio::time::timeout(Duration::from_secs(5), tab)
+                    .await
+                    .expect("a tab waited for a thread of the pool")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(css.as_ptr(), built.as_ptr());
+            }
+            give_back.send(()).unwrap();
+            taken.await.unwrap();
+        });
     }
 
     #[test]

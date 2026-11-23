@@ -538,7 +538,8 @@ impl StylexPlugin {
         *self.on_change.write().unwrap() = Some(listener);
     }
 
-    /// Bumped by every change [`Self::set_module_rules`] makes to the sheet.
+    /// Bumped by every change to a module's recorded rules; the sheet may
+    /// still assemble the same.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }

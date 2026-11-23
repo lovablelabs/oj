@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `fru` / `oj stylex`: the compile cache is stored in a binary format (schema 3). An existing cache directory misses once and is rewritten.
+- `fru serve`: a request line that is not valid UTF-8 gets a `malformed request line` error reply; the daemon used to exit.
+- StyleX dev: recording a module's rules and polling `/virtual:stylex.css` no longer contend on the stylesheet assembly lock, and concurrent tab refetches share one rebuild off the async runtime workers.
+
+### Fixed
+
+- StyleX dev: a `.ts`/`.tsx` module that no plugin transforms and that imports no CommonJS value is compiled from one parse, so its dev JSX `lineNumber`/`columnNumber` point at the file's own lines, and its source map is built from them directly.
+
 ## [0.4.25] - 2026-11-26
 
 ### Changed

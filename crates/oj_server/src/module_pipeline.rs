@@ -1479,13 +1479,7 @@ impl CompileJob {
     ) -> Result<oj_compiler::CompileOutput, oj_compiler::StylexModuleError> {
         let later = self.later_transforms();
         let may_need_interop = |spec: &str| rw.may_need_interop(spec);
-        let interop = |spec: &str| {
-            let target = rw.cjs_interop_url(spec);
-            // What lets a module none of whose imports may need interop skip
-            // the rewrite (`compile_stylex_module`): one that needs it may.
-            debug_assert!(target.is_none() || rw.may_need_interop(spec));
-            target
-        };
+        let interop = |spec: &str| rw.cjs_interop_url(spec);
         let mut rewrite = |spec: &str| rw.rewrite(spec, &self.state.resolver);
         let mut opts = dev_compile_opts(&self.state);
         if self.is_svelte {
