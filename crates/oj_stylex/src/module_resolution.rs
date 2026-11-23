@@ -758,6 +758,14 @@ impl MemoFs {
             look: look.as_ref(),
         })
     }
+
+    /// Whether an answer is kept for the relative `specifier` asked from a
+    /// module in `dir`.
+    #[cfg(test)]
+    pub(crate) fn keeps_relative(&self, dir: &Path, specifier: &str) -> bool {
+        relative_target(dir, specifier)
+            .is_some_and(|target| read_lock(&self.relative).contains_key(&target[..]))
+    }
 }
 
 /// See [`MemoFs::session`].

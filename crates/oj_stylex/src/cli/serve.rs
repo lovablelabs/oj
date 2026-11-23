@@ -382,6 +382,8 @@ fn sheet(request: &Request, id: &str, shared: &Shared) -> String {
 
 // The boot pass: walk `roots` on this daemon's own threads, compile every
 // StyleX-bearing file once, and register its rules under its absolute path.
+// Each compile is a session of the live fs `transform` compiles through, so
+// the transforms that follow find what the pass resolved already kept.
 fn warm(request: &Request, id: &str, shared: &Shared) -> String {
     let (Some(root), Some(roots)) = (&request.root, &request.roots) else {
         return input_error_line(id, "warm needs root and roots");
@@ -403,8 +405,6 @@ fn warm(request: &Request, id: &str, shared: &Shared) -> String {
     let compiled = AtomicUsize::new(0);
     let errors: Mutex<Vec<Value>> = Mutex::new(Vec::new());
     let cwd = Path::new(root.trim_end_matches('/'));
-    let fs = MemoFs::snapshot();
-    let fs = &fs;
     std::thread::scope(|scope| {
         for _ in 0..shared.threads {
             let (files, next, compiled, errors, options) =
@@ -435,7 +435,8 @@ fn warm(request: &Request, id: &str, shared: &Shared) -> String {
                         source_text: source,
                         cwd,
                     };
-                    match transform_source_rules_in(&allocator, &ctx, options, fs) {
+                    let fs = MemoFs::shared().session();
+                    match transform_source_rules_in(&allocator, &ctx, options, &fs) {
                         Ok(Some(result)) if !result.rules.is_empty() => {
                             compiled.fetch_add(1, Ordering::Relaxed);
                             let key = path.to_string_lossy().replace('\\', "/");
@@ -463,4 +464,46 @@ fn warm(request: &Request, id: &str, shared: &Shared) -> String {
         .value("generation", &generation)
         .value("wallMs", &(started.elapsed().as_secs_f64() * 1e3))
         .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warm_keeps_what_it_resolved_for_the_transforms_that_follow() {
+        let root = std::env::temp_dir().join(format!("fru-serve-warm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        std::fs::write(
+            root.join("src/tokens.stylex.ts"),
+            "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ c: 'red' });\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/box.ts"),
+            "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.stylex';\nexport const s = stylex.create({ a: { color: vars.c } });\n",
+        )
+        .unwrap();
+        let src = root.join("src");
+        assert!(!MemoFs::shared().keeps_relative(&src, "./tokens.stylex"));
+
+        let line = json!({
+            "op": "warm",
+            "root": root,
+            "roots": [src],
+            "options": { "unstable_moduleResolution": { "type": "commonJS", "rootDir": root } },
+        })
+        .to_string();
+        let request: Request = serde_json::from_str(&line).unwrap();
+        let shared = Shared {
+            registry: Mutex::new(RuleRegistry::new()),
+            threads: 1,
+        };
+        let response = warm(&request, "1", &shared);
+        assert!(response.contains(r#""stylexFiles":2"#), "{response}");
+        assert!(response.contains(r#""errors":[]"#), "{response}");
+        assert!(MemoFs::shared().keeps_relative(&src, "./tokens.stylex"));
+    }
 }
