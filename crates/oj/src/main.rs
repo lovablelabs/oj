@@ -500,6 +500,7 @@ fn default_dev_root() -> PathBuf {
 }
 
 fn main() -> anyhow::Result<()> {
+    oj_server::rolldown_runtime::silence_tracing();
     raise_fd_limit();
     // `oj typecheck` takes tsc's command line, which clap cannot parse: every
     // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
