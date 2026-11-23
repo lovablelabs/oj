@@ -1830,7 +1830,8 @@ struct IncrState {
 
 // A config the splice path cannot serve. Rebuilding its state is pointless
 // until the input that ruled it out changes, so it is remembered instead of
-// being retried on every emit.
+// being retried on every emit. A state whose splice met the blocker is kept
+// meanwhile, and splices its dirty files once the blocker is gone.
 struct Blocked {
     cfg: AssembleConfig,
     on: Blocker,
@@ -1986,8 +1987,12 @@ impl RuleRegistry {
         if !incr[at].dirty.is_empty()
             && let Err(blocker) = incr[at].splice(files)
         {
-            // A splice that gave up half-way leaves nothing to print from.
-            incr.remove(at);
+            // A splice that gave up half-way leaves nothing to print from;
+            // one stopped by a blocker left the state as it was, still dirty,
+            // and it is not printed until a splice brings it up to date.
+            if blocker.is_none() {
+                incr.remove(at);
+            }
             return Err(blocker);
         }
         if files.values().all(|rules| rules.is_empty()) {
@@ -2149,9 +2154,11 @@ impl IncrState {
 
     // Brings the state up to date with the registry: re-prepares the files set
     // since the last emit, drops the removed ones, slots in the added ones and
-    // splices their rules into the sort order. Err = the state can no longer
-    // stand in for a full assembly: with the blocker when a dirty file is
-    // what rules the splice path out, else the caller rebuilds the state.
+    // splices their rules into the sort order. Err = the state cannot stand
+    // in for a full assembly now: with the blocker when a dirty file is what
+    // rules the splice path out, met before anything changed, so the state
+    // keeps its dirty files for the splice after the blocker; else the state
+    // is spent and the caller rebuilds it.
     fn splice(&mut self, files: &BTreeMap<String, Vec<StylexRule>>) -> Result<(), Option<Blocker>> {
         let legacy = self.cfg.use_legacy_classnames_sort;
         let dirty = std::mem::take(&mut self.dirty);
@@ -2215,8 +2222,19 @@ impl IncrState {
                 // a rebuild would stop at, prepared against an equal table:
                 // every file before it is safe. That holds only if no dirty
                 // file declares other constants than it did.
-                return Err((!consts_touched).then(|| Blocker::File {
-                    path: path.clone(),
+                if consts_touched {
+                    return Err(None);
+                }
+                // Nothing is installed yet: the state stays as it was, its
+                // files dirty, to splice them once the blocker is gone.
+                let path = path.clone();
+                retire(&mut self.pool, prep);
+                for (_, prep) in prepared {
+                    retire(&mut self.pool, prep);
+                }
+                self.dirty = dirty;
+                return Err(Some(Blocker::File {
+                    path,
                     consts: Arc::clone(&self.table),
                 }));
             }
@@ -3839,7 +3857,8 @@ mod splice_tests {
     // A file edited from safe to unsafe is met by the splice that prepares
     // it. The config is blocked on it there, against the constants of the
     // state being spliced: a rebuild would prepare every file against a table
-    // of its own to stop at the same one.
+    // of its own to stop at the same one. The state is kept, its files
+    // dirty, for the splice after the blocker.
     #[test]
     fn a_splice_that_meets_an_unsafe_file_blocks_on_it_without_a_rebuild() {
         let cfg = AssembleConfig::default();
@@ -3864,7 +3883,6 @@ mod splice_tests {
         };
         // What the one config is blocked on.
         let blocker = |registry: &RuleRegistry| -> (String, Arc<ConstTable>) {
-            assert!(registry.incr.is_empty());
             match &registry.blocked[..] {
                 [
                     Blocked {
@@ -3874,6 +3892,14 @@ mod splice_tests {
                 ] => (path.clone(), Arc::clone(consts)),
                 _ => panic!("expected one config blocked on a file"),
             }
+        };
+        // The seeded state is the one registered, with these files dirty.
+        let kept = |registry: &RuleRegistry, table: &Arc<ConstTable>, dirty: &[&str]| {
+            let [state] = &registry.incr[..] else {
+                panic!("expected the one state to be kept");
+            };
+            assert!(Arc::ptr_eq(&state.table, table));
+            assert!(state.dirty.iter().eq(dirty));
         };
 
         // Edited, added and removed files in one batch, two of them unsafe:
@@ -3891,9 +3917,10 @@ mod splice_tests {
         let (path, consts) = blocker(&registry);
         assert_eq!(path, "b.ts");
         assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["a.ts", "b.ts", "c.ts", "d.ts"]);
         // The entry is one `unblock` reads like any other: an edit that
         // leaves the file unsafe keeps it, a safe one drops it, and the
-        // retry stops at the next unsafe file.
+        // retry, a splice of the kept state, stops at the next unsafe file.
         registry.set_file_rules("b.ts", with(2, &glyph_user));
         assert!(Arc::ptr_eq(&blocker(&registry).1, &table));
         registry.set_file_rules("b.ts", file_rules(1));
@@ -3901,7 +3928,16 @@ mod splice_tests {
         assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
         let (path, consts) = blocker(&registry);
         assert_eq!(path, "c.ts");
-        assert!(!Arc::ptr_eq(&consts, &table));
+        assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["a.ts", "b.ts", "c.ts", "d.ts"]);
+        // The last blocker is fixed: the kept state splices the whole batch.
+        registry.set_file_rules("c.ts", file_rules(2));
+        assert!(registry.blocked.is_empty());
+        let Ok(spliced) = registry.try_incremental(&cfg) else {
+            panic!("left the splice path");
+        };
+        assert_eq!(Ok(spliced), assemble(&registry.all_rules(), &cfg));
+        kept(&registry, &table, &[]);
 
         // An added file is judged the same way.
         let (mut registry, table) = seeded();
@@ -3910,6 +3946,11 @@ mod splice_tests {
         let (path, consts) = blocker(&registry);
         assert_eq!(path, "b2.ts");
         assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["b2.ts"]);
+        registry.remove_file("b2.ts");
+        assert!(registry.blocked.is_empty());
+        assert!(registry.try_incremental(&cfg).is_ok());
+        kept(&registry, &table, &[]);
 
         // The same batch changes the constant the unsafe file reads, in a
         // file the splice has not looked at yet: the state's table is stale,
@@ -3920,6 +3961,7 @@ mod splice_tests {
         let css = registry.emit(&cfg);
         assert!(css.as_ref().unwrap().contains("content:none"));
         assert_eq!(css, assemble(&registry.all_rules(), &cfg));
+        assert!(registry.incr.is_empty());
         let (path, consts) = blocker(&registry);
         assert_eq!(path, "b.ts");
         assert!(!Arc::ptr_eq(&consts, &table));
@@ -3937,10 +3979,84 @@ mod splice_tests {
             }
             registry.set_file_rules("b.ts", rules);
             assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            assert!(registry.incr.is_empty(), "constants in {tokens}");
             let (path, consts) = blocker(&registry);
             assert_eq!(path, "b.ts", "constants in {tokens}");
             assert!(!Arc::ptr_eq(&consts, &table), "constants in {tokens}");
             assert_eq!(consts.consts.len(), 2);
+        }
+    }
+
+    // A rule of non-finite priority added to a file and taken out again.
+    // The state outlives the block, in inline and in shared storage, and
+    // splices the file back without a rebuild.
+    #[test]
+    fn a_brief_unsafe_edit_is_spliced_back_without_a_rebuild() {
+        let cfg = AssembleConfig::default();
+        let atoms = |i: usize| -> Vec<StylexRule> {
+            (0..8)
+                .map(|j| {
+                    let n = (i + j) % 12;
+                    rule(
+                        &format!("xatom{n}"),
+                        &format!(".xatom{n}{{order:{n}}}"),
+                        3000.0,
+                    )
+                })
+                .collect()
+        };
+        let layouts: [(usize, &dyn Fn(usize) -> Vec<StylexRule>); 2] =
+            [(16, &file_rules), (64, &atoms)];
+        for (shared, (file_count, contents)) in [false, true].into_iter().zip(layouts) {
+            let mut registry = RuleRegistry::new();
+            for i in 0..file_count {
+                registry.set_file_rules(&format!("f{i:02}.ts"), contents(i));
+            }
+            registry.emit(&cfg).unwrap();
+            assert_eq!(registry.incr[0].pool.is_some(), shared);
+            let table = Arc::clone(&registry.incr[0].table);
+
+            let mut typed = contents(100);
+            typed.push(rule("xu", ".xu{color:red}", f64::INFINITY));
+            registry.set_file_rules("f07.ts", typed);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            assert_eq!(registry.blocked.len(), 1);
+            assert_consistent(&registry);
+
+            registry.set_file_rules("f07.ts", contents(101));
+            assert!(registry.blocked.is_empty());
+            let before = PREPARED_RULES.with(std::cell::Cell::get);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            let prepared = PREPARED_RULES.with(std::cell::Cell::get) - before;
+            assert!(prepared <= contents(101).len() as u64, "shared {shared}");
+            assert!(
+                Arc::ptr_eq(&registry.incr[0].table, &table),
+                "shared {shared}"
+            );
+            assert!(registry.incr[0].dirty.is_empty());
+            assert_consistent(&registry);
+        }
+    }
+
+    // What every registered state holds between emits, a state a blocker
+    // kept waiting included: one sort entry per class with owners, each
+    // owner list sorted, and a pool that counts exactly the shared
+    // preparations alive.
+    fn assert_consistent(registry: &RuleRegistry) {
+        for state in &registry.incr {
+            if let Some(owners) = &state.owners {
+                assert_eq!(state.sorted.len(), owners.len());
+                assert!(
+                    owners
+                        .values()
+                        .all(|entries| !entries.is_empty() && entries.is_sorted())
+                );
+            }
+            if let Some(pool) = &state.pool {
+                let held = pool.buckets.values().flatten();
+                assert_eq!(pool.live, held.clone().count());
+                assert!(held.clone().all(|shared| shared.strong_count() > 0));
+            }
         }
     }
 
@@ -4007,7 +4123,9 @@ mod splice_tests {
 
     // Random adds, edits and removals over rule pools with little and with
     // heavy repetition (inline and shared storage), with constants, class
-    // conflicts, negative priorities and rtl pairs in the mix.
+    // conflicts, negative priorities and rtl pairs in the mix; in some runs
+    // also a rule of non-finite priority, which blocks a config while a file
+    // holds it.
     #[test]
     fn random_file_churn_matches_one_shot() {
         let universe = |classes: usize| -> Vec<StylexRule> {
@@ -4046,11 +4164,21 @@ mod splice_tests {
             rules.push(constant("xgap", serde_json::json!("8px")));
             rules
         };
-        for (seed, classes, files, per_file) in [
-            (1, 40, 48, 12),
-            (2, 2000, 24, 16),
-            (3, 12, 64, 8),
-            (4, 300, 40, 20),
+        let unsafe_rule = rule("xu", ".xu{color:red}", f64::INFINITY);
+        // The last field: 1 in how many rare draws is the unsafe rule (0:
+        // none is), tuned so that a registry holds it a quarter to half of
+        // the time. A few paths keep a blocked state's backlog under the
+        // floor, so it lives to splice again.
+        for (seed, classes, files, per_file, unsafe_odds) in [
+            (1, 40, 48, 12, 0),
+            (2, 2000, 24, 16, 0),
+            (3, 12, 64, 8, 0),
+            (4, 300, 40, 20, 0),
+            (5, 40, 48, 12, 6),
+            (6, 12, 64, 8, 6),
+            (8, 12, 14, 64, 8),
+            (9, 40, 8, 12, 1),
+            (10, 300, 10, 8, 1),
         ] {
             let universe = universe(classes);
             // The tail of the universe (conflict, constants) is drawn rarely.
@@ -4058,12 +4186,10 @@ mod splice_tests {
             let mut rng = Lcg(seed);
             let draw = |rng: &mut Lcg| -> Vec<StylexRule> {
                 (0..rng.below(per_file + 1))
-                    .map(|_| {
-                        let at = match rng.below(60) {
-                            0 => plain + rng.below(4),
-                            _ => rng.below(plain),
-                        };
-                        universe[at].clone()
+                    .map(|_| match rng.below(60) {
+                        0 => universe[plain + rng.below(4)].clone(),
+                        1 if unsafe_odds > 0 && rng.below(unsafe_odds) == 0 => unsafe_rule.clone(),
+                        _ => universe[rng.below(plain)].clone(),
                     })
                     .collect()
             };
@@ -4087,6 +4213,7 @@ mod splice_tests {
                     assemble(&registry.all_rules(), cfg),
                     "seed {seed} step {step}"
                 );
+                assert_consistent(&registry);
             }
         }
     }
