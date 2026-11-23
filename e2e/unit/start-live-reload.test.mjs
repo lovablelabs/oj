@@ -1001,6 +1001,37 @@ test("an import() answered for another run's page reloads it through the behind 
   return receive({ type: "oj:behind" }).then(() => assert.equal(reloadsIn(log), 0));
 });
 
+// The reload takes as long as the server takes to answer it, and the
+// document runs on until then: a route's second chunk is answered with the
+// same word as its first, and the socket may be told too.
+test("a page reloading for being behind keeps its later import()s waiting, and does not reload again", async () => {
+  const storage = new Map();
+  const { bus, open, receive, log, warned } = loadPage({ stamp: '"1f-4"', storage });
+  assert.equal(bus.reloadBehind(), true);
+  assert.equal(reloadsIn(log), 1);
+  // Another import() of the same document: it waits with the first.
+  assert.equal(bus.reloadBehind(), true, "rejected while the document was on its way out");
+  open();
+  await receive({ type: "oj:behind" });
+  assert.equal(reloadsIn(log), 1, "one reload");
+  assert.deepEqual(warned, [], "nothing served this document again");
+  // The document that comes back under the same stamp is the cache's.
+  const again = loadPage({ stamp: '"1f-4"', storage });
+  assert.equal(again.bus.reloadBehind(), false);
+  assert.equal(again.warned.length, 1);
+});
+
+test("a page told it is behind by its socket keeps the import()s it makes meanwhile waiting", async () => {
+  const { bus, open, receive, log, warned } = loadPage({ stamp: '"1f-4"' });
+  open();
+  log.length = 0;
+  await receive({ type: "oj:behind" });
+  assert.equal(reloadsIn(log), 1);
+  assert.equal(bus.reloadBehind(), true);
+  assert.equal(reloadsIn(log), 1);
+  assert.deepEqual(warned, []);
+});
+
 test("an uncaught failed import of a hot update or of the answer to an import() is no chunk gone from the server", async () => {
   for (const url of [
     "http://localhost/@oj-start/hmr/lazy?id=%2Fapp%2Fsrc%2Fa.ts%3Frolldown-lazy%3D1&clientId=c1&n=1",

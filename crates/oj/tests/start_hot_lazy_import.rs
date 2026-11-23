@@ -2525,3 +2525,49 @@ async fn an_import_of_the_module_a_failed_build_is_about_rejects_with_its_error(
     );
     page.close().await;
 }
+
+/// A tab left open across a restart of the dev server reloads at its first
+/// `import()`, and the reload takes as long as the new run takes to render
+/// the document. A route's other chunks are asked for meanwhile and answered
+/// with the same word: they wait with the first, where they rejected with
+/// "this page was served by another run of the dev server" and the app put
+/// its error screen up over a page about to be replaced.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_imports_of_a_page_reloading_for_another_run_wait_for_the_reload() {
+    let Some(app) = lazy_app(
+        "lazy-import-another-run",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let page = open_home(&dev).await;
+    // As the page's runtime asks, under the stamp of another run's document.
+    page.eval::<bool>(
+        "(() => {
+            sessionStorage.setItem('rejected', '');
+            const ask = (n) => import(`/@oj-start/hmr/lazy?id=x&clientId=old-tab&n=${n}&g=1-0`).catch((e) =>
+                sessionStorage.setItem('rejected', sessionStorage.getItem('rejected') + `[${n}: ${e.message}]`));
+            ask(1);
+            ask(2);
+            setTimeout(() => ask(3), 5);
+            return true;
+        })()",
+    )
+    .await;
+    // The reload brings a new document.
+    hot_ready(&page).await;
+    let rejected = page
+        .eval::<String>("sessionStorage.getItem('rejected')")
+        .await;
+    assert_eq!(
+        rejected,
+        "",
+        "an import rejected while the page reloaded\n{}",
+        dev.output()
+    );
+    page.close().await;
+}

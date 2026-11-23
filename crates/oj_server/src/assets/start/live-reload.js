@@ -255,6 +255,16 @@
     } catch {}
     return true;
   };
+  // Whether this document is reloading for being behind. The reload takes
+  // as long as the server takes to answer it (a server that just restarted
+  // is still building), and the document runs on until then: its socket
+  // may be told it is behind, and each `import()` it makes is answered with
+  // the same word. Those find the mark this document left itself, which
+  // says a reload served the same document only to the one that comes
+  // back: this one is still on its way out, and a second `import()` that
+  // rejected here would put the app's error screen up over a page about to
+  // be replaced.
+  let leaving = false;
   // Sent with each request for a module behind an `import()`: which run of
   // the dev server rendered this document.
   bus.stamp = stamp;
@@ -266,7 +276,10 @@
   // server rendered (the same reload its socket is told to make, under the
   // same guard); whether it reloads.
   bus.reloadBehind = () => {
+    // On its way out already: the import waits with the one that reloaded.
+    if (leaving) return true;
     if (!behindOnce(stamp)) return false;
+    leaving = true;
     snapshot();
     location.reload();
     return true;
@@ -545,7 +558,8 @@
       if (msg && msg.type === "oj:behind") {
         // A missed hot change keys on the changes the page has too: the
         // reload brings a document stamped with newer ones.
-        if (!behindOnce(msg.hot ? stamp + "#h" + hotHas : stamp)) return;
+        if (leaving || !behindOnce(msg.hot ? stamp + "#h" + hotHas : stamp)) return;
+        leaving = true;
       }
     }
     await notify("vite:beforeFullReload", { type: "full-reload" });
