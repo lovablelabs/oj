@@ -201,7 +201,7 @@ test("an answer that comes with another edit ends the wait, and both re-run", as
     app.accept();
     runtime.hooks.createModuleHotContext("src/other.tsx").accept();
     const announced = [];
-    app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => u.path)));
+    app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => `${u.path} by ${u.firstInvalidatedBy}`)));
     runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
     await settle(runtime);
     runtime.ojApply({
@@ -211,7 +211,9 @@ test("an answer that comes with another edit ends the wait, and both re-run", as
     });
     await settle(runtime);
     assert.equal(runtime.hmr.resent, undefined, "answered");
-    assert.deepEqual(announced.sort(), ["src/app.tsx", "src/other.tsx"]);
+    // Who invalidated is named on the importer's entry alone, as on each
+    // entry of Vite's update payload.
+    assert.deepEqual(announced.sort(), ["src/app.tsx by src/a.tsx", "src/other.tsx by undefined"]);
     const before = runtime.log.length;
     timers[0]();
     assert.equal(runtime.log.length, before, "no reload when the wait ends");

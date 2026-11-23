@@ -173,7 +173,7 @@ class OjHmrClient {
       return `update propagated back to ${firstInvalidatedBy}, which called import.meta.hot.invalidate()`;
     }
     if (this.selfAccepted(id)) {
-      boundaries.push({ boundary: id, acceptedVia: id, circular: this.circular(id, stack) });
+      boundaries.push({ boundary: id, acceptedVia: id, circular: this.circular(id, stack), by: firstInvalidatedBy });
       return;
     }
     const parents = this.runtime.getImporters(id).filter((p) => this.runtime.isExecuted(p));
@@ -181,7 +181,12 @@ class OjHmrClient {
     for (const parent of parents) {
       const chain = [...stack, parent];
       if (this.acceptsDep(parent, id)) {
-        boundaries.push({ boundary: parent, acceptedVia: id, circular: this.circular(parent, chain) });
+        boundaries.push({
+          boundary: parent,
+          acceptedVia: id,
+          circular: this.circular(parent, chain),
+          by: firstInvalidatedBy,
+        });
         continue;
       }
       if (!stack.includes(parent)) {
@@ -232,7 +237,10 @@ class OjHmrClient {
     return __ojBus.beforeApply ? __ojBus.beforeApply() : "continue";
   }
 
-  payload(boundaries, firstInvalidatedBy) {
+  // Who invalidated is each boundary's own (`by`), as it is each entry's
+  // of Vite's update payload: an edit sent with the answer to an
+  // invalidation has none.
+  payload(boundaries) {
     return {
       type: "update",
       updates: boundaries.map((b) => ({
@@ -241,7 +249,7 @@ class OjHmrClient {
         acceptedPath: b.acceptedVia,
         timestamp: Date.now(),
         isWithinCircularImport: b.circular,
-        firstInvalidatedBy,
+        firstInvalidatedBy: b.by,
       })),
     };
   }
@@ -326,7 +334,7 @@ class OjHmrClient {
         const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
         for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
         if (fresh.length) {
-          await this.notify("vite:beforeUpdate", this.payload(fresh, by));
+          await this.notify("vite:beforeUpdate", this.payload(fresh));
           // A module a listener imported meanwhile runs here now.
           const again = compute();
           if (again?.reload) return this.requestReload(again.reload);
@@ -353,10 +361,10 @@ class OjHmrClient {
         }
       }
     }
-    if (update) await this.apply(update, by);
+    if (update) await this.apply(update);
     this.applied = this.lastSeq;
     this.wake();
-    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries, by));
+    if (update) await this.notify("vite:afterUpdate", this.payload(update.boundaries));
   }
 
   async applyInvalidate(id) {
@@ -396,14 +404,14 @@ class OjHmrClient {
       }
       return;
     }
-    const payload = this.payload(update.boundaries, firstInvalidatedBy);
+    const payload = this.payload(update.boundaries);
     await this.notify("vite:beforeUpdate", payload);
     if (this.beforeApply() === "reload") return;
-    await this.apply(update, firstInvalidatedBy);
+    await this.apply(update);
     await this.notify("vite:afterUpdate", payload);
   }
 
-  async apply(update, firstInvalidatedBy) {
+  async apply(update) {
     for (const id of update.updateSet) {
       if (!this.runtime.hasFactory(id)) return this.requestReload(`no factory for module ${id}`);
     }
@@ -413,7 +421,7 @@ class OjHmrClient {
       callbacks: this.hotModules.get(b.boundary)?.callbacks.filter((c) => c.deps.includes(b.acceptedVia)) ?? [],
     }));
     for (const id of update.updateSet) this.runtime.removeModuleCache(id);
-    for (const { boundary, acceptedVia, circular, callbacks } of applies) {
+    for (const { boundary, acceptedVia, circular, callbacks, by: firstInvalidatedBy } of applies) {
       let fresh;
       try {
         this.runtime.initModule(acceptedVia);
