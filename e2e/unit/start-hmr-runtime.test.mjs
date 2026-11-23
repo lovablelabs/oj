@@ -189,6 +189,57 @@ test("a page whose importer arrived does not reload when its wait ends", async (
   assert.equal(runtime.log.length, before, "nothing asked of the server");
 });
 
+// The bundler sends the importer and an edit made meanwhile as one update,
+// and the page takes the updates waiting for it together: the answer is in
+// there, and the wait is over.
+test("an answer that comes with another edit ends the wait, and both re-run", async () => {
+  GRAPH["src/other.tsx"] = [];
+  try {
+    const timers = [];
+    const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], timers });
+    const app = runtime.hooks.createModuleHotContext("src/app.tsx");
+    app.accept();
+    runtime.hooks.createModuleHotContext("src/other.tsx").accept();
+    const announced = [];
+    app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => `${u.path} by ${u.firstInvalidatedBy}`)));
+    runtime.hooks.createModuleHotContext("src/a.tsx").invalidate();
+    await settle(runtime);
+    runtime.ojApply({
+      url: "/@oj-start/hmr/hmr_patch_0.js",
+      seq: 1,
+      changedIds: ["src/other.tsx", "src/app.tsx"],
+    });
+    await settle(runtime);
+    assert.equal(runtime.hmr.resent, undefined, "answered");
+    // Who invalidated is named on the importer's entry alone, as on each
+    // entry of Vite's update payload.
+    assert.deepEqual(announced.sort(), ["src/app.tsx by src/a.tsx", "src/other.tsx by undefined"]);
+    const before = runtime.log.length;
+    timers[0]();
+    assert.equal(runtime.log.length, before, "no reload when the wait ends");
+  } finally {
+    delete GRAPH["src/other.tsx"];
+  }
+});
+
+// The module that invalidated, edited again while the page waits: an edit
+// like any other, not the invalidation come back to where it started.
+test("an edit to the module that invalidated, sent with the answer, is no circular invalidation", async () => {
+  const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"] });
+  const app = runtime.hooks.createModuleHotContext("src/app.tsx");
+  app.accept();
+  const self = runtime.hooks.createModuleHotContext("src/a.tsx");
+  self.accept();
+  const announced = [];
+  app.on("vite:beforeUpdate", (p) => announced.push(...p.updates.map((u) => u.path)));
+  self.invalidate();
+  await settle(runtime);
+  runtime.ojApply({ url: "/@oj-start/hmr/hmr_patch_0.js", seq: 1, changedIds: ["src/app.tsx", "src/a.tsx"] });
+  await settle(runtime);
+  assert.deepEqual(announced.sort(), ["src/a.tsx", "src/app.tsx"]);
+  assert.ok(!runtime.log.some((l) => /propagated back/.test(l.reason ?? "")), JSON.stringify(runtime.log));
+});
+
 test("hot.invalidate reloads when the server cannot be asked for the importer", async () => {
   const runtime = loadRuntime(undefined, { noFactory: ["src/app.tsx"], send: () => false });
   runtime.hooks.createModuleHotContext("src/app.tsx").accept();

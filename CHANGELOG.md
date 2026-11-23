@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Start dev: a tab left open across a restart of the dev server no longer shows the app's error screen with "this page was served by another run of the dev server" while it reloads. The tab reloads at its first `import()`, and the reload takes as long as the new run takes to render the document; the other chunks the route asked for meanwhile found the reload already asked for and rejected. They now wait with the first, and a socket told the page is behind in that time does not reload it a second time.
 
+- Start dev: a page that asked the server for an importer no longer reloads ten seconds later when that importer arrived together with another edit. The page took the two as one update, re-ran both, and still counted itself waiting; now an update that holds the importers it asked for ends the wait, and an edit to the module that invalidated, sent along with them, is not taken for a circular invalidation.
+
 ## [0.4.19] - 2026-11-22
 
 ### Fixed
