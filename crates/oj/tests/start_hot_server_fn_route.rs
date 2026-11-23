@@ -215,6 +215,25 @@ async fn an_edit_to_a_route_with_a_server_function_is_a_hot_update() {
         "the page reloaded for an edit to the handler alone\n{}",
         dev.output()
     );
+
+    // A router from before `_refreshRoute` (router-core 1.171.18) loads its
+    // routes again through `invalidate`, as its own accept handler did.
+    assert!(
+        page.eval::<bool>(
+            "(() => { let p = self.__TSR_ROUTER__, had = false; \
+             while (p) { if (Object.hasOwn(p, '_refreshRoute')) { delete p._refreshRoute; had = true; } p = Object.getPrototypeOf(p); } \
+             return had && typeof self.__TSR_ROUTER__._refreshRoute === 'undefined'; })()"
+        )
+        .await,
+        "the router had no _refreshRoute to take away"
+    );
+    std::fs::write(root.join("src/routes/index.tsx"), index_route(4, 2)).unwrap();
+    shows(&page, &dev, "loaded", "answer-v4").await;
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded for an edit to the handler alone\n{}",
+        dev.output()
+    );
     assert!(
         page.errors().is_empty(),
         "the page threw: {:?}",

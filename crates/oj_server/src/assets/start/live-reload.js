@@ -543,12 +543,25 @@
       }
       // A module that declares a server function was patched in place: the
       // router loads its matches again, as the route module's accept handler
-      // does under Vite (`router._refreshRoute`), so a loader that calls the
-      // function shows what the edited handler answers.
+      // does under Vite, so a loader that calls the function shows what the
+      // edited handler answers. `_refreshRoute` is what that handler calls
+      // from router-core 1.171.18; before it, `invalidate({ sync: true })`.
+      // Not awaited, as there: a loader that never settles would hold every
+      // later frame of this socket, the next patch and a reload among them.
       if (msg && msg.type === "oj:routes") {
         const router = self.__TSR_ROUTER__;
-        if (router && typeof router._refreshRoute === "function") {
-          await Promise.resolve(router._refreshRoute()).catch((err) => console.error("[oj]", err));
+        const refresh =
+          router && typeof router._refreshRoute === "function"
+            ? () => router._refreshRoute()
+            : router && typeof router.invalidate === "function"
+              ? () => router.invalidate({ sync: true })
+              : null;
+        if (refresh) {
+          try {
+            Promise.resolve(refresh()).catch((err) => console.error("[oj]", err));
+          } catch (err) {
+            console.error("[oj]", err);
+          }
         }
         applied(msg);
         return;

@@ -3326,9 +3326,9 @@ enum ServerFnTrigger {
     /// and went, a tsconfig saved as it was.
     Scan,
     /// A source file that may declare a server function was edited: the
-    /// resolver is regenerated without reading what the scan recorded, and
-    /// the server engine revalidates the file. For the page it counts as a
-    /// scan does: a change when the resolver it leaves is another.
+    /// resolver is regenerated without reading what the scan recorded. For
+    /// the page it counts as a scan does: a change when the resolver it
+    /// leaves is another, or could not be made.
     Declares,
 }
 
@@ -3365,8 +3365,8 @@ fn refresh_server_fn_resolver(
         // A declaring edit changes the server functions for the page only
         // when the resolver it leaves is another (a function added, removed
         // or renamed): an edit inside a handler keeps every id, the client
-        // takes it as a hot update, and the server engine revalidates the
-        // module it was served from. Counted as a change on the edit alone,
+        // takes it as a hot update, and the server graphs drop the module
+        // as they do any edited one. Counted as a change on the edit alone,
         // every save of a route with a loader reloaded the page and the
         // server's module graph.
         ServerFnTrigger::Declares | ServerFnTrigger::Scan => {
@@ -9077,6 +9077,11 @@ mod tests {
         assert!(!refresh_server_fn_resolver(&root, &cache, Scan, true));
         // An edit inside a declaring file that keeps its functions: the same
         // resolver, nothing for the page.
+        std::fs::write(
+            root.join("src/lib/aliased.functions.ts"),
+            "import { authedFn } from \"@app/lib/barrel\";\nexport const first = authedFn.handler(async () => 2);\n",
+        )
+        .unwrap();
         assert!(!refresh_server_fn_resolver(&root, &cache, Declares, false));
         assert_eq!(std::fs::read(&resolver).unwrap(), before);
 
