@@ -26,6 +26,10 @@ pub(crate) struct PreGate {
     /// The sx prop compiles with no stylex import in the file at all.
     sx: Option<SxSearcher>,
     sources: SourceSearchers,
+    /// A hash of what the searchers were built from, for
+    /// [`PreGate::assert_built_from`].
+    #[cfg(debug_assertions)]
+    inputs: u64,
 }
 
 #[derive(Clone)]
@@ -49,6 +53,8 @@ impl PreGate {
         import_sources: &[ImportSource],
         rewrite_aliases: bool,
     ) -> Self {
+        #[cfg(debug_assertions)]
+        let inputs = input_hash(sx_prop_name, import_sources, rewrite_aliases);
         let sx = sx_prop_name.map(|name| match name {
             DEFAULT_SX_PROP_NAME => SxSearcher::Default,
             name => SxSearcher::Named(Box::new(searcher(name))),
@@ -66,6 +72,8 @@ impl PreGate {
             return Self {
                 sx,
                 sources: SourceSearchers::Stylex,
+                #[cfg(debug_assertions)]
+                inputs,
             };
         }
         // Atoms compile off a hardcoded source no importSources setting
@@ -89,7 +97,27 @@ impl PreGate {
         Self {
             sx,
             sources: SourceSearchers::Listed(sources),
+            #[cfg(debug_assertions)]
+            inputs,
         }
+    }
+
+    /// Panics unless the gate was built from these. The options that hold it
+    /// keep them in `pub` fields, and a gate left over from before one was
+    /// assigned to turns away sources the options would now compile.
+    #[cfg(debug_assertions)]
+    pub(crate) fn assert_built_from(
+        &self,
+        sx_prop_name: Option<&str>,
+        import_sources: &[ImportSource],
+        rewrite_aliases: bool,
+    ) {
+        debug_assert_eq!(
+            self.inputs,
+            input_hash(sx_prop_name, import_sources, rewrite_aliases),
+            "`sx_prop_name`, `import_sources` or `rewrite_aliases` changed after `resolve()`: \
+             the pre-parse gate still searches for what they were"
+        );
     }
 
     fn sx(&self) -> Option<&Finder<'static>> {
@@ -135,6 +163,18 @@ fn searcher(needle: &str) -> Finder<'static> {
     Finder::new(needle.as_bytes()).into_owned()
 }
 
+#[cfg(debug_assertions)]
+fn input_hash(
+    sx_prop_name: Option<&str>,
+    import_sources: &[ImportSource],
+    rewrite_aliases: bool,
+) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (sx_prop_name, import_sources, rewrite_aliases).hash(&mut hasher);
+    hasher.finish()
+}
+
 // Derived from the options it sits in, so it neither distinguishes two option
 // sets nor adds to their `cache_repr` (a searcher's own Debug names the SIMD
 // kernel picked for this CPU).
@@ -165,7 +205,7 @@ mod tests {
     }
 
     fn pre_gate(source: &str, options: &ResolvedOptions) -> Option<bool> {
-        options.gate.scan(source)
+        options.pre_gate().scan(source)
     }
 
     /// The gate as specified, one scan per needle and nothing prebuilt.
@@ -279,6 +319,42 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a.cache_repr, b.cache_repr);
         assert_eq!(format!("{:?}", a.gate), format!("{:?}", b.gate));
+    }
+
+    /// Each field the gate is built from, assigned to after `resolve()`.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_gate_left_behind_by_its_options_is_caught_in_a_debug_build() {
+        use crate::api::might_contain_stylex;
+
+        type Change = fn(&mut ResolvedOptions);
+        let changes: [(&str, Change); 4] = [
+            ("sx_prop_name", |options| options.sx_prop_name = None),
+            ("import_sources", |options| {
+                let source = ImportSource::Plain("foo-bar".to_string());
+                options.import_sources.push(source);
+            }),
+            ("import_sources", |options| {
+                options.import_sources[0] = ImportSource::Aliased {
+                    from: "@stylexjs/stylex".to_string(),
+                    as_name: "css".to_string(),
+                };
+            }),
+            ("rewrite_aliases", |options| options.rewrite_aliases = true),
+        ];
+        let source = "import { css } from 'foo-bar';";
+        for (field, change) in changes {
+            let mut options = ResolvedOptions::default();
+            assert!(!might_contain_stylex(source, &options));
+            change(&mut options);
+            let scan = std::panic::AssertUnwindSafe(|| might_contain_stylex(source, &options));
+            let caught = std::panic::catch_unwind(scan).expect_err(field);
+            let message = caught.downcast_ref::<String>().expect(field);
+            assert!(message.contains("changed after `resolve()`"), "{message}");
+        }
+        // A clone carries the gate along with the fields it was built from.
+        let listed = options(serde_json::json!({ "importSources": ["foo-bar"] }));
+        assert!(might_contain_stylex(source, &listed.clone()));
     }
 
     #[test]

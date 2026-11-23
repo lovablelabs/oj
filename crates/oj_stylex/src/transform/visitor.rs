@@ -416,7 +416,8 @@ fn pass_a_index(state: &CompileState<'_>, source: &str) -> SiteIndex {
     });
     // A JSX attribute name is no reference; its source text stands in.
     if state.options.sx_prop_name.is_some() {
-        starts.extend(state.options.gate.sx_offsets(source).map(|i| i as u32));
+        let gate = state.options.pre_gate();
+        starts.extend(gate.sx_offsets(source).map(|i| i as u32));
         starts.sort_unstable();
     }
     SiteIndex { starts }

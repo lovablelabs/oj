@@ -501,6 +501,16 @@ impl<T: Clone> Checked<T> {
     }
 }
 
+/// Whether the answer a map keeps by now (`None`: it keeps none) is for a
+/// look to drop or to write over, having found `stale` there (`None`:
+/// nothing) and worked out its own with no lock on the map. Any other answer
+/// was kept in the meantime by another thread: this look has not found it
+/// wanting, and its own, which may be the older of the two or one that is not
+/// to be kept at all, leaves it where it is.
+fn gives_way<T>(kept: Option<&Checked<T>>, stale: Option<&Arc<Deps>>) -> bool {
+    kept.is_none_or(|kept| stale.is_some_and(|stale| Arc::ptr_eq(&kept.deps, stale)))
+}
+
 /// What every answer of a snapshot rests on.
 static NOTHING: LazyLock<Arc<Deps>> = LazyLock::new(Arc::default);
 
@@ -626,7 +636,10 @@ impl MemoFs {
     }
 
     /// Process-wide live instance: an embedder swaps `&StdFs` for
-    /// `MemoFs::shared()` at its call sites and nothing else changes.
+    /// `MemoFs::shared()` at its call sites and nothing else changes. One
+    /// that compiles through it takes a [`MemoFs::session`] once per compile
+    /// and passes that: every call made on the fs itself is a session of its
+    /// own, and stats again what the call before it statted.
     pub fn shared() -> &'static MemoFs {
         &SHARED
     }
@@ -881,17 +894,25 @@ impl View<'_> {
                 hit => hit.map(Checked::copied),
             }
         };
-        if let Some((value, deps)) = hit
-            && let Standing::Holds = self.standing(&deps)
-        {
-            rests_on(&deps);
-            return value;
-        }
+        // What this look found kept and no longer standing.
+        let stale = match hit {
+            Some((value, deps)) => {
+                if let Standing::Holds = self.standing(&deps) {
+                    rests_on(&deps);
+                    return value;
+                }
+                Some(deps)
+            }
+            None => None,
+        };
         let tracker = Tracker::new(*self);
         let value = work(&tracker);
         let deps = tracker.finish();
         rests_on(&deps);
         let mut map = write_lock(map);
+        if !gives_way(map.get(key), stale.as_ref()) {
+            return value;
+        }
         if deps.volatile {
             map.remove(key);
         } else {
@@ -971,21 +992,30 @@ impl View<'_> {
                 hit => hit.map(Checked::copied),
             }
         };
-        if let Some((value, deps)) = hit
-            && let Standing::Holds = self.standing(&deps)
-        {
-            return value;
-        }
+        // What this look found kept and no longer standing.
+        let stale = match hit {
+            Some((value, deps)) => {
+                if let Standing::Holds = self.standing(&deps) {
+                    return value;
+                }
+                Some(deps)
+            }
+            None => None,
+        };
         let resolved = resolve_import_with(&tracker, specifier, importer, config);
         let deps = tracker.finish();
         let mut memos = write_lock(&self.fs.resolve);
+        let kept = memos
+            .get(key, config)
+            .and_then(|memo| memo.by_specifier.get(specifier));
+        let held = kept.is_some();
+        if !gives_way(kept, stale.as_ref()) {
+            return resolved;
+        }
         if deps.volatile {
             memos.forget(key, config, specifier);
             return resolved;
         }
-        let held = memos
-            .get(key, config)
-            .is_some_and(|memo| memo.by_specifier.contains_key(specifier));
         if memos.kept >= self.fs.cap && !held {
             memos.clear();
         }
@@ -1204,31 +1234,40 @@ impl<'a> Tracker<'a> {
         let Some(look) = self.view.look else {
             return;
         };
-        let mut deps = self.deps.borrow_mut();
         let own = real.is_some_and(|real| real.as_os_str() == p.as_os_str());
         if !(DIRS_PIN_ENTRIES && own) {
+            let mut deps = self.deps.borrow_mut();
             deps.push(Dep::Real(p.into(), real.map(Into::into)));
             return;
         }
-        // A path that is its own realpath crosses no symlink: each directory
-        // above lists the next name as the real entry it is, and goes on
-        // doing so until its stamp moves. Under a directory that cannot say,
-        // what is left of the path is realpathed again.
-        let mut path = p;
-        while let Some(dir) = parent_dir(path) {
-            match self.view.stat(dir) {
-                Stamp::Node(node) if node.kind == Kind::Dir && look.settled(&node) => {
-                    deps.push(Dep::Stat(dir.into(), Stamp::Node(node)));
-                }
-                stamp => {
-                    if let Stamp::Node(node) = stamp {
-                        deps.wait_for(&node, look);
-                    }
-                    deps.push(Dep::Real(path.into(), Some(path.into())));
-                    return;
-                }
+        // A path that is its own realpath crosses no symlink: the directory
+        // above lists its last name as the real entry it is, and goes on
+        // doing so until its stamp moves, and is itself its own realpath for
+        // as long as that answer stands. The directory's answer is kept for
+        // itself, so every path below rests on the one account of the
+        // directories above and none lists them again. Under a directory
+        // that cannot say, the path is realpathed again.
+        let Some(dir) = parent_dir(p) else {
+            return;
+        };
+        let listed = match self.view.stat(dir) {
+            Stamp::Node(node) if node.kind == Kind::Dir && look.settled(&node) => {
+                let listing = Dep::Stat(dir.into(), Stamp::Node(node));
+                self.deps.borrow_mut().push(listing);
+                // Taken on as it is answered. A directory found to lead
+                // elsewhere became a symlink after `p` was realpathed.
+                self.realpath(dir.to_path_buf()).as_os_str() == dir.as_os_str()
             }
-            path = dir;
+            stamp => {
+                if let Stamp::Node(node) = stamp {
+                    self.deps.borrow_mut().wait_for(&node, look);
+                }
+                false
+            }
+        };
+        if !listed {
+            let mut deps = self.deps.borrow_mut();
+            deps.push(Dep::Real(p.into(), Some(p.into())));
         }
     }
 }
@@ -4143,6 +4182,184 @@ mod tests {
             .held
             .insert(Arc::as_ptr(&moved) as usize, Arc::clone(&moved));
         assert!(view.holds(look, &inheriting(&moved)));
+    }
+
+    #[test]
+    fn memo_live_leaves_in_place_an_answer_kept_while_its_own_was_worked_out() {
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let look = look_from(SystemTime::now());
+        let view = view_of(&live, &look);
+        let map: PathMap<Checked<&str>> = RwLock::default();
+        let key = b"asked".as_slice();
+        let keep = |value: &'static str, deps: Deps| {
+            let deps = Arc::new(deps);
+            write_lock(&map).insert(key.into(), Checked { value, deps });
+        };
+        let kept = || read_lock(&map).get(key).map(|kept| kept.value);
+        // Kept by an earlier look, and no longer so: the root is there.
+        let moved = || Deps {
+            list: vec![Dep::Stat(Path::new("/").into(), Stamp::Missing)],
+            ..Deps::default()
+        };
+        // This look's answer, worked out while `meanwhile` plays the thread
+        // that keeps its own before this one takes the lock again.
+        let ask = |volatile: bool, meanwhile: &dyn Fn()| {
+            let work = |tracker: &Tracker<'_>| {
+                meanwhile();
+                tracker.deps.borrow_mut().volatile = volatile;
+                "worked out"
+            };
+            view.kept(&map, key, work, |_| {})
+        };
+        for found_moved in [false, true] {
+            let found = if found_moved { "one moved" } else { "none" };
+            for volatile in [false, true] {
+                let reset = || {
+                    write_lock(&map).clear();
+                    if found_moved {
+                        keep("moved", moved());
+                    }
+                };
+                // Nothing kept since: the answer takes the slot, or with no
+                // stat to vouch for it, leaves the slot empty.
+                reset();
+                assert_eq!(ask(volatile, &|| {}), "worked out");
+                let left = (!volatile).then_some("worked out");
+                assert_eq!(kept(), left, "found {found}, volatile: {volatile}");
+                // Another thread's answer, kept since, is neither written
+                // over nor dropped; this look still goes by its own.
+                reset();
+                let racing = || keep("kept meanwhile", Deps::default());
+                assert_eq!(ask(volatile, &racing), "worked out");
+                assert_eq!(
+                    kept(),
+                    Some("kept meanwhile"),
+                    "found {found}, volatile: {volatile}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn memo_live_resolve_leaves_in_place_an_answer_kept_while_its_own_was_worked_out() {
+        let root = live_fixture("meanwhile");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let button = root.join("src/ui/button/Button.tsx");
+        let dir = path_key(button.parent().unwrap());
+        let asked = ResolveConfig::default();
+        let specifier = "dep/tokens.stylex";
+        let keep = |value: &str, deps: Deps| {
+            let answer = Checked {
+                value: Some(PathBuf::from(value)),
+                deps: Arc::new(deps),
+            };
+            write_lock(&live.resolve).keep(dir, asked, specifier, answer);
+        };
+        let moved = || Deps {
+            list: vec![Dep::Stat(Path::new("/").into(), Stamp::Missing)],
+            ..Deps::default()
+        };
+        for volatile in [false, true] {
+            for found_moved in [false, true] {
+                live.invalidate_all();
+                if found_moved {
+                    keep("/moved", moved());
+                }
+                if volatile {
+                    // Read before its stamp has stood: not an answer to keep.
+                    let manifest = r#"{"name":"dep","exports":{"./*":"./lib/*.js"}}"#;
+                    put(&root, "node_modules/dep/package.json", manifest);
+                } else {
+                    come_to_rest();
+                }
+                let look = look_from(SystemTime::now());
+                // Held here, the look's stats: the asker has read what is
+                // kept and waits at the first stat it makes after.
+                let seen = lock(&look.seen);
+                std::thread::scope(|scope| {
+                    let asker = scope
+                        .spawn(|| view_of(&live, &look).resolve_import(specifier, &button, asked));
+                    std::thread::sleep(TEST_SETTLE);
+                    keep("/kept/meanwhile", Deps::default());
+                    drop(seen);
+                    asker.join().unwrap();
+                });
+                let memos = read_lock(&live.resolve);
+                let kept = &memos.get(dir, asked).unwrap().by_specifier[specifier];
+                assert_eq!(
+                    kept.value.as_deref(),
+                    Some(Path::new("/kept/meanwhile")),
+                    "volatile: {volatile}, found one moved: {found_moved}"
+                );
+                assert_eq!(memos.kept, 1);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memo_live_realpaths_share_what_the_directories_above_rest_on() {
+        let root = live_fixture("realpaths");
+        let live = MemoFs::settling(Some(TEST_SETTLE));
+        let theme = root.join("src/theme");
+        let alt = theme.join("alt");
+        let files = [
+            (theme.join("tokens.stylex.ts"), &theme),
+            (alt.join("tokens.stylex.ts"), &alt),
+        ];
+        // A look by whose time everything has stood, the temp dir others
+        // write to as well: every directory vouches for what it lists.
+        let look = look_from(SystemTime::now() + TEST_SETTLE * 2);
+        let tracker = Tracker::new(view_of(&live, &look));
+        for (file, _) in &files {
+            assert_eq!(tracker.realpath(file.clone()), *file);
+        }
+        let kept = |p: &Path| Arc::clone(&read_lock(&live.real)[path_key(p)].deps);
+        // Each rests on the listing of the directory it is in, and for the
+        // rest on what that directory's own realpath does: the same account,
+        // held and not copied.
+        let mut below = files
+            .iter()
+            .map(|(file, dir)| (file.as_path(), dir.as_path()));
+        let mut level = below.next();
+        let mut levels = 0;
+        while let Some((path, dir)) = level {
+            let deps = kept(path);
+            assert!(
+                matches!(&deps.list[..], [Dep::Stat(on, Stamp::Node(_))] if **on == *dir),
+                "{}",
+                path.display()
+            );
+            let above = kept(dir);
+            let shared = match &deps.inherited[..] {
+                [] => above.list.is_empty() && above.inherited.is_empty(),
+                [inherited] => Arc::ptr_eq(inherited, &above),
+                _ => false,
+            };
+            assert!(shared, "{}", path.display());
+            levels += 1;
+            level = parent_dir(dir).map(|up| (dir, up)).or_else(|| below.next());
+        }
+        // Both files, and every directory above each, were walked.
+        let depth = |p: &Path| p.ancestors().count() - 1;
+        assert_eq!(levels, depth(&files[0].0) + depth(&files[1].0));
+        // What the tracker took on is the files' two accounts.
+        let deps = tracker.finish();
+        assert!(deps.list.is_empty());
+        assert_eq!(deps.inherited.len(), 2);
+        for ((file, _), inherited) in files.iter().zip(&deps.inherited) {
+            assert!(Arc::ptr_eq(inherited, &kept(file)));
+        }
+        // And the answers still follow every directory above them.
+        let stats: Vec<&Path> = every_dep(&deps.inherited[1])
+            .into_iter()
+            .map(|dep| match dep {
+                Dep::Stat(path, Stamp::Node(_)) => &**path,
+                _ => panic!("rests on something other than a listing"),
+            })
+            .collect();
+        let above: Vec<&Path> = files[1].0.ancestors().skip(1).collect();
+        assert_eq!(stats, above);
     }
 
     #[test]

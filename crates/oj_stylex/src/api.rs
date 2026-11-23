@@ -46,7 +46,7 @@ pub enum MapMode {
 }
 
 pub fn might_contain_stylex(source: &str, options: &ResolvedOptions) -> bool {
-    options.gate.scan(source).is_some()
+    options.pre_gate().scan(source).is_some()
 }
 
 /// `None` = pre-gate skip (the file cannot reference any stylex import source).
@@ -96,7 +96,7 @@ pub fn transform_source_in_with_map(
     map_mode: MapMode,
 ) -> Result<Option<SourceCompileResult>, StylexError> {
     let want_map = map_mode != MapMode::Off;
-    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
         return Ok(None);
     };
     let filename = ctx.filename.to_string_lossy().replace('\\', "/");
@@ -191,7 +191,7 @@ pub fn transform_program<'a>(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<CompileResult, StylexError> {
-    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
         return Ok(CompileResult {
             modified: false,
             rules: Vec::new(),
@@ -246,12 +246,13 @@ pub fn transform_source_rules_in(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<Option<CompileResult>, StylexError> {
-    let Some(sx_hit) = options.gate.scan(ctx.source_text) else {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
         return Ok(None);
     };
+    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
     let program = {
         let _t = crate::timings::start(crate::timings::Stage::Parse);
-        parse_program(allocator, ctx.source_text, &ctx.filename.to_string_lossy())?
+        parse_program(allocator, ctx.source_text, &filename)?
     };
     compile_rules(&program, sx_hit, ctx, options, fs).map(Some)
 }
@@ -264,7 +265,7 @@ pub fn transform_program_rules(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<CompileResult, StylexError> {
-    match options.gate.scan(ctx.source_text) {
+    match options.pre_gate().scan(ctx.source_text) {
         Some(sx_hit) => compile_rules(program, sx_hit, ctx, options, fs),
         None => Ok(CompileResult::default()),
     }

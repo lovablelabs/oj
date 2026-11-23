@@ -71,6 +71,9 @@ fn jobs() -> String {
             "consts",
             "import * as stylex from '@stylexjs/stylex';\nexport const c = stylex.defineConsts({ gap: '4px' });\n",
         ),
+        // Turned away by the pre-parse gate: no backend parses it, to find
+        // that it does not parse.
+        job("unparsed", "export const = ;\n"),
     ]
     .join("\n")
 }
@@ -83,8 +86,8 @@ fn rules_only_lines_are_the_full_lines_minus_code() {
         &["ndjson", "--threads", "1", "--emit", "rules"],
         &input,
     ));
-    assert_eq!(full.len(), 5);
-    assert_eq!(rules.len(), 5);
+    assert_eq!(full.len(), 6);
+    assert_eq!(rules.len(), 6);
     for (full, rules) in full.iter().zip(&rules) {
         assert_eq!(rules, &without_code(full));
         assert!(!rules.contains("\"code\""), "{rules}");
@@ -106,6 +109,11 @@ fn rules_only_lines_are_the_full_lines_minus_code() {
         rules[3]
     );
     assert!(rules[4].contains("constKey"), "{}", rules[4]);
+    assert!(
+        rules[5].ends_with(r#""ok":true,"rules":[]}"#),
+        "{}",
+        rules[5]
+    );
 }
 
 #[test]

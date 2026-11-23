@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- StyleX: the compiler works out bindings with its own scope model by default, where it used `oxc_semantic`; compiled output is unchanged. `OJ_STYLEX_NATIVE_SCOPE=0` brings back `oxc_semantic`.
+- StyleX dev: the plugin keeps import resolution across modules and reloads, rechecking the file stats each answer rests on before reusing it, so a later pass over an app does not resolve every import again.
+- StyleX: a serve `transform` with `wantCode: false` and no source map, and a batch run that emits only rules, compile the rules without building the code.
+
 ## [0.4.20] - 2026-11-23
 
 ### Changed

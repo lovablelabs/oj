@@ -85,7 +85,7 @@ impl ModuleResolution {
 pub type AliasMap = Vec<(String, Vec<String>)>;
 /// One resolved `importSources` entry. `Aliased` names the single named export
 /// that carries the whole stylex namespace for that source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportSource {
     Plain(String),
     Aliased { from: String, as_name: String },
@@ -146,7 +146,8 @@ pub struct ResolvedOptions {
     pub rewrite_aliases: bool,
     /// The pre-parse gate over `sx_prop_name`, `import_sources` and
     /// `rewrite_aliases`, its searchers built once here instead of per file
-    /// (those of the default needles, once for the process).
+    /// (those of the default needles, once for the process). Read through
+    /// [`ResolvedOptions::pre_gate`].
     pub(crate) gate: PreGate,
     /// Canonical `{:?}` capture of every other field, computed once at
     /// resolve: cache/memo keys read it instead of reformatting per call.
@@ -154,6 +155,19 @@ pub struct ResolvedOptions {
 }
 
 impl ResolvedOptions {
+    /// The pre-parse gate. A debug build checks on every read that the
+    /// fields it was built from are as `resolve()` left them: they are `pub`,
+    /// and nothing rebuilds the gate when one is assigned to.
+    pub(crate) fn pre_gate(&self) -> &PreGate {
+        #[cfg(debug_assertions)]
+        self.gate.assert_built_from(
+            self.sx_prop_name.as_deref(),
+            &self.import_sources,
+            self.rewrite_aliases,
+        );
+        &self.gate
+    }
+
     /// parity: `state.importSources.includes(source)` — the `.map(from)` list.
     pub fn is_import_source(&self, source: &str) -> bool {
         self.import_sources

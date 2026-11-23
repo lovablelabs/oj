@@ -873,6 +873,11 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
             }
         }),
         Backend::Ast => ARENA.with(|cell| {
+            // The rules of a source the gate turns away are none, parsed or
+            // not: as under the splice backend, it is not parsed to say so.
+            if rules_only && options.pre_gate().scan(source).is_none() {
+                return Ok((Cow::Borrowed(source), Vec::new(), None));
+            }
             let mut allocator = cell.borrow_mut();
             allocator.reset();
             let mut program = {
