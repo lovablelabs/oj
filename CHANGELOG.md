@@ -7,10 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-11-23
+
+### Changed
+
+- StyleX: the compiler and oj's native `@stylexjs/unplugin` follow StyleX 0.19.2 (they followed 0.19.0 and 0.19.1). What an app can see:
+  - `enableDebugClassNames` is gone, as upstream: class names and variable names are the prefixed hash whatever `debug` says, and a config that still sets the option compiles as if it did not.
+  - Media queries: a media type is resolved against the rest of the query before it is printed (contradictory types become `not all`), a leading `not` survives an `and` chain, and the `max-width` that closes the gap under a `min-width` in px sits 0.02px below it. In the stylesheet, same-property `@media` rules are ordered by their px width bound.
+  - Values: bare `content` and `hyphenateCharacter` text is escaped into one CSS string, the contents of `url(...)` are left as written, a zero inside any nested function keeps its unit, units compare case-insensitively, `fontSizeAdjust` is unitless, `keyframes` and `viewTransitionClass` values are transformed under their camelCase keys, and `positionTry` prints one declaration per property.
+  - Dynamic styles: an argument left `undefined` contributes no key, where it produced a class name starting with `null`.
+  - Compile-time evaluation: only upstream's allowlisted static methods of `Object`, `String`, `Number`, `Math` and `Array` run, and reads of `constructor`, `__proto__` and `prototype` are refused.
+  - Stylesheet: with `useCSSLayers`, priority-0 rules (variables, keyframes) print outside the `@layer` blocks; `defineConsts` values are substituted before the sort, and a rule wrapped in a constant at-rule is ordered as that at-rule; `@position-try` takes neither the specificity bump nor a direction selector.
+  - `attrs()` keeps `--custom` property names as written.
+  - Plugin: `importSources` adds to the built-in `stylex` and `@stylexjs/stylex` sources and no longer replaces them; a module that drops its StyleX imports drops its rules from the sheet, in dev and in a build; the dev runtime disables the server-rendered stylesheet through `sheet.disabled` and leaves the `<link>`'s attributes alone during hydration.
+  - `oj build`: the StyleX sheet joins the stylesheet the plugin picks under Vite: the first `index-<hash>.css`, else the first `style-<hash>.css`, else the first stylesheet by file name. It joined the entry's stylesheet before; in an app with neither an `index` nor a `style` sheet, the first by name can be a lazy chunk's, as under Vite.
+
+### Fixed
+
 - Start dev: a tab left open across a restart of the dev server no longer shows the app's error screen with "this page was served by another run of the dev server" while it reloads. The tab reloads at its first `import()`, and the reload takes as long as the new run takes to render the document; the other chunks the route asked for meanwhile found the reload already asked for and rejected. They now wait with the first, and a socket told the page is behind in that time does not reload it a second time.
-
 - Start dev: a page that asked the server for an importer no longer reloads ten seconds later when that importer arrived together with another edit. The page took the two as one update, re-ran both, and still counted itself waiting; now an update that holds the importers it asked for ends the wait, and an edit to the module that invalidated, sent along with them, is not taken for a circular invalidation.
-
 - Start dev: a page that is to run a module it has no factory for reloads onto the server's current output, where the app was left on its error screen with "No factory registered for module" until someone reloaded the tab. The `import()` that met the missing module waits for the reload and does not reject first. The same module missing again within fifteen seconds of that reload is not reloaded for a second time: the output itself lacks it, and the error is the app's to show.
 
 ## [0.4.19] - 2026-11-22
