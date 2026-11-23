@@ -2412,8 +2412,14 @@ fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) 
             return None;
         }
     }
-    let at = entries.partition_point(|&owner| owner < entry);
-    entries.insert(at, entry);
+    // A build, and a file added behind every owner, append.
+    match entries.last() {
+        Some(&last) if last > entry => {
+            let at = entries.partition_point(|&owner| owner < entry);
+            entries.insert(at, entry);
+        }
+        _ => entries.push(entry),
+    }
     Some(())
 }
 
