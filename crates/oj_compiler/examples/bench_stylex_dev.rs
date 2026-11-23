@@ -11,8 +11,17 @@
 //! case, a module the dev server cannot compile in one parse.
 //!
 //! `--pipeline dev` (the default) is the compile of a module no app plugin
-//! transforms; `--pipeline steps` the one where a plugin could, StyleX
-//! running ahead of the plugin chain.
+//! transforms, in one parse where it can be (each group reports how many of
+//! its modules were); `--pipeline steps` the one where a plugin could,
+//! StyleX running ahead of the plugin chain; `--pipeline main` the steps as
+//! the dev server made them before it compiled StyleX modules itself (the
+//! calls of `origin/main`, over this tree's plugin and compiler): the
+//! string transform, its map serialized to JSON, and a compile that parses
+//! it back.
+//!
+//! `--runtime-injection` compiles under the plugin's `runtimeInjection`,
+//! whose module, a dependency the optimizer has not seen, may need interop:
+//! no module then takes one parse.
 //!
 //!   cargo run --release -p oj_compiler --example bench_stylex_dev [-- --modules 200 --runs 7 --pipeline dev]
 
@@ -23,10 +32,13 @@ use oj_compiler::interop::{
     rewrite_cjs_interop_logged, ImporterFormat, InteropKind, InteropTarget, LaterTransforms,
 };
 use oj_compiler::{
-    compile_module_with_input_maps, compile_stylex_module, CompileOptions, CompileOutput, InputMap,
-    InteropPass,
+    compile_module_with_input_maps, compile_module_with_maps, compile_stylex_module_with_pass,
+    CompileOptions, CompileOutput, InputMap, InteropPass, StylexPass,
 };
 use oj_stylex::plugin::StylexPlugin;
+
+/// The module `runtimeInjection: true` imports.
+const INJECT: &str = "@stylexjs/stylex/lib/stylex-inject";
 
 const TOKENS: &str = r#"import * as stylex from "@stylexjs/stylex";
 
@@ -235,6 +247,7 @@ fn served_url(spec: &str) -> Option<String> {
             "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=1a2b3c4d".into()
         }
         "@stylexjs/stylex" => "/node_modules/.vite/deps/@stylexjs_stylex.js?v=1a2b3c4d".into(),
+        INJECT => "/node_modules/@stylexjs/stylex/lib/stylex-inject.js".into(),
         relative if relative.starts_with("./") => format!("/src/{}.ts", &relative[2..]),
         _ => return None,
     })
@@ -247,31 +260,52 @@ fn compile_options() -> CompileOptions {
     opts
 }
 
+struct Bench {
+    plugin: StylexPlugin,
+    /// Under `runtimeInjection`.
+    injecting: bool,
+}
+
+impl Bench {
+    fn may_need_interop(&self, spec: &str) -> bool {
+        spec == "react" || (self.injecting && spec == INJECT)
+    }
+}
+
+/// A compile of one module, and the way it took when it can take another.
+type Compile = fn(&Bench, &Path, &str) -> (CompileOutput, Option<StylexPass>);
+
 /// The dev server's client compile of an app module the StyleX gate admits
 /// and no app plugin transforms.
-fn dev_compile(plugin: &StylexPlugin, file: &Path, source: &str) -> CompileOutput {
-    compile_stylex_module(
+fn dev_compile(bench: &Bench, file: &Path, source: &str) -> (CompileOutput, Option<StylexPass>) {
+    let (out, pass) = compile_stylex_module_with_pass(
         file,
         source,
         &compile_options(),
-        plugin,
+        &bench.plugin,
         InteropPass {
             format: ImporterFormat::ESM,
             later: &LaterTransforms::default(),
-            may_need_interop: &|spec: &str| spec == "react",
+            may_need_interop: &|spec: &str| bench.may_need_interop(spec),
             interop: &interop_target,
             warn: &mut |_| {},
         },
         &mut |spec: &str| served_url(spec),
     )
-    .expect("compile")
+    .expect("compile");
+    (out, Some(pass))
 }
 
 /// The same module where an app plugin's transform could take it: the StyleX
 /// transform ahead of the plugin chain as a string, then the interop rewrite
 /// and the compile, its map folded through the transform's.
-fn dev_compile_in_steps(plugin: &StylexPlugin, file: &Path, source: &str) -> CompileOutput {
-    let pre = plugin
+fn dev_compile_in_steps(
+    bench: &Bench,
+    file: &Path,
+    source: &str,
+) -> (CompileOutput, Option<StylexPass>) {
+    let pre = bench
+        .plugin
         .transform_source_mapped(file, source, true)
         .expect("stylex compile");
     let (code, mappings) = match pre {
@@ -283,7 +317,7 @@ fn dev_compile_in_steps(plugin: &StylexPlugin, file: &Path, source: &str) -> Com
         file,
         ImporterFormat::ESM,
         &LaterTransforms::default(),
-        &|spec: &str| spec == "react",
+        &|spec: &str| bench.may_need_interop(spec),
         &interop_target,
         &mut |_| {},
     );
@@ -291,14 +325,47 @@ fn dev_compile_in_steps(plugin: &StylexPlugin, file: &Path, source: &str) -> Com
         .into_iter()
         .map(|mappings| InputMap::Parsed(mappings.into_sourcemap(Some(source))))
         .collect();
-    compile_module_with_input_maps(
+    let out = compile_module_with_input_maps(
         file,
         interopped.as_deref().unwrap_or(&code),
         &compile_options(),
         Some(&mut |spec: &str| served_url(spec)),
         &input_maps,
     )
-    .expect("compile")
+    .expect("compile");
+    (out, None)
+}
+
+/// The steps as `origin/main` makes them: the plugin's string transform,
+/// whose map is JSON with the source in it, then the interop rewrite, and
+/// the compile with that JSON as its input map.
+fn main_compile(bench: &Bench, file: &Path, source: &str) -> (CompileOutput, Option<StylexPass>) {
+    let pre = bench
+        .plugin
+        .transform_source(file, source)
+        .expect("stylex compile");
+    let (code, maps) = match pre {
+        Some(out) => (out.code, out.map.into_iter().collect()),
+        None => (source.to_string(), Vec::new()),
+    };
+    let interopped = rewrite_cjs_interop_logged(
+        &code,
+        file,
+        ImporterFormat::ESM,
+        &LaterTransforms::default(),
+        &|spec: &str| bench.may_need_interop(spec),
+        &interop_target,
+        &mut |_| {},
+    );
+    let out = compile_module_with_maps(
+        file,
+        interopped.as_deref().unwrap_or(&code),
+        &compile_options(),
+        Some(&mut |spec: &str| served_url(spec)),
+        &maps,
+    )
+    .expect("compile");
+    (out, None)
 }
 
 fn arg(name: &str) -> Option<String> {
@@ -322,20 +389,34 @@ fn median(mut samples: Vec<f64>) -> f64 {
 
 fn main() {
     let (count, runs) = (count_arg("--modules", 200), count_arg("--runs", 7).max(5));
-    let compile: fn(&StylexPlugin, &Path, &str) -> CompileOutput =
-        match arg("--pipeline").as_deref() {
-            None | Some("dev") => dev_compile,
-            Some("steps") => dev_compile_in_steps,
-            Some(other) => panic!("--pipeline is `dev` or `steps`, not `{other}`"),
-        };
+    let pipeline = arg("--pipeline").unwrap_or_else(|| "dev".into());
+    let compile: Compile = match pipeline.as_str() {
+        "dev" => dev_compile,
+        "steps" => dev_compile_in_steps,
+        "main" => main_compile,
+        other => panic!("--pipeline is `dev`, `steps` or `main`, not `{other}`"),
+    };
+    let injecting = std::env::args().any(|a| a == "--runtime-injection");
     let corpus = corpus(count);
-    let plugin =
-        StylexPlugin::new(&serde_json::json!({}), &corpus.root, true, true).expect("plugin");
+    let options = if injecting {
+        serde_json::json!({ "runtimeInjection": true })
+    } else {
+        serde_json::json!({})
+    };
+    let bench = Bench {
+        plugin: StylexPlugin::new(&options, &corpus.root, true, true).expect("plugin"),
+        injecting,
+    };
     let bytes: usize = corpus.modules.iter().map(|(_, s)| s.len()).sum();
     println!(
-        "{count} modules, {:.1} KB of source ({:.2} KB each)",
+        "{count} modules, {:.1} KB of source ({:.2} KB each), --pipeline {pipeline}{}",
         bytes as f64 / 1024.0,
-        bytes as f64 / 1024.0 / count as f64
+        bytes as f64 / 1024.0 / count as f64,
+        if injecting {
+            " --runtime-injection"
+        } else {
+            ""
+        },
     );
 
     // Each group with the parity of its modules' indices (see `corpus`).
@@ -354,13 +435,17 @@ fn main() {
             .collect();
         let mut digest = 0usize;
         let mut samples = Vec::with_capacity(runs);
+        let mut taken = Vec::with_capacity(modules.len());
         for run in 0..=runs {
             let started = Instant::now();
             for (file, source) in &modules {
-                let out = compile(&plugin, file, source);
+                let (out, pass) = compile(&bench, file, source);
                 digest = digest
                     .wrapping_add(out.code.len())
                     .wrapping_add(out.map_json.map_or(0, |m| m.len()));
+                if run == 0 {
+                    taken.extend(pass);
+                }
             }
             // The first pass warms the plugin's fs memo and the allocator.
             if run > 0 {
@@ -371,8 +456,21 @@ fn main() {
         let (min, max) = samples
             .iter()
             .fold((f64::MAX, 0f64), |(lo, hi), &s| (lo.min(s), hi.max(s)));
+        let ways = if taken.is_empty() {
+            String::new()
+        } else {
+            let took = |pass: StylexPass| taken.iter().filter(|&&p| p == pass).count();
+            format!(
+                ", one parse {}/{} ({:.0}%), steps {}, restarted {}",
+                took(StylexPass::OneParse),
+                taken.len(),
+                100.0 * took(StylexPass::OneParse) as f64 / taken.len() as f64,
+                took(StylexPass::Steps),
+                took(StylexPass::Restarted),
+            )
+        };
         println!(
-            "{label:>15}: median {total:8.2} ms over {runs} runs (min {min:.2}, max {max:.2}), {:7.1} us/module, {} modules, digest {digest}",
+            "{label:>15}: median {total:8.2} ms over {runs} runs (min {min:.2}, max {max:.2}), {:7.1} us/module, {} modules, digest {digest}{ways}",
             total * 1e3 / modules.len() as f64,
             modules.len(),
         );
