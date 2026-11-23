@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Start dev: a page that asked the server for an importer no longer reloads ten seconds later when that importer arrived together with another edit. The page took the two as one update, re-ran both, and still counted itself waiting; now an update that holds the importers it asked for ends the wait, and an edit to the module that invalidated, sent along with them, is not taken for a circular invalidation.
 
+- Start dev: a page that is to run a module it has no factory for reloads onto the server's current output, where the app was left on its error screen with "No factory registered for module" until someone reloaded the tab. The `import()` that met the missing module waits for the reload and does not reject first. The same module missing again within fifteen seconds of that reload is not reloaded for a second time: the output itself lacks it, and the error is the app's to show.
+
 ## [0.4.19] - 2026-11-22
 
 ### Fixed

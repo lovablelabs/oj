@@ -2571,3 +2571,64 @@ async fn the_imports_of_a_page_reloading_for_another_run_wait_for_the_reload() {
     );
     page.close().await;
 }
+
+/// A page that is to run a module it has no factory for holds modules that
+/// are not the ones the server's output is made of. Vite has no such state
+/// (a module is a request, answered as the file is now); here the app was
+/// left on its error screen, "No factory registered for module", until
+/// someone reloaded the tab. The page reloads onto the current output, and
+/// the `import()` that met it waits for that; the same module missing again
+/// right after the reload is not reloaded for a second time.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_without_a_factory_for_a_module_it_imports_reloads() {
+    let Some(app) = lazy_app(
+        "lazy-import-no-factory",
+        "export const EVENTS = [\"a\", \"b\"];\n",
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let page = open_home(&dev).await;
+    // An `import()` whose answer leaves the module out.
+    const IMPORT: &str = "(() => {
+        const runtime = globalThis.__rolldown_runtime__;
+        runtime.loadLazyChunk = async () => {};
+        runtime.requestLazy('src/never.ts', 'never-proxy').then(
+            () => sessionStorage.setItem('settled', 'resolved'),
+            (e) => sessionStorage.setItem('settled', e.message),
+        );
+        return true;
+    })()";
+    page.eval::<bool>("(sessionStorage.setItem('settled', ''), true)")
+        .await;
+    page.eval::<bool>(IMPORT).await;
+    // The reload brings a new document.
+    hot_ready(&page).await;
+    assert_eq!(
+        page.eval::<String>("sessionStorage.getItem('settled')")
+            .await,
+        "",
+        "the import settled while the page reloaded\n{}",
+        dev.output()
+    );
+    // Missing again in the document the reload brought: no second reload,
+    // and the import rejects as the module's own would.
+    page.eval::<bool>(IMPORT).await;
+    page.wait_for("sessionStorage.getItem('settled') !== ''", WAIT)
+        .await;
+    assert_eq!(
+        page.eval::<String>("sessionStorage.getItem('settled')")
+            .await,
+        "No factory registered for module src/never.ts"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        page.eval::<bool>("window.__mark === 'kept'").await,
+        "the page reloaded a second time for the same module\n{}",
+        dev.output()
+    );
+    page.close().await;
+}

@@ -11,6 +11,18 @@
 
 var __ojBus = (globalThis.__ojStartHmr ??= {});
 
+// How soon after a reload for a module with no factory the same module,
+// missing again, is not reloaded for: the reload did not bring it.
+var NO_FACTORY_AGAIN = 15000;
+
+// rolldown's `MissingFactoryError`: a module the page was to run and has no
+// code for.
+function ojMissingFactory(err) {
+  return (
+    err instanceof Error && typeof err.id === "string" && err.message === `No factory registered for module ${err.id}`
+  );
+}
+
 // How long a page waits for the importers it asked the server for
 // (`applyInvalidate`) before it reloads instead.
 var RESEND_WAIT = 10000;
@@ -445,6 +457,35 @@ class OjHmrClient {
     if (dispose) dispose(this.dataMap.get(id));
   }
 
+  // The page was to run a module it has no factory for: the modules it
+  // holds are not the ones the server's output is made of (an update it
+  // took left one out, or it took an answer made for another page's
+  // state). Under Vite there is no such state, every module being a request
+  // the server answers as the file is now; here nothing the page holds can
+  // be trusted to run on, and the app is left on its error screen until
+  // someone reloads the tab. So the page reloads, onto the server's current
+  // output. Once: the same module missing again right after that reload is
+  // missing from the output itself, and reloading would only loop.
+  // Whether the page reloads.
+  missingFactory(id) {
+    if (this.reloadPending) return true;
+    let key;
+    let last = null;
+    try {
+      key = "oj:start:no-factory:" + location.pathname;
+      last = JSON.parse(sessionStorage.getItem(key));
+    } catch {}
+    if (last && last.id === id && Date.now() - last.at < NO_FACTORY_AGAIN) {
+      console.warn(`[oj] no factory for module ${id}, and reloading did not bring it`);
+      return false;
+    }
+    try {
+      sessionStorage.setItem(key, JSON.stringify({ id, at: Date.now() }));
+    } catch {}
+    this.requestReload(`no factory for module ${id}`);
+    return true;
+  }
+
   // The server reloads the page once its bundle output covers every change
   // (a reload straight away could load the bundle from before this edit).
   requestReload(reason) {
@@ -552,17 +593,36 @@ class OjDevRuntime extends DevRuntime {
     pending.catch(() => {
       if (!this.moduleCache.has(id) && this.lazyRequests.get(id) === asked) this.lazyRequests.delete(id);
     });
-    return pending.then(async (exports) => {
-      // The module, and the modules it imports statically, as far as they
-      // are still evaluating (not everything that is: a module that awaits
-      // this very import is).
-      const seen = new Set([id]);
-      for (const current of seen) {
-        await this.evaluating?.get(current);
-        for (const dep of this.staticImports?.get(current)?.edges ?? []) seen.add(dep);
-      }
-      return exports;
-    });
+    return pending
+      .then(async (exports) => {
+        // The module, and the modules it imports statically, as far as they
+        // are still evaluating (not everything that is: a module that awaits
+        // this very import is).
+        const seen = new Set([id]);
+        for (const current of seen) {
+          await this.evaluating?.get(current);
+          for (const dep of this.staticImports?.get(current)?.edges ?? []) seen.add(dep);
+        }
+        return exports;
+      })
+      .catch((err) => {
+        // The page reloads for it (`initModule`): the import waits for
+        // that, where its rejection would put the app's error screen up
+        // over a page about to be replaced.
+        if (ojMissingFactory(err) && this.hmr.reloadPending) return new Promise(() => {});
+        throw err;
+      });
+  }
+  // A module with no factory reloads the page (`missingFactory`), whoever
+  // was to run it: the answer to an `import()`, a hot update's module, a
+  // module that imports it.
+  initModule(id) {
+    try {
+      return super.initModule(id);
+    } catch (err) {
+      if (ojMissingFactory(err)) this.hmr.missingFactory(err.id);
+      throw err;
+    }
   }
   // The dev server compiled a module for an `import()` after it sent this
   // page hot update number `seq`: the module must not run before the page
