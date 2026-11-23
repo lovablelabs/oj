@@ -1185,28 +1185,43 @@ struct PreparedConst {
     at_rule_shares: Option<(f64, f64)>,
 }
 
+#[cfg(test)]
+thread_local! {
+    // Substitution work on this thread: names looked up in the constant
+    // index, and texts searched for one constant's reference or key. Tests
+    // weigh the indexed steps against the sequence by them, not by a clock.
+    static NAME_LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CONST_SEARCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn search(text: &str, needle: &str) -> bool {
+    #[cfg(test)]
+    CONST_SEARCHES.with(|count| count.set(count.get() + 1));
+    text.contains(needle)
+}
+
 impl PreparedConst {
     // Whether this constant's substitution step would rewrite `text`.
     fn touches(&self, text: &str) -> bool {
-        text.contains(self.var_ref.as_str())
+        search(text, &self.var_ref)
             || self
                 .key_rewrite
                 .as_ref()
-                .is_some_and(|(needle, _)| text.contains(needle.as_str()))
+                .is_some_and(|(needle, _)| search(text, needle))
     }
 
     // parity: one iteration of the per-rule constsMap loop, over the running
     // text (`out`, or `text` while nothing has matched yet).
     fn substitute(&self, text: &str, out: &mut Option<String>) {
         let cur = out.as_deref().unwrap_or(text);
-        if cur.contains(self.var_ref.as_str()) {
+        if search(cur, &self.var_ref) {
             // Verbatim, like the function replacer upstream passes; only the
             // key rewrite below still reads `$` patterns in its replacement.
             *out = Some(cur.replace(self.var_ref.as_str(), &self.replacement));
         }
         let cur = out.as_deref().unwrap_or(text);
         if let Some((needle, target)) = &self.key_rewrite
-            && cur.contains(needle.as_str())
+            && search(cur, needle)
         {
             *out = Some(js_replace_all(cur, needle, target));
         }
@@ -1272,13 +1287,20 @@ impl ConstTable {
         self.consts.is_empty()
     }
 
+    // The position of the `by_name` constant a reference or a key names.
+    fn lookup(&self, name: &str) -> Option<u32> {
+        #[cfg(test)]
+        NAME_LOOKUPS.with(|count| count.set(count.get() + 1));
+        self.by_name.get(name).copied()
+    }
+
     // The first constant at or after `from` whose substitution step would
     // rewrite `text`: the steps before it are identity copies upstream.
     fn next_active(&self, text: &str, from: u32) -> Option<u32> {
         let mut best = u32::MAX;
         let mut scan_from = 0;
         while let Some((start, end)) = find_var_ref(text, scan_from) {
-            if let Some(&i) = self.by_name.get(&text[start + 6..end - 1])
+            if let Some(i) = self.lookup(&text[start + 6..end - 1])
                 && i >= from
             {
                 if i == from {
@@ -1290,7 +1312,7 @@ impl ConstTable {
         }
         if self.rewrites_keys {
             let found_from = for_each_custom_property_key(text, |name| {
-                if let Some(&i) = self.by_name.get(name)
+                if let Some(i) = self.lookup(name)
                     && i >= from
                     && i < best
                     && self.consts[i as usize].key_rewrite.is_some()
@@ -1326,7 +1348,7 @@ impl ConstTable {
         let mut named: Vec<u32> = Vec::new();
         let mut scan_from = 0;
         while let Some((start, end)) = find_var_ref(text, scan_from) {
-            if let Some(&i) = self.by_name.get(&text[start + 6..end - 1])
+            if let Some(i) = self.lookup(&text[start + 6..end - 1])
                 && i >= from
             {
                 named.push(i);
@@ -1335,7 +1357,7 @@ impl ConstTable {
         }
         if self.rewrites_keys {
             let _ = for_each_custom_property_key(text, |name| {
-                if let Some(&i) = self.by_name.get(name)
+                if let Some(i) = self.lookup(name)
                     && i >= from
                     && self.consts[i as usize].key_rewrite.is_some()
                 {
@@ -2983,30 +3005,52 @@ mod parity_tests {
         }
     }
 
+    // What one substitution costs: the names it looks up in the constant
+    // index, and the texts it searches for one constant.
+    #[derive(Debug)]
+    struct Work {
+        lookups: u64,
+        searches: u64,
+    }
+
+    fn substitution_work(text: &str, table: &ConstTable, cap: u32) -> (Option<String>, Work) {
+        let count = || {
+            (
+                NAME_LOOKUPS.with(std::cell::Cell::get),
+                CONST_SEARCHES.with(std::cell::Cell::get),
+            )
+        };
+        let (lookups, searches) = count();
+        let got = substitute_consts_capped(text, table, cap);
+        let (lookups_after, searches_after) = count();
+        let work = Work {
+            lookups: lookups_after - lookups,
+            searches: searches_after - searches,
+        };
+        (got, work)
+    }
+
     // The rule every constant rewrites a key of, between values that read
     // plain variables: without the cap each of its steps looks up every name
     // in the text again, with it the rule costs what upstream's loop does.
-    // Both are timed here, so the comparison holds on a slow or busy machine.
+    // The work is counted, not timed, so the comparison holds on a slow or
+    // busy machine.
     #[test]
     fn a_const_heavy_rule_is_not_rescanned_for_every_step() {
         let table = var_valued_consts(600);
         let text = const_heavy_rule(600, |i| format!("--c{i}:var(--a) var(--b);"));
         let want = substitute_sequential(&text, &table);
-        let best_of = |cap: u32| {
-            (0..3)
-                .map(|_| {
-                    let start = std::time::Instant::now();
-                    let got = substitute_consts_capped(&text, &table, cap);
-                    let elapsed = start.elapsed();
-                    assert_eq!(got.as_deref(), Some(want.as_str()));
-                    elapsed
-                })
-                .min()
-                .unwrap()
-        };
-        let (capped, indexed) = (best_of(MAX_INDEXED_STEPS), best_of(u32::MAX));
+        let (got, capped) = substitution_work(&text, &table, MAX_INDEXED_STEPS);
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        let (got, indexed) = substitution_work(&text, &table, u32::MAX);
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        // Upstream's loop searches the text for every constant's reference
+        // and key; the capped run searches no more than that.
+        assert!(capped.searches <= 2 * 600, "capped {capped:?}");
+        // Each of the 600 indexed steps looks up the 1800 names in the text
+        // again; the capped run, after its first steps and one weighing, none.
         assert!(
-            capped * 2 < indexed,
+            capped.lookups * 8 < indexed.lookups,
             "capped {capped:?} vs indexed throughout {indexed:?}"
         );
     }
@@ -3043,22 +3087,15 @@ mod parity_tests {
             }
         }
 
+        // Neither kind of work may double over the indexed run: handing over
+        // would search for thousands of constants, the weighings cost a
+        // rescan each.
         let text = &texts[0];
-        let best_of = |cap: u32| {
-            (0..5)
-                .map(|_| {
-                    let start = std::time::Instant::now();
-                    let got = substitute_consts_capped(text, &table, cap);
-                    let elapsed = start.elapsed();
-                    assert!(got.is_some());
-                    elapsed
-                })
-                .min()
-                .unwrap()
-        };
-        let (capped, indexed) = (best_of(MAX_INDEXED_STEPS), best_of(u32::MAX));
+        let (capped_got, capped) = substitution_work(text, &table, MAX_INDEXED_STEPS);
+        let (indexed_got, indexed) = substitution_work(text, &table, u32::MAX);
+        assert!(capped_got.is_some() && capped_got == indexed_got);
         assert!(
-            capped <= indexed * 2,
+            capped.searches <= indexed.searches * 2 && capped.lookups <= indexed.lookups * 2,
             "capped {capped:?} vs indexed throughout {indexed:?}"
         );
     }
