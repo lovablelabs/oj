@@ -41,15 +41,16 @@ pub enum StylexModuleError {
 /// it wrote, and the compile of that with the plugin's map as its input map
 /// (`opts.stylex` is not read).
 ///
-/// A TypeScript module none of whose imports may need interop takes them in
-/// one parse instead: the plugin compiles the program in place and the
-/// compile carries on from it. The module it emits is the steps' own, with
-/// one difference: its positions (the source map, the `lineNumber` and
-/// `columnNumber` of a dev JSX element) are read off `source_text` itself,
-/// where the steps read them off the plugin's output and fold the map back.
-/// Whatever the one parse cannot answer for (another language, a diagnostic,
-/// an import that may need interop, any error) goes through the steps, so an
-/// error is always theirs.
+/// A TypeScript module none of whose imports may need interop, before the
+/// plugin's compile or after it, takes them in one parse instead: the plugin
+/// compiles the program in place and the compile carries on from it. The
+/// module it emits is the steps' own, with one difference: its positions
+/// (the source map, the `lineNumber` and `columnNumber` of a dev JSX
+/// element) are read off `source_text` itself, where the steps read them
+/// off the plugin's output and fold the map back. Whatever the one parse
+/// cannot answer for (another language, a diagnostic, an import that may
+/// need interop, any error) goes through the steps, so an error is always
+/// theirs.
 pub fn compile_stylex_module(
     path: &Path,
     source_text: &str,
@@ -58,10 +59,37 @@ pub fn compile_stylex_module(
     interop: InteropPass<'_>,
     rewriter: &mut ImportRewriter,
 ) -> Result<CompileOutput, StylexModuleError> {
+    compile_stylex_module_with_pass(path, source_text, opts, stylex, interop, rewriter)
+        .map(|(output, _)| output)
+}
+
+/// How [`compile_stylex_module`] took a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StylexPass {
+    /// One parse, which the plugin compiled in place and the compile
+    /// carried on from.
+    OneParse,
+    /// The steps: the plugin's transform (of the module's parse, where one
+    /// serves it), the interop rewrite and the compile.
+    Steps,
+    /// The steps over the source, after the plugin compiled the one parse
+    /// in place and left it what the one parse cannot answer for.
+    Restarted,
+}
+
+/// [`compile_stylex_module`], with the way it took the module.
+pub fn compile_stylex_module_with_pass(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    stylex: &StylexPlugin,
+    interop: InteropPass<'_>,
+    rewriter: &mut ImportRewriter,
+) -> Result<(CompileOutput, StylexPass), StylexModuleError> {
     // The parse and its arena end with this block: the steps past the
     // plugin's transform parse what it wrote into arenas of their own, and
     // none of them is held beside this one.
-    let compiled = {
+    let (compiled, pass) = {
         let allocator = Allocator::default();
         let module = Module {
             allocator: &allocator,
@@ -73,20 +101,20 @@ pub fn compile_stylex_module(
         match module.parse() {
             Some((program, source_type)) if !module.may_rewrite(&program, &interop) => {
                 if let Some(output) = module.in_one_pass(program, source_type, &interop, rewriter) {
-                    return Ok(output);
+                    return Ok((output, StylexPass::OneParse));
                 }
                 // The plugin compiled the parse in place: the steps start
                 // over from the source.
-                None
+                (None, StylexPass::Restarted)
             }
-            Some((program, _)) => Some(module.stylex_step(&program)),
-            None => None,
+            Some((program, _)) => (Some(module.stylex_step(&program)), StylexPass::Steps),
+            None => (None, StylexPass::Steps),
         }
     };
     let compiled = compiled
         .unwrap_or_else(|| stylex.transform_source_mapped(path, source_text, opts.sourcemap))
         .map_err(StylexModuleError::Stylex)?;
-    finish_steps(path, source_text, opts, compiled, interop, rewriter)
+    finish_steps(path, source_text, opts, compiled, interop, rewriter).map(|output| (output, pass))
 }
 
 struct Module<'a> {
@@ -126,14 +154,20 @@ impl<'a> Module<'a> {
     }
 
     /// Whether the interop rewrite could take the module `program` is the
-    /// parse of (see [`may_rewrite`]).
+    /// parse of (see [`may_rewrite`]), or the plugin's compile of it, which
+    /// may import what may need interop where `program` does not (see
+    /// [`StylexPlugin::may_add_import`]). Such a module is decided here,
+    /// before the plugin's compile, which would leave nothing of the parse
+    /// for the steps to read.
     fn may_rewrite(&self, program: &Program<'_>, interop: &InteropPass<'_>) -> bool {
         may_rewrite(
             program,
             self.source_text,
             interop.later,
             interop.may_need_interop,
-        )
+        ) || self
+            .stylex
+            .may_add_import(program, self.source_text, interop.may_need_interop)
     }
 
     fn in_one_pass(
@@ -309,15 +343,27 @@ export function Counter() {
         source: &str,
         later: &LaterTransforms,
     ) -> Result<CompileOutput, String> {
-        compile_stylex_module(
+        compile_with(&plugin(), path, source, later, &needs_interop).map(|(output, _)| output)
+    }
+
+    /// The module `plugin` and the compile make of `source`, where the
+    /// specifiers `flagged` holds for may need interop, and the way it took.
+    fn compile_with(
+        plugin: &StylexPlugin,
+        path: &str,
+        source: &str,
+        later: &LaterTransforms,
+        flagged: &dyn Fn(&str) -> bool,
+    ) -> Result<(CompileOutput, StylexPass), String> {
+        compile_stylex_module_with_pass(
             Path::new(path),
             source,
             &opts_under(later),
-            &plugin(),
+            plugin,
             InteropPass {
                 format: ImporterFormat::ESM,
                 later,
-                may_need_interop: &needs_interop,
+                may_need_interop: flagged,
                 interop: &interop,
                 warn: &mut |_| {},
             },
@@ -341,8 +387,18 @@ export function Counter() {
         source: &str,
         later: &LaterTransforms,
     ) -> Result<CompileOutput, String> {
+        steps_with(&plugin(), path, source, later, &needs_interop)
+    }
+
+    fn steps_with(
+        plugin: &StylexPlugin,
+        path: &str,
+        source: &str,
+        later: &LaterTransforms,
+        flagged: &dyn Fn(&str) -> bool,
+    ) -> Result<CompileOutput, String> {
         let path = Path::new(path);
-        let pre = plugin()
+        let pre = plugin
             .transform_source(path, source)
             .map_err(|message| format!("stylex: {message}"))?;
         let (code, maps, rules) = match pre {
@@ -354,7 +410,7 @@ export function Counter() {
             path,
             ImporterFormat::ESM,
             later,
-            &needs_interop,
+            flagged,
             &interop,
             &mut |_| {},
         );
@@ -495,6 +551,80 @@ export function Counter() {
         }
         let counter = compile("/app/src/Counter.tsx", COUNTER).unwrap();
         assert!(counter.code.contains("__ojcjs0"), "{}", counter.code);
+    }
+
+    /// A module whose own imports need no interop, where the plugin's
+    /// compile adds one that may: it goes through the steps from its parse,
+    /// and the plugin compiles it once, not in place first for nothing.
+    #[test]
+    fn an_import_the_plugin_adds_that_may_need_interop_is_seen_before_it_compiles() {
+        const INJECT: &str = "@stylexjs/stylex/lib/stylex-inject";
+        // An `sx` prop where the module binds no value of the import source.
+        const TYPE_IMPORT_SX: &str = "import type { StyleXStyles } from '@stylexjs/stylex';\n\
+             export const Box = ({ s }: { s: StyleXStyles }) => <div sx={s} />;\n";
+        const TYPE_NAMESPACE_SX: &str = "import * as stylex from '@stylexjs/stylex';\n\
+             export const Box = ({ s }: { s: stylex.StyleXStyles }) => <div sx={s} />;\n";
+        let injecting = StylexPlugin::new(
+            &serde_json::json!({ "runtimeInjection": true }),
+            Path::new("/app"),
+            true,
+            true,
+        )
+        .unwrap();
+        let plain = plugin();
+        let later = LaterTransforms::default();
+        for (plugin, path, source, flagged, added) in [
+            // Every module with rules imports the runtime injection's module.
+            (
+                &injecting,
+                "/app/src/Card.tsx",
+                FLAT_CARD,
+                INJECT,
+                "import _inject from",
+            ),
+            // A namespace import the compile adds.
+            (
+                &plain,
+                "/app/src/Box.tsx",
+                TYPE_IMPORT_SX,
+                "@stylexjs/stylex",
+                "import * as _stylex from",
+            ),
+            // The module's own, which bound a type alone.
+            (
+                &plain,
+                "/app/src/Box.tsx",
+                TYPE_NAMESPACE_SX,
+                "@stylexjs/stylex",
+                "...stylex.props(s)",
+            ),
+        ] {
+            let may_need_interop = |spec: &str| spec == flagged;
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, source, SourceType::tsx()).parse();
+            assert!(!may_rewrite(
+                &parsed.program,
+                source,
+                &later,
+                &may_need_interop
+            ));
+
+            let (module, pass) = compile_with(plugin, path, source, &later, &may_need_interop)
+                .unwrap_or_else(|err| panic!("{source}\n{err}"));
+            assert_eq!(pass, StylexPass::Steps, "{source}");
+            let steps = steps_with(plugin, path, source, &later, &may_need_interop).unwrap();
+            assert_eq!(module.code, steps.code, "{source}");
+            assert_eq!(module.map_json, steps.map_json, "{source}");
+            assert_eq!(rules(&module), rules(&steps));
+            assert_eq!(module.imports, steps.imports);
+            assert!(module.code.contains(added), "{}", module.code);
+
+            // Where nothing may need interop, the one parse takes it.
+            let (one, pass) = compile_with(plugin, path, source, &later, &|_| false).unwrap();
+            assert_eq!(pass, StylexPass::OneParse, "{source}");
+            let steps = steps_with(plugin, path, source, &later, &|_| false).unwrap();
+            assert_same_module(&one, &steps);
+        }
     }
 
     #[test]

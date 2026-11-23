@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use memchr::memmem::Finder;
+use memchr::memmem::{self, Finder};
 use oxc_allocator::Allocator;
-use oxc_ast::ast::Program;
+use oxc_ast::ast::{Program, Statement};
 use serde_json::{Map, Value, json};
 
 use crate::api::{
@@ -18,6 +18,7 @@ use crate::api::{
 use crate::assemble::{AssembleConfig, RuleRegistry};
 use crate::errors::{ErrorCode, StylexError};
 use crate::fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
+use crate::jsrt::lit_text;
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
 use crate::rules::StylexRule;
@@ -384,6 +385,56 @@ impl StylexPlugin {
         transform_program(allocator, program, &ctx, &self.options, &self.fs.session())
             .map(|out| out.rules)
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
+    /// Whether compiling `program` (the parse of `source`) may leave it a
+    /// value import of a specifier `flagged` holds for where `program` binds
+    /// no value of it: the runtime injection's module, which the compile of
+    /// a module with rules imports, or an import source, which an `sx` prop
+    /// reads through a namespace import (one the compile adds, or one of
+    /// the module's that bound a type alone). Any other import the compile
+    /// writes repeats one of `program`'s whose binding it read
+    /// (`treeshakeCompensation`), or names a relative path
+    /// (`rewriteAliases`).
+    pub fn may_add_import(
+        &self,
+        program: &Program<'_>,
+        source: &str,
+        flagged: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        let options = &self.options;
+        if options
+            .runtime_injection
+            .as_ref()
+            .is_some_and(|injection| flagged(&injection.from))
+        {
+            return true;
+        }
+        // An `sx` attribute's name is a JSX identifier: written as it reads.
+        let Some(sx) = options.sx_prop_name.as_deref() else {
+            return false;
+        };
+        if memmem::find(source.as_bytes(), sx.as_bytes()).is_none() {
+            return false;
+        }
+        let mut imported = program
+            .body
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::ImportDeclaration(decl) => Some(lit_text(decl.source.value)),
+                _ => None,
+            })
+            .filter(|specifier| options.is_import_source(specifier))
+            .peekable();
+        if imported.peek().is_none() {
+            // The source the namespace import names in a module that
+            // imports none.
+            return options
+                .import_source_at(2)
+                .or_else(|| options.import_source_at(0))
+                .is_some_and(flagged);
+        }
+        imported.any(|specifier| flagged(&specifier))
     }
 
     /// [`Self::transform_program`] answering as the string-level transform
@@ -1544,6 +1595,66 @@ mod tests {
             "class names stay hashed: {}",
             a.code
         );
+    }
+
+    // What a module's compile may import where its parse binds no value of
+    // it: the runtime injection's module, and the import source an `sx`
+    // prop reads.
+    #[test]
+    fn the_imports_a_compile_may_add() {
+        const INJECT: &str = "@stylexjs/stylex/lib/stylex-inject";
+        let may_add = |p: &StylexPlugin, source: &str, flagged: &[&str]| {
+            let allocator = Allocator::default();
+            let program = crate::api::parse_program(&allocator, source, "a.tsx").unwrap();
+            p.may_add_import(&program, source, &|spec| flagged.contains(&spec))
+        };
+        let injecting = plugin(json!({ "runtimeInjection": true }));
+        assert!(may_add(&injecting, SRC, &[INJECT]));
+        assert!(!may_add(&injecting, SRC, &["@stylexjs/stylex"]));
+        let named = plugin(json!({ "runtimeInjection": { "from": "my-inject", "as": "inject" } }));
+        assert!(may_add(&named, SRC, &["my-inject"]));
+        assert!(!may_add(&named, SRC, &[INJECT]));
+        assert!(!may_add(
+            &plugin(json!({})),
+            SRC,
+            &[INJECT, "@stylexjs/stylex"]
+        ));
+
+        // An `sx` prop reads the import sources the module names, or the
+        // one its compile names when the module names none: the first the
+        // config lists, which lists the built-in ones when it sets none.
+        let p = plugin(json!({}));
+        let typed = "import type { StyleXStyles } from 'stylex';\n\
+                     export const A = ({ s }: { s: StyleXStyles }) => <div sx={s} />;\n";
+        assert!(may_add(&p, typed, &["stylex"]));
+        assert!(!may_add(&p, typed, &["@stylexjs/stylex", "react"]));
+        let unnamed = "export const A = ({ s }: { s: unknown }) => <div sx={s} />;\n";
+        let compiled = |p: &StylexPlugin| {
+            p.transform_source(Path::new("/app/src/a.tsx"), unnamed)
+                .unwrap()
+                .unwrap()
+                .code
+        };
+        assert!(compiled(&p).starts_with("import * as stylex from \"stylex\";"));
+        assert!(may_add(&p, unnamed, &["stylex"]));
+        assert!(!may_add(&p, unnamed, &["@stylexjs/stylex"]));
+        let custom = plugin(json!({ "importSources": ["my-sx"] }));
+        assert!(compiled(&custom).starts_with("import * as stylex from \"my-sx\";"));
+        assert!(may_add(&custom, unnamed, &["my-sx"]));
+        assert!(!may_add(&custom, unnamed, &["stylex", "@stylexjs/stylex"]));
+        // Under another name, or none, `sx` is an attribute like any other.
+        assert!(!may_add(
+            &plugin(json!({ "sxPropName": false })),
+            typed,
+            &["stylex"]
+        ));
+        let renamed = plugin(json!({ "sxPropName": "css" }));
+        assert!(!may_add(&renamed, typed, &["stylex"]));
+        assert!(may_add(
+            &renamed,
+            &typed.replace("sx=", "css="),
+            &["stylex"]
+        ));
     }
 
     #[test]

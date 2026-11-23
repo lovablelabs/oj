@@ -35,7 +35,10 @@ pub(crate) use rewrite::rewrite_module_specifiers_pub;
 pub use scan::{exports, imports, rewrite_specifiers, specifier_edits, SpecifierEdits};
 pub(crate) use scan::{scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
 pub use sourcemap::{line_map_json, map_json_to_data_url, InputMap};
-pub use stylex::{compile_stylex_module, InteropPass, StylexModuleError};
+pub use stylex::{
+    compile_stylex_module, compile_stylex_module_with_pass, InteropPass, StylexModuleError,
+    StylexPass,
+};
 
 /// A string literal's value as text for analysis (specifiers, export names,
 /// keys): oxc 0.155 stores it as WTF-8, and a value with a lone surrogate,
