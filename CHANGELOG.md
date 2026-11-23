@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-11-23
+
+### Fixed
+
+- Start dev: a save inside a module the pages run that declares a server function (a route with a loader, say) reaches them as a hot update, as a save to any other such module does. Every such save reloaded the page, which waits for the client output to be written whole, and reloaded the server's module graph with it: the edit counted as a change to the server functions whatever the regenerated resolver held, although an edit inside a handler or a component keeps every function id. The resolver is still regenerated for it, and the edit itself reloads the page only when that resolver differs (a function added, removed or renamed) or could not be made; the server drops the edited module either way, so the next call runs the edited handler. After such an update the router loads the page's routes again, as the route module's accept handler does under Vite, so a loader that calls the function shows what the edited handler answers. A declaring module no page runs still reloads the pages, as any server-only module does.
+
 ## [0.4.20] - 2026-11-23
 
 ### Changed

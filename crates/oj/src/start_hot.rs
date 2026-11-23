@@ -432,6 +432,28 @@ impl HotUpdates {
         });
     }
 
+    /// Every page's routes after an update applied in place to a module that
+    /// declares a server function: the router loads its matches again, so a
+    /// loader that calls the function shows what the edited handler answers.
+    /// The client's copy of such a module holds no handler, and a patch
+    /// re-runs only the modules whose code changed: the route module is the
+    /// same, and nothing else tells the router. Vite re-runs every module of
+    /// an edited file, the route's among them, and its accept handler
+    /// refreshes the router (`handleRouteUpdate`, `router._refreshRoute`).
+    pub(crate) fn refresh_routes(&self) {
+        let change = self.begin_change();
+        let text = serde_json::json!({
+            "type": "oj:routes",
+            "change": change,
+        })
+        .to_string();
+        self.send(Frame {
+            client: None,
+            text,
+            seq: None,
+        });
+    }
+
     /// A patch for its page: kept for the page to fetch, announced on its
     /// socket, and marking the written client output stale.
     pub(crate) fn accept(&self, patch: &Patch) {

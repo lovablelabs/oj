@@ -2143,7 +2143,15 @@ async fn rebundle_worker(
                     },
                     Some(Err(e)) => ClientRun::Failed(format!("{e:#}")),
                 };
-                (routes_now, server_fn_changed, bundling, outcome, generation)
+                let declares = trigger == ServerFnTrigger::Declares;
+                (
+                    routes_now,
+                    server_fn_changed,
+                    declares,
+                    bundling,
+                    outcome,
+                    generation,
+                )
             })
         };
         let side = async {
@@ -2158,13 +2166,14 @@ async fn rebundle_worker(
             hit
         };
         let (client, worker_hit) = tokio::join!(client, side);
-        let (mut bundled, mut server_fn_changed) = (false, false);
+        let (mut bundled, mut server_fn_changed, mut declares) = (false, false, false);
         let mut failure: Option<String> = None;
         let mut hot = false;
         let mut fresh = false;
-        if let Ok((routes_now, fn_changed, bundling, outcome, generation)) = client {
+        if let Ok((routes_now, fn_changed, declaring, bundling, outcome, generation)) = client {
             prev_routes = routes_now;
             server_fn_changed = fn_changed;
+            declares = declaring;
             bundled = bundling;
             if bundling {
                 if let ClientRun::Failed(reason) = &outcome {
@@ -2299,6 +2308,14 @@ async fn rebundle_worker(
         let relink = state.css_host.is_some() || served.iter().any(|p| is_style_input(p));
         if hot && !reload && (relink || !added.is_empty()) {
             state.bundler.hot.refresh_styles(relink, &added);
+        }
+        // An edit to a module that declares a server function, taken in
+        // place: the patch re-runs no route module for a handler's change
+        // (the client's copy holds none), so the pages are told to load
+        // their routes again. Sent here, after the server graphs took the
+        // batch, the loaders run on the edited handler.
+        if hot && !reload && declares {
+            state.bundler.hot.refresh_routes();
         }
         // A sheet that is no input of the bundle but that a sheet the pages
         // link read (a partial it `@import`s): the run had nothing to
@@ -3309,7 +3326,9 @@ enum ServerFnTrigger {
     /// and went, a tsconfig saved as it was.
     Scan,
     /// A source file that may declare a server function was edited: the
-    /// server's copy of it changed with it, whatever the resolver holds.
+    /// resolver is regenerated without reading what the scan recorded. For
+    /// the page it counts as a scan does: a change when the resolver it
+    /// leaves is another, or could not be made.
     Declares,
 }
 
@@ -3328,8 +3347,8 @@ fn is_tsconfig_json(path: &Path) -> bool {
 
 /// Regenerates the dev resolver for a batch that may have changed it (or
 /// the routes), answering whether the server functions changed for the
-/// page: always for a declaring edit, and for a scan when the resolver it
-/// leaves is another, or could not be made (what it holds is then unknown).
+/// page: for a declaring edit or a scan, when the resolver it leaves is
+/// another, or could not be made (what it holds is then unknown).
 fn refresh_server_fn_resolver(
     root: &Path,
     cache: &Path,
@@ -3343,8 +3362,16 @@ fn refresh_server_fn_resolver(
     let before = std::fs::read(&resolver).ok();
     let made = generate_server_fn_resolver(root, cache, true);
     match trigger {
-        ServerFnTrigger::Declares => true,
-        ServerFnTrigger::Scan => made.is_err() || std::fs::read(&resolver).ok() != before,
+        // A declaring edit changes the server functions for the page only
+        // when the resolver it leaves is another (a function added, removed
+        // or renamed): an edit inside a handler keeps every id, the client
+        // takes it as a hot update, and the server graphs drop the module
+        // as they do any edited one. Counted as a change on the edit alone,
+        // every save of a route with a loader reloaded the page and the
+        // server's module graph.
+        ServerFnTrigger::Declares | ServerFnTrigger::Scan => {
+            made.is_err() || std::fs::read(&resolver).ok() != before
+        }
         ServerFnTrigger::None => false,
     }
 }
@@ -9033,12 +9060,12 @@ mod tests {
         }
     }
 
-    // What the rebuild worker takes from a batch: a declaring edit always
-    // changed the server functions, a scan did when the resolver it leaves
-    // is another or could not be made, and a route change alone regenerates
-    // without counting.
+    // What the rebuild worker takes from a batch: a declaring edit or a scan
+    // changed the server functions when the resolver it leaves is another or
+    // could not be made, and a route change alone regenerates without
+    // counting.
     #[test]
-    fn the_worker_counts_a_scan_when_the_resolver_it_leaves_is_another() {
+    fn the_worker_counts_an_edit_when_the_resolver_it_leaves_is_another() {
         use ServerFnTrigger::{Declares, None, Scan};
         let (root, cache) = aliased_builder_app("resolver-worker");
         generate_server_fn_resolver(&root, &cache, true).unwrap();
@@ -9048,7 +9075,14 @@ mod tests {
         assert!(!refresh_server_fn_resolver(&root, &cache, None, true));
         assert!(!refresh_server_fn_resolver(&root, &cache, Scan, false));
         assert!(!refresh_server_fn_resolver(&root, &cache, Scan, true));
-        assert!(refresh_server_fn_resolver(&root, &cache, Declares, false));
+        // An edit inside a declaring file that keeps its functions: the same
+        // resolver, nothing for the page.
+        std::fs::write(
+            root.join("src/lib/aliased.functions.ts"),
+            "import { authedFn } from \"@app/lib/barrel\";\nexport const first = authedFn.handler(async () => 2);\n",
+        )
+        .unwrap();
+        assert!(!refresh_server_fn_resolver(&root, &cache, Declares, false));
         assert_eq!(std::fs::read(&resolver).unwrap(), before);
 
         // The resolver is regenerated for a route change alone, uncounted.
