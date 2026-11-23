@@ -351,9 +351,10 @@ pub(crate) struct DevSheet {
     /// The sheet polls are answered with, and the store generation and
     /// targets it was built from.
     served: RwLock<Option<(u64, TargetsStamp, Bytes)>>,
-    /// Held by the request whose rebuild is on the blocking pool: the tabs
+    /// Held by the rebuild on the blocking pool until it is done, whether
+    /// the request that began it still waits for it or not: the tabs
     /// refetching at once wait for it here, and park no thread of the pool.
-    rebuilding: tokio::sync::Mutex<()>,
+    rebuilding: Arc<tokio::sync::Mutex<()>>,
     /// Held across a rebuild: callers of [`DevSheet::css`] at once wait for
     /// one.
     built: Mutex<Option<Built>>,
@@ -380,15 +381,20 @@ impl DevSheet {
         if let Some(css) = self.current(root, plugin) {
             return Ok(css);
         }
-        let _gate = self.rebuilding.lock().await;
+        let gate = Arc::clone(&self.rebuilding).lock_owned().await;
         // The request that held the gate has built what this one came for.
         if let Some(css) = self.current(root, plugin) {
             return Ok(css);
         }
         let (sheet, root, plugin) = (Arc::clone(self), root.to_path_buf(), Arc::clone(plugin));
-        tokio::task::spawn_blocking(move || sheet.css(&root, &plugin))
-            .await
-            .unwrap_or_else(|err| Err(format!("the StyleX stylesheet was not built: {err}")))
+        // The rebuild holds the gate, not this request: one dropped while it
+        // runs lets no other request past to wait on it with a thread.
+        tokio::task::spawn_blocking(move || {
+            let _gate = gate;
+            sheet.css(&root, &plugin)
+        })
+        .await
+        .unwrap_or_else(|err| Err(format!("the StyleX stylesheet was not built: {err}")))
     }
 
     /// The sheet, when the one last built still stands. Waits on no rebuild.
@@ -707,6 +713,70 @@ mod tests {
             give_back.send(()).unwrap();
             taken.await.unwrap();
         });
+    }
+
+    // A request dropped while its rebuild runs (its tab closed) leaves the
+    // gate with the rebuild: the next requests wait for it there, not on the
+    // sheet with a thread of the pool each.
+    #[test]
+    fn a_dropped_request_leaves_its_rebuild_the_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(2)
+            .build()
+            .unwrap();
+        // A long rebuild: the sheet, held until told.
+        let (held, holds) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let building = std::thread::spawn({
+            let sheet = Arc::clone(&sheet);
+            move || {
+                let _built = sheet.built.lock().unwrap();
+                held.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(10));
+            }
+        });
+        holds.recv().unwrap();
+        let fetch = || {
+            let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+            tokio::spawn(async move { sheet.fetch(&root, &p).await })
+        };
+        runtime.block_on(async {
+            // Its rebuild takes the pool's first thread, and runs on after
+            // the request is dropped.
+            let dropped = fetch();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!dropped.is_finished());
+            dropped.abort();
+            assert!(dropped.await.unwrap_err().is_cancelled());
+            assert!(sheet.rebuilding.try_lock().is_err());
+
+            let tabs: Vec<_> = (0..4).map(|_| fetch()).collect();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(tabs.iter().all(|tab| !tab.is_finished()));
+            // The pool's other thread is free: no tab took it.
+            tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(|| ()))
+                .await
+                .expect("a tab waited on the sheet with a thread of the pool")
+                .unwrap();
+
+            release.send(()).unwrap();
+            for tab in tabs {
+                let css = tokio::time::timeout(Duration::from_secs(5), tab)
+                    .await
+                    .expect("a tab never found the sheet")
+                    .unwrap()
+                    .unwrap();
+                assert!(text(&css).contains("color: red"), "{}", text(&css));
+                assert_eq!(css.as_ptr(), sheet.current(root, &p).unwrap().as_ptr());
+            }
+        });
+        building.join().unwrap();
     }
 
     #[test]
