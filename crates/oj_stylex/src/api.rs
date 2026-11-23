@@ -173,7 +173,8 @@ pub fn transform_source_with_dep_log_in(
 }
 
 /// AST-backend result: rules plus whether the caller's program was mutated
-/// (for a rules-only compile, whether the full compile would rewrite it).
+/// (for a rules-only compile, whether the full compile would rewrite it for
+/// anything but a `rewriteAliases` import source).
 #[derive(Debug, Default)]
 pub struct CompileResult {
     pub modified: bool,
@@ -247,8 +248,10 @@ pub(crate) fn compile_program<'a>(
 }
 
 /// [`transform_source_in`] for callers that read only the rules: `rules`,
-/// `modified`, `create_objects` and the error are the full compile's, and
-/// nothing that only shapes its output JS runs. `None` = pre-gate skip.
+/// `create_objects` and the error are the full compile's, and nothing that
+/// only shapes its output JS runs. `modified` is the full compile's but for
+/// the `rewriteAliases` import rewrites, which are not worked out: a file
+/// whose only rewrite is one reports `false`. `None` = pre-gate skip.
 pub fn transform_source_rules_in(
     allocator: &Allocator,
     ctx: &FileContext<'_>,
@@ -266,7 +269,8 @@ pub fn transform_source_rules_in(
     compile_rules(&program, sx_hit, ctx, options, fs).map(Some)
 }
 
-/// [`transform_program`] for callers that read only the rules; the program
+/// [`transform_program`] for callers that read only the rules, as
+/// [`transform_source_rules_in`] is to [`transform_source_in`]; the program
 /// stays as parsed.
 pub fn transform_program_rules(
     program: &Program<'_>,

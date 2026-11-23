@@ -1306,7 +1306,8 @@ pub enum Emit {
     /// The AST backend's [`AstPlan`].
     Plan,
     /// Neither: nothing that only shapes the output JS runs (printing, call
-    /// inlining, DCE, compensation imports).
+    /// inlining, DCE, compensation imports, `rewriteAliases` import
+    /// rewrites), and `modified` leaves out the import rewrites.
     RulesOnly,
 }
 
@@ -1412,11 +1413,12 @@ pub fn transform_module<'a>(
     }
     if shared.rules_only {
         // Everything past this point only adds edits, never removes the last
-        // one, so `modified` is whether any exists or would be added.
+        // one, so `modified` is whether any exists or would be added; all but
+        // the `rewriteAliases` import rewrites, which take a resolution each
+        // to tell and shape nothing but the output JS.
         let modified = shared.rewritten
             || shared.edits.iter().any(Option::is_some)
-            || !shared.state.treeshake_imports.is_empty()
-            || !shared.rewrite_import_sources(program).is_empty();
+            || !shared.state.treeshake_imports.is_empty();
         return Ok(TransformOutput {
             code: String::new(),
             modified,

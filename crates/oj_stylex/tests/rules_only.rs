@@ -1,5 +1,6 @@
 //! A rules-only compile is the full compile minus its output JS: the same
-//! rules, `modified`, create objects and error, on either backend.
+//! rules, `modified`, create objects and error, on either backend, but that
+//! `modified` leaves out the `rewriteAliases` import rewrites.
 
 use std::path::{Path, PathBuf};
 
@@ -40,8 +41,29 @@ fn ast_outcomes(ctx: &FileContext<'_>, options: &ResolvedOptions) -> Option<(Out
     Some((full, rules))
 }
 
+/// The options without `rewriteAliases`, when they set it: their full
+/// compile makes every edit the one under it makes but the import rewrites.
+fn without_alias_rewrites(options: &Value) -> Option<ResolvedOptions> {
+    let mut options = options.clone();
+    options.as_object_mut()?.remove("rewriteAliases")?;
+    CompilerOptions::from_json(&options)
+        .and_then(|o| o.resolve())
+        .ok()
+}
+
+/// `full` with the `modified` of the full compile under `plain`, where a
+/// rules-only compile under the options `plain` was made from reports it.
+fn less_alias_rewrites(full: Outcome, plain: Option<Outcome>) -> Outcome {
+    let modified = match plain {
+        Some(Ok(result)) => result.is_some_and(|(modified, _, _)| modified),
+        None | Some(Err(_)) => return full,
+    };
+    full.map(|result| result.map(|(_, rules, objects)| (modified, rules, objects)))
+}
+
 /// The differences between the two compiles of one job, empty when none.
 fn differences(root: &Path, filename: &str, source: &str, options: &Value) -> Vec<String> {
+    let plain = without_alias_rewrites(options);
     let options = match CompilerOptions::from_json(options).and_then(|o| o.resolve()) {
         Ok(options) => options,
         // Options that do not resolve never reach a compile.
@@ -55,13 +77,19 @@ fn differences(root: &Path, filename: &str, source: &str, options: &Value) -> Ve
     };
     let mut out = Vec::new();
     let (full, rules) = splice_outcomes(&ctx, &options);
+    let full = less_alias_rewrites(full, plain.as_ref().map(|o| splice_outcomes(&ctx, o).0));
     if full != rules {
         out.push(format!("splice: full {full:?}\n   rules-only {rules:?}"));
     }
-    if let Some((full, rules)) = ast_outcomes(&ctx, &options)
-        && full != rules
-    {
-        out.push(format!("ast: full {full:?}\n   rules-only {rules:?}"));
+    if let Some((full, rules)) = ast_outcomes(&ctx, &options) {
+        let plain = plain
+            .as_ref()
+            .and_then(|o| ast_outcomes(&ctx, o))
+            .map(|(full, _)| full);
+        let full = less_alias_rewrites(full, plain);
+        if full != rules {
+            out.push(format!("ast: full {full:?}\n   rules-only {rules:?}"));
+        }
     }
     out
 }
@@ -182,6 +210,40 @@ fn modified_counts_the_rewrites_that_never_ran() {
         ),
         Ok((false, 0))
     );
+}
+
+#[test]
+fn modified_leaves_out_the_alias_rewrites() {
+    let root = fixture_root();
+    std::fs::create_dir_all(root.join("lib")).expect("lib dir");
+    std::fs::write(
+        root.join("lib/colors.stylex.ts"),
+        "export const vars = {};\n",
+    )
+    .expect("theme file");
+    let options = json!({
+        "aliases": { "@lib/*": format!("{}/lib/*", root.display()) },
+        "rewriteAliases": true,
+    });
+    let source = "import '@lib/colors.stylex';\nexport const x = 1;\n";
+    let abs = root.join("src/input.tsx");
+    let ctx = FileContext {
+        filename: &abs,
+        source_text: source,
+        cwd: &root,
+    };
+    let resolved = CompilerOptions::from_json(&options)
+        .and_then(|o| o.resolve())
+        .expect("options resolve");
+    let allocator = Allocator::default();
+    let full = transform_source_in(&allocator, &ctx, &resolved, &StdFs)
+        .expect("compiles")
+        .expect("pre-gate must pass");
+    // The import rewrite is the full compile's only edit.
+    assert!(full.modified);
+    assert!(full.code.contains("../lib/colors.stylex"), "{}", full.code);
+    assert_eq!(rules_only(source, options.clone()), Ok((false, 0)));
+    assert_same(source, options);
 }
 
 #[test]
