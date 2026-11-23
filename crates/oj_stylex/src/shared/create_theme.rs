@@ -5,7 +5,7 @@ use crate::errors::StylexError;
 use crate::eval::JsValue;
 use crate::eval::value::{EvalValue, JsObjectMap};
 use crate::hash::hash;
-use crate::jsrt::{js_slice_utf16, locale_cmp, unverified_collation_char, utf16_cmp};
+use crate::jsrt::{default_first_cmp, js_slice_utf16, utf16_cmp};
 use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::shared::define_vars::{
@@ -48,7 +48,7 @@ pub fn create_theme(
         _ => return Err(StylexError::theme_without_var_group()),
     };
 
-    // Sorted with the default comparator (plain UTF-16), not localeCompare.
+    // Override variable names use the JavaScript default string order.
     let mut sorted_keys: Vec<&str> = override_entries.iter().map(|(k, _)| k.as_str()).collect();
     sorted_keys.sort_by(|a, b| utf16_cmp(a, b));
 
@@ -68,27 +68,8 @@ pub fn create_theme(
     }
 
     let mut sorted_at_rules: Vec<&str> = collection.iter().map(|(k, _)| k.as_str()).collect();
-    // This sort feeds atRulesStringForHash: an unverified collation char would
-    // silently change class names, so it hard-errors (r4#4 policy).
-    for at_rule in &sorted_at_rules {
-        if let Some(c) = unverified_collation_char(at_rule) {
-            return Err(StylexError::new(
-                crate::errors::ErrorCode::UnsupportedApi,
-                format!(
-                    "createTheme() cannot sort at-rule {at_rule:?}: {c:?} is outside the pinned collation alphabet and the order feeds the theme hash"
-                ),
-            ));
-        }
-    }
-    sorted_at_rules.sort_by(|a, b| {
-        if *a == "default" {
-            std::cmp::Ordering::Less
-        } else if *b == "default" {
-            std::cmp::Ordering::Greater
-        } else {
-            locale_cmp(a, b).expect("unverified chars rejected above")
-        }
-    });
+    // The `default` bucket remains first; other buckets use UTF-16 order.
+    sorted_at_rules.sort_by(|a, b| default_first_cmp(a, b));
 
     let decls_of = |at_rule: &str| -> String {
         collection
