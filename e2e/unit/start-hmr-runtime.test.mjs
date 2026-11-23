@@ -18,7 +18,11 @@ const STUB = `class DevRuntime {
   getImporters(id) { return GRAPH[id] || []; }
   hasFactory(id) { return id in GRAPH && !NO_FACTORY.has(id); }
   removeModuleCache(id) { this.hooks.onModuleCacheRemoval(id); }
-  initModule(id) { log.push("run " + id); }
+  initModule(id) {
+    // rolldown's MissingFactoryError.
+    if (MISSING.has(id)) throw Object.assign(new Error("No factory registered for module " + id), { id });
+    log.push("run " + id);
+  }
   loadExports() { return {}; }
 }`;
 
@@ -28,12 +32,20 @@ function loadRuntime(source = readFileSync(asset("start/hmr-runtime.js"), "utf8"
     GRAPH,
     // Modules of the page's first bundle: executed, with no factory.
     NO_FACTORY: new Set(bus.noFactory ?? []),
+    // Modules the runtime throws for when asked to run them.
+    MISSING: new Set(bus.missing ?? []),
+    ...(bus.storage ? { sessionStorage: bus.storage } : {}),
+    Date: bus.clock ? { now: () => bus.clock.now } : Date,
     // The page's timers, run by the test.
     setTimeout: (fn) => (bus.timers ?? []).push(fn),
     log,
     // Set by the entry's first import, before the runtime runs.
     __ojEngine: "engine",
-    console: { debug() {}, error: (...m) => log.push("error " + m.join(" ")) },
+    console: {
+      debug() {},
+      warn: (...m) => log.push("warn " + m.join(" ")),
+      error: (...m) => log.push("error " + m.join(" ")),
+    },
     location: { reload: () => log.push("location.reload") },
     document: { querySelectorAll: () => [] },
     __ojStartHmr: {
@@ -882,3 +894,49 @@ test(
     assert.equal(log.filter((l) => l === "app re-ran").length, 2, JSON.stringify(log));
   },
 );
+
+// Under Vite a module is a request the server answers as the file is now:
+// a page cannot be left without one. Here it can (an update that left a
+// module out), and nothing it holds can be trusted to run on.
+const storageOf = (map = new Map()) => ({
+  getItem: (k) => (map.has(k) ? map.get(k) : null),
+  setItem: (k, v) => map.set(k, String(v)),
+});
+
+test("a module the page has no factory for reloads the page, and still throws to its caller", () => {
+  const runtime = loadRuntime(undefined, { missing: ["src/gone.ts"], storage: storageOf() });
+  assert.throws(() => runtime.initModule("src/gone.ts"), /No factory registered for module src\/gone\.ts/);
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.log)), [
+    { type: "oj:reload-needed", reason: "no factory for module src/gone.ts" },
+  ]);
+  // Asked once, however many modules find it missing.
+  assert.throws(() => runtime.initModule("src/gone.ts"));
+  assert.equal(runtime.log.length, 1);
+  // Any other error is the module's own.
+  const other = loadRuntime(undefined, { storage: storageOf() });
+  other.initModule("src/a.tsx");
+  assert.deepEqual(other.log, ["run src/a.tsx"]);
+});
+
+test("a module still missing right after the reload it asked for is not reloaded for again", () => {
+  const storage = storageOf();
+  const clock = { now: 1000 };
+  const load = () => loadRuntime(undefined, { missing: ["src/gone.ts", "src/other.ts"], storage, clock });
+  const asked = (runtime) => runtime.log.filter((l) => l.type === "oj:reload-needed").length;
+  const first = load();
+  assert.throws(() => first.initModule("src/gone.ts"));
+  assert.equal(asked(first), 1);
+  // The document the reload brought, missing it again: the output lacks it.
+  clock.now += 2000;
+  const second = load();
+  assert.throws(() => second.initModule("src/gone.ts"), /No factory registered/);
+  assert.equal(asked(second), 0, "a reload loop");
+  assert.deepEqual(second.log, ["warn [oj] no factory for module src/gone.ts, and reloading did not bring it"]);
+  // Another module is another matter, and so is the same one much later.
+  assert.throws(() => second.initModule("src/other.ts"));
+  assert.equal(asked(second), 1);
+  clock.now += 60000;
+  const third = load();
+  assert.throws(() => third.initModule("src/gone.ts"));
+  assert.equal(asked(third), 1);
+});
