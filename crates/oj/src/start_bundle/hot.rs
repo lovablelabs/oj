@@ -680,15 +680,13 @@ fn watch_options(watch: Option<&serde_json::Value>) -> DevWatchOptions {
         compare_contents_for_polling: w.get("compareContentsForPolling").and_then(|v| v.as_bool()),
         use_debounce: w.get("useDebounce").and_then(|v| v.as_bool()),
         debounce_delay: Some(debounce_delay),
-        // The engine's debouncer thread wakes once a tick to look for an
-        // event old enough to report, whether or not one is queued, and
-        // its default tick is a quarter of the delay: at the 10 ms delay,
-        // 400 wakeups a second from an idle dev server, the whole of its
-        // idle CPU (0.5% of a core on a workstation, about 2% of a sandbox
-        // vCPU). With the delay itself as the tick an edit is reported
-        // within two delays of the save where it was within one and a
-        // quarter, and the idle wakeups are a quarter of what they were. An
-        // app's own tick is kept.
+        // The engine's debouncer thread sleeps while no event is queued
+        // (oj's fork of the debouncer, crates/oj_notify_debouncer_full) and
+        // wakes once a tick while one is, to look for an event old enough to
+        // report; its default tick is a quarter of the delay. The delay
+        // itself as the tick wakes it once per edit instead of four times,
+        // and bounds the report at two delays from the save where it was
+        // one and a quarter. An app's own tick is kept.
         debounce_tick_rate: Some(
             w.get("debounceTickRate")
                 .and_then(|v| v.as_u64())

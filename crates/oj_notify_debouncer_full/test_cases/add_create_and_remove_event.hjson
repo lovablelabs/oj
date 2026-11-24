@@ -1,0 +1,28 @@
+// https://github.com/notify-rs/notify/issues/900
+//
+// macOS repeats the "create" event when a file is created and then removed.
+// The "remove" event must not be swallowed.
+{
+    state: {
+        queues: {
+            /watch/file: {
+                events: [
+                    { kind: "create-any", paths: ["*"] }
+                ]
+            }
+        }
+    }
+    events: [
+        { kind: "create-any", paths: ["/watch/file"] }
+        { kind: "remove-any", paths: ["/watch/file"] }
+    ]
+    expected: {
+        queues: {
+            /watch/file: {
+                events: [
+                    { kind: "remove-any", paths: ["*"] }
+                ]
+            }
+        }
+    }
+}

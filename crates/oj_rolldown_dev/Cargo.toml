@@ -53,8 +53,10 @@ version = "=1.3.2"
 [dependencies.rolldown_error]
 version = "=1.3.2"
 
+# oj: oj's fork of rolldown_fs_watcher 1.3.2 (its debouncer thread sleeps
+# while idle); the same types, so the engine is otherwise unchanged.
 [dependencies.rolldown_fs_watcher]
-version = "=1.3.2"
+workspace = true
 
 [dependencies.rolldown_utils]
 version = "=1.3.2"
