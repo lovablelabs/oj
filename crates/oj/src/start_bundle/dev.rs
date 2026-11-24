@@ -914,11 +914,13 @@ impl DevBundler {
                     &serde_json::json!({ "handled": false }),
                 )?;
                 eprintln!("{}: client bundled ({files} files)", oj_server::oj_brand());
-                // A full build is over and its bundler closed: the heap it
-                // freed goes back to the OS here instead of staying resident
-                // as the arenas' free pages (a few MB per build, every
-                // rebuild and output refresh of a long session).
-                oj_server::rolldown_runtime::release_freed_heap();
+                // The output was made anew, by a bundler now closed or by
+                // the live engine: the heap that freed goes back to the OS
+                // instead of staying resident as the arenas' free pages (a
+                // few MB per build, every rebuild and output refresh of a
+                // long session). Off this run, which holds the session the
+                // next edit waits for.
+                tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap);
                 Ok(false)
             }
             Err(err) => {
