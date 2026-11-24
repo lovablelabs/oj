@@ -7,14 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Start dev: an idle dev server for a Start app no longer spends half a percent of a core (about 2% of a sandbox vCPU) waking up 400 times a second. The engine's file watcher debounces its events on a thread that woke once a tick, a quarter of the 10 ms debounce delay, to look for an edit old enough to report, whether or not one was queued. The thread now sleeps until the watcher queues an event and ticks only while one is queued, so an idle server never wakes it: on a 1,000-component app the server's wakeups went from 386 a second to under 2, and the thread's CPU from 0.47% of a core to none. The fix is upstream's own (notify-rs/notify#933, in notify-debouncer-full 0.8.0), which rolldown's publication of the debouncer predates: oj builds on `oj_notify_debouncer_full`, a fork carrying it, through `oj_rolldown_fs_watcher`, rolldown's watcher crate unchanged but for that dependency, until rolldown's catches up. A plain React app, whose dev server starts no such engine, idled at zero before and does still.
-
 ## [0.4.22] - 2026-11-24
 
 ### Fixed
 
+- Start dev: an idle dev server for a Start app no longer spends half a percent of a core (about 2% of a sandbox vCPU) waking up 400 times a second. The engine's file watcher debounces its events on a thread that woke once a tick, a quarter of the 10 ms debounce delay, to look for an edit old enough to report, whether or not one was queued. The thread now sleeps until the watcher queues an event and ticks only while one is queued, so an idle server never wakes it: on a 1,000-component app the server's wakeups went from 386 a second to under 2, and the thread's CPU from 0.47% of a core to none. The fix is upstream's own (notify-rs/notify#933, in notify-debouncer-full 0.8.0), which rolldown's publication of the debouncer predates: oj builds on `oj_notify_debouncer_full`, a fork carrying it, through `oj_rolldown_fs_watcher`, rolldown's watcher crate unchanged but for that dependency, until rolldown's catches up. A plain React app, whose dev server starts no such engine, idled at zero before and does still.
 - Start dev: the heap a client build frees goes back to the OS when the build is over, after each rebuild and each output refresh that follows a hot update, and so does the heap an engine respawn frees. On glibc the build's allocations interleave with the module graph's long-lived ones, so its free pages stayed resident in the threads' arenas and the server's memory grew with every rebuild of a long session (about 1 GB over 300 edits on a 3,500-module app, most of it recoverable by one `malloc_trim`). The same release ran after the cold dependency pre-bundle alone.
 
 ### Changed
