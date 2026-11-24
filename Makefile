@@ -1,6 +1,8 @@
-# The vendored forks (oj_deno_*, oj_notify, oj_rolldown_dev, oj_tsrs_*) keep
-# upstream sources verbatim, so they are not linted as targets (oj_deno_*,
-# oj_rolldown_dev and oj_tsrs_* are formatted with upstream's rustfmt.toml);
+# The vendored forks (oj_deno_*, oj_notify, oj_notify_debouncer_full,
+# oj_rolldown_dev, oj_rolldown_fs_watcher, oj_tsrs_*) keep upstream sources
+# verbatim, so they are not linted as targets (oj_deno_*, oj_rolldown_dev,
+# oj_rolldown_fs_watcher and oj_tsrs_* are formatted with upstream's
+# rustfmt.toml);
 # the forks, reference/ and the e2e fixtures are left out of oxfmt too (see
 # .oxfmtrc.json).
 JS_FILES = '**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'
@@ -13,7 +15,7 @@ NEXTEST = nextest="$$(tools/fetch-nextest.sh)" && "$$nextest" nextest
 
 lint:
 	cargo fmt -- --check --color always
-	cargo clippy --workspace --all-targets --exclude oj_deno_napi --exclude oj_notify --exclude oj_rolldown_dev --exclude oj_deno_process --exclude oj_deno_runtime --exclude oj_deno_snapshots --exclude 'oj_tsrs_*' -- -D warnings
+	cargo clippy --workspace --all-targets --exclude oj_deno_napi --exclude oj_notify --exclude oj_notify_debouncer_full --exclude oj_rolldown_dev --exclude oj_rolldown_fs_watcher --exclude oj_deno_process --exclude oj_deno_runtime --exclude oj_deno_snapshots --exclude 'oj_tsrs_*' -- -D warnings
 	$(OXFMT) --check $(JS_FILES)
 
 fmt:

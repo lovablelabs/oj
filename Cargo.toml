@@ -18,7 +18,9 @@ members = [
     "crates/oj_wasm",
     "crates/oj_deno_napi",
     "crates/oj_notify",
+    "crates/oj_notify_debouncer_full",
     "crates/oj_rolldown_dev",
+    "crates/oj_rolldown_fs_watcher",
     "crates/oj_deno_runtime",
     "crates/oj_deno_snapshots",
     "crates/typecheck/oj_*",
@@ -126,6 +128,15 @@ clap = { version = "4.6.6", features = ["derive"] }
 # name): a lazy compile queues no rebuild when rolldown's own lazy compilation
 # is off. See crates/oj_rolldown_dev/README.md.
 rolldown_dev = { package = "oj_rolldown_dev", version = "0.4.22", path = "crates/oj_rolldown_dev" }
+# oj-maintained fork of rolldown_fs_watcher 1.3.2 (published to crates.io
+# under this name): verbatim upstream, built on oj's fork of the event
+# debouncer below instead of rolldown's. See crates/oj_rolldown_fs_watcher/README.md.
+rolldown_fs_watcher = { package = "oj_rolldown_fs_watcher", version = "0.4.22", path = "crates/oj_rolldown_fs_watcher" }
+# oj-maintained fork of rolldown-notify-debouncer-full 0.8.1 (rolldown's
+# publication of notify-debouncer-full; published to crates.io under this
+# name): the debouncer's thread sleeps while no event is queued, instead of
+# waking once a tick. See crates/oj_notify_debouncer_full/README.md.
+oj_notify_debouncer_full = { version = "0.4.22", path = "crates/oj_notify_debouncer_full" }
 
 # test-only
 proptest = "1.9.0"
