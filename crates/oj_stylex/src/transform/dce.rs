@@ -57,49 +57,49 @@ pub fn dce_action(
         Some(Keep::All) => DceAction::KeepAll,
         None => DceAction::Remove,
         Some(Keep::Namespaces(namespaces)) => {
-            let mut pruned = JsObjectMap::new();
+            let own: Vec<&StyleVarToKeep> =
+                tuples.iter().filter(|t| t.var_name == var_name).collect();
+            // A subset of a map's entries, in its order: the keys stay unique.
+            let mut kept: Vec<(String, EvalValue)> =
+                Vec::with_capacity(namespaces.len().min(compiled.len()));
             for (key, value) in compiled.entries() {
                 if !namespaces.iter().any(|ns| ns == key) {
                     continue;
                 }
-                pruned.insert(key, prune_namespace(var_name, key, value, tuples));
+                kept.push((key.to_owned(), prune_namespace(key, value, &own)));
             }
-            DceAction::Prune(pruned)
+            DceAction::Prune(JsObjectMap::from_unique_entries(kept))
         }
     }
 }
 
-fn prune_namespace(
-    var_name: &str,
-    namespace: &str,
-    value: &EvalValue,
-    tuples: &[StyleVarToKeep],
-) -> EvalValue {
-    let relevant: Vec<&NonNullProps> = tuples
-        .iter()
-        .filter(|t| t.var_name == var_name && t.namespace.as_deref() == Some(namespace))
-        .map(|t| &t.non_null_props)
-        .collect();
-    if relevant.iter().any(|p| matches!(p, NonNullProps::True)) {
+/// `own` holds the tuples of the variable the namespace belongs to.
+fn prune_namespace(namespace: &str, value: &EvalValue, own: &[&StyleVarToKeep]) -> EvalValue {
+    let relevant = || {
+        own.iter()
+            .filter(|t| t.namespace.as_deref() == Some(namespace))
+            .map(|t| &t.non_null_props)
+    };
+    if relevant().any(|p| matches!(p, NonNullProps::True)) {
         return value.clone();
     }
     let EvalValue::Obj(map) = value else {
         return value.clone();
     };
     let mut keep_nulls: Vec<&str> = Vec::new();
-    for props in relevant {
+    for props in relevant() {
         if let NonNullProps::Props(list) = props {
             keep_nulls.extend(list.iter().map(String::as_str));
         }
     }
-    let mut pruned = JsObjectMap::new();
+    let mut kept: Vec<(String, EvalValue)> = Vec::with_capacity(map.len());
     for (key, prop_value) in map.entries() {
         if matches!(prop_value, EvalValue::Null) && !keep_nulls.contains(&key) {
             continue;
         }
-        pruned.insert(key, prop_value.clone());
+        kept.push((key.to_owned(), prop_value.clone()));
     }
-    EvalValue::Obj(Arc::new(pruned))
+    EvalValue::Obj(Arc::new(JsObjectMap::from_unique_entries(kept)))
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 //! JS style value → final CSS string value.
 // parity: babel-plugin/src/shared/utils/transform-value.js
 
-use crate::jsrt::{js_math_round, js_number_to_string};
+use crate::jsrt::{js_math_round, write_js_number};
 use crate::shared::css_value::{Kind, parse};
-use crate::shared::normalize_value::{CssValueError, normalize_value};
+use crate::shared::normalize_value::{CssValueError, normalize_owned, normalize_value};
 
 pub fn transform_value_str(
     key: &str,
@@ -22,11 +22,38 @@ pub fn transform_value_num(
     font_size_px_to_rem: bool,
 ) -> Result<String, CssValueError> {
     let rounded = js_math_round(value * 10000.0) / 10000.0;
-    let as_string = js_number_to_string(rounded) + get_number_suffix(key);
+    let suffix = get_number_suffix(key);
+    let mut as_string = String::with_capacity(24 + suffix.len());
+    push_js_number(&mut as_string, rounded);
+    as_string.push_str(suffix);
     if let Some(out) = transform_content_like(key, &as_string) {
         return Ok(out);
     }
-    normalize_value(&as_string, key, font_size_px_to_rem)
+    normalize_owned(as_string, key, font_size_px_to_rem)
+}
+
+// `String(n)`: an integer below 1e15 prints as its plain decimal digits
+// (`-0` as "0"), which skips the shortest-round-trip formatter.
+fn push_js_number(out: &mut String, x: f64) {
+    if x.fract() != 0.0 || x.abs() >= 1e15 {
+        return write_js_number(x, out);
+    }
+    let n = x as i64;
+    let mut digits = [0u8; 16];
+    let mut at = digits.len();
+    let mut rest = n.unsigned_abs();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        out.push('-');
+    }
+    out.push_str(str::from_utf8(&digits[at..]).expect("ascii digits"));
 }
 
 // content/hyphenateCharacter auto-quoting; short-circuits normalization.
@@ -74,7 +101,8 @@ fn is_content_keyword(val: &str) -> bool {
 // A value that already is a content list: at least one closed string, and
 // nothing besides closed strings, closed functions and content keywords.
 fn is_quoted_content_list(val: &str) -> bool {
-    if !val.bytes().any(|b| matches!(b, b'"' | b'\'')) {
+    // A string node starts at a quote byte: without one the list has none.
+    if memchr::memchr2(b'"', b'\'', val.as_bytes()).is_none() {
         return false;
     }
     let nodes = parse(val);
@@ -224,7 +252,7 @@ mod tests {
     #[test]
     fn negative_zero_prints_unsigned() {
         // String(-0) is "0" in JS; the pipeline depends on ryu-js matching that.
-        assert_eq!(js_number_to_string(-0.0), "0");
+        assert_eq!(crate::jsrt::js_number_to_string(-0.0), "0");
         assert_eq!(transform_value_num("width", -0.0, false).unwrap(), "0");
     }
 
@@ -283,5 +311,39 @@ mod tests {
             transform_value_num("fontSizeAdjust", 0.5, false).unwrap(),
             ".5"
         );
+    }
+
+    #[test]
+    fn push_js_number_prints_like_number_to_string() {
+        for x in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            9.0,
+            10.0,
+            16.0,
+            -400.0,
+            1234567890.0,
+            999_999_999_999_999.0,
+            -999_999_999_999_999.0,
+            1e15,
+            -1e15,
+            1e21,
+            1e300,
+            0.5,
+            -0.5,
+            0.1 + 0.2,
+            1e-7,
+            5e-324,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let mut out = String::from("<");
+            push_js_number(&mut out, x);
+            assert_eq!(out[1..], crate::jsrt::js_number_to_string(x), "{x:?}");
+        }
     }
 }

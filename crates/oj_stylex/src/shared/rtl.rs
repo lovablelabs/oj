@@ -149,16 +149,29 @@ fn inline_rtl_property(key: &str) -> Option<&'static str> {
     })
 }
 
-fn map_background_position(value: &str, start_to: &str, end_to: &str) -> String {
-    value
-        .split(' ')
-        .map(|word| match word {
+fn maps_background_position(word: &str) -> bool {
+    matches!(
+        word,
+        "start" | "insetInlineStart" | "end" | "insetInlineEnd"
+    )
+}
+
+fn map_background_position<'v>(value: &'v str, start_to: &str, end_to: &str) -> Cow<'v, str> {
+    if !value.split(' ').any(maps_background_position) {
+        return Cow::Borrowed(value);
+    }
+    let mut out = String::with_capacity(value.len());
+    for (i, word) in value.split(' ').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(match word {
             "start" | "insetInlineStart" => start_to,
             "end" | "insetInlineEnd" => end_to,
             other => other,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+        });
+    }
+    Cow::Owned(out)
 }
 
 /// The ltr declaration for a `[dashed-key, value]` pair (identity when no
@@ -187,7 +200,7 @@ pub fn generate_ltr<'k, 'v>(
         ),
         "background-position" => (
             Cow::Borrowed(key),
-            Cow::Owned(map_background_position(value, "left", "right")),
+            map_background_position(value, "left", "right"),
         ),
         _ => identity,
     }
@@ -219,7 +232,7 @@ pub fn generate_rtl<'k, 'v>(
             }
             Some((
                 Cow::Borrowed(key),
-                Cow::Owned(map_background_position(value, "right", "left")),
+                map_background_position(value, "right", "left"),
             ))
         }
         "cursor" if ctx.enable_legacy_value_flipping => {
@@ -269,18 +282,25 @@ fn split_by_divisor(value: &str) -> Vec<String> {
 
 // parity: generate-rtl.js flipShadow — naive space split, string-only surgery.
 fn flip_shadow(value: &str) -> Option<String> {
-    let flipped: Vec<String> = split_by_divisor(value)
-        .into_iter()
-        .map(|def| {
-            let mut parts: Vec<String> = def.split(' ').map(str::to_string).collect();
-            let index = usize::from(!starts_like_number(&parts[0]));
-            if index < parts.len() {
-                parts[index] = flip_sign(&parts[index]);
+    let mut rtl = String::with_capacity(value.len() + 4);
+    for (group, def) in split_by_divisor(value).iter().enumerate() {
+        if group > 0 {
+            rtl.push(',');
+        }
+        let mut parts = def.split(' ');
+        let first = parts.next().unwrap_or_default();
+        let flipped = usize::from(!starts_like_number(first));
+        for (i, part) in std::iter::once(first).chain(parts).enumerate() {
+            if i > 0 {
+                rtl.push(' ');
             }
-            parts.join(" ")
-        })
-        .collect();
-    let rtl = flipped.join(",");
+            if i == flipped {
+                push_flipped_sign(&mut rtl, part);
+            } else {
+                rtl.push_str(part);
+            }
+        }
+    }
     (rtl != value).then_some(rtl)
 }
 
@@ -288,13 +308,17 @@ fn starts_like_number(part: &str) -> bool {
     unit(part).is_some()
 }
 
-fn flip_sign(part: &str) -> String {
+fn push_flipped_sign(out: &mut String, part: &str) {
     if part == "0" {
-        return part.to_string();
+        out.push_str(part);
+        return;
     }
     match part.strip_prefix('-') {
-        Some(rest) => rest.to_string(),
-        None => format!("-{part}"),
+        Some(rest) => out.push_str(rest),
+        None => {
+            out.push('-');
+            out.push_str(part);
+        }
     }
 }
 

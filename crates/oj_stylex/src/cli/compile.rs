@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
-use crate::api::{FileContext, might_contain_stylex, transform_source_in};
+use crate::api::{FileContext, might_contain_stylex, transform_source_rules_in};
 use crate::assemble::{AssembleConfig, assemble};
 use crate::module_resolution::MemoFs;
 use crate::options::CompilerOptions;
@@ -228,15 +228,19 @@ pub fn run(
                                         Some(Err(format!("{}: {}", path.display(), err.message)))
                                     }
                                 },
-                                None => match transform_source_in(&allocator, &ctx, options, fs) {
-                                    Ok(Some(result)) => {
-                                        Some(Ok((path.clone(), result.rules, false)))
+                                None => {
+                                    match transform_source_rules_in(&allocator, &ctx, options, fs) {
+                                        Ok(Some(result)) => {
+                                            Some(Ok((path.clone(), result.rules, false)))
+                                        }
+                                        Ok(None) => Some(Ok((path.clone(), Vec::new(), false))),
+                                        Err(err) => Some(Err(format!(
+                                            "{}: {}",
+                                            path.display(),
+                                            err.message
+                                        ))),
                                     }
-                                    Ok(None) => Some(Ok((path.clone(), Vec::new(), false))),
-                                    Err(err) => {
-                                        Some(Err(format!("{}: {}", path.display(), err.message)))
-                                    }
-                                },
+                                }
                             }
                         }
                     };

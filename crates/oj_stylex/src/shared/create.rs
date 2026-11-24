@@ -16,7 +16,7 @@ use crate::shared::flatten::{
     PreRule, PreRuleValue, StyleScalar, flatten_raw_style_object, media_order_transform,
     validate_namespace,
 };
-use crate::shared::generate_rule::CompiledDecl;
+use crate::shared::generate_rule::{CompiledDecl, convert_style_to_class_name};
 use crate::shared::resolution::is_unexpanded_property;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -193,9 +193,19 @@ fn compile_namespaces_core(
     let _t = crate::timings::start(crate::timings::Stage::Create);
     let options = ctx.options;
     let mut resolved_namespaces = JsObjectMap::with_capacity(namespaces.len());
-    let mut rules: Vec<StylexRule> = Vec::new();
+    // Sized for one rule per top-level entry, the flat-namespace shape: the
+    // dedupe set then never rehashes and the rule list never regrows.
+    let entry_count: usize = namespaces
+        .entries()
+        .map(|(_, namespace)| match namespace {
+            EvalValue::Obj(namespace) => namespace.len(),
+            _ => 0,
+        })
+        .sum();
+    let mut rules: Vec<StylexRule> = Vec::with_capacity(entry_count);
     let mut class_paths: Vec<(String, ClassPathsInNamespace)> = Vec::new();
-    let mut seen_class_names: FxHashSet<Arc<str>> = FxHashSet::default();
+    let mut seen_class_names: FxHashSet<Arc<str>> =
+        FxHashSet::with_capacity_and_hasher(entry_count, Default::default());
     let mut decls: Vec<CompiledDecl> = Vec::new();
 
     for (namespace_name, namespace_value) in namespaces.entries() {
@@ -248,54 +258,61 @@ fn compile_namespaces_core(
                 key.to_string()
             };
 
-            decls.clear();
-            pre_rule.for_each_compiled(options, &mut |decl, key_path| {
-                if need_class_paths {
-                    match paths_in_namespace
-                        .iter_mut()
-                        .find(|(name, _)| name.as_str() == &*decl.class_name)
-                    {
-                        Some(slot) => {
-                            slot.1 = key_path.iter().map(|c| c.to_string()).collect();
-                        }
-                        None => paths_in_namespace.push((
-                            decl.class_name.to_string(),
-                            key_path.iter().map(|c| c.to_string()).collect(),
-                        )),
+            let class_names = match &pre_rule {
+                PreRule::Null => EvalValue::Null,
+                // One declaration (every flat `property: value` entry): its
+                // class name is the whole compiled value.
+                PreRule::Rule {
+                    property,
+                    value,
+                    key_path,
+                } => {
+                    let key_path = key_path
+                        .as_deref()
+                        .unwrap_or_else(|| std::slice::from_ref(property));
+                    let decl = convert_style_to_class_name(property, value, key_path, options)?;
+                    if need_class_paths {
+                        record_class_path(&mut paths_in_namespace, &decl, key_path);
                     }
+                    if seen_class_names.insert(decl.class_name.clone()) {
+                        rules.push((*decl).clone());
+                    }
+                    class_names_value(String::from(&*decl.class_name))
                 }
-                decls.push(decl);
-            })?;
+                PreRule::Set(_) => {
+                    decls.clear();
+                    pre_rule.for_each_compiled(options, &mut |decl, key_path| {
+                        if need_class_paths {
+                            record_class_path(&mut paths_in_namespace, &decl, key_path);
+                        }
+                        decls.push(decl);
+                    })?;
 
-            let mut joined =
-                String::with_capacity(decls.iter().map(|d| d.class_name.len() + 1).sum());
-            let mut first = true;
-            for (i, decl) in decls.iter().enumerate() {
-                if decls[..i]
-                    .iter()
-                    .any(|seen| seen.class_name == decl.class_name)
-                {
-                    continue;
+                    let mut joined =
+                        String::with_capacity(decls.iter().map(|d| d.class_name.len() + 1).sum());
+                    let mut first = true;
+                    for (i, decl) in decls.iter().enumerate() {
+                        if decls[..i]
+                            .iter()
+                            .any(|seen| seen.class_name == decl.class_name)
+                        {
+                            continue;
+                        }
+                        if !first {
+                            joined.push(' ');
+                        }
+                        first = false;
+                        joined.push_str(&decl.class_name);
+                    }
+                    for decl in &decls {
+                        if seen_class_names.insert(decl.class_name.clone()) {
+                            rules.push((**decl).clone());
+                        }
+                    }
+                    class_names_value(joined)
                 }
-                if !first {
-                    joined.push(' ');
-                }
-                first = false;
-                joined.push_str(&decl.class_name);
-            }
-            namespace_obj.insert(
-                display_key,
-                if joined.is_empty() {
-                    EvalValue::Null
-                } else {
-                    EvalValue::Str(joined)
-                },
-            );
-            for decl in &decls {
-                if seen_class_names.insert(decl.class_name.clone()) {
-                    rules.push((**decl).clone());
-                }
-            }
+            };
+            namespace_obj.insert(display_key, class_names);
         }
         namespace_obj.insert("$$css", shape.css_marker(namespace_name));
         resolved_namespaces.insert(
@@ -312,6 +329,30 @@ fn compile_namespaces_core(
         rules,
         class_paths,
     })
+}
+
+fn class_names_value(joined: String) -> EvalValue {
+    if joined.is_empty() {
+        EvalValue::Null
+    } else {
+        EvalValue::Str(joined)
+    }
+}
+
+// classPathsPerNamespace: first-seen position, last-written path.
+fn record_class_path(
+    paths: &mut ClassPathsInNamespace,
+    decl: &StylexRule,
+    key_path: &[Cow<'_, str>],
+) {
+    let path = key_path.iter().map(|c| c.to_string()).collect();
+    match paths
+        .iter_mut()
+        .find(|(name, _)| name.as_str() == &*decl.class_name)
+    {
+        Some(slot) => slot.1 = path,
+        None => paths.push((String::from(&*decl.class_name), path)),
+    }
 }
 
 enum NamespaceEntries<'a> {
@@ -371,6 +412,15 @@ impl ExactSizeIterator for NamespaceEntries<'_> {
 fn dedupe_last_wins<'a>(
     flattened: Vec<(Cow<'a, str>, PreRule<'a>)>,
 ) -> Vec<(Cow<'a, str>, PreRule<'a>)> {
+    // A handful of keys compares faster pairwise than through a hash set.
+    if flattened.len() <= 16 {
+        let repeats = |(i, (key, _)): (usize, &(Cow<'a, str>, PreRule<'a>))| {
+            flattened[..i].iter().any(|(earlier, _)| earlier == key)
+        };
+        if !flattened.iter().enumerate().any(repeats) {
+            return flattened;
+        }
+    }
     let mut seen: FxHashSet<&str> =
         FxHashSet::with_capacity_and_hasher(flattened.len(), Default::default());
     if flattened.iter().all(|(key, _)| seen.insert(key)) {

@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Start dev: the heap a client build frees goes back to the OS when the build is over, after each rebuild and each output refresh that follows a hot update, and so does the heap an engine respawn frees. On glibc the build's allocations interleave with the module graph's long-lived ones, so its free pages stayed resident in the threads' arenas and the server's memory grew with every rebuild of a long session (about 1 GB over 300 edits on a 3,500-module app, most of it recoverable by one `malloc_trim`). The same release ran after the cold dependency pre-bundle alone.
 
+### Changed
+
+- StyleX: the compiler works out bindings with its own scope model by default, where it used `oxc_semantic`; compiled output is unchanged. `OJ_STYLEX_NATIVE_SCOPE=0` brings back `oxc_semantic`.
+- StyleX dev: the plugin keeps import resolution across modules and reloads, rechecking the file stats each answer rests on before reusing it, so a later pass over an app does not resolve every import again.
+- StyleX: a serve `transform` with `wantCode: false` and no source map, and a batch run that emits only rules, compile the rules without building the code.
+
 ## [0.4.21] - 2026-11-23
 
 ### Fixed

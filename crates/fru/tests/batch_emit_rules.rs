@@ -71,6 +71,9 @@ fn jobs() -> String {
             "consts",
             "import * as stylex from '@stylexjs/stylex';\nexport const c = stylex.defineConsts({ gap: '4px' });\n",
         ),
+        // Turned away by the pre-parse gate: no backend parses it, to find
+        // that it does not parse.
+        job("unparsed", "export const = ;\n"),
     ]
     .join("\n")
 }
@@ -78,34 +81,48 @@ fn jobs() -> String {
 #[test]
 fn rules_only_lines_are_the_full_lines_minus_code() {
     let input = jobs();
-    let full = lines(&batch(&["ndjson", "--threads", "1"], &input));
-    let rules = lines(&batch(
-        &["ndjson", "--threads", "1", "--emit", "rules"],
-        &input,
-    ));
-    assert_eq!(full.len(), 5);
-    assert_eq!(rules.len(), 5);
-    for (full, rules) in full.iter().zip(&rules) {
-        assert_eq!(rules, &without_code(full));
-        assert!(!rules.contains("\"code\""), "{rules}");
+    for backend in ["splice", "ast"] {
+        let args = ["ndjson", "--threads", "1", "--backend", backend];
+        let full = lines(&batch(&args, &input));
+        let rules = lines(&batch(&[&args[..], &["--emit", "rules"]].concat(), &input));
+        assert_eq!(full.len(), 6, "{backend}");
+        assert_eq!(rules.len(), 6, "{backend}");
+        for (full, rules) in full.iter().zip(&rules) {
+            assert_eq!(rules, &without_code(full), "{backend}");
+            assert!(!rules.contains("\"code\""), "{backend}: {rules}");
+        }
+        assert!(
+            rules[0].contains(r#""ok":true,"rules":[["x"#),
+            "{backend}: {}",
+            rules[0]
+        );
+        assert!(
+            rules[1].ends_with(r#""ok":true,"rules":[]}"#),
+            "{backend}: {}",
+            rules[1]
+        );
+        assert!(
+            rules[2].contains(r#""ok":false"#),
+            "{backend}: {}",
+            rules[2]
+        );
+        assert!(
+            rules[3].starts_with(r#"{"id":"?","ok":false"#),
+            "{backend}: {}",
+            rules[3]
+        );
+        assert!(rules[4].contains("constKey"), "{backend}: {}", rules[4]);
+        assert!(
+            rules[5].ends_with(r#""ok":true,"rules":[]}"#),
+            "{backend}: {}",
+            rules[5]
+        );
+        assert!(
+            full[5].contains(r#""ok":true,"code":"export const = ;\n""#),
+            "{backend}: {}",
+            full[5]
+        );
     }
-    assert!(
-        rules[0].contains(r#""ok":true,"rules":[["x"#),
-        "{}",
-        rules[0]
-    );
-    assert!(
-        rules[1].ends_with(r#""ok":true,"rules":[]}"#),
-        "{}",
-        rules[1]
-    );
-    assert!(rules[2].contains(r#""ok":false"#), "{}", rules[2]);
-    assert!(
-        rules[3].starts_with(r#"{"id":"?","ok":false"#),
-        "{}",
-        rules[3]
-    );
-    assert!(rules[4].contains("constKey"), "{}", rules[4]);
 }
 
 #[test]

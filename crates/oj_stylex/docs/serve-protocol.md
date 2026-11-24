@@ -16,7 +16,8 @@ fingerprint starts with the compiler version followed by `+`; clients should
 reject incompatible versions.
 
 `transform` returns `code` and StyleX metadata `rules`. `wantCode: false` omits
-the code; `wantMap: true` requests a source map. Supplying a `key` also replaces
+the code and, unless a map is requested, skips building it; `wantMap: true`
+requests a source map. Supplying a `key` also replaces
 that file's rules in the resident registry and returns `generation` and
 `rulesChanged`. Without a key, the transform leaves the registry unchanged.
 

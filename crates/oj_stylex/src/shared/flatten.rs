@@ -335,6 +335,10 @@ fn dfs_process_map(obj: &JsObjectMap, depth: usize) -> Result<JsObjectMap, Style
 /// any key CONTAINING that pattern is sliced `[4..len-1]` wholesale.
 fn unwrap_var_key(key: &str) -> Cow<'_, str> {
     let bytes = key.as_bytes();
+    // Almost every key is a plain property name: no `(`, so no `var(--…)`.
+    if memchr::memchr(b'(', bytes).is_none() {
+        return Cow::Borrowed(key);
+    }
     let mut search = 0;
     while let Some(pos) = key[search..].find("var(--") {
         let start = search + pos;

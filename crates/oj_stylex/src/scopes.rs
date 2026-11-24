@@ -1,8 +1,11 @@
-//! Native binding analysis (`OJ_STYLEX_NATIVE_SCOPE=1`): CompileState's queries from one Visit walk.
-// parity: oxc_semantic 0.154 SemanticBuilder + Binder (declaration, hoisting, flags, resolution).
+//! Native binding analysis: CompileState's queries from one Visit walk that
+//! records scopes, bindings and references, and looks a reference up only when
+//! a query asks about it. The default; `OJ_STYLEX_NATIVE_SCOPE=0` keeps oxc_semantic.
+// parity: oxc_semantic 0.158 SemanticBuilder + Binder (declaration, hoisting, flags, resolution).
 
 use std::cell::Cell;
 
+use oxc_allocator::{Address, GetAddress, UnstableAddress};
 use oxc_ast::AstKind;
 use oxc_ast::ast::*;
 use oxc_ast_visit::{Visit, walk};
@@ -14,6 +17,7 @@ use oxc_syntax::reference::{ReferenceFlags, ReferenceId};
 use oxc_syntax::scope::{ScopeFlags, ScopeId};
 use oxc_syntax::symbol::{SymbolFlags, SymbolId};
 
+use crate::fxhash::FxHashMap;
 use crate::state::{
     BindingDecl, BindingInfo, MUTATING_ARRAY_METHODS, RefParent, RefSite,
     babel_is_export_declaration, babel_is_statement, binding_pattern_type_name,
@@ -28,12 +32,12 @@ pub enum ScopeBackend {
 }
 
 impl ScopeBackend {
-    /// `OJ_STYLEX_NATIVE_SCOPE=1` selects the native walk; anything else keeps oxc.
+    /// The native walk, unless `OJ_STYLEX_NATIVE_SCOPE=0` asks for oxc_semantic.
     pub fn from_env() -> Self {
-        if oj_env::get().knobs.stylex_native_scope {
-            ScopeBackend::Native
-        } else {
+        if oj_env::get().knobs.stylex_native_scope_off {
             ScopeBackend::Oxc
+        } else {
+            ScopeBackend::Native
         }
     }
 }
@@ -41,6 +45,16 @@ impl ScopeBackend {
 type Idx = u32;
 
 const ROOT: Idx = 0;
+/// No parent scope / end of a binding list.
+const NONE: Idx = u32::MAX;
+/// [`Reference::symbol`] before its lookup ran.
+const PENDING: Idx = u32::MAX;
+/// [`Reference::symbol`] once a lookup found no binding.
+const UNRESOLVED: Idx = u32::MAX - 1;
+
+const CONSTNESS_KNOWN: u8 = 1;
+const VIOLATED: u8 = 2;
+const MUTATED: u8 = 4;
 
 enum DeclSite<'a> {
     Declarator(&'a VariableDeclarator<'a>),
@@ -63,28 +77,40 @@ struct Symbol<'a> {
     decl: DeclSite<'a>,
     redeclared: bool,
     var_for_head: bool,
-    violated: bool,
-    mutated: bool,
+    /// [`CONSTNESS_KNOWN`] once computed, with [`VIOLATED`] and [`MUTATED`].
+    constness: Cell<u8>,
 }
 
 struct Reference<'a> {
     name: Ident<'a>,
     start: u32,
+    /// Where lookup starts: the scope holding the reference, or the parent of
+    /// the function whose parameters it sits in and did not resolve against.
     scope: Idx,
-    flags: ReferenceFlags,
-    symbol: Option<Idx>,
-    parent: RefParent<'a>,
+    /// A symbol index, [`PENDING`] or [`UNRESOLVED`].
+    symbol: Cell<Idx>,
+    /// Rewritten by the lookup that resolves the reference.
+    flags: Cell<ReferenceFlags>,
     mutation: bool,
+    parent: RefParent<'a>,
 }
 
-struct Scope<'a> {
-    parent: Option<Idx>,
-    flags: ScopeFlags,
-    bindings: Vec<(Ident<'a>, Idx)>,
+struct Scope {
+    parent: Idx,
+    /// Head of this scope's list in [`ScopeModel::bindings`] (the root scope
+    /// keeps a map instead).
+    bindings: Idx,
     /// oxc `hoisting_variables`: `var` names that passed through this scope.
-    hoisted: Vec<(Ident<'a>, Idx)>,
+    hoisted: Idx,
+    flags: ScopeFlags,
     /// Union of [`name_bit`] over `bindings`: a clear bit skips the scan.
     mask: u64,
+}
+
+struct Binding<'a> {
+    name: Ident<'a>,
+    symbol: Idx,
+    next: Idx,
 }
 
 /// `Ident::hash` writes its precomputed word once; this hasher just keeps it.
@@ -114,21 +140,66 @@ struct Site {
     program_level: bool,
 }
 
+/// Where one upward lookup ended.
+enum Lookup {
+    Found(Idx, ReferenceFlags),
+    Unresolved,
+    /// Nothing through the last scope it was allowed to search.
+    PastLast,
+}
+
+// parity: SemanticBuilder try_resolve_reference — whether a reference with
+// `flags` may bind to a symbol with `symbol_flags`, and its flags once it has.
+fn resolved_flags(flags: ReferenceFlags, symbol_flags: SymbolFlags) -> Option<ReferenceFlags> {
+    let can_resolve = if flags.is_namespace()
+        && !flags.is_value_as_type()
+        && !symbol_flags.can_be_referenced_as_namespace()
+    {
+        false
+    } else {
+        (flags.is_value() && symbol_flags.can_be_referenced_by_value())
+            || (flags.is_type() && symbol_flags.can_be_referenced_by_type())
+            || (flags.is_value_as_type() && symbol_flags.can_be_referenced_by_value_as_type())
+    };
+    if !can_resolve {
+        return None;
+    }
+    if (symbol_flags.is_value() && flags.is_value()) || (flags.is_namespace() && flags.is_read()) {
+        Some(flags - ReferenceFlags::Type)
+    } else {
+        Some(ReferenceFlags::Type)
+    }
+}
+
 pub struct ScopeModel<'a> {
-    scopes: Vec<Scope<'a>>,
+    scopes: Vec<Scope>,
+    /// Every non-root scope's `bindings` and `hoisted` lists, linked by `next`.
+    bindings: Vec<Binding<'a>>,
     root_bindings: IdentHashMap<'a, Idx>,
     symbols: Vec<Symbol<'a>>,
     refs: Vec<Reference<'a>>,
+    /// References that write or mutate: all that constness has to look up.
+    effects: Vec<Idx>,
     /// Indexed by the `NodeId` written into call/member/JSX-opening cells.
     sites: Vec<Site>,
-    root_unresolved: Vec<Idx>,
 }
 
 impl<'a> ScopeModel<'a> {
     pub fn build(program: &'a Program<'a>) -> Self {
-        let mut builder = Builder::new(program.source_text.len());
+        let mut builder = Builder::new(program);
         builder.visit_program(program);
         builder.model
+    }
+
+    fn list_find(&self, mut entry: Idx, name: Ident<'_>) -> Option<Idx> {
+        while entry != NONE {
+            let binding = &self.bindings[entry as usize];
+            if binding.name == name {
+                return Some(binding.symbol);
+            }
+            entry = binding.next;
+        }
+        None
     }
 
     fn get_binding(&self, scope: Idx, name: Ident<'_>) -> Option<Idx> {
@@ -143,17 +214,69 @@ impl<'a> ScopeModel<'a> {
         if s.mask & bit == 0 {
             return None;
         }
-        s.bindings.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+        self.list_find(s.bindings, name)
     }
 
     fn find_binding(&self, mut scope: Idx, name: Ident<'_>) -> Option<Idx> {
         let bit = name_bit(name);
-        loop {
+        while scope != NONE {
             if let Some(symbol) = self.get_binding_masked(scope, name, bit) {
                 return Some(symbol);
             }
-            scope = self.scopes[scope as usize].parent?;
+            scope = self.scopes[scope as usize].parent;
         }
+        None
+    }
+
+    /// Walks up from `scope` through `last` ([`NONE`] = the root) for a
+    /// binding a reference to `name` with `flags` may resolve to.
+    // parity: SemanticBuilder walk_up_resolve_reference + resolve_arguments_reference
+    // — a value `arguments` stops at the nearest non-arrow function, whose
+    // implicit arguments object has no symbol, and skips a function
+    // expression's own name on the way.
+    fn walk_up(&self, name: Ident<'_>, flags: ReferenceFlags, mut scope: Idx, last: Idx) -> Lookup {
+        let bit = name_bit(name);
+        let arguments = name.as_str() == "arguments"
+            && flags.intersects(ReferenceFlags::Value | ReferenceFlags::ValueAsType);
+        loop {
+            if let Some(symbol) = self.get_binding_masked(scope, name, bit) {
+                let symbol_flags = self.symbols[symbol as usize].flags;
+                if !(arguments && symbol_flags.contains(SymbolFlags::FunctionExpression))
+                    && let Some(resolved) = resolved_flags(flags, symbol_flags)
+                {
+                    return Lookup::Found(symbol, resolved);
+                }
+            }
+            let s = &self.scopes[scope as usize];
+            if arguments && s.flags.is_function() && !s.flags.is_arrow() {
+                return Lookup::Unresolved;
+            }
+            if scope == last {
+                return Lookup::PastLast;
+            }
+            if s.parent == NONE {
+                return Lookup::Unresolved;
+            }
+            scope = s.parent;
+        }
+    }
+
+    /// The reference's symbol or [`UNRESOLVED`], looked up on first use.
+    fn resolve(&self, reference: &Reference<'a>) -> Idx {
+        let known = reference.symbol.get();
+        if known != PENDING {
+            return known;
+        }
+        let symbol =
+            match self.walk_up(reference.name, reference.flags.get(), reference.scope, NONE) {
+                Lookup::Found(symbol, flags) => {
+                    reference.flags.set(flags);
+                    symbol
+                }
+                Lookup::Unresolved | Lookup::PastLast => UNRESOLVED,
+            };
+        reference.symbol.set(symbol);
+        symbol
     }
 
     fn site(&self, node: NodeId) -> &Site {
@@ -162,17 +285,42 @@ impl<'a> ScopeModel<'a> {
     }
 
     pub fn symbol_of(&self, id: &IdentifierReference<'a>) -> Option<SymbolId> {
-        let reference = id.reference_id.get()?;
-        self.refs
-            .get(reference.index())?
-            .symbol
-            .map(|s| SymbolId::from_usize(s as usize))
+        let reference = self.refs.get(id.reference_id.get()?.index())?;
+        let symbol = self.resolve(reference);
+        (symbol != UNRESOLVED).then(|| SymbolId::from_usize(symbol as usize))
     }
 
     /// (constantViolations non-empty, isMutated) for one symbol.
+    // parity: state.rs non_constant_flags.
     pub fn constness(&self, symbol: SymbolId) -> (bool, bool) {
         let s = &self.symbols[symbol.index()];
-        (s.redeclared || s.var_for_head || s.violated, s.mutated)
+        let known = s.constness.get();
+        if known != 0 {
+            return (known & VIOLATED != 0, known & MUTATED != 0);
+        }
+        let target = symbol.index() as Idx;
+        let mut violated = s.redeclared || s.var_for_head;
+        let mut mutated = false;
+        for &index in &self.effects {
+            let reference = &self.refs[index as usize];
+            if reference.name != s.name || self.resolve(reference) != target {
+                continue;
+            }
+            if reference.flags.get().is_write() {
+                violated = true;
+            } else if reference.mutation {
+                mutated = true;
+            }
+            if violated && mutated {
+                break;
+            }
+        }
+        s.constness.set(
+            CONSTNESS_KNOWN
+                | if violated { VIOLATED } else { 0 }
+                | if mutated { MUTATED } else { 0 },
+        );
+        (violated, mutated)
     }
 
     pub fn binding_info(&self, symbol: SymbolId) -> BindingInfo<'a> {
@@ -205,12 +353,11 @@ impl<'a> ScopeModel<'a> {
             .map(|s| SymbolId::from_usize(s as usize))
     }
 
+    /// A name is taken by any symbol and by any unresolved reference; a
+    /// resolved reference shares its symbol's name, so no lookup is needed.
     pub fn uid_name_taken(&self, name: &str) -> bool {
         let name = Ident::from(name);
-        self.root_unresolved
-            .iter()
-            .any(|&r| self.refs[r as usize].name == name)
-            || self.symbols.iter().any(|s| s.name == name)
+        self.symbols.iter().any(|s| s.name == name) || self.refs.iter().any(|r| r.name == name)
     }
 
     pub fn reference_starts_where(
@@ -285,39 +432,49 @@ fn bound_names<'a>(pattern: &'a BindingPattern<'a>, f: &mut impl FnMut(&'a Bindi
     }
 }
 
-fn upsert<'a>(entries: &mut Vec<(Ident<'a>, Idx)>, name: Ident<'a>, symbol: Idx) {
-    match entries.iter_mut().find(|(n, _)| *n == name) {
-        Some(entry) => entry.1 = symbol,
-        None => entries.push((name, symbol)),
-    }
+struct Frame<'a> {
+    kind: AstKind<'a>,
+    /// Whether this node counts toward [`Builder::opaque_depth`].
+    opaque: bool,
 }
 
 struct Builder<'a> {
     model: ScopeModel<'a>,
     current_scope: Idx,
-    /// Ancestor kinds, `Program` first; the parent of the node being visited.
-    stack: Vec<AstKind<'a>>,
+    /// Ancestors, `Program` first; the top is the parent of the node being visited.
+    stack: Vec<Frame<'a>>,
     /// Ancestors that make a node non-program-level (functions, nested statements).
     opaque_depth: u32,
     top_stmt_start: u32,
     reference_flags: ReferenceFlags,
+    /// References recorded while a parameter region is open, for the lookup
+    /// that closes it; every other reference waits for a query.
     pending: Vec<Idx>,
+    open_parameter_regions: u32,
     ambient_depth: u32,
+    typescript: bool,
     var_decl: Option<(VariableDeclarationKind, bool)>,
     var_head: Option<*const VariableDeclarator<'a>>,
     import_is_type: bool,
     catch_clause_span: Span,
+    /// Whether a namespace body or statement instantiates, by node address.
+    module_states: FxHashMap<Address, bool>,
 }
 
 impl<'a> Builder<'a> {
-    fn new(source_len: usize) -> Self {
+    fn new(program: &Program<'a>) -> Self {
+        let source_len = program.source_text.len();
         let per_kb = |n: usize| ((source_len * n) / 1024).max(16);
+        let mut root_flags = ScopeFlags::Top;
+        if program.source_type.is_strict() || program.has_use_strict_directive() {
+            root_flags |= ScopeFlags::StrictMode;
+        }
         let mut scopes = Vec::with_capacity(per_kb(6));
         scopes.push(Scope {
-            parent: None,
-            flags: ScopeFlags::Top,
-            bindings: Vec::new(),
-            hoisted: Vec::new(),
+            parent: NONE,
+            bindings: NONE,
+            hoisted: NONE,
+            flags: root_flags,
             mask: 0,
         });
         let mut sites = Vec::with_capacity(per_kb(12));
@@ -329,23 +486,27 @@ impl<'a> Builder<'a> {
         Builder {
             model: ScopeModel {
                 scopes,
+                bindings: Vec::with_capacity(per_kb(4)),
                 root_bindings: IdentHashMap::with_capacity_and_hasher(per_kb(3), IdentBuildHasher),
                 symbols: Vec::with_capacity(per_kb(4)),
                 refs: Vec::with_capacity(per_kb(20)),
+                effects: Vec::new(),
                 sites,
-                root_unresolved: Vec::new(),
             },
             current_scope: ROOT,
             stack: Vec::with_capacity(64),
             opaque_depth: 0,
             top_stmt_start: 0,
             reference_flags: ReferenceFlags::empty(),
-            pending: Vec::with_capacity(per_kb(20)),
-            ambient_depth: 0,
+            pending: Vec::new(),
+            open_parameter_regions: 0,
+            ambient_depth: u32::from(program.source_type.is_typescript_definition()),
+            typescript: program.source_type.is_typescript(),
             var_decl: None,
             var_head: None,
             import_is_type: false,
             catch_clause_span: Span::default(),
+            module_states: FxHashMap::default(),
         }
     }
 
@@ -360,38 +521,96 @@ impl<'a> Builder<'a> {
     fn add_binding(&mut self, scope: Idx, name: Ident<'a>, symbol: Idx) {
         if scope == ROOT {
             self.model.root_bindings.insert(name, symbol);
-        } else {
-            let s = &mut self.model.scopes[scope as usize];
-            s.mask |= name_bit(name);
-            upsert(&mut s.bindings, name, symbol);
+            return;
         }
+        let bit = name_bit(name);
+        let s = &self.model.scopes[scope as usize];
+        if s.mask & bit != 0 {
+            let mut entry = s.bindings;
+            while entry != NONE {
+                let binding = &mut self.model.bindings[entry as usize];
+                if binding.name == name {
+                    binding.symbol = symbol;
+                    return;
+                }
+                entry = binding.next;
+            }
+        }
+        let s = &mut self.model.scopes[scope as usize];
+        let entry = self.model.bindings.len() as Idx;
+        self.model.bindings.push(Binding {
+            name,
+            symbol,
+            next: s.bindings,
+        });
+        s.bindings = entry;
+        s.mask |= bit;
     }
 
-    fn remove_binding(&mut self, scope: Idx, name: Ident<'a>) {
+    /// Unlinks `name` from `scope`, returning the symbol it was bound to.
+    fn remove_binding(&mut self, scope: Idx, name: Ident<'a>) -> Option<Idx> {
         if scope == ROOT {
-            self.model.root_bindings.remove(&name);
-        } else {
-            self.model.scopes[scope as usize]
-                .bindings
-                .retain(|(n, _)| *n != name);
+            return self.model.root_bindings.remove(&name);
         }
+        let mut previous = NONE;
+        let mut entry = self.model.scopes[scope as usize].bindings;
+        while entry != NONE {
+            let binding = &self.model.bindings[entry as usize];
+            let (symbol, next) = (binding.symbol, binding.next);
+            if binding.name == name {
+                if previous == NONE {
+                    self.model.scopes[scope as usize].bindings = next;
+                } else {
+                    self.model.bindings[previous as usize].next = next;
+                }
+                return Some(symbol);
+            }
+            previous = entry;
+            entry = next;
+        }
+        None
     }
 
-    fn check_redeclaration(&self, scope: Idx, name: Ident<'a>) -> Option<Idx> {
-        let symbol = self.model.get_binding(scope, name).or_else(|| {
-            self.model.scopes[scope as usize]
-                .hoisted
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, s)| *s)
-        })?;
-        if self.model.symbols[symbol as usize]
-            .flags
-            .contains(SymbolFlags::FunctionExpression)
-        {
-            return None;
+    fn hoisted(&self, scope: Idx, name: Ident<'a>) -> Option<Idx> {
+        self.model
+            .list_find(self.model.scopes[scope as usize].hoisted, name)
+    }
+
+    fn set_hoisted(&mut self, scope: Idx, name: Ident<'a>, symbol: Idx) {
+        let mut entry = self.model.scopes[scope as usize].hoisted;
+        while entry != NONE {
+            let binding = &mut self.model.bindings[entry as usize];
+            if binding.name == name {
+                binding.symbol = symbol;
+                return;
+            }
+            entry = binding.next;
         }
-        Some(symbol)
+        let s = &mut self.model.scopes[scope as usize];
+        let entry = self.model.bindings.len() as Idx;
+        self.model.bindings.push(Binding {
+            name,
+            symbol,
+            next: s.hoisted,
+        });
+        s.hoisted = entry;
+    }
+
+    // parity: SemanticBuilder check_redeclaration — a function expression's
+    // own name never counts; otherwise the binding, else a `var` hoisted
+    // through the scope.
+    fn check_redeclaration(&self, scope: Idx, name: Ident<'a>) -> Option<Idx> {
+        match self.model.get_binding(scope, name) {
+            Some(symbol)
+                if self.model.symbols[symbol as usize]
+                    .flags
+                    .contains(SymbolFlags::FunctionExpression) =>
+            {
+                None
+            }
+            Some(symbol) => Some(symbol),
+            None => self.hoisted(scope, name),
+        }
     }
 
     fn create_symbol(
@@ -412,13 +631,15 @@ impl<'a> Builder<'a> {
             decl,
             redeclared: false,
             var_for_head,
-            violated: false,
-            mutated: false,
+            constness: Cell::new(0),
         });
         self.add_binding(scope, name, symbol);
         symbol
     }
 
+    // parity: SemanticBuilder declare_symbol_on_scope — a `var` hoisted
+    // through the scope is bound further out, so only a value joins it; a
+    // type declares its own symbol here.
     fn declare_symbol_on_scope(
         &mut self,
         span: Span,
@@ -427,7 +648,9 @@ impl<'a> Builder<'a> {
         includes: SymbolFlags,
         decl: DeclSite<'a>,
     ) -> Idx {
-        if let Some(symbol) = self.check_redeclaration(scope, name) {
+        if let Some(symbol) = self.check_redeclaration(scope, name)
+            && (includes.intersects(SymbolFlags::Value) || self.scope_has_binding(scope, name))
+        {
             let s = &mut self.model.symbols[symbol as usize];
             s.redeclared = true;
             s.flags |= includes;
@@ -478,30 +701,32 @@ impl<'a> Builder<'a> {
             self.declare_pattern(&decl.id, decl.span, includes, || DeclSite::Declarator(decl));
             return;
         }
-        let mut target = self.current_scope;
-        let mut var_scopes: Vec<Idx> = Vec::new();
-        let mut scope = Some(self.current_scope);
-        while let Some(s) = scope {
-            if self.scope_flags(s).is_var() {
-                target = s;
-                break;
-            }
-            var_scopes.push(s);
-            scope = self.model.scopes[s as usize].parent;
+        // The scopes from here up to (excluding) the var scope are the ones
+        // the name hoists through; the root is a var scope, so one is found.
+        let innermost = self.current_scope;
+        let mut target = innermost;
+        while !self.scope_flags(target).is_var() {
+            target = self.model.scopes[target as usize].parent;
         }
         bound_names(&decl.id, &mut |ident| {
             let name = ident.name;
             let mut declared = None;
-            for &s in &var_scopes {
-                if let Some(symbol) = self.check_redeclaration(s, name) {
+            let mut scope = innermost;
+            while scope != target {
+                // A type-only binding lives in its own declaration space: a
+                // hoisted `var` does not merge into it.
+                if let Some(symbol) = self.check_redeclaration(scope, name)
+                    && self.model.symbols[symbol as usize].flags.is_value()
+                {
                     self.model.symbols[symbol as usize].redeclared = true;
                     declared = Some(symbol);
                     if !self.scope_has_binding(target, name) {
-                        self.remove_binding(s, name);
+                        self.remove_binding(scope, name);
                         self.add_binding(target, name, symbol);
                     }
                     break;
                 }
+                scope = self.model.scopes[scope as usize].parent;
             }
             let symbol = declared.unwrap_or_else(|| {
                 self.declare_symbol_on_scope(
@@ -512,8 +737,10 @@ impl<'a> Builder<'a> {
                     DeclSite::Declarator(decl),
                 )
             });
-            for &s in &var_scopes {
-                upsert(&mut self.model.scopes[s as usize].hoisted, name, symbol);
+            let mut scope = innermost;
+            while scope != target {
+                self.set_hoisted(scope, name, symbol);
+                scope = self.model.scopes[scope as usize].parent;
             }
         });
     }
@@ -532,7 +759,7 @@ impl<'a> Builder<'a> {
         if func.r#async || func.generator {
             includes |= SymbolFlags::AsyncOrGeneratorFunction;
         }
-        self.declare_symbol(
+        let symbol = self.declare_symbol(
             func.span,
             ident.name,
             includes,
@@ -540,6 +767,31 @@ impl<'a> Builder<'a> {
                 expression: func.is_expression(),
             },
         );
+        // Annex B.3.2.1: a plain function declared in a sloppy-mode block is
+        // also var-like in the enclosing function, unless the name is taken
+        // there. JavaScript only.
+        let block = self.current_scope;
+        let block_flags = self.scope_flags(block);
+        if self.typescript
+            || !func.is_declaration()
+            || func.r#async
+            || func.generator
+            || block_flags.is_var()
+            || block_flags.is_strict_mode()
+        {
+            return;
+        }
+        let mut var_scope = self.model.scopes[block as usize].parent;
+        while var_scope != NONE && !self.scope_flags(var_scope).is_var() {
+            var_scope = self.model.scopes[var_scope as usize].parent;
+        }
+        if var_scope == NONE || self.scope_has_binding(var_scope, ident.name) {
+            return;
+        }
+        if let Some(moved) = self.remove_binding(block, ident.name) {
+            self.add_binding(var_scope, ident.name, moved);
+        }
+        self.set_hoisted(block, ident.name, symbol);
     }
 
     fn bind_class(&mut self, class: &'a Class<'a>) {
@@ -575,7 +827,7 @@ impl<'a> Builder<'a> {
         let mut i = stack.len();
         let mut child_span = ref_span;
         while i > 0 {
-            match stack[i - 1] {
+            match stack[i - 1].kind {
                 AstKind::ParenthesizedExpression(paren) => {
                     child_span = paren.span;
                     i -= 1;
@@ -586,7 +838,7 @@ impl<'a> Builder<'a> {
         if i == 0 {
             return (RefParent::Other, false);
         }
-        let parent = stack[i - 1];
+        let parent = stack[i - 1].kind;
         if let Some((object_span, property)) = member_object_span(parent) {
             let info = RefParent::Member { property };
             if object_span != child_span {
@@ -595,7 +847,7 @@ impl<'a> Builder<'a> {
             let mut j = i - 1;
             let mut member_span = parent.span();
             while j > 0 {
-                match stack[j - 1] {
+                match stack[j - 1].kind {
                     AstKind::ParenthesizedExpression(paren) => {
                         member_span = paren.span;
                         j -= 1;
@@ -606,7 +858,7 @@ impl<'a> Builder<'a> {
             if j == 0 {
                 return (info, false);
             }
-            let mutation = match stack[j - 1] {
+            let mutation = match stack[j - 1].kind {
                 AstKind::AssignmentExpression(assignment) => assignment.left.span() == member_span,
                 AstKind::UpdateExpression(_) => true,
                 AstKind::UnaryExpression(unary) => unary.operator == UnaryOperator::Delete,
@@ -641,95 +893,62 @@ impl<'a> Builder<'a> {
         });
     }
 
-    // parity: SemanticBuilder try_resolve_reference, flag rewrites included.
-    fn try_resolve(&mut self, reference: Idx, symbol: Idx) -> bool {
-        let symbol_flags = self.model.symbols[symbol as usize].flags;
-        let r = &mut self.model.refs[reference as usize];
-        let flags = &mut r.flags;
-        let can_resolve = if flags.is_namespace()
-            && !flags.is_value_as_type()
-            && !symbol_flags.can_be_referenced_as_namespace()
-        {
-            false
-        } else {
-            (flags.is_value() && symbol_flags.can_be_referenced_by_value())
-                || (flags.is_type() && symbol_flags.can_be_referenced_by_type())
-                || (flags.is_value_as_type() && symbol_flags.can_be_referenced_by_value_as_type())
-        };
-        if !can_resolve {
-            return false;
-        }
-        if (symbol_flags.is_value() && flags.is_value())
-            || (flags.is_namespace() && flags.is_read())
-        {
-            *flags -= ReferenceFlags::Type;
-        } else {
-            *flags = ReferenceFlags::Type;
-        }
-        r.symbol = Some(symbol);
-        let s = &mut self.model.symbols[symbol as usize];
-        if r.flags.is_write() {
-            s.violated = true;
-        } else if r.mutation {
-            s.mutated = true;
-        }
-        true
-    }
-
-    /// Walks up from the reference's lookup scope through `last` (`None` = root).
-    fn walk_up_resolve(&mut self, reference: Idx, last: Option<Idx>) -> bool {
-        let r = &self.model.refs[reference as usize];
-        let name = r.name;
-        let bit = name_bit(name);
-        let mut scope = Some(r.scope);
-        while let Some(s) = scope {
-            if let Some(symbol) = self.model.get_binding_masked(s, name, bit)
-                && self.try_resolve(reference, symbol)
-            {
+    fn is_within(&self, mut scope: Idx, ancestor: Idx) -> bool {
+        while scope != NONE {
+            if scope == ancestor {
                 return true;
             }
-            if Some(s) == last {
-                return false;
-            }
-            scope = self.model.scopes[s as usize].parent;
+            scope = self.model.scopes[scope as usize].parent;
         }
         false
     }
 
-    fn is_within(&self, mut scope: Idx, ancestor: Idx) -> bool {
-        loop {
-            if scope == ancestor {
-                return true;
-            }
-            match self.model.scopes[scope as usize].parent {
-                Some(parent) => scope = parent,
-                None => return false,
-            }
-        }
+    /// Opens a parameter region (function parameters and signature types, or
+    /// a catch parameter) in the scope just entered. Its references are the
+    /// only ones looked up during the walk: they must be matched against the
+    /// scope before the body declares anything in it.
+    fn open_parameter_region(&mut self) -> usize {
+        self.open_parameter_regions += 1;
+        self.pending.len()
     }
 
-    /// Resolves the references recorded since `checkpoint` against the
-    /// parameter scope open now. Parameters must not see body declarations, so
-    /// a miss resumes from the parent scope at final resolution.
+    /// Looks up the references recorded since `checkpoint` against the scope
+    /// the region opened in. A miss resumes from the parent scope, at the
+    /// close of an enclosing region or on first query.
     // parity: SemanticBuilder resolve_references_for_current_scope.
-    fn resolve_pending_from(&mut self, checkpoint: usize) {
+    fn close_parameter_region(&mut self, checkpoint: usize) {
+        self.open_parameter_regions -= 1;
+        let enclosed = self.open_parameter_regions > 0;
         let current = self.current_scope;
         let parent = self.model.scopes[current as usize].parent;
         let mut write = checkpoint;
         for read in checkpoint..self.pending.len() {
-            let reference = self.pending[read];
-            let lookup = self.model.refs[reference as usize].scope;
+            let index = self.pending[read];
+            let reference = &self.model.refs[index as usize];
             // Parameter decorators sit outside this scope chain; leave them.
-            if self.is_within(lookup, current) {
-                if self.walk_up_resolve(reference, Some(current)) {
-                    continue;
-                }
-                if let Some(parent) = parent {
-                    self.model.refs[reference as usize].scope = parent;
+            if self.is_within(reference.scope, current) {
+                match self.model.walk_up(
+                    reference.name,
+                    reference.flags.get(),
+                    reference.scope,
+                    current,
+                ) {
+                    Lookup::Found(symbol, flags) => {
+                        reference.symbol.set(symbol);
+                        reference.flags.set(flags);
+                        continue;
+                    }
+                    Lookup::Unresolved => {
+                        reference.symbol.set(UNRESOLVED);
+                        continue;
+                    }
+                    Lookup::PastLast => self.model.refs[index as usize].scope = parent,
                 }
             }
-            self.pending[write] = reference;
-            write += 1;
+            if enclosed {
+                self.pending[write] = index;
+                write += 1;
+            }
         }
         self.pending.truncate(write);
     }
@@ -742,20 +961,14 @@ impl<'a> Builder<'a> {
             return;
         }
         let function_scope = self.current_scope;
-        self.current_scope = self.model.scopes[function_scope as usize]
-            .parent
-            .expect("parameter decorators are visited from a function scope");
+        let class_scope = self.model.scopes[function_scope as usize].parent;
+        debug_assert!(
+            class_scope != NONE,
+            "parameter decorators are visited from a function scope"
+        );
+        self.current_scope = class_scope;
         self.visit_decorators(decorators);
         self.current_scope = function_scope;
-    }
-
-    fn resolve_all(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        for reference in pending {
-            if !self.walk_up_resolve(reference, None) {
-                self.model.root_unresolved.push(reference);
-            }
-        }
     }
 
     fn enter_ambient(&mut self, is_ambient: bool) {
@@ -770,21 +983,74 @@ impl<'a> Builder<'a> {
         self.ambient_depth > 0
     }
 
-    // parity: TSNamespaceDeclaration binder — a namespace holding only types
-    // is a NamespaceModule; `export { x }` aliases are read as instantiating.
-    fn namespace_is_instantiated(decl: &TSNamespaceDeclaration<'a>) -> bool {
-        match &decl.body {
-            TSNamespaceDeclarationBody::TSNamespaceDeclaration(inner) => {
-                Self::namespace_is_instantiated(inner)
-            }
-            TSNamespaceDeclarationBody::TSModuleBlock(block) => {
-                block.body.iter().any(Self::statement_instantiates)
-            }
+    // parity: Binder get_module_instance_state and its helpers — a namespace
+    // holding only types (or aliases of such) is a NamespaceModule. `anchor`
+    // is the stack index of the node the alias search climbs out from, and
+    // `stmts` every module-block statement seen so far in this computation.
+    // The per-address memo is part of the behaviour: the first computation of
+    // a nested statement's state is the one every later binder reads.
+    fn namespace_instantiates(
+        &mut self,
+        decl: &'a TSNamespaceDeclaration<'a>,
+        anchor: usize,
+        stmts: &mut Vec<&'a Statement<'a>>,
+    ) -> bool {
+        let address = decl.unstable_address();
+        if let Some(&state) = self.module_states.get(&address) {
+            return state;
         }
+        let state = match &decl.body {
+            TSNamespaceDeclarationBody::TSModuleBlock(block) => {
+                self.module_block_instantiates(&block.body, anchor, stmts)
+            }
+            TSNamespaceDeclarationBody::TSNamespaceDeclaration(inner) => {
+                self.namespace_instantiates(inner, anchor, &mut Vec::new())
+            }
+        };
+        self.module_states.insert(address, state);
+        state
     }
 
-    fn statement_instantiates(stmt: &Statement<'a>) -> bool {
-        match stmt {
+    fn external_module_instantiates(
+        &mut self,
+        decl: &'a TSExternalModuleDeclaration<'a>,
+        anchor: usize,
+        stmts: &mut Vec<&'a Statement<'a>>,
+    ) -> bool {
+        let address = decl.unstable_address();
+        if let Some(&state) = self.module_states.get(&address) {
+            return state;
+        }
+        let Some(block) = &decl.body else {
+            return true;
+        };
+        let state = self.module_block_instantiates(&block.body, anchor, stmts);
+        self.module_states.insert(address, state);
+        state
+    }
+
+    fn module_block_instantiates(
+        &mut self,
+        body: &'a oxc_allocator::Vec<'a, Statement<'a>>,
+        anchor: usize,
+        stmts: &mut Vec<&'a Statement<'a>>,
+    ) -> bool {
+        stmts.extend(body.iter());
+        body.iter()
+            .any(|stmt| self.statement_instantiates(stmt, anchor, stmts))
+    }
+
+    fn statement_instantiates(
+        &mut self,
+        stmt: &'a Statement<'a>,
+        anchor: usize,
+        stmts: &mut Vec<&'a Statement<'a>>,
+    ) -> bool {
+        let address = stmt.address();
+        if let Some(&state) = self.module_states.get(&address) {
+            return state;
+        }
+        let state = match stmt {
             Statement::TSInterfaceDeclaration(_)
             | Statement::TSTypeAliasDeclaration(_)
             | Statement::TSImportEqualsDeclaration(_) => false,
@@ -793,14 +1059,108 @@ impl<'a> Builder<'a> {
                 ExportDefaultDeclarationKind::TSInterfaceDeclaration(_)
             ),
             Statement::ExportDeclaration(export) => match &export.declaration {
+                Declaration::TSExternalModuleDeclaration(module) => {
+                    self.external_module_instantiates(module, anchor, stmts)
+                }
                 Declaration::TSNamespaceDeclaration(inner) => {
-                    Self::namespace_is_instantiated(inner)
+                    self.namespace_instantiates(inner, anchor, stmts)
                 }
                 decl => !decl.is_type(),
             },
-            Statement::TSNamespaceDeclaration(inner) => Self::namespace_is_instantiated(inner),
+            Statement::ExportNamedDeclaration(export) => export
+                .specifiers
+                .iter()
+                .any(|specifier| self.alias_target_instantiates(specifier, anchor, stmts)),
+            Statement::TSNamespaceDeclaration(inner) => {
+                self.namespace_instantiates(inner, anchor, stmts)
+            }
+            Statement::TSExternalModuleDeclaration(module) => {
+                self.external_module_instantiates(module, anchor, stmts)
+            }
             _ => true,
+        };
+        self.module_states.insert(address, state);
+        state
+    }
+
+    /// `export { x }` inside a namespace instantiates it when what `x` names
+    /// does; the declaration is searched for outward, block by block.
+    fn alias_target_instantiates(
+        &mut self,
+        specifier: &ExportSpecifier<'a>,
+        mut anchor: usize,
+        stmts: &[&'a Statement<'a>],
+    ) -> bool {
+        let ModuleExportName::IdentifierReference(local) = &specifier.local else {
+            return true;
+        };
+        let name = local.name;
+        let mut block = stmts.to_vec();
+        loop {
+            if let Some(&stmt) = block.iter().find(|stmt| statement_declares(stmt, name)) {
+                // A re-exported import alias is ambiguous: read as instantiating.
+                return matches!(stmt, Statement::TSImportEqualsDeclaration(_))
+                    || self.statement_instantiates(stmt, anchor, &mut Vec::new());
+            }
+            let enclosing = self.stack[..anchor].iter().rposition(|frame| {
+                matches!(
+                    frame.kind,
+                    AstKind::Program(_) | AstKind::TSModuleBlock(_) | AstKind::BlockStatement(_)
+                )
+            });
+            let Some(index) = enclosing else {
+                return true;
+            };
+            anchor = index;
+            block.clear();
+            match self.stack[index].kind {
+                AstKind::Program(program) => block.extend(program.body.iter()),
+                AstKind::TSModuleBlock(module) => block.extend(module.body.iter()),
+                AstKind::BlockStatement(statement) => block.extend(statement.body.iter()),
+                _ => unreachable!("rposition matched a block-like kind"),
+            }
         }
+    }
+}
+
+fn declaration_declares(decl: &VariableDeclaration<'_>, name: Ident<'_>) -> bool {
+    let mut found = false;
+    for declarator in &decl.declarations {
+        bound_names(&declarator.id, &mut |ident| found |= ident.name == name);
+    }
+    found
+}
+
+fn statement_declares(stmt: &Statement<'_>, name: Ident<'_>) -> bool {
+    let names = |id: Option<&BindingIdentifier<'_>>| id.is_some_and(|id| id.name == name);
+    match stmt {
+        Statement::VariableDeclaration(decl) => declaration_declares(decl, name),
+        Statement::ExportDeclaration(export) => match &export.declaration {
+            Declaration::VariableDeclaration(decl) => declaration_declares(decl, name),
+            decl => names(decl.id()),
+        },
+        Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ExportDefaultDeclarationKind::FunctionDeclaration(decl) => names(decl.id.as_ref()),
+            ExportDefaultDeclarationKind::ClassDeclaration(decl) => names(decl.id.as_ref()),
+            ExportDefaultDeclarationKind::TSInterfaceDeclaration(decl) => names(Some(&decl.id)),
+            _ => false,
+        },
+        _ => stmt.as_declaration().is_some_and(|decl| names(decl.id())),
+    }
+}
+
+// parity: SemanticBuilder is_delete_member_target — `delete` writes a property
+// only when its argument, parens and assertions aside, is a member (an
+// optional chain ending in one included).
+fn is_delete_member_target(expr: &Expression<'_>) -> bool {
+    match expr.get_inner_expression() {
+        Expression::ChainExpression(chain) => matches!(
+            chain.expression,
+            ChainElement::StaticMemberExpression(_)
+                | ChainElement::ComputedMemberExpression(_)
+                | ChainElement::PrivateFieldExpression(_)
+        ),
+        inner => inner.is_member_expression(),
     }
 }
 
@@ -819,41 +1179,44 @@ impl<'a> Visit<'a> for Builder<'a> {
         if self.stack.len() == 1 {
             self.top_stmt_start = kind.span().start;
         }
-        if opaque_step(kind, self.stack.last().copied()) {
-            self.opaque_depth += 1;
-        }
-        self.stack.push(kind);
+        let opaque = opaque_step(kind, self.stack.last().map(|frame| frame.kind));
+        self.opaque_depth += u32::from(opaque);
+        self.stack.push(Frame { kind, opaque });
     }
 
-    fn leave_node(&mut self, kind: AstKind<'a>) {
-        self.stack.pop();
-        if opaque_step(kind, self.stack.last().copied()) {
-            self.opaque_depth -= 1;
+    fn leave_node(&mut self, _kind: AstKind<'a>) {
+        if let Some(frame) = self.stack.pop() {
+            self.opaque_depth -= u32::from(frame.opaque);
         }
     }
 
+    // parity: Scoping get_new_scope_flags — strict mode is inherited.
     fn enter_scope(&mut self, flags: ScopeFlags, _scope_id: &Cell<Option<ScopeId>>) {
+        let parent = self.current_scope;
+        let inherited = self.model.scopes[parent as usize].flags & ScopeFlags::StrictMode;
         let index = self.model.scopes.len() as Idx;
         self.model.scopes.push(Scope {
-            parent: Some(self.current_scope),
-            flags,
-            bindings: Vec::new(),
-            hoisted: Vec::new(),
+            parent,
+            bindings: NONE,
+            hoisted: NONE,
+            flags: flags | inherited,
             mask: 0,
         });
         self.current_scope = index;
     }
 
     fn leave_scope(&mut self) {
-        self.current_scope = self.model.scopes[self.current_scope as usize]
-            .parent
-            .expect("leave_scope on the root scope");
+        let parent = self.model.scopes[self.current_scope as usize].parent;
+        debug_assert!(parent != NONE, "leave_scope on the root scope");
+        self.current_scope = parent;
     }
 
     fn visit_program(&mut self, program: &Program<'a>) {
-        self.stack.push(AstKind::Program(self.alloc(program)));
+        self.stack.push(Frame {
+            kind: AstKind::Program(self.alloc(program)),
+            opaque: false,
+        });
         self.visit_statements(&program.body);
-        self.resolve_all();
         self.stack.pop();
     }
 
@@ -897,7 +1260,6 @@ impl<'a> Visit<'a> for Builder<'a> {
     }
 
     fn visit_identifier_reference(&mut self, ident: &IdentifierReference<'a>) {
-        let ident = self.alloc(ident);
         let flags = self.take_reference_flags();
         let (parent, mutation) = self.reference_parent(ident.span);
         let index = self.model.refs.len() as Idx;
@@ -905,15 +1267,20 @@ impl<'a> Visit<'a> for Builder<'a> {
             name: ident.name,
             start: ident.span.start,
             scope: self.current_scope,
-            flags,
-            symbol: None,
-            parent,
+            symbol: Cell::new(PENDING),
+            flags: Cell::new(flags),
             mutation,
+            parent,
         });
         ident
             .reference_id
             .set(Some(ReferenceId::from_usize(index as usize)));
-        self.pending.push(index);
+        if flags.is_write() || mutation {
+            self.model.effects.push(index);
+        }
+        if self.open_parameter_regions > 0 {
+            self.pending.push(index);
+        }
     }
 
     fn visit_call_expression(&mut self, expr: &CallExpression<'a>) {
@@ -990,7 +1357,7 @@ impl<'a> Visit<'a> for Builder<'a> {
     fn visit_unary_expression(&mut self, it: &UnaryExpression<'a>) {
         let kind = AstKind::UnaryExpression(self.alloc(it));
         self.enter_node(kind);
-        if it.operator == UnaryOperator::Delete && it.argument.is_member_expression() {
+        if it.operator == UnaryOperator::Delete && is_delete_member_target(&it.argument) {
             self.reference_flags = ReferenceFlags::Write;
         }
         self.visit_expression(&it.argument);
@@ -1124,12 +1491,12 @@ impl<'a> Visit<'a> for Builder<'a> {
     fn visit_ts_method_signature(&mut self, sig: &TSMethodSignature<'a>) {
         let kind = AstKind::TSMethodSignature(self.alloc(sig));
         self.enter_node(kind);
-        self.enter_scope(ScopeFlags::empty(), &sig.scope_id);
         if sig.computed {
             self.reference_flags = ReferenceFlags::ValueAsType;
         }
         self.visit_property_key(&sig.key);
         self.reference_flags = ReferenceFlags::empty();
+        self.enter_scope(ScopeFlags::empty(), &sig.scope_id);
         if let Some(type_parameters) = &sig.type_parameters {
             self.visit_ts_type_parameter_declaration(type_parameters);
         }
@@ -1216,6 +1583,17 @@ impl<'a> Visit<'a> for Builder<'a> {
         self.leave_node(kind);
     }
 
+    fn visit_ts_type_assertion(&mut self, it: &TSTypeAssertion<'a>) {
+        let kind = AstKind::TSTypeAssertion(self.alloc(it));
+        self.enter_node(kind);
+        // The type must not consume the asserted expression's reference flags.
+        let flags = std::mem::take(&mut self.reference_flags);
+        self.visit_ts_type(&it.type_annotation);
+        self.reference_flags = flags;
+        self.visit_expression(&it.expression);
+        self.leave_node(kind);
+    }
+
     fn visit_ts_qualified_name(&mut self, name: &TSQualifiedName<'a>) {
         let kind = AstKind::TSQualifiedName(self.alloc(name));
         self.enter_node(kind);
@@ -1271,11 +1649,16 @@ impl<'a> Visit<'a> for Builder<'a> {
         if func.is_declaration() {
             self.bind_function(func);
         }
-        self.enter_scope(flags, &func.scope_id);
+        let strict = if func.has_use_strict_directive() {
+            ScopeFlags::StrictMode
+        } else {
+            ScopeFlags::empty()
+        };
+        self.enter_scope(flags | strict, &func.scope_id);
         if func.is_expression() {
             self.bind_function(func);
         }
-        let checkpoint = self.pending.len();
+        let checkpoint = self.open_parameter_region();
         if let Some(type_parameters) = &func.type_parameters {
             self.visit_ts_type_parameter_declaration(type_parameters);
         }
@@ -1286,7 +1669,7 @@ impl<'a> Visit<'a> for Builder<'a> {
         if let Some(return_type) = &func.return_type {
             self.visit_ts_type_annotation(return_type);
         }
-        self.resolve_pending_from(checkpoint);
+        self.close_parameter_region(checkpoint);
         if let Some(body) = &func.body {
             self.visit_function_body(body);
         }
@@ -1298,8 +1681,12 @@ impl<'a> Visit<'a> for Builder<'a> {
     fn visit_arrow_function_expression(&mut self, expr: &ArrowFunctionExpression<'a>) {
         let kind = AstKind::ArrowFunctionExpression(self.alloc(expr));
         self.enter_node(kind);
-        self.enter_scope(ScopeFlags::Function | ScopeFlags::Arrow, &expr.scope_id);
-        let checkpoint = self.pending.len();
+        let mut flags = ScopeFlags::Function | ScopeFlags::Arrow;
+        if expr.has_use_strict_directive() {
+            flags |= ScopeFlags::StrictMode;
+        }
+        self.enter_scope(flags, &expr.scope_id);
+        let checkpoint = self.open_parameter_region();
         if let Some(parameters) = &expr.type_parameters {
             self.visit_ts_type_parameter_declaration(parameters);
         }
@@ -1307,7 +1694,7 @@ impl<'a> Visit<'a> for Builder<'a> {
         if let Some(return_type) = &expr.return_type {
             self.visit_ts_type_annotation(return_type);
         }
-        self.resolve_pending_from(checkpoint);
+        self.close_parameter_region(checkpoint);
         self.visit_arrow_function_body(&expr.body);
         self.leave_scope();
         self.leave_node(kind);
@@ -1379,12 +1766,12 @@ impl<'a> Visit<'a> for Builder<'a> {
                 || DeclSite::Catch,
             );
         }
-        let checkpoint = self.pending.len();
+        let checkpoint = self.open_parameter_region();
         self.visit_binding_pattern(&param.pattern);
         if let Some(type_annotation) = &param.type_annotation {
             self.visit_ts_type_annotation(type_annotation);
         }
-        self.resolve_pending_from(checkpoint);
+        self.close_parameter_region(checkpoint);
         self.leave_node(kind);
     }
 
@@ -1393,12 +1780,14 @@ impl<'a> Visit<'a> for Builder<'a> {
         self.enter_node(kind);
         let parent_scope = self.current_scope;
         self.enter_scope(ScopeFlags::empty(), &it.scope_id);
+        // A catch clause's parameter bindings move into its body's scope.
         if self.scope_flags(parent_scope).is_catch_clause() {
             let parent = &mut self.model.scopes[parent_scope as usize];
-            let (moved, mask) = (std::mem::take(&mut parent.bindings), parent.mask);
+            let moved = std::mem::replace(&mut parent.bindings, NONE);
+            let mask = std::mem::take(&mut parent.mask);
             let block = &mut self.model.scopes[self.current_scope as usize];
             block.bindings = moved;
-            block.mask |= mask;
+            block.mask = mask;
         }
         self.visit_statements(&it.body);
         self.leave_scope();
@@ -1573,7 +1962,8 @@ impl<'a> Visit<'a> for Builder<'a> {
         let kind = AstKind::TSNamespaceDeclaration(decl);
         self.enter_node(kind);
         self.enter_ambient(decl.declare);
-        let mut includes = if Self::namespace_is_instantiated(decl) {
+        let anchor = self.stack.len() - 1;
+        let mut includes = if self.namespace_instantiates(decl, anchor, &mut Vec::new()) {
             SymbolFlags::ValueModule
         } else {
             SymbolFlags::NamespaceModule
@@ -1582,7 +1972,11 @@ impl<'a> Visit<'a> for Builder<'a> {
             includes |= SymbolFlags::Ambient;
         }
         self.declare_symbol(decl.span, decl.id.name, includes, DeclSite::Other);
-        self.enter_scope(ScopeFlags::TsModuleBlock, &decl.scope_id);
+        let mut flags = ScopeFlags::TsModuleBlock;
+        if decl.has_use_strict_directive() {
+            flags |= ScopeFlags::StrictMode;
+        }
+        self.enter_scope(flags, &decl.scope_id);
         self.visit_ts_namespace_declaration_body(&decl.body);
         self.leave_scope();
         self.leave_node(kind);
@@ -1653,21 +2047,20 @@ impl<'a> Visit<'a> for Builder<'a> {
         let member = self.alloc(member);
         let kind = AstKind::TSEnumMember(member);
         self.enter_node(kind);
-        let name =
-            match &member.id {
-                TSEnumMemberName::Identifier(ident) => ident.name,
-                TSEnumMemberName::String(lit) | TSEnumMemberName::ComputedString(lit) => {
-                    lit.value.as_str().map_or(Ident::empty(), Ident::from)
-                }
-                TSEnumMemberName::ComputedTemplateString(template) => template
-                    .quasis
-                    .first()
-                    .map_or(Ident::empty(), |quasi| match quasi.value.cooked {
-                        Some(cooked) => cooked.as_str().map_or(Ident::empty(), Ident::from),
-                        None => Ident::from(quasi.value.raw),
-                    }),
-            };
-        self.declare_symbol(member.span, name, SymbolFlags::EnumMember, DeclSite::Other);
+        // A name that is not UTF-8 (a lone surrogate) declares nothing.
+        let name = match &member.id {
+            TSEnumMemberName::Identifier(ident) => Some(ident.name),
+            TSEnumMemberName::String(lit) | TSEnumMemberName::ComputedString(lit) => {
+                lit.value.as_str().map(Ident::from)
+            }
+            TSEnumMemberName::ComputedTemplateString(template) => template
+                .single_quasi()
+                .and_then(|quasi| quasi.as_str())
+                .map(Ident::from),
+        };
+        if let Some(name) = name {
+            self.declare_symbol(member.span, name, SymbolFlags::EnumMember, DeclSite::Other);
+        }
         self.visit_ts_enum_member_name(&member.id);
         if let Some(initializer) = &member.initializer {
             self.visit_expression(initializer);
@@ -1682,15 +2075,18 @@ impl<'a> Visit<'a> for Builder<'a> {
         let mut scope = self.current_scope;
         if matches!(
             self.stack.get(self.stack.len().wrapping_sub(2)),
-            Some(AstKind::TSInferType(_))
+            Some(Frame {
+                kind: AstKind::TSInferType(_),
+                ..
+            })
         ) {
-            let mut candidate = Some(self.current_scope);
-            while let Some(s) = candidate {
-                if self.scope_flags(s).is_ts_conditional() {
-                    scope = s;
+            let mut candidate = self.current_scope;
+            while candidate != NONE {
+                if self.scope_flags(candidate).is_ts_conditional() {
+                    scope = candidate;
                     break;
                 }
-                candidate = self.model.scopes[s as usize].parent;
+                candidate = self.model.scopes[candidate as usize].parent;
             }
         }
         self.declare_symbol_on_scope(
@@ -1873,12 +2269,28 @@ pub(crate) mod tests {
         lines
     }
 
-    /// Lines the two backends disagree on for `source` (empty = parity).
-    pub(crate) fn diff_backends(source: &str) -> Vec<String> {
+    /// Source types whose binding rules differ: TS modules (fru parses
+    /// everything as tsx; plain ts admits `<T>x` assertions), JS modules,
+    /// sloppy scripts and CommonJS (Annex B function hoisting) and
+    /// declaration files (ambient everywhere).
+    fn source_types() -> [(&'static str, SourceType); 6] {
+        [
+            ("tsx", SourceType::tsx()),
+            ("ts", SourceType::ts()),
+            ("jsx module", SourceType::jsx()),
+            ("jsx script", SourceType::jsx().with_script(true)),
+            ("cjs", SourceType::cjs()),
+            ("d.ts", SourceType::d_ts()),
+        ]
+    }
+
+    /// Lines the two backends disagree on for `source` parsed as
+    /// `source_type` (empty = parity); `None` when it does not parse.
+    fn diff_backends(source: &str, source_type: SourceType) -> Option<Vec<String>> {
         let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, source, SourceType::tsx()).parse();
+        let ret = Parser::new(&allocator, source, source_type).parse();
         if ret.fatal_error || ret.diagnostics.has_errors() {
-            return Vec::new();
+            return None;
         }
         let program = &ret.program;
         let mut collector = Collector {
@@ -1918,12 +2330,24 @@ pub(crate) mod tests {
                 .difference(&expected_set)
                 .map(|line| format!("native only: {line}")),
         );
-        out
+        Some(out)
     }
 
+    /// Parity under every source type `source` parses as (at least one).
     fn assert_parity(label: &str, source: &str) {
-        let diff = diff_backends(source);
-        assert!(diff.is_empty(), "{label}:\n{}", diff.join("\n"));
+        let mut parsed = 0;
+        for (type_label, source_type) in source_types() {
+            let Some(diff) = diff_backends(source, source_type) else {
+                continue;
+            };
+            parsed += 1;
+            assert!(
+                diff.is_empty(),
+                "{label} ({type_label}):\n{}",
+                diff.join("\n")
+            );
+        }
+        assert!(parsed > 0, "{label}: parses under no source type");
     }
 
     /// An empty diff must mean parity, not an empty snapshot.
@@ -1973,7 +2397,7 @@ function f() { return stylex.props(s.a); }";
 
     #[test]
     fn native_matches_oxc_on_binding_shapes() {
-        let snippets: [(&str, &str); 26] = [
+        let snippets: &[(&str, &str)] = &[
             (
                 "var hoisting",
                 "{ var a = 1; } { var a = 2; } function f() { { var b; } var b; b; } a; b;",
@@ -2078,6 +2502,125 @@ function f() { return stylex.props(s.a); }";
                 "enum member names",
                 "enum E { 'a b' = 1, [`c`] = 2, D } E['a b'];",
             ),
+            (
+                "enum member lone surrogate",
+                "enum E { '\\uD800' = 1, ['\\uDC00'] = 2, A = 3 } E.A;",
+            ),
+            (
+                "arguments object",
+                "function f() { arguments; const g = () => arguments; { arguments; } }\n\
+                 function h(arguments) { arguments; }\n\
+                 function k() { var arguments; arguments; (() => arguments)(); }\n\
+                 function p(a = arguments, b = () => arguments) { let arguments; }\n\
+                 const q = (a = arguments) => { var arguments; arguments; };\n\
+                 var arguments; arguments; (() => arguments)();",
+            ),
+            (
+                "arguments and function expression names",
+                "(function arguments() { return arguments; });\n\
+                 (function arguments() { return () => arguments; });\n\
+                 (function f(arguments) { return arguments; });\n\
+                 const o = { arguments() { return arguments; } };\n\
+                 class K { static x = arguments; m() { return arguments; } }",
+            ),
+            (
+                "arguments as a type",
+                "type arguments = 1; function f() { let a: arguments; let b: typeof arguments; }\n\
+                 function g<arguments>(x: arguments) { return arguments; }",
+            ),
+            (
+                "method signature keys",
+                "const k = 'a'; interface I { [k](k: number): void; [k]: string; [k]<k>(): k }\n\
+                 type T = { [k](k: string): typeof k };",
+            ),
+            (
+                "ambient class members",
+                "import type { B } from 'b'; import type { k } from 'k';\n\
+                 export class A extends B { [k]: string; [k](): void; }\n\
+                 export declare class C extends B { [k]: string; }",
+            ),
+            (
+                "var hoisted past types",
+                "{ var x; interface x {} } type y = 0; { var y; } { type z = 1; var z; }\n\
+                 { var w; type w = 2; let v; } x; y; z; w; let a: x, b: y, c: z, d: w;",
+            ),
+            (
+                "var hoisted into values",
+                "{ var q; function q() {} } { var c; class c {} } { var e; enum e {} }\n\
+                 { { var n; } namespace n { export const v = 1; } } q; c; e; n;",
+            ),
+            (
+                "catch parameter hoisting",
+                "try {} catch (e) { var e = 1; { var e; } } e;\n\
+                 function f() { try {} catch (e) { { var e; } } return e; }\n\
+                 try {} catch ({ a = b }) { var b; a; } try {} catch (g) { let h = g; { g; } }",
+            ),
+            (
+                "type assertion targets",
+                "let a: any, b: any; type T = any; (<T>a) = 1; (<T>b).x = 2; (<T>a)++;\n\
+                 [<T>a, <T>b] = [b, a]; for (<T>a of []) {}",
+            ),
+            (
+                "delete targets",
+                "const o: any = {}, p: any = {}, r: any = {}, s: any = {}, t: any = {}, u: any = {};\n\
+                 delete o?.a; delete (p.b); delete (r as any).c; delete s?.[p]; delete t!.x;\n\
+                 delete u?.f(); delete (u)?.g.h; delete u;",
+            ),
+            (
+                "writes to type-only bindings",
+                "interface X {} X = 1; type Y = 1; Y++; import type { Z } from 'z'; Z = 2;\n\
+                 enum E {} E = 3; namespace N {} N = 4; namespace M { export const a = 1; } M = 5;\n\
+                 import { V } from 'v'; V = 6; function outer(X, Y) { X = 1; Y += 1; }",
+            ),
+            (
+                "namespace instantiation",
+                "namespace A { export type T = 1; } namespace B { const enum E { X } }\n\
+                 namespace C { interface I {} export { I }; }\n\
+                 namespace D { import x = A; export { x }; }\n\
+                 namespace F { export namespace G { export const v = 1; } }\n\
+                 namespace F2 { export namespace G { export type V = 1; } }\n\
+                 namespace P.Q.R { export type S = 1; } namespace P2.Q.R { export const s = 1; }\n\
+                 A; B; C; D; F; F2; P; P2; let t: A.T, u: F2.G.V;",
+            ),
+            (
+                "namespace export aliases",
+                "const Outer = 1; type OuterT = 1; interface OuterI {}\n\
+                 namespace H { export { Outer }; } namespace J { export { OuterT }; }\n\
+                 namespace K { export { Missing }; } namespace L { export { OuterI as default }; }\n\
+                 namespace M { namespace Inner { export { OuterT }; } export { Inner }; }\n\
+                 namespace O { type Local = 1; namespace Deep { export { Local }; } }\n\
+                 function scope() { type Local = 1; { namespace Q { export { Local }; } Q; } }\n\
+                 H; J; K; L; M; O;",
+            ),
+            (
+                "annex b function hoisting",
+                "{ function f() {} } f; if (x) { function g() {} } g;\n\
+                 function outer() { { function h() {} } h; let i; { function i() {} } i; }\n\
+                 { async function a() {} } a; { function* b() {} } b;\n\
+                 { function k() {} var k; } k; { { function deep() {} } } deep;\n\
+                 switch (x) { case 1: function s() {} } s;\n\
+                 try { function t() {} } catch (e) { function u() {} } t; u;\n\
+                 label: { function v() {} } v;\n\
+                 function strict() { 'use strict'; { function w() {} } w; }\n\
+                 class C { m() { { function z() {} } z; } }\n\
+                 const arrow = () => { 'use strict'; { function y() {} } y; };\n\
+                 { function dup() {} } { function dup() {} } dup;",
+            ),
+            (
+                "nested parameter regions",
+                "function f(a = () => b, c = function () { var d; return d + b; }) { var b; }\n\
+                 const g = (h = (i = j) => { var j; }) => { let j; }; var j;\n\
+                 function o(p = function q(r = s) { var s; }) { var s; }\n\
+                 function t<U>(v: U = (<W>(x: W, y = v) => x) as any): U { type W = 1; let y; return v; }\n\
+                 try {} catch ({ k = (l = m) => l }) { var m; }",
+            ),
+            (
+                "shadowing chains",
+                "const a = 1; function f(a) { { let a; a = 2; } a++; return () => { var a; a.b = 1; }; }\n\
+                 a; class a2 { a = a; static { var a; a = 3; } m(a = a) {} }\n\
+                 for (let a = 0; a < 1; a++) { const b = a; } for (const a in {}) a;\n\
+                 label: for (var a3 of []) { ((a3) => a3)(a3); }",
+            ),
         ];
         for (label, source) in snippets {
             assert_parity(label, source);
@@ -2107,14 +2650,22 @@ function f() { return stylex.props(s.a); }";
         let mut failures = Vec::new();
         let mut checked = 0usize;
         for (filename, source) in &sources {
-            let diff = diff_backends(source);
-            checked += 1;
-            if !diff.is_empty() {
-                failures.push(format!("{filename}:\n  {}", diff.join("\n  ")));
+            for (type_label, source_type) in source_types() {
+                let Some(diff) = diff_backends(source, source_type) else {
+                    continue;
+                };
+                checked += 1;
+                if !diff.is_empty() {
+                    failures.push(format!(
+                        "{filename} ({type_label}):\n  {}",
+                        diff.join("\n  ")
+                    ));
+                }
             }
         }
         eprintln!(
-            "scope parity: {checked} files, {} with differences",
+            "scope parity: {} files, {checked} parses, {} with differences",
+            sources.len(),
             failures.len()
         );
         assert!(

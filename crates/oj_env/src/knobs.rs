@@ -58,9 +58,9 @@ pub struct Knobs {
     /// dev runner accumulates across reloads before it is respawned (500).
     pub start_respawn_stale: Option<usize>,
 
-    /// `OJ_STYLEX_NATIVE_SCOPE=1`: StyleX binding analysis from oj_stylex's own
-    /// walk instead of oxc_semantic.
-    pub stylex_native_scope: bool,
+    /// `OJ_STYLEX_NATIVE_SCOPE=0`: StyleX binding analysis from oxc_semantic
+    /// instead of oj_stylex's own walk.
+    pub stylex_native_scope_off: bool,
     /// `STYLEX_STAGE_TIMINGS=1`: per-stage StyleX compile timers.
     pub stylex_stage_timings: bool,
     /// `STYLEX_CACHE_DIR`, when non-empty: the `oj stylex` compile cache.
@@ -139,7 +139,7 @@ impl Knobs {
             start_respawn_stale: var("OJ_START_RESPAWN_STALE")
                 .and_then(|v| v.trim().parse().ok())
                 .filter(|v| *v > 0),
-            stylex_native_scope: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("1"),
+            stylex_native_scope_off: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("0"),
             stylex_stage_timings: var("STYLEX_STAGE_TIMINGS").as_deref() == Some("1"),
             stylex_cache_dir: get("STYLEX_CACHE_DIR")
                 .filter(|v| !v.is_empty())
@@ -244,11 +244,13 @@ mod tests {
         assert_eq!(knobs(&[("OJ_HMR_PING_MS", " 250 ")]).hmr_ping_ms, Some(250));
         assert_eq!(knobs(&[("OJ_HMR_PING_MS", "0")]).hmr_ping_ms, Some(0));
         assert_eq!(knobs(&[("OJ_HMR_PING_MS", "soon")]).hmr_ping_ms, None);
-        // StyleX: exactly "1" selects the native scope walk; only "0" kills
-        // the CLI cache.
-        assert!(knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "1")]).stylex_native_scope);
-        assert!(!knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "true")]).stylex_native_scope);
-        assert!(!knobs(&[("FRU_NATIVE_SCOPES", "1")]).stylex_native_scope);
+        // StyleX: only "0" turns the native scope walk off, and only "0"
+        // kills the CLI cache.
+        assert!(!knobs(&[]).stylex_native_scope_off);
+        assert!(knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "0")]).stylex_native_scope_off);
+        assert!(!knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "1")]).stylex_native_scope_off);
+        assert!(!knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "false")]).stylex_native_scope_off);
+        assert!(!knobs(&[("FRU_NATIVE_SCOPES", "0")]).stylex_native_scope_off);
         assert!(knobs(&[("STYLEX_CACHE", "0")]).stylex_cache_off);
         assert!(!knobs(&[("STYLEX_CACHE", "false")]).stylex_cache_off);
         assert_eq!(knobs(&[("STYLEX_CACHE_DIR", "")]).stylex_cache_dir, None);

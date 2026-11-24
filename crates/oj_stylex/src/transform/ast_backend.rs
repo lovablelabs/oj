@@ -276,9 +276,17 @@ impl<'a> Synth<'a> {
     }
 
     fn object(&self, props: Vec<ObjectPropertyKind<'a>>) -> Expression<'a> {
-        let mut list = ArenaVec::with_capacity_in(props.len(), &self.b);
+        let mut list = self.props_with_capacity(props.len());
         list.extend(props);
-        Expression::ObjectExpression(ObjectExpression::boxed(self.span, list, &self.b))
+        self.object_of(list)
+    }
+
+    fn props_with_capacity(&self, capacity: usize) -> ArenaVec<'a, ObjectPropertyKind<'a>> {
+        ArenaVec::with_capacity_in(capacity, &self.b)
+    }
+
+    fn object_of(&self, props: ArenaVec<'a, ObjectPropertyKind<'a>>) -> Expression<'a> {
+        Expression::ObjectExpression(ObjectExpression::boxed(self.span, props, &self.b))
     }
 
     /// Mirrors js_out::write_value (arrays print as index-keyed objects).
@@ -290,23 +298,22 @@ impl<'a> Synth<'a> {
             EvalValue::Num(n) => self.number(*n),
             EvalValue::Str(s) => self.string(s),
             EvalValue::Arr(items) => {
-                let props = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| self.prop(self.string_key(&i.to_string()), self.value(item)))
-                    .collect();
-                self.object(props)
+                let mut props = self.props_with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    props.push(self.prop(self.string_key(&i.to_string()), self.value(item)));
+                }
+                self.object_of(props)
             }
             EvalValue::Obj(map) => self.object_value(map),
         }
     }
 
     fn object_value(&self, map: &JsObjectMap) -> Expression<'a> {
-        let props = map
-            .entries()
-            .map(|(key, value)| self.prop(self.prop_key(key), self.value(value)))
-            .collect();
-        self.object(props)
+        let mut props = self.props_with_capacity(map.len());
+        for (key, value) in map.entries() {
+            props.push(self.prop(self.prop_key(key), self.value(value)));
+        }
+        self.object_of(props)
     }
 
     /// Mirrors js_out::print_static_chunk (`"$$css"` stays a quoted key).
@@ -964,10 +971,73 @@ fn key(span: Span) -> SpanKey {
     (span.start, span.end)
 }
 
+/// Span-keyed operations awaiting their node, each taken at most once.
+struct Pending<T> {
+    keys: Vec<SpanKey>,
+    ops: Vec<Option<T>>,
+    live: usize,
+}
+
+impl<T> Pending<T> {
+    /// A span recorded twice keeps its last operation.
+    fn new(recorded: Vec<(Span, T)>) -> Self {
+        let mut recorded: Vec<(SpanKey, T)> = recorded
+            .into_iter()
+            .map(|(span, op)| (key(span), op))
+            .collect();
+        if !recorded.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            recorded.sort_by_key(|(k, _)| *k);
+        }
+        let mut keys: Vec<SpanKey> = Vec::with_capacity(recorded.len());
+        let mut ops: Vec<Option<T>> = Vec::with_capacity(recorded.len());
+        for (k, op) in recorded {
+            if keys.last() == Some(&k) {
+                *ops.last_mut().expect("parallel to keys") = Some(op);
+            } else {
+                keys.push(k);
+                ops.push(Some(op));
+            }
+        }
+        let live = keys.len();
+        Pending { keys, ops, live }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.live == 0
+    }
+
+    fn contains(&self, k: SpanKey) -> bool {
+        self.live > 0
+            && self
+                .keys
+                .binary_search(&k)
+                .is_ok_and(|i| self.ops[i].is_some())
+    }
+
+    fn take(&mut self, k: SpanKey) -> Option<T> {
+        if self.live == 0 {
+            return None;
+        }
+        let op = self.ops[self.keys.binary_search(&k).ok()?].take();
+        self.live -= usize::from(op.is_some());
+        op
+    }
+
+    fn remaining(&self) -> impl Iterator<Item = &SpanKey> {
+        self.keys
+            .iter()
+            .zip(&self.ops)
+            .filter(|(_, op)| op.is_some())
+            .map(|(k, _)| k)
+    }
+}
+
 struct Applier<'a> {
     alloc: &'a Allocator,
-    replace: BTreeMap<SpanKey, SynthExpr>,
-    jsx: BTreeMap<SpanKey, JsxOp>,
+    replace: Pending<SynthExpr>,
+    jsx: Pending<JsxOp>,
+    /// Sorted start offsets of every recorded replacement and JSX operation.
+    starts: Vec<u32>,
     /// Pre-mutation clones of the dynamic-arrow expression spans (the splice
     /// printer reads them from the raw source, before any nested edit).
     preclones: BTreeMap<SpanKey, Expression<'a>>,
@@ -1001,10 +1071,17 @@ impl<'a> Applier<'a> {
             })
     }
 
+    /// Whether an operation may still be waiting inside `span`. Node spans
+    /// nest, so an operation starting inside `span` names a node inside it;
+    /// one already applied only costs a walk that finds nothing to do.
     fn pending_within(&self, span: Span) -> bool {
-        self.error.is_none()
-            && (self.replace.range(span_range(span)).next().is_some()
-                || self.jsx.range(span_range(span)).next().is_some())
+        if self.error.is_some() || (self.replace.is_empty() && self.jsx.is_empty()) {
+            return false;
+        }
+        let from = self.starts.partition_point(|&start| start < span.start);
+        self.starts
+            .get(from)
+            .is_some_and(|&start| start <= span.end)
     }
 
     /// `old` is child-mutated before cloning, so table tests carry nested
@@ -1145,7 +1222,7 @@ impl<'a> VisitMut<'a> for Applier<'a> {
         // Post-order: nested replacements land before enclosing ones, so a
         // table's cloned tests see their inner replacements (splice parity).
         walk_mut::walk_expression(self, expr);
-        if let Some(synth_expr) = self.replace.remove(&key(expr.span())) {
+        if let Some(synth_expr) = self.replace.take(key(expr.span())) {
             match self.build_expr(expr.span(), &synth_expr, expr) {
                 Ok(built) => *expr = built,
                 Err(error) => self.fail(error),
@@ -1158,16 +1235,17 @@ impl<'a> VisitMut<'a> for Applier<'a> {
             return;
         }
         walk_mut::walk_jsx_opening_element(self, el);
-        if !el
-            .attributes
-            .iter()
-            .any(|item| self.jsx.contains_key(&key(item.span())))
+        if self.jsx.is_empty()
+            || !el
+                .attributes
+                .iter()
+                .any(|item| self.jsx.contains(key(item.span())))
         {
             return;
         }
         let old = std::mem::replace(&mut el.attributes, ArenaVec::new_in(&self.alloc));
         for item in old {
-            match self.jsx.remove(&key(item.span())) {
+            match self.jsx.take(key(item.span())) {
                 None => el.attributes.push(item),
                 Some(op) => match self.build_jsx(item.span(), &op, &item) {
                     Ok(built) => el.attributes.extend(built),
@@ -1254,16 +1332,17 @@ pub fn apply_plan<'a>(
         }
     }
 
+    let mut starts: Vec<u32> = replace_exprs
+        .iter()
+        .map(|(span, _)| span.start)
+        .chain(jsx_ops.iter().map(|(span, _)| span.start))
+        .collect();
+    starts.sort_unstable();
     let mut applier = Applier {
         alloc: allocator,
-        replace: replace_exprs
-            .into_iter()
-            .map(|(span, synth_expr)| (key(span), synth_expr))
-            .collect(),
-        jsx: jsx_ops
-            .into_iter()
-            .map(|(span, op)| (key(span), op))
-            .collect(),
+        replace: Pending::new(replace_exprs),
+        jsx: Pending::new(jsx_ops),
+        starts,
         preclones,
         error: None,
     };
@@ -1274,8 +1353,8 @@ pub fn apply_plan<'a>(
     if !applier.replace.is_empty() || !applier.jsx.is_empty() {
         let leftover: Vec<String> = applier
             .replace
-            .keys()
-            .chain(applier.jsx.keys())
+            .remaining()
+            .chain(applier.jsx.remaining())
             .map(|(start, end)| format!("{start}..{end}"))
             .collect();
         return Err(internal(format!(
