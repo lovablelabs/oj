@@ -178,17 +178,6 @@ mod to_fixed_tests {
     }
 }
 
-/// Legacy error type of `locale_cmp`. UTF-16 ordering accepts every `str`,
-/// so that comparator no longer returns an error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnverifiedChar(pub char);
-
-/// Compare by UTF-16 code unit, independent of locale. The historical result
-/// type is retained for callers; this always returns `Ok`.
-pub fn locale_cmp(a: &str, b: &str) -> Result<Ordering, UnverifiedChar> {
-    Ok(utf16_cmp(a, b))
-}
-
 /// StyleX's stylesheet comparator: UTF-16 code-unit order.
 pub use utf16_cmp as default_locale_cmp;
 

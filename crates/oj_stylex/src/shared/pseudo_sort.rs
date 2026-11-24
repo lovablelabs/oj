@@ -1,17 +1,16 @@
 //! Deterministic ordering of pseudo selectors and at-rules before hashing.
 // parity: babel-plugin src/shared/utils/rule-utils.js
 
-use crate::errors::StylexError;
 use crate::jsrt::{default_first_cmp, utf16_cmp};
 
 /// Sorts consecutive runs of pseudo-classes (and `[attr]` selectors);
 /// pseudo-elements (`::`) are barriers. The result feeds the class-name hash.
-pub fn sort_pseudos<'s>(pseudos: &[&'s str]) -> Result<Vec<&'s str>, StylexError> {
+pub fn sort_pseudos<'s>(pseudos: &[&'s str]) -> Vec<&'s str> {
     let mut sorted = pseudos.to_vec();
     for run in sorted.split_mut(|pseudo| pseudo.starts_with("::")) {
         run.sort_by(|a, b| default_first_cmp(a, b));
     }
-    Ok(sorted)
+    sorted
 }
 
 /// JS default `Array.prototype.sort` over strings: UTF-16 code-unit order.
@@ -32,15 +31,15 @@ mod tests {
     #[test]
     fn classes_sort_elements_are_barriers() {
         assert_eq!(
-            sort_pseudos(&v(&[":hover", "::before", ":active"])).unwrap(),
+            sort_pseudos(&v(&[":hover", "::before", ":active"])),
             v(&[":hover", "::before", ":active"])
         );
         assert_eq!(
-            sort_pseudos(&v(&[":hover", ":active"])).unwrap(),
+            sort_pseudos(&v(&[":hover", ":active"])),
             v(&[":active", ":hover"])
         );
         assert_eq!(
-            sort_pseudos(&v(&[":b", ":a", "::x", ":d", ":c"])).unwrap(),
+            sort_pseudos(&v(&[":b", ":a", "::x", ":d", ":c"])),
             v(&[":a", ":b", "::x", ":c", ":d"])
         );
     }
@@ -48,15 +47,15 @@ mod tests {
     #[test]
     fn default_comes_first() {
         assert_eq!(
-            sort_pseudos(&v(&[":hover", "default", ":active"])).unwrap(),
+            sort_pseudos(&v(&[":hover", "default", ":active"])),
             v(&["default", ":active", ":hover"])
         );
     }
 
     #[test]
     fn short_inputs_pass_through() {
-        assert_eq!(sort_pseudos(&[]).unwrap(), Vec::<String>::new());
-        assert_eq!(sort_pseudos(&v(&[":hover"])).unwrap(), v(&[":hover"]));
+        assert_eq!(sort_pseudos(&[]), Vec::<String>::new());
+        assert_eq!(sort_pseudos(&v(&[":hover"])), v(&[":hover"]));
     }
 
     #[test]
@@ -69,8 +68,7 @@ mod tests {
                 "[data-B]",
                 "::before",
                 ":hover"
-            ])
-            .unwrap(),
+            ]),
             [
                 "[data-B]",
                 "[data-a]",

@@ -283,7 +283,7 @@ fn convert_style_to_class_name_uncached(
     text: &mut String,
 ) -> Result<StylexRule, StylexError> {
     // Match the sorted PreRule.pseudos/atRules getters used by upstream.
-    let sorted_pseudos = sort_pseudos(pseudos)?;
+    let sorted_pseudos = sort_pseudos(pseudos);
     let sorted_at_rules = sort_at_rules(at_rules);
     // A stable sort of an already sorted list is that list: the const-free
     // case reads the at-rule order as is.

@@ -1,4 +1,4 @@
-use oj_stylex::jsrt::{default_locale_cmp, locale_cmp};
+use oj_stylex::jsrt::default_locale_cmp;
 use oj_stylex::shared::dashify::{dashify, sanitize_dev_class_name};
 use oj_stylex::shared::priorities::get_priority;
 use oj_stylex::shared::pseudo_sort::{sort_at_rules, sort_pseudos};
@@ -66,7 +66,7 @@ fn pinned_pseudo_sort() {
     for case in cases {
         let input: Vec<&str> = case.input.iter().map(String::as_str).collect();
         assert_eq!(
-            sort_pseudos(&input).unwrap(),
+            sort_pseudos(&input),
             case.expected,
             "input {:?}",
             case.input
@@ -125,7 +125,6 @@ fn public_comparators_use_utf16_code_unit_order() {
         ("🐱", "\u{e000}"),
     ] {
         assert_eq!(default_locale_cmp(a, b), Ordering::Less);
-        assert_eq!(locale_cmp(a, b), Ok(Ordering::Less));
         assert_eq!(default_locale_cmp(b, a), Ordering::Greater);
         assert_eq!(default_locale_cmp(a, a), Ordering::Equal);
     }
