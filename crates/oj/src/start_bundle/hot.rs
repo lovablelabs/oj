@@ -633,6 +633,11 @@ fn unresolved_in_patch(code: &str, importer: &str, declared: &Declared) -> Optio
         .map(|spec| unresolved_import(spec, importer.split('?').next().unwrap_or(importer)))
 }
 
+/// The engine's default `debounceDelay` (rolldown_dev_common's
+/// `normalize_dev_options`), passed along so the tick below is sized against
+/// the delay in effect.
+const ENGINE_DEBOUNCE_DELAY_MS: u64 = 10;
+
 /// The engine's watcher options from the app's `server.watch`, as Vite's
 /// bundled dev hands them over (convertToDevWatchOptions): polling apps poll
 /// here too, and `null` turns watching off. The engine never writes files:
@@ -661,6 +666,11 @@ fn watch_options(watch: Option<&serde_json::Value>) -> DevWatchOptions {
                 .collect(),
         )
     };
+    let debounce_delay = w
+        .get("debounceDelay")
+        .or_else(|| w.get("debounceDuration"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(ENGINE_DEBOUNCE_DELAY_MS);
     let watcher = WatcherFileWatcherOptions {
         use_polling: w.get("usePolling").and_then(|v| v.as_bool()),
         poll_interval: w
@@ -669,11 +679,21 @@ fn watch_options(watch: Option<&serde_json::Value>) -> DevWatchOptions {
             .and_then(|v| v.as_u64()),
         compare_contents_for_polling: w.get("compareContentsForPolling").and_then(|v| v.as_bool()),
         use_debounce: w.get("useDebounce").and_then(|v| v.as_bool()),
-        debounce_delay: w
-            .get("debounceDelay")
-            .or_else(|| w.get("debounceDuration"))
-            .and_then(|v| v.as_u64()),
-        debounce_tick_rate: w.get("debounceTickRate").and_then(|v| v.as_u64()),
+        debounce_delay: Some(debounce_delay),
+        // The engine's debouncer thread wakes once a tick to look for an
+        // event old enough to report, whether or not one is queued, and
+        // its default tick is a quarter of the delay: at the 10 ms delay,
+        // 400 wakeups a second from an idle dev server, the whole of its
+        // idle CPU (0.5% of a core on a workstation, about 2% of a sandbox
+        // vCPU). With the delay itself as the tick an edit is reported
+        // within two delays of the save where it was within one and a
+        // quarter, and the idle wakeups are a quarter of what they were. An
+        // app's own tick is kept.
+        debounce_tick_rate: Some(
+            w.get("debounceTickRate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(debounce_delay),
+        ),
     };
     DevWatchOptions {
         skip_write: true,
@@ -1155,8 +1175,34 @@ mod tests {
         assert_eq!(watcher.use_polling, Some(true));
         assert_eq!(watcher.poll_interval, Some(300));
         assert_eq!(watcher.debounce_delay, Some(50));
+        // The tick follows the app's delay, so the debouncer's thread wakes
+        // once a delay, not four times.
+        assert_eq!(watcher.debounce_tick_rate, Some(50));
         assert!(polling.skip_write);
         assert_eq!(polling.enabled, None);
+    }
+
+    // The delay oj passes for an app that says nothing is the one the engine
+    // would pick itself, so a rolldown bump that changes its default fails
+    // here instead of leaving Start apps on a stale copy.
+    #[test]
+    fn engine_debounce_delay_is_the_engines_default() {
+        let normalized = rolldown_dev_common::types::normalize_dev_options(
+            rolldown_dev_common::types::DevOptions::default(),
+        );
+        assert_eq!(normalized.debounce_delay, ENGINE_DEBOUNCE_DELAY_MS);
+    }
+
+    // An app that says nothing about the watcher gets the engine's default
+    // delay with the tick equal to it; one that sets its own tick keeps it.
+    #[test]
+    fn debounce_tick_defaults_to_the_delay() {
+        let plain = watch_options(Some(&serde_json::json!({})));
+        let watcher = plain.watcher.as_ref().unwrap();
+        assert_eq!(watcher.debounce_delay, Some(ENGINE_DEBOUNCE_DELAY_MS));
+        assert_eq!(watcher.debounce_tick_rate, Some(ENGINE_DEBOUNCE_DELAY_MS));
+        let own = watch_options(Some(&serde_json::json!({ "debounceTickRate": 2 })));
+        assert_eq!(own.watcher.as_ref().unwrap().debounce_tick_rate, Some(2));
     }
 
     #[test]

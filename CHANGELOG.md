@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Start dev: an idle dev server for a Start app no longer spends half a percent of a core (about 2% of a sandbox vCPU) waking up 400 times a second. The engine's file watcher debounces its events on a thread that wakes once a tick to look for an edit old enough to report, idle or not, and the tick was a quarter of the 10 ms debounce delay. The tick is now the delay itself: the thread wakes 100 times a second, and an edit is reported within 20 ms of the save where it was within 12.5 ms. An app that sets `server.watch.debounceTickRate` keeps its own. A plain React app, whose dev server starts no such engine, idled at zero before and does still.
+
 ## [0.4.22] - 2026-11-24
 
 ### Fixed
