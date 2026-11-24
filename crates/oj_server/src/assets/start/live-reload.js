@@ -541,6 +541,31 @@
         applied(msg);
         return;
       }
+      // A module that declares a server function was patched in place: the
+      // router loads its matches again, as the route module's accept handler
+      // does under Vite, so a loader that calls the function shows what the
+      // edited handler answers. `_refreshRoute` is what that handler calls
+      // from router-core 1.171.18; before it, `invalidate({ sync: true })`.
+      // Not awaited, as there: a loader that never settles would hold every
+      // later frame of this socket, the next patch and a reload among them.
+      if (msg && msg.type === "oj:routes") {
+        const router = self.__TSR_ROUTER__;
+        const refresh =
+          router && typeof router._refreshRoute === "function"
+            ? () => router._refreshRoute()
+            : router && typeof router.invalidate === "function"
+              ? () => router.invalidate({ sync: true })
+              : null;
+        if (refresh) {
+          try {
+            Promise.resolve(refresh()).catch((err) => console.error("[oj]", err));
+          } catch (err) {
+            console.error("[oj]", err);
+          }
+        }
+        applied(msg);
+        return;
+      }
       // A change went out to the pages it names. Named, this page has it
       // (its patch came first, or it had nothing to patch). Left out, its
       // client was not there for it (registered while it was being built):

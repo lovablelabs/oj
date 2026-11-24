@@ -1777,6 +1777,10 @@ impl StartEngine {
                 *engine = EngineSlot::new(fresh);
                 self.host.graph().reset_after_respawn();
                 eprintln!("oj start: engine respawned to reclaim stale module instances");
+                // The old isolate is gone (its thread joined on the drop
+                // above) unless a body still streams from it: what it
+                // freed goes back to the OS, off this task.
+                tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap);
             }
             Err(e) => eprintln!("oj start: engine respawn failed: {e}"),
         }
