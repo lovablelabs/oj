@@ -577,6 +577,9 @@ impl SsrEngine {
         *engine = spawn_engine(&self.root, &self.host).map_err(|e| e.to_string())?;
         self.host.reset_after_respawn();
         eprintln!("oj ssr: engine respawned to reclaim stale module instances");
+        // The old isolate is gone (its thread joined on the drop above):
+        // what it freed goes back to the OS, off this task.
+        tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap);
         Ok(())
     }
 }

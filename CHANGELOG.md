@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Start dev: the heap a client build frees goes back to the OS when the build is over, after each rebuild and each output refresh that follows a hot update, and so does the heap an engine respawn frees. On glibc the build's allocations interleave with the module graph's long-lived ones, so its free pages stayed resident in the threads' arenas and the server's memory grew with every rebuild of a long session (about 1 GB over 300 edits on a 3,500-module app, most of it recoverable by one `malloc_trim`). The same release ran after the cold dependency pre-bundle alone.
+
 ## [0.4.21] - 2026-11-23
 
 ### Fixed
