@@ -76,23 +76,34 @@ fn murmur2_32_units(units: impl Units, seed: u32) -> u32 {
     h
 }
 
-pub fn to_base36(mut n: u32) -> String {
-    if n == 0 {
-        return "0".to_string();
-    }
+pub fn to_base36(n: u32) -> String {
+    let mut out = String::with_capacity(7);
+    push_base36(&mut out, n);
+    out
+}
+
+fn push_base36(out: &mut String, mut n: u32) {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut buf = [0u8; 7];
+    let mut buf = [b'0'; 7];
     let mut idx = buf.len();
-    while n > 0 {
+    loop {
         idx -= 1;
         buf[idx] = DIGITS[(n % 36) as usize];
         n /= 36;
+        if n == 0 {
+            break;
+        }
     }
-    String::from_utf8_lossy(&buf[idx..]).into_owned()
+    out.push_str(str::from_utf8(&buf[idx..]).expect("base36 digits are ASCII"));
 }
 
 pub fn hash(s: &str) -> String {
     to_base36(murmur2_32_gc(s, 1))
+}
+
+/// Appends `hash(s)` to `out`.
+pub fn push_hash(out: &mut String, s: &str) {
+    push_base36(out, murmur2_32_gc(s, 1));
 }
 
 // Upstream's toBase62 returns "" for 0; replicated deliberately.

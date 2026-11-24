@@ -1,9 +1,11 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::Value;
 
 use crate::errors::{ErrorCode, StylexError};
 use crate::eval::value::{EvalValue, JsObjectMap};
+use crate::gate::PreGate;
 use crate::module_resolution::THEME_FILE_EXTENSION;
 
 /// Raw `@stylexjs/babel-plugin` options as they appear in conformance jobs.
@@ -83,7 +85,7 @@ impl ModuleResolution {
 pub type AliasMap = Vec<(String, Vec<String>)>;
 /// One resolved `importSources` entry. `Aliased` names the single named export
 /// that carries the whole stylex namespace for that source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportSource {
     Plain(String),
     Aliased { from: String, as_name: String },
@@ -107,6 +109,9 @@ pub struct RuntimeInjection {
 }
 
 const DEFAULT_INJECT_PATH: &str = "@stylexjs/stylex/lib/stylex-inject";
+
+/// `sxPropName ?? 'sx'`.
+pub(crate) const DEFAULT_SX_PROP_NAME: &str = "sx";
 
 // parity: babel-plugin src/utils/state-manager.js setOptions +
 // src/shared/utils/default-options.js (0.19.0 ??-chains).
@@ -135,14 +140,34 @@ pub struct ResolvedOptions {
     pub property_validation_mode: PropertyValidationMode,
     pub treeshake_compensation: bool,
     pub unstable_module_resolution: Option<ModuleResolution>,
-    pub aliases: Option<AliasMap>,
+    /// Shared: a resolver that keeps answers by the map holds this one, and
+    /// knows it again by its address.
+    pub aliases: Option<Arc<AliasMap>>,
     pub rewrite_aliases: bool,
+    /// The pre-parse gate over `sx_prop_name`, `import_sources` and
+    /// `rewrite_aliases`, its searchers built once here instead of per file
+    /// (those of the default needles, once for the process). Read through
+    /// [`ResolvedOptions::pre_gate`].
+    pub(crate) gate: PreGate,
     /// Canonical `{:?}` capture of every other field, computed once at
     /// resolve: cache/memo keys read it instead of reformatting per call.
     pub cache_repr: String,
 }
 
 impl ResolvedOptions {
+    /// The pre-parse gate. A debug build checks on every read that the
+    /// fields it was built from are as `resolve()` left them: they are `pub`,
+    /// and nothing rebuilds the gate when one is assigned to.
+    pub(crate) fn pre_gate(&self) -> &PreGate {
+        #[cfg(debug_assertions)]
+        self.gate.assert_built_from(
+            self.sx_prop_name.as_deref(),
+            &self.import_sources,
+            self.rewrite_aliases,
+        );
+        &self.gate
+    }
+
     /// parity: `state.importSources.includes(source)` — the `.map(from)` list.
     pub fn is_import_source(&self, source: &str) -> bool {
         self.import_sources
@@ -284,7 +309,7 @@ impl CompilerOptions {
         }
 
         let sx_prop_name = match get(&self.sx_prop_name) {
-            None => Some("sx".to_string()),
+            None => Some(DEFAULT_SX_PROP_NAME.to_string()),
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Bool(false)) => None,
             Some(other) => {
@@ -412,7 +437,7 @@ impl CompilerOptions {
             Some(value @ Value::Object(_)) => EvalValue::from_json(value),
             Some(other) => return Err(invalid_value("options.env", other, "an object")),
         };
-        let aliases = resolve_aliases(get(&self.aliases));
+        let aliases = resolve_aliases(get(&self.aliases)).map(Arc::new);
         // parity: `typeof options.rewriteAliases === 'boolean' ? … : false` —
         // a non-boolean reads as off with no diagnostic.
         let rewrite_aliases = get(&self.rewrite_aliases) == Some(&Value::Bool(true));
@@ -426,6 +451,7 @@ impl CompilerOptions {
             return Err(StylexError::unsupported_option("exclude"));
         }
 
+        let gate = PreGate::new(sx_prop_name.as_deref(), &import_sources, rewrite_aliases);
         let mut resolved = ResolvedOptions {
             class_name_prefix,
             dev,
@@ -450,6 +476,7 @@ impl CompilerOptions {
             unstable_module_resolution,
             aliases,
             rewrite_aliases,
+            gate,
             cache_repr: String::new(),
         };
         // The empty-field capture keeps the repr a pure function of the inputs.

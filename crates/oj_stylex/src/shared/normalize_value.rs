@@ -2,8 +2,12 @@
 // parity: babel-plugin/src/shared/utils/normalize-value.js (+ normalizers/*)
 
 use crate::jsrt::js_number_to_string;
-use crate::shared::css_value::{Kind, Node, parse, stringify, unit, walk, walk_pruned};
+use crate::shared::css_value::{
+    Kind, Node, is_unicode_range, like_number, parse, stringify_with_capacity, unit, walk,
+    walk_pruned,
+};
 use crate::shared::dashify::dashify;
+use std::borrow::Cow;
 
 // Local until errors.rs lands a shared error surface; Display strings for the
 // two unclosed variants byte-match upstream messages.js LINT_* constants.
@@ -33,9 +37,38 @@ pub fn normalize_value(
     key: &str,
     font_size_px_to_rem: bool,
 ) -> Result<String, CssValueError> {
+    match normalize_plain(value, key, font_size_px_to_rem) {
+        Some(plain) => Ok(plain.into_owned()),
+        None => normalize_parsed(value, key, font_size_px_to_rem),
+    }
+}
+
+/// `normalize_value` over a string the caller no longer needs: a value that
+/// normalizes to itself is handed back without a copy.
+pub(crate) fn normalize_owned(
+    value: String,
+    key: &str,
+    font_size_px_to_rem: bool,
+) -> Result<String, CssValueError> {
+    let plain = normalize_plain(&value, key, font_size_px_to_rem).map(|plain| match plain {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(changed) => Some(changed),
+    });
+    match plain {
+        Some(None) => Ok(value),
+        Some(Some(changed)) => Ok(changed),
+        None => normalize_parsed(&value, key, font_size_px_to_rem),
+    }
+}
+
+// The full pipeline over the parsed node tree.
+fn normalize_parsed(
+    value: &str,
+    key: &str,
+    font_size_px_to_rem: bool,
+) -> Result<String, CssValueError> {
     let mut nodes = parse(value);
-    detect_unclosed(&nodes, Kind::Func, CssValueError::UnclosedFunction)?;
-    detect_unclosed(&nodes, Kind::Str, CssValueError::UnclosedString)?;
+    detect_unclosed(&nodes)?;
     normalize_whitespace(&mut nodes)?;
     normalize_timings(&mut nodes);
     normalize_zero_dimensions(&mut nodes, key);
@@ -45,19 +78,159 @@ pub fn normalize_value(
     if font_size_px_to_rem {
         convert_font_size_to_rem(&mut nodes, key);
     }
-    Ok(stringify(&nodes))
+    Ok(stringify_with_capacity(&nodes, value.len()))
 }
 
-fn detect_unclosed(nodes: &[Node], kind: Kind, err: CssValueError) -> Result<(), CssValueError> {
-    for node in nodes {
-        if node.kind == kind && node.unclosed {
-            return Err(err);
+const PLAIN_SPACE: u8 = 1;
+const PLAIN_STOP: u8 = 2;
+
+// Byte classes for `normalize_plain`: whitespace (every byte the tokenizer
+// treats as such, `<= 32`), and the bytes that start anything but a word —
+// quotes, dividers, `(`, comments (`/`), escapes — plus `!`, since a
+// mid-value `!important` word reshapes its neighbours, and every non-ASCII
+// byte, so the word rules there only ever reason about ASCII.
+const PLAIN_CLASS: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut b = 0;
+    while b <= 32 {
+        table[b] = PLAIN_SPACE;
+        b += 1;
+    }
+    let mut b = 128;
+    while b < 256 {
+        table[b] = PLAIN_STOP;
+        b += 1;
+    }
+    let stops = b"'\"/,:(\\!";
+    let mut i = 0;
+    while i < stops.len() {
+        table[stops[i] as usize] = PLAIN_STOP;
+        i += 1;
+    }
+    table
+};
+
+#[derive(Clone, Copy)]
+struct WordRules {
+    zero_dimensions: bool,
+    camel_case: bool,
+    font_size_rem: bool,
+}
+
+/// The pipeline's result for an ASCII value made of plain words and whitespace
+/// only, computed without building the node tree. Such a value tokenizes into
+/// top-level word (or unicode-range) nodes separated by space nodes, so every
+/// normalizer acts on one word at a time: leading/trailing whitespace drops,
+/// inner runs collapse to one space, and each word takes the per-word rewrites
+/// in pipeline order. `None` sends everything else — functions, strings,
+/// dividers, comments, escapes, `!important`, non-ASCII text, empty values —
+/// to the parser.
+fn normalize_plain<'v>(
+    value: &'v str,
+    key: &str,
+    font_size_px_to_rem: bool,
+) -> Option<Cow<'v, str>> {
+    let bytes = value.as_bytes();
+    let mut classes = 0u8;
+    for &b in bytes {
+        classes |= PLAIN_CLASS[b as usize];
+    }
+    if classes & PLAIN_STOP != 0 || bytes.is_empty() {
+        return None;
+    }
+    let rules = WordRules {
+        zero_dimensions: !key.starts_with("--"),
+        camel_case: is_camel_case_key(key),
+        font_size_rem: font_size_px_to_rem && key == "fontSize",
+    };
+    if classes & PLAIN_SPACE == 0 {
+        return Some(match normalize_word(value, rules) {
+            Some(changed) => Cow::Owned(changed),
+            None => Cow::Borrowed(value),
+        });
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut first = true;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        if bytes[pos] <= b' ' {
+            pos += 1;
+            continue;
         }
-        if node.kind == Kind::Func {
-            detect_unclosed(&node.nodes, kind, err)?;
+        let start = pos;
+        while pos < bytes.len() && bytes[pos] > b' ' {
+            pos += 1;
+        }
+        if !first {
+            out.push(' ');
+        }
+        first = false;
+        // Word edges sit on ASCII whitespace or the value's ends.
+        let word = &value[start..pos];
+        match normalize_word(word, rules) {
+            Some(changed) => out.push_str(&changed),
+            None => out.push_str(word),
         }
     }
-    Ok(())
+    // Whitespace only: the parser path reports the empty value.
+    (!first).then_some(Cow::Owned(out))
+}
+
+/// One top-level word through the per-word normalizers, in pipeline order;
+/// `None` when it comes out unchanged.
+fn normalize_word(word: &str, rules: WordRules) -> Option<String> {
+    let bytes = word.as_bytes();
+    if !like_number(bytes) {
+        // The numeric normalizers need `unit()` or a `parseFloat` in [0, 1),
+        // and both need the word to start a number.
+        if rules.camel_case && !word.starts_with("--") && !is_unicode_range(bytes) {
+            return Some(dashify(word));
+        }
+        return None;
+    }
+    let mut current: Option<String> = None;
+    if let Some(next) = timing_word(word) {
+        current = Some(next);
+    }
+    if rules.zero_dimensions
+        && let Some(next) = zero_dimension_word(current.as_deref().unwrap_or(word), false)
+    {
+        current = Some(next.to_string());
+    }
+    if let Some(next) = leading_zero_word(current.as_deref().unwrap_or(word)) {
+        current = Some(next);
+    }
+    if rules.camel_case {
+        let value = current.as_deref().unwrap_or(word);
+        if !value.starts_with("--") {
+            current = Some(dashify(value));
+        }
+    }
+    if rules.font_size_rem
+        && let Some(next) = font_size_rem_word(current.as_deref().unwrap_or(word))
+    {
+        current = Some(next);
+    }
+    current
+}
+
+// The top level decides: input that ends inside a nested node leaves every
+// enclosing function unclosed too. An unclosed function is reported ahead of
+// an unclosed string wherever each sits.
+fn detect_unclosed(nodes: &[Node]) -> Result<(), CssValueError> {
+    let mut unclosed_string = false;
+    for node in nodes {
+        match node.kind {
+            Kind::Func if node.unclosed => return Err(CssValueError::UnclosedFunction),
+            Kind::Str => unclosed_string |= node.unclosed,
+            _ => {}
+        }
+    }
+    if unclosed_string {
+        Err(CssValueError::UnclosedString)
+    } else {
+        Ok(())
+    }
 }
 
 // parity: normalizers/whitespace.js
@@ -145,21 +318,25 @@ fn normalize_timings(nodes: &mut [Node]) {
         if is_url(node) {
             return false;
         }
-        if node.kind != Kind::Word {
-            return true;
+        if node.kind == Kind::Word
+            && let Some(seconds) = timing_word(&node.value)
+        {
+            node.value = seconds;
         }
-        let Some(value) = js_parse_float(&node.value) else {
-            return true;
-        };
-        let Some(dimension) = unit(&node.value) else {
-            return true;
-        };
-        if dimension.unit != "ms" || value < 10.0 {
-            return true;
-        }
-        node.value = js_number_to_string(value / 1000.0) + "s";
         true
     });
+}
+
+fn timing_word(value: &str) -> Option<String> {
+    let dimension = unit(value)?;
+    if dimension.unit != "ms" {
+        return None;
+    }
+    let number = js_parse_float(value)?;
+    if number < 10.0 {
+        return None;
+    }
+    Some(js_number_to_string(number / 1000.0) + "s")
 }
 
 // parity: normalizers/zero-dimensions.js. `end_function` is the furthest end
@@ -180,35 +357,42 @@ fn normalize_zero_dimensions(nodes: &mut [Node], key: &str) {
         if is_url(node) {
             return false;
         }
-        if node.kind != Kind::Word {
-            return true;
-        }
-        let Some(dimension) = unit(&node.value) else {
-            return true;
-        };
-        if dimension.number != "0" {
-            return true;
-        }
-        // Units compare case-insensitively; none of them is the lowercase of a
-        // non-ASCII string, so the ASCII fold matches `toLowerCase()`.
-        let u = dimension.unit;
-        if u.eq_ignore_ascii_case("deg")
-            || u.eq_ignore_ascii_case("grad")
-            || u.eq_ignore_ascii_case("turn")
-            || u.eq_ignore_ascii_case("rad")
+        if node.kind == Kind::Word
+            && let Some(zero) = zero_dimension_word(&node.value, end_function != 0)
+            && node.value != zero
         {
-            node.value = "0deg".to_string();
-        } else if u.eq_ignore_ascii_case("ms") || u.eq_ignore_ascii_case("s") {
-            node.value = "0s".to_string();
-        } else if u.eq_ignore_ascii_case("fr") {
-            node.value = "0fr".to_string();
-        } else if u == "%" {
-            node.value = "0%".to_string();
-        } else if end_function == 0 {
-            node.value = "0".to_string();
+            node.value.clear();
+            node.value.push_str(zero);
         }
         true
     });
+}
+
+fn zero_dimension_word(value: &str, in_function: bool) -> Option<&'static str> {
+    // The number must be the exact text "0", which the word then starts with.
+    if value.as_bytes().first() != Some(&b'0') {
+        return None;
+    }
+    let dimension = unit(value)?;
+    if dimension.number != "0" {
+        return None;
+    }
+    // Units compare case-insensitively; none of them is the lowercase of a
+    // non-ASCII string, so the ASCII fold matches `toLowerCase()`.
+    let is = |name: &str| dimension.unit.eq_ignore_ascii_case(name);
+    if is("deg") || is("grad") || is("turn") || is("rad") {
+        Some("0deg")
+    } else if is("ms") || is("s") {
+        Some("0s")
+    } else if is("fr") {
+        Some("0fr")
+    } else if dimension.unit == "%" {
+        Some("0%")
+    } else if !in_function {
+        Some("0")
+    } else {
+        None
+    }
 }
 
 // parity: normalizers/leading-zero.js
@@ -217,18 +401,55 @@ fn normalize_leading_zero(nodes: &mut [Node]) {
         if is_url(node) {
             return false;
         }
-        if node.kind != Kind::Word {
-            return true;
-        }
-        let Some(value) = js_parse_float(&node.value) else {
-            return true;
-        };
-        if (0.0..1.0).contains(&value) {
-            let unit_str = unit(&node.value).map(|d| d.unit).unwrap_or_default();
-            node.value = js_number_to_string(value).replacen("0.", ".", 1) + unit_str;
+        if node.kind == Kind::Word
+            && let Some(stripped) = leading_zero_word(&node.value)
+        {
+            node.value = stripped;
         }
         true
     });
+}
+
+fn leading_zero_word(value: &str) -> Option<String> {
+    // A bare "0" prints back as itself, and a number with a nonzero integer
+    // part and no exponent is at least 1: neither needs the float parse.
+    if value == "0" || at_least_one(value.as_bytes()) {
+        return None;
+    }
+    let number = js_parse_float(value)?;
+    if !(0.0..1.0).contains(&number) {
+        return None;
+    }
+    let unit_str = unit(value).map(|d| d.unit).unwrap_or_default();
+    Some(js_number_to_string(number).replacen("0.", ".", 1) + unit_str)
+}
+
+// `[1-9][0-9]*(\.[0-9]*)?` with no exponent after it: the `parseFloat` prefix
+// is that literal, so the value is >= 1.
+fn at_least_one(bytes: &[u8]) -> bool {
+    if !matches!(bytes.first(), Some(b'1'..=b'9')) {
+        return false;
+    }
+    let digits = |from: usize| {
+        bytes[from..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map_or(bytes.len(), |n| from + n)
+    };
+    let mut end = digits(1);
+    if bytes.get(end) == Some(&b'.') {
+        end = digits(end + 1);
+    }
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let mut exponent = end + 1;
+        if matches!(bytes.get(exponent), Some(b'+' | b'-')) {
+            exponent += 1;
+        }
+        if bytes.get(exponent).is_some_and(u8::is_ascii_digit) {
+            return false;
+        }
+    }
+    true
 }
 
 // parity: normalizers/quotes.js — empty strings get double quotes
@@ -240,9 +461,13 @@ fn normalize_quotes(nodes: &mut [Node]) {
     });
 }
 
+fn is_camel_case_key(key: &str) -> bool {
+    key == "transitionProperty" || key == "willChange"
+}
+
 // parity: normalizers/convert-camel-case-values.js — top-level words only
 fn convert_camel_case_values(nodes: &mut [Node], key: &str) {
-    if key != "transitionProperty" && key != "willChange" {
+    if !is_camel_case_key(key) {
         return;
     }
     for node in nodes.iter_mut() {
@@ -259,18 +484,21 @@ fn convert_font_size_to_rem(nodes: &mut [Node], key: &str) {
         return;
     }
     walk(nodes, &mut |node| {
-        if node.kind != Kind::Word {
-            return;
+        if node.kind == Kind::Word
+            && let Some(rem) = font_size_rem_word(&node.value)
+        {
+            node.value = rem;
         }
-        let Some(dimension) = unit(&node.value) else {
-            return;
-        };
-        if dimension.unit != "px" {
-            return;
-        }
-        let number = js_parse_float(dimension.number).unwrap_or(f64::NAN);
-        node.value = js_number_to_string(number / 16.0) + "rem";
     });
+}
+
+fn font_size_rem_word(value: &str) -> Option<String> {
+    let dimension = unit(value)?;
+    if dimension.unit != "px" {
+        return None;
+    }
+    let number = js_parse_float(dimension.number).unwrap_or(f64::NAN);
+    Some(js_number_to_string(number / 16.0) + "rem")
 }
 
 // JS Number.parseFloat over a word token: longest valid decimal-literal
@@ -548,5 +776,109 @@ mod tests {
             normalize_value("marginTop", "color", false).unwrap(),
             "marginTop"
         );
+    }
+
+    // The fast path must be indistinguishable from the node-tree pipeline it
+    // skips, so every value it accepts is replayed through that pipeline.
+    #[test]
+    fn plain_fast_path_agrees_with_the_parsed_pipeline() {
+        #[rustfmt::skip]
+        const WORDS: &[&str] = &[
+            "0", "00", "0.0", "-0", "+0", "0px", "0PX", "0Px", "-0px", "+0em", "0%", "0deg",
+            "0DEG", "0rad", "0turn", "0grad", "0s", "0ms", "0MS", "0fr", "0x", "0x10", "0e3",
+            "0e3px", "0.0px", ".0px", "0.px", "1", "1.0", "1.", "01", "0.5", ".5", "-.5",
+            "+.5", "-0.5", "+0.5", "00.5", "0.50", "0.5px", "0.5PX", "0.999", "1e-7", "1e-7px",
+            "1e3", "1E3", "5e", "5e+", "5e-", "0.5e1", "0.05e3", "1e-3rem", "9ms", "10ms",
+            "10MS", "10Ms", "500ms", "-500ms", "+500ms", "1500ms", "0.5ms", "1e3ms", "1e1ms",
+            "9.99ms", "500msx", "10s", "0.5s", "16px", "16PX", "14px", "1px", "1.5px", "-16px",
+            ".5px", "1e1px", "16pxx", "1rem", "100%", "100", "1/2", "+", "-", ".", "+.", "-.",
+            "--", "--x", "--0", "--aB", "-a", "a", "aB", "ABC", "WebkitFilter", "marginTop",
+            "red", "solid", "auto", "inherit", "currentColor", "ease-in-out", "Infinity",
+            "-Infinity", "NaN", "Infinityms", "e", "e3", "E3", ".e3", "px", "-px", ".px", "u",
+            "U", "u+", "U+0025-00FF", "u+4??", "U+26", "u+x", "#fff", "#FFF", "#0", "%", "$x",
+            "@a", "a;b", "a{b}", "[x]", "a=b", "a|b", "~", "a.b", "a+b", "a-b", "a--b", "x1",
+            "1x", ")", "x)", "*", "a*b", "1.5.5px", "0.0.5px", "-+1px", "+-1px", "1e309",
+            "1e309px", "12345678901234567890", "0.30000000000000004", "0.000001", "0.0000001",
+            "5e-324",
+        ];
+        const SEPARATORS: &[&str] = &[
+            " ", "  ", "\t", "\n", "\r\n", "\u{c}", "\u{b}", "\0", "\u{1f}",
+        ];
+        const KEYS: &[&str] = &[
+            "width",
+            "fontSize",
+            "font-size",
+            "--x",
+            "transitionProperty",
+            "willChange",
+            "transitionDuration",
+            "lineHeight",
+            "unicodeRange",
+        ];
+
+        let mut accepted = 0usize;
+        let mut check = |value: &str| {
+            for key in KEYS {
+                for px_to_rem in [false, true] {
+                    let Some(plain) = normalize_plain(value, key, px_to_rem) else {
+                        continue;
+                    };
+                    accepted += 1;
+                    assert_eq!(
+                        Ok(plain.as_ref()),
+                        normalize_parsed(value, key, px_to_rem).as_deref(),
+                        "{key}: {value:?} (px_to_rem: {px_to_rem})"
+                    );
+                    assert_eq!(
+                        normalize_owned(value.to_string(), key, px_to_rem).as_deref(),
+                        Ok(plain.as_ref()),
+                    );
+                }
+            }
+        };
+
+        let mut value = String::new();
+        for (i, first) in WORDS.iter().enumerate() {
+            check(first);
+            for (j, second) in WORDS.iter().enumerate() {
+                let separator = SEPARATORS[(i + j) % SEPARATORS.len()];
+                value.clear();
+                value.push_str(first);
+                value.push_str(separator);
+                value.push_str(second);
+                check(&value);
+            }
+            let lead = SEPARATORS[i % SEPARATORS.len()];
+            let trail = SEPARATORS[(i + 3) % SEPARATORS.len()];
+            let third = WORDS[(i * 7 + 3) % WORDS.len()];
+            check(&format!("{lead}{first}{trail}"));
+            check(&format!("{first}{lead}{third}{trail}{first}"));
+        }
+        // The corpus is only a check if the fast path takes nearly all of it.
+        assert!(accepted > 300_000, "fast path accepted {accepted} values");
+    }
+
+    #[test]
+    fn plain_fast_path_declines_what_needs_the_parser() {
+        for value in [
+            "",
+            " ",
+            "\t\n",
+            "a, b",
+            "a/b",
+            "a:b",
+            "rgb(0 0 0)",
+            "'a'",
+            "\"a\"",
+            "a\\ b",
+            "red !important",
+            "0\u{a0}0.5px",
+            "caf\u{e9}",
+        ] {
+            assert!(
+                normalize_plain(value, "width", false).is_none(),
+                "{value:?}"
+            );
+        }
     }
 }

@@ -5,6 +5,23 @@ use std::borrow::Cow;
 /// Equivalent of `str.replace(/(^|[a-z])([A-Z])/g, '$1-$2').toLowerCase()`.
 // parity: babel-plugin src/shared/utils/dashify.js
 pub fn dashify(s: &str) -> String {
+    if s.is_ascii() {
+        // `toLowerCase()` over ASCII is the per-byte fold: one pass, one buffer.
+        let mut out = String::with_capacity(s.len() + 4);
+        let mut prev_is_lower = false;
+        for (i, b) in s.bytes().enumerate() {
+            if b.is_ascii_uppercase() && (i == 0 || prev_is_lower) {
+                out.push('-');
+            }
+            prev_is_lower = b.is_ascii_lowercase();
+            out.push(char::from(b.to_ascii_lowercase()));
+        }
+        return out;
+    }
+    dashify_unicode(s)
+}
+
+fn dashify_unicode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     let mut prev_is_ascii_lower = false;
     for (i, c) in s.chars().enumerate() {
@@ -55,6 +72,39 @@ mod tests {
         // consecutive capitals only split after a lowercase
         assert_eq!(dashify("backgroundURL"), "background-url");
         assert_eq!(dashify("notARealProp"), "not-areal-prop");
+    }
+
+    #[test]
+    fn ascii_branch_matches_the_unicode_one() {
+        for input in [
+            "",
+            "a",
+            "A",
+            "aB",
+            "aBC",
+            "ABc",
+            "a1B",
+            "a_B",
+            "a-B",
+            "aB1C",
+            "--aB",
+            "-aB",
+            "zZ",
+            "Zz",
+            "a B",
+            "a\tB",
+            "msTransform",
+            "MozOsxFontSmoothing",
+            "x{Y}",
+            "0A",
+            "aA0aA",
+        ] {
+            assert_eq!(dashify(input), dashify_unicode(input), "{input:?}");
+        }
+        assert_eq!(dashify("a1B"), "a1b");
+        assert_eq!(dashify("\u{e9}aB"), "\u{e9}a-b");
+        assert_eq!(dashify("a\u{c9}B"), "a\u{e9}b");
+        assert_eq!(dashify("\u{130}aB"), "i\u{307}a-b");
     }
 
     #[test]

@@ -81,7 +81,7 @@ fn tokens<'a>(stack: &'a mut [Node], root: &'a mut Vec<Node>) -> &'a mut Vec<Nod
     }
 }
 
-fn is_unicode_range(token: &[u8]) -> bool {
+pub(crate) fn is_unicode_range(token: &[u8]) -> bool {
     token.len() > 2
         && (token[0] == b'u' || token[0] == b'U')
         && token[1] == b'+'
@@ -365,7 +365,13 @@ pub fn walk_pruned<F: FnMut(&mut Node) -> bool>(nodes: &mut [Node], f: &mut F) {
 }
 
 pub fn stringify(nodes: &[Node]) -> String {
-    let mut out = String::new();
+    stringify_with_capacity(nodes, 0)
+}
+
+/// `stringify` into a buffer sized up front (the source length is a tight
+/// guess: normalization mostly removes bytes).
+pub fn stringify_with_capacity(nodes: &[Node], capacity: usize) -> String {
+    let mut out = String::with_capacity(capacity);
     for node in nodes {
         stringify_node(node, &mut out);
     }
@@ -417,7 +423,7 @@ pub struct Dimension<'a> {
 }
 
 // https://www.w3.org/TR/css-syntax-3/#starts-with-a-number
-fn like_number(b: &[u8]) -> bool {
+pub(crate) fn like_number(b: &[u8]) -> bool {
     match b.first() {
         Some(b'+') | Some(b'-') => match b.get(1) {
             Some(c) if c.is_ascii_digit() => true,

@@ -3,7 +3,6 @@
 
 use std::path::Path;
 
-use memchr::memmem;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
 use oxc_parser::Parser;
@@ -11,13 +10,13 @@ use oxc_span::SourceType;
 
 use crate::errors::StylexError;
 use crate::eval::value::JsObjectMap;
-use crate::imports::{ATOMS_SOURCE, ImportTable, scan_imports};
-use crate::module_resolution::{FsProvider, THEME_FILE_EXTENSION};
-use crate::options::{ImportSource, ResolvedOptions};
+use crate::imports::{ImportTable, scan_imports};
+use crate::module_resolution::FsProvider;
+use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::state::CompileState;
 use crate::transform::ast_backend::apply_plan;
-use crate::transform::visitor::transform_module;
+use crate::transform::visitor::{Emit, transform_module};
 
 pub struct FileContext<'s> {
     /// Absolute path the source pretends to live at.
@@ -47,44 +46,7 @@ pub enum MapMode {
 }
 
 pub fn might_contain_stylex(source: &str, options: &ResolvedOptions) -> bool {
-    pre_gate(source, options).is_some()
-}
-
-/// `None` = the file cannot reference any stylex import source; `Some(sx)`
-/// carries whether the sx-prop needle hit, sparing the dormancy check a rescan.
-fn pre_gate(source: &str, options: &ResolvedOptions) -> Option<bool> {
-    let bytes = source.as_bytes();
-    // The sx prop compiles with no stylex import in the file at all.
-    if options
-        .sx_prop_name
-        .as_deref()
-        .is_some_and(|sx| memmem::find(bytes, sx.as_bytes()).is_some())
-    {
-        return Some(true);
-    }
-    // Atoms compile off a hardcoded source no importSources setting covers; a
-    // rewritable import source must carry the hardcoded `.stylex` suffix.
-    let needles = || {
-        options
-            .import_sources
-            .iter()
-            .map(ImportSource::from_specifier)
-            .chain(std::iter::once(ATOMS_SOURCE))
-            .chain(options.rewrite_aliases.then_some(THEME_FILE_EXTENSION))
-    };
-    // A needle containing another (or repeating an earlier one) can only hit
-    // where that one hits: the default set collapses to "stylex" alone.
-    let hit = needles().enumerate().any(|(i, needle)| {
-        let redundant = needles().enumerate().any(|(j, other)| {
-            (other.len() < needle.len() && needle.contains(other)) || (j < i && other == needle)
-        });
-        !redundant && memmem::find(bytes, needle.as_bytes()).is_some()
-    });
-    // A `\u`/`\x` escape can cook into an import-source match the raw needles
-    // miss (`"@stylexjs/stylex"`); parse and decide post-parse.
-    let escapes =
-        || memchr::memchr_iter(b'\\', bytes).any(|i| matches!(bytes.get(i + 1), Some(b'u' | b'x')));
-    (hit || escapes()).then_some(false)
+    options.pre_gate().scan(source).is_some()
 }
 
 /// `None` = pre-gate skip (the file cannot reference any stylex import source).
@@ -134,7 +96,7 @@ pub fn transform_source_in_with_map(
     map_mode: MapMode,
 ) -> Result<Option<SourceCompileResult>, StylexError> {
     let want_map = map_mode != MapMode::Off;
-    let Some(sx_hit) = pre_gate(ctx.source_text, options) else {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
         return Ok(None);
     };
     let filename = ctx.filename.to_string_lossy().replace('\\', "/");
@@ -161,7 +123,14 @@ pub fn transform_source_in_with_map(
     );
     let out = {
         let _t = crate::timings::start(crate::timings::Stage::Transform);
-        transform_module(&program, ctx.source_text, &mut state, fs, false, want_map)?
+        transform_module(
+            &program,
+            ctx.source_text,
+            &mut state,
+            fs,
+            Emit::Splice,
+            want_map,
+        )?
     };
     let map = out.splice_map.as_ref().map(|m| {
         render_sourcemap(
@@ -203,8 +172,10 @@ pub fn transform_source_with_dep_log_in(
     Ok((result, recorder.into_log()))
 }
 
-/// AST-backend result: rules plus whether the caller's program was mutated.
-#[derive(Debug)]
+/// AST-backend result: rules plus whether the caller's program was mutated
+/// (for a rules-only compile, whether the full compile would rewrite it for
+/// anything but a `rewriteAliases` import source).
+#[derive(Debug, Default)]
 pub struct CompileResult {
     pub modified: bool,
     pub rules: Vec<StylexRule>,
@@ -221,13 +192,22 @@ pub fn transform_program<'a>(
     options: &ResolvedOptions,
     fs: &dyn FsProvider,
 ) -> Result<CompileResult, StylexError> {
-    let Some(sx_hit) = pre_gate(ctx.source_text, options) else {
-        return Ok(CompileResult {
-            modified: false,
-            rules: Vec::new(),
-            create_objects: Vec::new(),
-        });
-    };
+    match options.pre_gate().scan(ctx.source_text) {
+        Some(sx_hit) => compile_program(allocator, program, sx_hit, ctx, options, fs),
+        None => Ok(CompileResult::default()),
+    }
+}
+
+/// [`transform_program`] of a source the pre-gate let through, its scan
+/// having found `sx_hit`.
+pub(crate) fn compile_program<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    sx_hit: bool,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
     let Some(imports) = scan_unless_dormant(program, sx_hit, options)? else {
         return Ok(CompileResult {
             modified: false,
@@ -245,7 +225,14 @@ pub fn transform_program<'a>(
             CompileState::build_with_imports(program_ref, options, Some(filename), cwd, imports);
         let out = {
             let _t = crate::timings::start(crate::timings::Stage::Transform);
-            transform_module(program_ref, ctx.source_text, &mut state, fs, true, false)?
+            transform_module(
+                program_ref,
+                ctx.source_text,
+                &mut state,
+                fs,
+                Emit::Plan,
+                false,
+            )?
         };
         (out.plan, out.modified, state.rules, out.create_objects)
     };
@@ -257,6 +244,77 @@ pub fn transform_program<'a>(
         modified,
         rules,
         create_objects,
+    })
+}
+
+/// [`transform_source_in`] for callers that read only the rules: `rules`,
+/// `create_objects` and the error are the full compile's, and nothing that
+/// only shapes its output JS runs. `modified` is the full compile's but for
+/// the `rewriteAliases` import rewrites, which are not worked out: a file
+/// whose only rewrite is one reports `false`. `None` = pre-gate skip.
+pub fn transform_source_rules_in(
+    allocator: &Allocator,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<Option<CompileResult>, StylexError> {
+    let Some(sx_hit) = options.pre_gate().scan(ctx.source_text) else {
+        return Ok(None);
+    };
+    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
+    let program = {
+        let _t = crate::timings::start(crate::timings::Stage::Parse);
+        parse_program(allocator, ctx.source_text, &filename)?
+    };
+    compile_rules(&program, sx_hit, ctx, options, fs).map(Some)
+}
+
+/// [`transform_program`] for callers that read only the rules, as
+/// [`transform_source_rules_in`] is to [`transform_source_in`]; the program
+/// stays as parsed.
+pub fn transform_program_rules(
+    program: &Program<'_>,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
+    match options.pre_gate().scan(ctx.source_text) {
+        Some(sx_hit) => compile_rules(program, sx_hit, ctx, options, fs),
+        None => Ok(CompileResult::default()),
+    }
+}
+
+/// [`transform_program_rules`] of a source the pre-gate let through, its
+/// scan having found `sx_hit`.
+pub(crate) fn compile_rules(
+    program: &Program<'_>,
+    sx_hit: bool,
+    ctx: &FileContext<'_>,
+    options: &ResolvedOptions,
+    fs: &dyn FsProvider,
+) -> Result<CompileResult, StylexError> {
+    let Some(imports) = scan_unless_dormant(program, sx_hit, options)? else {
+        return Ok(CompileResult::default());
+    };
+    let filename = ctx.filename.to_string_lossy().replace('\\', "/");
+    let cwd = ctx.cwd.to_string_lossy().replace('\\', "/");
+    let mut state =
+        CompileState::build_with_imports(program, options, Some(filename), cwd, imports);
+    let out = {
+        let _t = crate::timings::start(crate::timings::Stage::Transform);
+        transform_module(
+            program,
+            ctx.source_text,
+            &mut state,
+            fs,
+            Emit::RulesOnly,
+            false,
+        )?
+    };
+    Ok(CompileResult {
+        modified: out.modified,
+        rules: state.rules,
+        create_objects: out.create_objects,
     })
 }
 
@@ -330,54 +388,4 @@ pub fn parse_program<'a>(
         .map(|d| d.message.to_string())
         .unwrap_or_else(|| "unknown parse error".to_string());
     Err(StylexError::parse_error(&detail))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn options(json: serde_json::Value) -> ResolvedOptions {
-        crate::options::CompilerOptions::from_json(&json)
-            .unwrap()
-            .resolve()
-            .unwrap()
-    }
-
-    #[test]
-    fn pre_gate_admits_every_needle_and_reports_sx() {
-        let opts = ResolvedOptions::default();
-        assert_eq!(pre_gate("export const x = 1;\n", &opts), None);
-        for (source, sx) in [
-            ("import * as s from '@stylexjs/stylex';", false),
-            ("import s from 'stylex';", false),
-            ("import { color } from '@stylexjs/atoms';", false),
-            ("const t = './tokens.stylex';", false),
-            ("<div sx={x} />", true),
-            ("const tsx = 1;", true),
-            ("const s = '\\u0040stylexjs/stylex';", false),
-            ("const s = '\\x40';", false),
-        ] {
-            assert_eq!(pre_gate(source, &opts), Some(sx), "{source}");
-        }
-    }
-
-    #[test]
-    fn pre_gate_keeps_non_default_needles_and_honours_sx_off() {
-        let opts = options(serde_json::json!({
-            "importSources": ["foo-bar", { "from": "my-stylex-lib", "as": "css" }],
-            "sxPropName": false,
-        }));
-        assert_eq!(
-            pre_gate("import { css } from 'foo-bar';", &opts),
-            Some(false)
-        );
-        assert_eq!(
-            pre_gate("import { css } from 'my-stylex-lib';", &opts),
-            Some(false)
-        );
-        assert_eq!(pre_gate("<div sx={x} />", &opts), None);
-        let custom_sx = options(serde_json::json!({ "sxPropName": "css" }));
-        assert_eq!(pre_gate("<div css={x} />", &custom_sx), Some(true));
-        assert_eq!(pre_gate("<div sx={x} />", &custom_sx), None);
-    }
 }

@@ -3,7 +3,7 @@
 
 use crate::errors::StylexError;
 use crate::fxhash::FxHashMap;
-use crate::hash::hash;
+use crate::hash::push_hash;
 use crate::options::ResolvedOptions;
 use crate::rules::StylexRule;
 use crate::shared::dashify::dashed_key;
@@ -49,13 +49,16 @@ fn transform_scalar(
 pub type CompiledDecl = Rc<StylexRule>;
 
 struct ConvertMemo {
-    key: String,
-    map: FxHashMap<Arc<str>, CompiledDecl>,
+    key: Vec<u8>,
+    /// Miss-path scratch: the class-name hash input, then each rule's text.
+    text: String,
+    map: FxHashMap<Arc<[u8]>, CompiledDecl>,
 }
 
 thread_local! {
     static CONVERT_MEMO: RefCell<ConvertMemo> = RefCell::new(ConvertMemo {
-        key: String::new(),
+        key: Vec::new(),
+        text: String::new(),
         map: FxHashMap::default(),
     });
 }
@@ -64,7 +67,7 @@ const CONVERT_MEMO_CAP: usize = 1 << 16;
 const SHARD_COUNT: usize = 64;
 const SHARD_CAP: usize = CONVERT_MEMO_CAP / SHARD_COUNT;
 
-type SharedMemo = FxHashMap<Arc<str>, StylexRule>;
+type SharedMemo = FxHashMap<Arc<[u8]>, StylexRule>;
 
 // Second level behind the thread-local memo: worker pools (batch threads, oj's
 // blocking pool) otherwise recompute every declaration once per thread.
@@ -84,49 +87,38 @@ fn private_copy(rule: &StylexRule) -> StylexRule {
     }
 }
 
-fn shard_for(key: &str) -> MutexGuard<'static, SharedMemo> {
+fn shard_for(key: &[u8]) -> &'static Mutex<SharedMemo> {
     let hash = BuildHasherDefault::<crate::fxhash::FxHasher>::new().hash_one(key);
-    SHARED_MEMO[(hash >> (64 - SHARD_COUNT.trailing_zeros())) as usize]
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    &SHARED_MEMO[(hash >> (64 - SHARD_COUNT.trailing_zeros())) as usize]
 }
 
-/// Length-prefixed segments with fixed `|` section breaks: injective, so equal
-/// keys mean equal inputs.
-fn push_memo_part(key: &mut String, part: &str) {
-    let mut buf = [0u8; 20];
-    let mut n = part.len();
-    let mut i = buf.len();
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    key.push_str(str::from_utf8(&buf[i..]).expect("ascii digits"));
-    key.push(':');
-    key.push_str(part);
+fn lock(shard: &Mutex<SharedMemo>) -> MutexGuard<'_, SharedMemo> {
+    shard.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn push_memo_scalar(key: &mut String, scalar: &StyleScalar) {
+// Memo keys are raw bytes, framed with two values UTF-8 never contains: every
+// text segment ends with `KEY_END` and every list with `KEY_LIST_END`, and a
+// number is a tag plus exactly eight bytes. That framing is injective, so
+// equal keys mean equal inputs.
+const KEY_END: u8 = 0xff;
+const KEY_LIST_END: u8 = 0xfe;
+
+fn push_memo_text(key: &mut Vec<u8>, text: &str) {
+    key.extend_from_slice(text.as_bytes());
+    key.push(KEY_END);
+}
+
+fn push_memo_scalar(key: &mut Vec<u8>, scalar: &StyleScalar) {
     match scalar {
         StyleScalar::Str(s) => {
-            key.push('s');
-            push_memo_part(key, s);
+            key.push(b's');
+            push_memo_text(key, s);
         }
         StyleScalar::Num(n) => {
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            let bits = n.to_bits();
-            let mut buf = [0u8; 16];
-            for (j, b) in buf.iter_mut().enumerate() {
-                *b = HEX[((bits >> (60 - j * 4)) & 0xf) as usize];
-            }
-            key.push('n');
-            key.push_str(str::from_utf8(&buf).expect("ascii digits"));
+            key.push(b'n');
+            key.extend_from_slice(&n.to_bits().to_le_bytes());
         }
-        StyleScalar::Undefined => key.push('u'),
+        StyleScalar::Undefined => key.push(b'u'),
     }
 }
 
@@ -153,63 +145,63 @@ fn const_rules_of<'k>(key_path: &'k [Cow<'_, str>]) -> impl Iterator<Item = &'k 
         .filter(|k| k.starts_with("var(--"))
 }
 
+// A condition opens with one of these bytes: a keyPath without any (the flat
+// `property: value` entry) has three empty condition lists.
+fn may_be_condition(segment: &str) -> bool {
+    matches!(segment.as_bytes().first(), Some(b':' | b'[' | b'@' | b'v'))
+}
+
 // The fingerprint covers every option the uncached path reads: px-to-rem,
-// debug class names + prefix, and the three RtlContext fields.
+// the class-name prefix, and the three RtlContext fields.
 fn encode_memo_key(
-    key: &mut String,
+    key: &mut Vec<u8>,
     property: &str,
     value: &PreRuleValue<'_>,
     key_path: &[Cow<'_, str>],
     options: &ResolvedOptions,
 ) {
-    key.push(if options.enable_font_size_px_to_rem {
-        'R'
-    } else {
-        'r'
-    });
-    key.push(match options.style_resolution {
-        crate::options::StyleResolution::PropertySpecificity => 'p',
-        crate::options::StyleResolution::ApplicationOrder => 'a',
-        crate::options::StyleResolution::LegacyExpandShorthands => 'l',
-    });
-    key.push(if options.enable_logical_styles_polyfill {
-        'L'
-    } else {
-        'g'
-    });
-    key.push(if options.enable_legacy_value_flipping {
-        'F'
-    } else {
-        'f'
-    });
-    push_memo_part(key, &options.class_name_prefix);
-    key.push('|');
-    push_memo_part(key, property);
-    key.push('|');
+    let resolution = match options.style_resolution {
+        crate::options::StyleResolution::PropertySpecificity => 0,
+        crate::options::StyleResolution::ApplicationOrder => 1,
+        crate::options::StyleResolution::LegacyExpandShorthands => 2,
+    };
+    key.push(
+        u8::from(options.enable_font_size_px_to_rem)
+            | resolution << 1
+            | u8::from(options.enable_logical_styles_polyfill) << 3
+            | u8::from(options.enable_legacy_value_flipping) << 4,
+    );
+    push_memo_text(key, &options.class_name_prefix);
+    push_memo_text(key, property);
     match value {
         PreRuleValue::Single(scalar) => {
-            key.push('S');
+            key.push(b'S');
             push_memo_scalar(key, scalar);
         }
         PreRuleValue::Multi(scalars) => {
-            key.push('M');
+            key.push(b'M');
             for scalar in scalars {
                 push_memo_scalar(key, scalar);
             }
+            key.push(KEY_LIST_END);
         }
     }
-    key.push('|');
+    if !key_path.iter().any(|segment| may_be_condition(segment)) {
+        key.extend_from_slice(&[KEY_LIST_END; 3]);
+        return;
+    }
     for item in pseudos_of(key_path) {
-        push_memo_part(key, item);
+        push_memo_text(key, item);
     }
-    key.push('|');
+    key.push(KEY_LIST_END);
     for item in at_rules_of(key_path) {
-        push_memo_part(key, item);
+        push_memo_text(key, item);
     }
-    key.push('|');
+    key.push(KEY_LIST_END);
     for item in const_rules_of(key_path) {
-        push_memo_part(key, item);
+        push_memo_text(key, item);
     }
+    key.push(KEY_LIST_END);
 }
 
 /// Conditions are read from `key_path` in keyPath order; sorting for the hash
@@ -222,48 +214,63 @@ pub fn convert_style_to_class_name(
 ) -> Result<CompiledDecl, StylexError> {
     CONVERT_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
-        let ConvertMemo { key, map } = &mut *memo;
+        let ConvertMemo { key, text, map } = &mut *memo;
         key.clear();
         encode_memo_key(key, property, value, key_path, options);
-        if let Some(hit) = map.get(key.as_str()) {
+        if let Some(hit) = map.get(key.as_slice()) {
             return Ok(Rc::clone(hit));
         }
-        let shared = shard_for(key)
-            .get_key_value(key.as_str())
-            .map(|(k, v)| (Arc::clone(k), private_copy(v)));
-        let (shared_key, rule) = match shared {
-            Some(hit) => hit,
-            None => {
-                let _t = crate::timings::start(crate::timings::Stage::CreateMiss);
-                let pseudos: Vec<&str> = pseudos_of(key_path).collect();
-                let at_rules: Vec<&str> = at_rules_of(key_path).collect();
-                let const_rules: Vec<&str> = const_rules_of(key_path).collect();
-                let rule = convert_style_to_class_name_uncached(
-                    property,
-                    value,
-                    &pseudos,
-                    &at_rules,
-                    &const_rules,
-                    options,
-                )?;
-                let shared_key: Arc<str> = Arc::from(key.as_str());
-                let mut shard = shard_for(key);
-                if shard.len() >= SHARD_CAP {
-                    shard.clear();
-                }
-                shard
-                    .entry(Arc::clone(&shared_key))
-                    .or_insert_with(|| private_copy(&rule));
-                (shared_key, rule)
-            }
-        };
-        let computed = Rc::new(rule);
-        if map.len() >= CONVERT_MEMO_CAP {
-            map.clear();
-        }
-        map.insert(shared_key, Rc::clone(&computed));
-        Ok(computed)
+        convert_memo_miss(key, text, map, property, value, key_path, options)
     })
+}
+
+#[inline(never)]
+fn convert_memo_miss(
+    key: &[u8],
+    text: &mut String,
+    map: &mut FxHashMap<Arc<[u8]>, CompiledDecl>,
+    property: &str,
+    value: &PreRuleValue<'_>,
+    key_path: &[Cow<'_, str>],
+    options: &ResolvedOptions,
+) -> Result<CompiledDecl, StylexError> {
+    let shard = shard_for(key);
+    let shared = lock(shard)
+        .get_key_value(key)
+        .map(|(k, v)| (Arc::clone(k), private_copy(v)));
+    let (shared_key, rule) = match shared {
+        Some(hit) => hit,
+        None => {
+            let _t = crate::timings::start(crate::timings::Stage::CreateMiss);
+            let pseudos: Vec<&str> = pseudos_of(key_path).collect();
+            let at_rules: Vec<&str> = at_rules_of(key_path).collect();
+            let const_rules: Vec<&str> = const_rules_of(key_path).collect();
+            let rule = convert_style_to_class_name_uncached(
+                property,
+                value,
+                &pseudos,
+                &at_rules,
+                &const_rules,
+                options,
+                text,
+            )?;
+            let shared_key: Arc<[u8]> = Arc::from(key);
+            let mut shard = lock(shard);
+            if shard.len() >= SHARD_CAP {
+                shard.clear();
+            }
+            shard
+                .entry(Arc::clone(&shared_key))
+                .or_insert_with(|| private_copy(&rule));
+            (shared_key, rule)
+        }
+    };
+    let computed = Rc::new(rule);
+    if map.len() >= CONVERT_MEMO_CAP {
+        map.clear();
+    }
+    map.insert(shared_key, Rc::clone(&computed));
+    Ok(computed)
 }
 
 fn convert_style_to_class_name_uncached(
@@ -273,6 +280,7 @@ fn convert_style_to_class_name_uncached(
     at_rules: &[&str],
     const_rules: &[&str],
     options: &ResolvedOptions,
+    text: &mut String,
 ) -> Result<StylexRule, StylexError> {
     // Upstream evaluates the sorting PreRule.pseudos/atRules getters as call
     // arguments, so a collation error precedes any value-normalization error.
@@ -315,17 +323,13 @@ fn convert_style_to_class_name_uncached(
     // The hash concatenates with `+` (so a JS `undefined` stringifies) while
     // the declaration is built with `Array.join`, which renders it empty.
     let undefined_single = matches!(value, PreRuleValue::Single(StyleScalar::Undefined));
-    let values_len: usize = if undefined_single {
-        "undefined".len()
-    } else {
-        values.iter().map(|v| v.len() + 2).sum()
-    };
 
     // parity: the '<>' prefix and 'null' modifier keep upstream hashes stable;
     // built in place, byte-for-byte `<>{dashed}{values.join(", ")}{modifier}`.
     let modifier_len: usize = sorted_pseudos.iter().map(|s| s.len()).sum::<usize>()
         + sorted_at_and_const.iter().map(|s| s.len()).sum::<usize>();
-    let mut hash_input = String::with_capacity(2 + dashed.len() + values_len + modifier_len.max(4));
+    let hash_input = &mut *text;
+    hash_input.clear();
     hash_input.push_str("<>");
     hash_input.push_str(&dashed);
     if undefined_single {
@@ -348,12 +352,12 @@ fn convert_style_to_class_name_uncached(
             hash_input.push_str(a);
         }
     }
-    let hashed = hash(&hash_input);
-    let mut class_name = String::with_capacity(options.class_name_prefix.len() + hashed.len());
+    let mut class_name = String::with_capacity(options.class_name_prefix.len() + 7);
     class_name.push_str(&options.class_name_prefix);
-    class_name.push_str(&hashed);
+    push_hash(&mut class_name, hash_input);
 
-    let rule = generate_css_rule(
+    Ok(css_rule_in(
+        text,
         &class_name,
         &dashed,
         values,
@@ -361,8 +365,7 @@ fn convert_style_to_class_name_uncached(
         &sorted_at_rules,
         const_rules,
         RtlContext::of(options),
-    );
-    Ok(rule)
+    ))
 }
 
 pub fn generate_css_rule(
@@ -374,21 +377,31 @@ pub fn generate_css_rule(
     const_rules: &[&str],
     ctx: RtlContext,
 ) -> StylexRule {
-    let mut ltr_decls = String::with_capacity(
-        values
-            .iter()
-            .map(|v| key.len() + v.len() + 2)
-            .sum::<usize>(),
-    );
-    for (i, v) in values.iter().enumerate() {
-        if i > 0 {
-            ltr_decls.push(';');
-        }
-        let (k, v) = generate_ltr(key, v, ctx);
-        ltr_decls.push_str(&k);
-        ltr_decls.push(':');
-        ltr_decls.push_str(&v);
-    }
+    css_rule_in(
+        &mut String::new(),
+        class_name,
+        key,
+        values,
+        pseudos,
+        at_rules,
+        const_rules,
+        ctx,
+    )
+}
+
+// `generate_css_rule` with the rule text assembled in the caller's scratch
+// buffer: each side costs one allocation, its `Arc<str>`.
+#[allow(clippy::too_many_arguments)]
+fn css_rule_in(
+    text: &mut String,
+    class_name: &str,
+    key: &str,
+    values: &[String],
+    pseudos: &[&str],
+    at_rules: &[&str],
+    const_rules: &[&str],
+    ctx: RtlContext,
+) -> StylexRule {
     let mut rtl_decls = String::new();
     for v in values {
         if let Some((k, v)) = generate_rtl(key, v, ctx) {
@@ -401,17 +414,27 @@ pub fn generate_css_rule(
         }
     }
 
-    let ltr = build_nested_css_rule(class_name, &ltr_decls, pseudos, at_rules, const_rules);
-    let rtl = if rtl_decls.is_empty() {
+    text.clear();
+    write_nested_css_rule(text, class_name, pseudos, at_rules, const_rules, |out| {
+        for (i, v) in values.iter().enumerate() {
+            if i > 0 {
+                out.push(';');
+            }
+            let (k, v) = generate_ltr(key, v, ctx);
+            out.push_str(&k);
+            out.push(':');
+            out.push_str(&v);
+        }
+    });
+    let ltr: Arc<str> = Arc::from(text.as_str());
+    let rtl: Option<Arc<str>> = if rtl_decls.is_empty() {
         None
     } else {
-        Some(build_nested_css_rule(
-            class_name,
-            &rtl_decls,
-            pseudos,
-            at_rules,
-            const_rules,
-        ))
+        text.clear();
+        write_nested_css_rule(text, class_name, pseudos, at_rules, const_rules, |out| {
+            out.push_str(&rtl_decls);
+        });
+        Some(Arc::from(text.as_str()))
     };
 
     let priority = get_priority(key)
@@ -421,8 +444,8 @@ pub fn generate_css_rule(
 
     StylexRule {
         class_name: class_name.into(),
-        ltr: ltr.into(),
-        rtl: rtl.map(Into::into),
+        ltr,
+        rtl,
         const_key: None,
         const_val: None,
         priority,
@@ -435,14 +458,15 @@ const THUMB_VARIANTS: [&str; 3] = [
     "::-ms-thumb",
 ];
 
-// parity: generate-css-rule.js buildNestedCSSRule
-fn build_nested_css_rule(
+// parity: generate-css-rule.js buildNestedCSSRule, appended to `out`.
+fn write_nested_css_rule(
+    out: &mut String,
     class_name: &str,
-    decls: &str,
     pseudos: &[&str],
     at_rules: &[&str],
     const_rules: &[&str],
-) -> String {
+    decls: impl FnOnce(&mut String),
+) {
     // Pseudo-classes before pseudo-elements, insertion order within each —
     // the two-buffer concat of upstream, built as one string in two passes.
     let mut pseudo = String::new();
@@ -457,40 +481,38 @@ fn build_nested_css_rule(
         }
     }
     let combined_len = at_rules.len() + const_rules.len();
-
     let class_copies = 1 + usize::from(pseudo.contains(":where(")) + combined_len;
-    let mut selector = String::with_capacity(class_copies * (class_name.len() + 1) + pseudo.len());
-    for _ in 0..class_copies {
-        selector.push('.');
-        selector.push_str(class_name);
-    }
-    selector.push_str(&pseudo);
-    if pseudos.contains(&"::thumb") {
-        selector = THUMB_VARIANTS
-            .iter()
-            .map(|suffix| format!("{selector}{suffix}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
 
     // Nesting parity: iterating at_rules then const_rules and wrapping each
     // time leaves the last-iterated outermost; emit them reversed in one pass.
-    let wrappers = at_rules.iter().chain(const_rules.iter());
-    let mut rule = String::with_capacity(
-        selector.len() + decls.len() + 2 + wrappers.clone().map(|w| w.len() + 2).sum::<usize>(),
-    );
-    for at_rule in wrappers.rev() {
-        rule.push_str(at_rule);
-        rule.push('{');
+    for at_rule in at_rules.iter().chain(const_rules.iter()).rev() {
+        out.push_str(at_rule);
+        out.push('{');
     }
-    rule.push_str(&selector);
-    rule.push('{');
-    rule.push_str(decls);
-    rule.push('}');
+    let selector = |out: &mut String| {
+        for _ in 0..class_copies {
+            out.push('.');
+            out.push_str(class_name);
+        }
+        out.push_str(&pseudo);
+    };
+    if pseudos.contains(&"::thumb") {
+        for (i, suffix) in THUMB_VARIANTS.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            selector(out);
+            out.push_str(suffix);
+        }
+    } else {
+        selector(out);
+    }
+    out.push('{');
+    decls(out);
+    out.push('}');
     for _ in 0..combined_len {
-        rule.push('}');
+        out.push('}');
     }
-    rule
 }
 
 #[cfg(test)]
@@ -499,6 +521,87 @@ mod tests {
 
     fn defaults() -> ResolvedOptions {
         ResolvedOptions::default()
+    }
+
+    fn memo_key(property: &str, value: PreRuleValue<'_>, key_path: &[&str]) -> Vec<u8> {
+        let key_path: Vec<Cow<'_, str>> = key_path.iter().map(|k| Cow::Borrowed(*k)).collect();
+        let mut key = Vec::new();
+        encode_memo_key(&mut key, property, &value, &key_path, &defaults());
+        key
+    }
+
+    fn text(value: &str) -> StyleScalar<'_> {
+        StyleScalar::Str(Cow::Borrowed(value))
+    }
+
+    // Two declarations may share a memo entry only if they compile alike, so
+    // moving bytes between neighbouring fields must change the key.
+    #[test]
+    fn memo_keys_keep_their_fields_apart() {
+        let single = |v| PreRuleValue::Single(v);
+        let keys = [
+            memo_key("color", single(text("red")), &["color"]),
+            memo_key("colo", single(text("rred")), &["colo"]),
+            memo_key("color", single(text("1")), &["color"]),
+            memo_key("color", single(StyleScalar::Num(1.0)), &["color"]),
+            memo_key("color", single(StyleScalar::Num(-1.0)), &["color"]),
+            memo_key("color", PreRuleValue::Multi(vec![text("red")]), &["color"]),
+            memo_key(
+                "color",
+                PreRuleValue::Multi(vec![text("r"), text("ed")]),
+                &["color"],
+            ),
+            memo_key("color", PreRuleValue::Multi(vec![]), &["color"]),
+            memo_key("color", single(text("red")), &[":hover", "color"]),
+            memo_key(
+                "color",
+                single(text("red")),
+                &[":hover", ":active", "color"],
+            ),
+            memo_key(
+                "color",
+                single(text("red")),
+                &[":active", ":hover", "color"],
+            ),
+            memo_key("color", single(text("red")), &[":hover:active", "color"]),
+            memo_key("color", single(text("red")), &["@media print", "color"]),
+            memo_key("color", single(text("red")), &["var(--x)", "color"]),
+            memo_key("color", single(text("red")), &["[data-x]", "color"]),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[..i] {
+                assert_ne!(a, b);
+            }
+        }
+
+        let mut prefixed = Vec::new();
+        let options = ResolvedOptions {
+            class_name_prefix: "y".into(),
+            ..defaults()
+        };
+        encode_memo_key(
+            &mut prefixed,
+            "color",
+            &single(text("red")),
+            &[Cow::Borrowed("color")],
+            &options,
+        );
+        assert_ne!(prefixed, keys[0]);
+    }
+
+    // A keyPath whose segments merely look like conditions takes the long
+    // encoding and must land on the same key as the shortcut.
+    #[test]
+    fn memo_key_shortcut_matches_the_full_encoding() {
+        let value = || PreRuleValue::Single(text("red"));
+        assert_eq!(
+            memo_key("color", value(), &["color"]),
+            memo_key("color", value(), &["vertical", "color"]),
+        );
+        assert_eq!(
+            memo_key("color", value(), &[]),
+            memo_key("color", value(), &["default", "color"]),
+        );
     }
 
     #[test]
