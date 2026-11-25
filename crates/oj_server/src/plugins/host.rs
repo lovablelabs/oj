@@ -740,7 +740,16 @@ pub(crate) fn ctx_rpc(
             };
             Ok(match answer {
                 OptimizedAnswer::Id(id) => serde_json::Value::String(id),
-                OptimizedAnswer::File => serde_json::Value::String(p.display().to_string()),
+                // The file with its package.json (the nearest one above it),
+                // as rolldown's resolver answers: a plugin passing the answer
+                // on keeps the module's format with it.
+                OptimizedAnswer::File => match nearest_package_json(&p) {
+                    Some(pkg) => serde_json::json!({
+                        "id": p.display().to_string(),
+                        "packageJsonPath": pkg,
+                    }),
+                    None => serde_json::Value::String(p.display().to_string()),
+                },
                 OptimizedAnswer::ScanPending => serde_json::json!({ "scanPending": true }),
             })
         }
@@ -3695,5 +3704,20 @@ impl HostTransform {
                 .map(str::to_string),
             chunks: emitted_chunks(&v),
         }
+    }
+}
+
+/// The `package.json` nearest above `file`, by its real path (rolldown reads
+/// a module's format, ESM or CommonJS, off its `type` field where the file's
+/// extension does not say).
+fn nearest_package_json(file: &Path) -> Option<String> {
+    let mut dir = file.parent()?;
+    loop {
+        let candidate = dir.join("package.json");
+        if candidate.is_file() {
+            let real = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            return Some(real.to_string_lossy().into_owned());
+        }
+        dir = dir.parent()?;
     }
 }

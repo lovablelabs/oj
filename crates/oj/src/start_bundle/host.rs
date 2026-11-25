@@ -141,6 +141,12 @@ async fn answer(
         Ok(r) => serde_json::json!({
             "id": r.id.as_str(),
             "external": !matches!(r.external, ResolvedExternal::Bool(false)),
+            // As rolldown's `this.resolve` answers it: a plugin passing the
+            // answer on keeps the module's format (`"type": "module"`) with it.
+            "packageJsonPath": r
+                .package_json
+                .as_ref()
+                .map(|p| p.realpath().to_string_lossy().into_owned()),
         }),
         Err(_) => serde_json::Value::Null,
     })
@@ -306,6 +312,9 @@ fn hook_output(r: ResolvedId) -> HookResolveIdOutput {
                 rolldown_common::side_effects::HookSideEffects::False
             }
         }),
+        // Kept from the plugin's answer (a `this.resolve` result it passed
+        // on), as rolldown keeps it: the module's format follows from it.
+        package_json_path: r.package_json_path,
         ..HookResolveIdOutput::from_id(r.id)
     }
 }

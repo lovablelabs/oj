@@ -2314,8 +2314,8 @@ function pluginContext(c) {
           const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
           // Outside a running bundle (no bundler to ask) oj's resolver answers.
           if (!r || !r.fallback) return r ?? null;
-          const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
-          return id == null ? null : { id };
+          const own = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
+          return coreResolved(own);
         })();
         if (core != null) return core;
         return chain("post");
@@ -2349,7 +2349,7 @@ function pluginContext(c) {
         id = await ctxRpc("resolve", args);
         if (id && id.scanPending) id = await ctxRpc("resolve", args.slice(0, 4));
       }
-      if (id != null) return { id };
+      if (id != null) return coreResolved(id);
       return chain("post");
     },
     emitFile(file) {
@@ -5005,8 +5005,8 @@ async function ssrFetchModule(vite, root, url, importer) {
     const viaPlugins = await resolveIdFull(c, url, importerFile, {});
     let resolved = viaPlugins?.id ?? null;
     if (resolved == null) {
-      const own = await ctxRpc("resolve", [url, importerFile ?? "", "ssr", "server"]);
-      if (typeof own === "string") resolved = own;
+      const own = coreResolved(await ctxRpc("resolve", [url, importerFile ?? "", "ssr", "server"]));
+      if (own) resolved = own.id;
     }
     if (resolved == null) {
       const err = new Error(`Cannot find module '${url}'${importer ? ` imported from '${importer}'` : ""}`);
@@ -6211,6 +6211,19 @@ function hookTransformMatches(hook, id, code, idOnly = false) {
 // each handed `{ attributes, custom, isEntry, ssr, scan }`, the first non-null
 // result winning with its object kept whole (id plus external / meta /
 // moduleSideEffects / syntheticNamedExports, as Vite's partial does).
+// oj's own resolver's answer as a resolved object: the id (a string, or an
+// object naming it with the module's `packageJsonPath`, which rolldown reads
+// the module's format off, as its own resolver's answers carry it).
+function coreResolved(answer) {
+  if (answer == null) return null;
+  if (typeof answer === "string") return { id: answer };
+  if (typeof answer === "object" && typeof answer.id === "string") {
+    const out = { id: answer.id };
+    if (typeof answer.packageJsonPath === "string") out.packageJsonPath = answer.packageJsonPath;
+    return out;
+  }
+  return null;
+}
 // `opts.skipCalls`: the chain's cumulative skip list (see ctx.resolve);
 // `opts.skip`: a single plugin to skip outright (legacy single-caller form,
 // kept for external callers of environment.resolveId).
@@ -6247,7 +6260,14 @@ async function resolveIdFull(c, source, importer, opts) {
     if (typeof r === "string") return { id: r };
     if (typeof r !== "object" || r.id == null) continue;
     const out = { id: r.id };
-    for (const k of ["external", "meta", "moduleSideEffects", "syntheticNamedExports", "attributes"]) {
+    for (const k of [
+      "external",
+      "meta",
+      "moduleSideEffects",
+      "syntheticNamedExports",
+      "attributes",
+      "packageJsonPath",
+    ]) {
       if (r[k] !== undefined) out[k] = r[k];
     }
     noteModuleOption(c, String(out.id), out);
@@ -6301,6 +6321,9 @@ async function resolveIdPhase(c, source, importer, phase, isEntry) {
   const out = { id: String(r.id) };
   if (r.external !== undefined && r.external !== false) out.external = r.external;
   if (typeof r.moduleSideEffects === "boolean") out.moduleSideEffects = r.moduleSideEffects;
+  // The module's package.json, where the chain knows it (a `this.resolve`
+  // answer passed on): rolldown reads the module's format off it.
+  if (typeof r.packageJsonPath === "string") out.packageJsonPath = r.packageJsonPath;
   return JSON.stringify(out);
 }
 

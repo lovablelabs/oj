@@ -126,6 +126,9 @@ pub fn fold_env_keys_into_object(defines: Vec<(String, String)>) -> Vec<(String,
     let keys: BTreeMap<&str, &str> = out
         .iter()
         .filter_map(|(k, v)| Some((k.strip_prefix("import.meta.env.")?, v.as_str())))
+        // `import.meta.env.*` (Vite's `undefined` for a key the env has
+        // not) is a define of its own, no key of the object.
+        .filter(|(k, _)| *k != "*")
         .collect();
     let mut text = String::from("{");
     for (i, (k, v)) in keys.iter().enumerate() {

@@ -212,6 +212,10 @@ impl StartConfig {
         ));
         if self.command == Command::Build {
             out.push(("import.meta.hot".into(), "undefined".into()));
+            // Vite's define for a bundled environment: a key the env has
+            // not is `undefined`, so a branch on `import.meta.env.VITE_X`
+            // the build has no value for is dead, its `import()` with it.
+            out.push(("import.meta.env.*".into(), "undefined".into()));
         }
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, "client"));
@@ -251,6 +255,7 @@ impl StartConfig {
             &self.base,
             true,
         ));
+        out.push(("import.meta.env.*".into(), "undefined".into()));
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, env_name));
         out.extend(plugin_defines.iter().cloned());

@@ -4309,6 +4309,9 @@ pub async fn build(
         let mut pairs: Vec<(String, String)> = process_env_defines(&node_env);
         pairs.push(import_meta_hot_define());
         pairs.extend(app_env.import_meta_env_defines(oj_env::get(), &env_delta, &base, false));
+        // Vite's define for a bundled environment: a key the env has not is
+        // `undefined`, so a branch on it is dead, its `import()` with it.
+        pairs.push(("import.meta.env.*".into(), "undefined".into()));
         pairs.extend(oj_config::config_defines(&config));
         pairs.extend(oj_config::environment_defines(&config, "client"));
         pairs.extend(plugin_defines);

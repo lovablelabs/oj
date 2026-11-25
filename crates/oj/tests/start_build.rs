@@ -1292,3 +1292,183 @@ fn the_preload_helper_is_the_apps_vites() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A private copy of the StyleX Start fixture (e2e/fixtures/start-stylex-app)
+/// sharing its installed `node_modules`; None (after saying why) when the
+/// fixture is not installed.
+fn stylex_app(name: &str) -> Option<PathBuf> {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/start-stylex-app")
+        .canonicalize()
+        .unwrap();
+    if !fixture.join("node_modules/@stylexjs/unplugin").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but the start-stylex-app fixture is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/start-stylex-app");
+        return None;
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("oj-start-stylex-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let file_name = entry.file_name();
+            if matches!(
+                file_name.to_str(),
+                Some("node_modules" | "dist" | ".oj-cache")
+            ) {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                copy(&path, &to.join(&file_name));
+            } else {
+                std::fs::copy(&path, to.join(&file_name)).unwrap();
+            }
+        }
+    }
+    copy(&fixture, &root);
+    std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
+    Some(root)
+}
+
+/// The StyleX plugin's `cssInjectionTarget` picks the stylesheet its rules
+/// join, as @stylexjs/unplugin's generateBundle asks it over the bundle's
+/// sheets; oj took the plugin's default pick (the first `index-*.css`, else
+/// `style-*.css`, else the first sheet by name), so an app sending its rules
+/// to one sheet found them in another.
+#[test]
+fn stylex_rules_join_the_sheet_css_injection_target_picks() {
+    let Some(root) = stylex_app("injection-target") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap().replacen(
+        "stylex.vite()",
+        "stylex.vite({ cssInjectionTarget: (fileName: string) => /(^|\\/)extra-[\\w-]+\\.css$/.test(fileName) })",
+        1,
+    );
+    assert!(
+        source.contains("cssInjectionTarget"),
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(&config, source).unwrap();
+    std::fs::write(
+        root.join("src/extra.css"),
+        ".extra-marker { color: teal }\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import appCss from \"../styles.css?url\";",
+            "import appCss from \"../styles.css?url\";\nimport extraCss from \"../extra.css?url\";",
+            1,
+        )
+        .replacen(
+            "links: [{ rel: \"stylesheet\", href: appCss }, ...devLinks],",
+            "links: [{ rel: \"stylesheet\", href: appCss }, { rel: \"stylesheet\", href: extraCss }, ...devLinks],",
+            1,
+        );
+    assert!(
+        source.contains("href: extraCss"),
+        "the fixture's __root.tsx changed shape"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let sheets: Vec<(String, String)> = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "css"))
+        .map(|p| {
+            (
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+                std::fs::read_to_string(&p).unwrap(),
+            )
+        })
+        .collect();
+    let extra = sheets
+        .iter()
+        .find(|(name, _)| name.starts_with("extra-"))
+        .expect("the ?url sheet extra-<hash>.css");
+    // A rule of Card.tsx's `stylex.create`, as the plugin's sheet writes it.
+    assert!(
+        extra.1.contains("animation-duration:1ms") && extra.1.contains(".extra-marker"),
+        "the StyleX rules did not join the sheet cssInjectionTarget picked:\n{}",
+        &extra.1[..extra.1.len().min(400)]
+    );
+    for (name, css) in &sheets {
+        assert!(
+            name.starts_with("extra-") || !css.contains("animation-duration:1ms"),
+            "the StyleX rules also landed in {name}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A module a plugin resolves by passing its `this.resolve` answer on keeps
+/// the package.json that answer names, as under rolldown, so its format
+/// stays what `"type": "module"` makes it: its CommonJS imports take the
+/// node-mode interop (`__toESM(require_x(), 1)`). oj's host dropped the
+/// package.json from such answers, and every module resolved that way lost
+/// the flag (`__toESM(require_x())`), one byte off Vite's in every chunk.
+#[test]
+fn a_plugin_resolved_module_keeps_its_packages_format() {
+    let Some(root) = app("plugin-resolved-format") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let probe = r#"    react(),
+    {
+      name: "resolve-through-this",
+      enforce: "pre",
+      async resolveId(source, importer) {
+        if (!importer || !source.endsWith("./routes/index")) return null;
+        return await this.resolve(source, importer, { skipSelf: true });
+      },
+    },"#;
+    let source = source
+        .replacen(
+            "export default defineConfig({",
+            "export default defineConfig({\n  build: { minify: false },",
+            1,
+        )
+        .replacen("    react(),", probe, 1);
+    assert!(
+        source.contains("resolve-through-this") && source.contains("minify: false"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    build(&root);
+
+    // The index route imports `legacy-cjs` (CommonJS); its chunk reads the
+    // module through the node-mode interop.
+    let chunk = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .find_map(|p| {
+            let code = std::fs::read_to_string(&p).ok()?;
+            code.contains("__toESM(require_").then_some(code)
+        })
+        .expect("a client chunk imports a CommonJS module");
+    let interop: Vec<&str> = chunk
+        .match_indices("__toESM(require_")
+        .map(|(at, _)| &chunk[at..chunk[at..].find(';').map_or(chunk.len(), |e| at + e)])
+        .collect();
+    assert!(
+        interop.iter().all(|call| call.ends_with(", 1)")),
+        "a CommonJS import lost the node-mode interop flag: {interop:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

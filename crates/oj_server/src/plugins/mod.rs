@@ -96,6 +96,10 @@ pub struct ResolvedId {
     pub id: String,
     pub external: Option<serde_json::Value>,
     pub module_side_effects: Option<bool>,
+    /// The module's `package.json`, as rolldown's resolved id carries it
+    /// (`packageJsonPath`): what tells an ESM module from a CommonJS one
+    /// where the file's extension does not (`"type": "module"`).
+    pub package_json_path: Option<String>,
 }
 
 impl ResolvedId {
@@ -104,6 +108,11 @@ impl ResolvedId {
             id: v.get("id")?.as_str()?.to_string(),
             external: v.get("external").cloned(),
             module_side_effects: v.get("moduleSideEffects").and_then(|b| b.as_bool()),
+            package_json_path: v
+                .get("packageJsonPath")
+                .and_then(|p| p.as_str())
+                .filter(|p| !p.is_empty())
+                .map(str::to_string),
         })
     }
 
