@@ -13,7 +13,7 @@ mod start_app;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use start_app::Server;
@@ -83,6 +83,16 @@ fn get(port: u16, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&body).into_owned())
 }
 
+/// `oj preview`, stopped on drop: a failed check must not leave it running.
+struct Preview(Child);
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn dev_serves_the_directory_it_starts_in() {
     let (_tmp, root) = app();
@@ -107,7 +117,7 @@ fn build_builds_the_directory_it_starts_in() {
 
 #[test]
 fn preview_serves_the_build_of_the_directory_it_starts_in() {
-    let (_tmp, root) = app();
+    let (tmp, root) = app();
     build_in(&root);
     // A build of the folder too: before the change, preview served this one.
     let out = Command::new(env!("CARGO_BIN_EXE_oj"))
@@ -122,26 +132,34 @@ fn preview_serves_the_build_of_the_directory_it_starts_in() {
     );
 
     let port = start_app::free_port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oj"))
-        .args(["preview", "--port", &port.to_string(), "--strictPort"])
-        .current_dir(&root)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    // The output goes to a file, read back when a check fails.
+    let log = tmp.path().join("preview.log");
+    let out = std::fs::File::create(&log).unwrap();
+    let mut preview = Preview(
+        Command::new(env!("CARGO_BIN_EXE_oj"))
+            .args(["preview", "--port", &port.to_string(), "--strictPort"])
+            .current_dir(&root)
+            .stdout(out.try_clone().unwrap())
+            .stderr(out)
+            .spawn()
+            .unwrap(),
+    );
+    let output = || std::fs::read_to_string(&log).unwrap_or_default();
     let deadline = Instant::now() + Duration::from_secs(60);
     let body = loop {
         if let Some(body) = get(port, "/").filter(|b| b.contains("<title>")) {
             break body;
         }
-        if let Ok(Some(status)) = child.try_wait() {
-            panic!("oj preview exited: {status}");
+        if let Ok(Some(status)) = preview.0.try_wait() {
+            panic!("oj preview exited: {status}\n{}", output());
         }
-        assert!(Instant::now() < deadline, "oj preview never answered");
+        assert!(
+            Instant::now() < deadline,
+            "oj preview never answered\n{}",
+            output()
+        );
         std::thread::sleep(Duration::from_millis(50));
     };
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(body.contains(APP), "{body}");
-    assert!(!body.contains(PLAYGROUND), "{body}");
+    assert!(body.contains(APP), "{body}\n{}", output());
+    assert!(!body.contains(PLAYGROUND), "{body}\n{}", output());
 }
