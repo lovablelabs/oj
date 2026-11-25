@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- StyleX: the compiler orders strings by UTF-16 code unit wherever it compared them by locale: the stylesheet's tie-breaks between rules of one priority, runs of pseudo-classes, and the at-rules of a theme override. That order is the one proposed for the JS compiler in meta/stylex#2066, which no released `@stylexjs/babel-plugin` has yet, so for some inputs the sheet differs from 0.19.2's. Rules move where the two orders disagree (`"` and `'`, upper and lower case, accented letters), and the class name of a rule whose pseudo-classes or theme at-rules reorder changes with its hash input. Numeric priorities, the pseudo-element boundaries and `default` first are as before. The compiler pass is `0.19.2-rs.2`, so cached output is rebuilt.
+
+### Fixed
+
+- StyleX: a sheet whose rules the locale comparison could not put in one consistent order no longer stops the compiler with a panic in the sort. (#795)
+
 ## [0.4.24] - 2026-11-25
 
 ### Fixed

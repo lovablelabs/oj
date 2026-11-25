@@ -406,7 +406,7 @@ fn media_rule(class_name: &str, query: &str, declaration: &str) -> StylexRule {
     )
 }
 
-/// `want` is the live 0.19.2 `processStylexRules` answer. Every path must print
+/// `want` is the `processStylexRules` answer with UTF-16 string tie-breaks. Every path must print
 /// the same bytes: the keyed one-shot sort, the comparator sort, and a registry
 /// holding one rule per file that is taken through swap edits and back.
 fn assert_css(rules: &[StylexRule], cfg: serde_json::Value, want: &str) {
@@ -649,7 +649,7 @@ fn constants_are_substituted_verbatim() {
             plain_rule("x6", ".x6{--xvar:2px;width:var(--xvar)}", 3000.0),
         ],
         json!({}),
-        ".x6{--tar--xvar:get:2px;width:var(--tar$&get, 1px)}\n.x4{content:\"$'\"}\n.x5{content:\"$&\" \"$$\"}\n.x1{content:\"$&\"}\n.x3{content:\"$`\"}\n.x2{content:\"$$\"}",
+        ".x6{--tar--xvar:get:2px;width:var(--tar$&get, 1px)}\n.x2{content:\"$$\"}\n.x5{content:\"$&\" \"$$\"}\n.x1{content:\"$&\"}\n.x4{content:\"$'\"}\n.x3{content:\"$`\"}",
     );
     // Rules sort on the substituted text, and a constant can bring in the
     // logical-float variables.
@@ -758,10 +758,10 @@ fn registry_shared_owners_match_full_assembly_across_batches() {
     }
 }
 
-// Chars outside the pinned collation alphabet and non-finite priorities are
-// outside the keyed-order preconditions: swaps must still match one-shot.
+// Unicode stays on the incremental path; non-finite priorities still take
+// the one-shot path. Swaps must match the one-shot result for both.
 #[test]
-fn registry_unsafe_rules_fall_back_to_full_path() {
+fn registry_unicode_and_non_finite_priorities_match_full_path() {
     let cfg = AssembleConfig::default();
     for odd in [
         plain_rule("xa", ".xa{content:\"日\"}", 3000.0),
@@ -867,10 +867,9 @@ fn duplicates_of_a_multi_text_class_keep_the_last_wins_winner() {
     );
 }
 
-// An unverified selector char leaves the declaration slice verified: the declaration step
-// still collates (`{color` before `{Color`), only the whole-rule step falls back to UTF-16.
+// A non-ASCII selector must not affect how declaration/property keys sort.
 #[test]
-fn unverified_selector_char_keeps_declaration_collation() {
+fn unicode_selector_keeps_utf16_declaration_order() {
     use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
     let configs = [
         AssembleConfig::default(),
@@ -884,7 +883,7 @@ fn unverified_selector_char_keeps_declaration_collation() {
     ];
     assert_eq!(
         assemble(&rules, &configs[0]).unwrap(),
-        ".x\u{2603}{color:blue}\n.xa[title=\"\u{2603}\"]{color:red}\n.xc[title=\"\u{2603}\"]{color:red}\n.xb{Color:red}"
+        ".xb{Color:red}\n.x\u{2603}{color:blue}\n.xa[title=\"\u{2603}\"]{color:red}\n.xc[title=\"\u{2603}\"]{color:red}"
     );
     rules.push(plain_rule("xd", ".xd{content:\"\u{2603}\"}", 3000.0));
     for cfg in &configs {
@@ -895,10 +894,111 @@ fn unverified_selector_char_keeps_declaration_collation() {
     }
 }
 
-// Unverified collation chars and non-finite priorities void the dedupe
-// preconditions: the full input must sort exactly as the comparator path does.
 #[test]
-fn duplicates_outside_keyed_preconditions_match_comparator_path() {
+fn assembly_string_tie_breaks_use_utf16_code_units() {
+    // U+1F431 comes before U+E000 in UTF-16, and after it in UTF-8.
+    // Expected results match processStylexRules with UTF-16 tie-breaks.
+    let astral = '🐱';
+    let bmp = '\u{e000}';
+    let legacy = serde_json::json!({"useLegacyClassnamesSort": true});
+    let cfg = serde_json::json!({});
+    let a_class = format!("x{astral}");
+    let b_class = format!("x{bmp}");
+    let legacy_a = format!(".{a_class}{{color:red}}");
+    let legacy_b = format!(".{b_class}{{color:blue}}");
+    assert_css(
+        &[
+            plain_rule(&b_class, &legacy_b, 3000.0),
+            plain_rule(&a_class, &legacy_a, 3000.0),
+        ],
+        legacy,
+        &format!("{legacy_a}\n{legacy_b}"),
+    );
+
+    for (a, b) in [
+        (
+            format!(".xa{{--{astral}:red}}"),
+            format!(".xb{{--{bmp}:blue}}"),
+        ),
+        (
+            format!(".xa{{content:\"{astral}\"}}"),
+            format!(".xb{{content:\"{bmp}\"}}"),
+        ),
+        (
+            format!("[title=\"{astral}\"] .xa{{color:blue}}"),
+            format!("[title=\"{bmp}\"] .xb{{color:blue}}"),
+        ),
+        (
+            format!("@scope (.{astral}){{@media (min-width: 2px){{.xa.xa.xa{{color:red}}}}}}"),
+            format!("@scope (.{bmp}){{@media (min-width: 1px){{.xb.xb.xb{{color:blue}}}}}}"),
+        ),
+    ] {
+        assert_css(
+            &[plain_rule("xb", &b, 3000.0), plain_rule("xa", &a, 3000.0)],
+            cfg.clone(),
+            &format!("{a}\n{b}"),
+        );
+    }
+}
+
+#[test]
+fn rules_mixing_verified_and_unverified_text_sort_in_one_order() {
+    use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
+    let cfg = AssembleConfig::default();
+    let rules = [
+        plain_rule("xa", ".xa::after{content:''}", 8000.0),
+        plain_rule("xb", ".xb::after{content:\"\"}", 8000.0),
+        plain_rule("xc", ".xc::before{content:\"Checking…\"}", 8000.0),
+    ];
+    let mut sheets = std::collections::BTreeSet::new();
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let input: Vec<StylexRule> = order.iter().map(|&i| rules[i].clone()).collect();
+        let sheet = assemble(&input, &cfg).unwrap();
+        assert_eq!(
+            Ok(sheet.clone()),
+            assemble_with_comparator(&input, &cfg, default_locale_cmp)
+        );
+        sheets.insert(sheet);
+    }
+    let [a, b, c] = rules.each_ref().map(|rule| rule.ltr.as_ref());
+    assert_eq!(sheets, [format!("{b}\n{c}\n{a}")].into());
+}
+
+#[test]
+fn many_mixed_collation_rules_sort_without_panicking() {
+    let values = ["a", "B", "C↗"];
+    let mut rules: Vec<StylexRule> = (0..60)
+        .map(|i| {
+            let value = values[i % values.len()];
+            plain_rule(
+                &format!("{value}{i}"),
+                &format!(".x{i}{{content:\"{value}{i}\"}}"),
+                3000.0,
+            )
+        })
+        .collect();
+    let mut rng = Lcg(0x5eed_0f00_d00d_0001);
+    for _ in 0..64 {
+        for i in (1..rules.len()).rev() {
+            rules.swap(i, rng.below(i + 1));
+        }
+        std::panic::catch_unwind(|| assemble(&rules, &AssembleConfig::default()))
+            .expect("the sort panicked")
+            .unwrap();
+    }
+}
+
+// Duplicate Unicode rules and non-finite priorities must agree with the
+// undeduped comparator path.
+#[test]
+fn duplicates_with_unicode_or_non_finite_priorities_match_comparator_path() {
     use oj_stylex::assemble::{assemble_with_comparator, default_locale_cmp};
     let configs = [
         AssembleConfig::default(),

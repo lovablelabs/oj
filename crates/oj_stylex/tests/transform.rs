@@ -1058,16 +1058,15 @@ fn sx_falls_back_to_the_first_unshadowed_stylex_local() {
 }
 
 #[test]
-fn unverified_pseudo_collation_on_the_hash_path_hard_errors() {
-    // Documented rust-rejects-more divergence (codex r5#2): the oracle emits
-    // x1ua4pqi; a collation-unverified char feeding the hash refuses loudly.
-    let err = compile_err(&format!(
+fn pseudo_hashes_use_utf16_code_unit_order() {
+    // Pinned with the Babel plugin's pseudo comparator using UTF-16 order.
+    let out = compile(&format!(
         "{IMP}export const s = stylex.create({{a: {{'[data-🐱]': {{'[data-a]': {{color: 'red'}}}}}}}});\n"
     ));
-    assert_eq!(err.code, ErrorCode::UnsupportedApi);
-    assert!(err.to_string().contains("pinned collation alphabet"));
-    // A lone unverified pseudo is never comparator-sorted: exact parity
-    // (oracle-pinned xxd33zb, regressions/r5-pseudo-lone-unverified-009).
+    assert!(out.code.contains("xomsrv6"), "code: {}", out.code);
+    assert_eq!(&*out.rules[0].ltr, ".xomsrv6[data-a][data-🐱]{color:red}");
+
+    // A lone pseudo is not reordered and retains its hash.
     let out = compile(&format!(
         "{IMP}export const s = stylex.create({{a: {{'[data-🐱]': {{color: 'red'}}}}}});\n"
     ));

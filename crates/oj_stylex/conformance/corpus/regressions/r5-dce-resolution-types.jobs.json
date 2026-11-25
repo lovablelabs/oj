@@ -1,7 +1,7 @@
 {
   "header": {
     "corpus": "regressions/r5-dce-resolution-types",
-    "description": "Codex round-5 findings: multi-declarator DCE removal spans (finding 1 — the two-dynamic-declarators job crashed release builds with 'overlapping stylex output edits'), pseudo-sort collation reachability (finding 2 — safe single-run cases only; the sorted-run divergence x1ua4pqi is a rust-rejects-more pin in shared/pseudo_sort.rs tests), UTF-16 imports-key matching (finding 3 — the #xfoo.stylex job byte-panicked), file-URL percent/query semantics (finding 4), primitive exports roots fatal (finding 5), CSSType brand spread/alias/forgery (finding 6), typed __proto__ [[Set]] (finding 7), and generated-import-before-hoist ordering (finding 8). Oracle is @stylexjs/babel-plugin 0.19.0 run live; resolution semantics pinned against import-meta-resolve 4.2.1 (scratchpad imr-r5-probe.mjs).",
+    "description": "Codex round-5 findings: multi-declarator DCE removal spans (finding 1 — the two-dynamic-declarators job crashed release builds with 'overlapping stylex output edits'), pseudo-sort Unicode coverage (finding 2 — the UTF-16 comparator now orders all selectors; these cases pin the lone-pseudo and pseudo-element-barrier behavior), UTF-16 imports-key matching (finding 3 — the #xfoo.stylex job byte-panicked), file-URL percent/query semantics (finding 4), primitive exports roots fatal (finding 5), CSSType brand spread/alias/forgery (finding 6), typed __proto__ [[Set]] (finding 7), and generated-import-before-hoist ordering (finding 8). Oracle is @stylexjs/babel-plugin 0.19.0 run live; resolution semantics pinned against import-meta-resolve 4.2.1 (scratchpad imr-r5-probe.mjs).",
     "oracle": "@stylexjs/babel-plugin@0.19.0",
     "written": "2026-08-28"
   },
