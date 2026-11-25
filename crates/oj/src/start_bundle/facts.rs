@@ -59,6 +59,12 @@ pub(crate) struct Facts {
     /// stylesheets and the files they reference (on for the client; a
     /// Worker environment's is on, a Node server's off by default).
     pub emit_assets: bool,
+    /// The `\0vite/preload-helper.js` module as the app's Vite composes it
+    /// (a patched Vite's included); `None` for oj's own copy.
+    pub preload_helper: Option<String>,
+    /// @stylexjs/unplugin's `cssInjectionTarget`: a function handle over a
+    /// stylesheet's file name, picking the sheet the StyleX rules join.
+    pub stylex_css_injection_target: Option<Value>,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -99,6 +105,15 @@ impl Facts {
                 .get("emitAssets")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            preload_helper: v
+                .get("preloadHelper")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            stylex_css_injection_target: v
+                .get("stylexCssInjectionTarget")
+                .filter(|e| !e.is_null())
+                .cloned(),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

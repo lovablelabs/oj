@@ -6375,6 +6375,15 @@ async function startFacts(c) {
     reactRefresh: names.includes("vite:react-refresh"),
     cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
     worker: workerFacts(cfg, fns),
+    preloadHelper: vitePreloadHelper(c),
+    // @stylexjs/unplugin's `cssInjectionTarget`, the predicate over the
+    // bundle's stylesheet names that picks the sheet its generateBundle
+    // appends the rules to (the plugin keeps it as a field of its own);
+    // oj, compiling StyleX natively, asks it the same question.
+    stylexCssInjectionTarget: factValue(
+      c.rawPlugins.find((p) => p && p.name === "@stylexjs/unplugin")?.__stylexCssInjectionTarget ?? null,
+      fns,
+    ),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
       (n, { p, rank }) => {
@@ -6386,6 +6395,28 @@ async function startFacts(c) {
   });
   c.startFns = fns;
   return facts;
+}
+// The `\0vite/preload-helper.js` module of this environment as the app's own
+// Vite composes it (getPreloadCode: `detectScriptRel`, `preload` and their
+// helpers stringified from Vite's dist, so a patched Vite's helper is the
+// patched one), read off the vite:build-import-analysis plugin Vite's
+// resolveConfig listed: a per-environment plugin whose instance is rolldown's
+// builtin, holding the code among its options. `null` where Vite's resolved
+// config is not at hand or the plugin changed shape; oj then writes its own
+// copy of the helper.
+function vitePreloadHelper(c) {
+  const rc = userResolvedViteConfig;
+  const plugin = rc?.plugins?.find?.((p) => p && p.name === "native:import-analysis-build");
+  if (!plugin || typeof plugin.applyToEnvironment !== "function") return null;
+  const name = c.environment.name;
+  const envConfig = { ...rc, ...(rc.environments?.[name] ?? rc.environments?.client ?? {}) };
+  try {
+    const instance = plugin.applyToEnvironment({ name, config: envConfig });
+    const code = instance?._options?.preloadCode;
+    return typeof code === "string" && code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
 }
 // The chunk policy of an `output`, as rolldown's bindingifyCodeSplitting
 // settles it from `codeSplitting`, the older `advancedChunks` and

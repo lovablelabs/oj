@@ -205,13 +205,20 @@ fn client_plugins(
         // helper module imported where one is. Ahead of the host's plugins,
         // whose renderChunk (esbuild's minify) then sees the modern flag set.
         let relative = crate::build::is_relative_base(&start.base);
-        plugins.push(Pluginable::new_shared(
-            crate::build::vite_preload::BuildImportAnalysisPlugin {
-                preload_code: arcstr::ArcStr::from(crate::build::vite_preload::preload_code(
+        // The helper module as the app's own Vite composes it (a patched
+        // Vite's included), where the host read it; oj's copy otherwise.
+        let preload_code = host
+            .and_then(|h| h.facts.preload_helper.clone())
+            .unwrap_or_else(|| {
+                crate::build::vite_preload::preload_code(
                     &start.base,
                     oj_config::module_preload_polyfill(&start.config),
                     relative,
-                )),
+                )
+            });
+        plugins.push(Pluginable::new_shared(
+            crate::build::vite_preload::BuildImportAnalysisPlugin {
+                preload_code: arcstr::ArcStr::from(preload_code),
                 is_relative_base: relative,
             },
         ));
@@ -619,8 +626,33 @@ pub(crate) async fn build(
         // generateBundle appends it there once every module's rules are known.
         if let Some(plugin) = &start.stylex {
             if let Some(sheet) = crate::stylex_plugin::stylesheet(plugin, &start.root)? {
+                let names = emitter.css_file_names();
+                // The plugin's `cssInjectionTarget`, a predicate over the
+                // sheets' file names (an app sending its rules to
+                // `globals-*.css`), first; the plugin's default pick else.
+                let mut picked = None;
+                if let Some(handle) = client_host
+                    .as_ref()
+                    .and_then(|h| h.facts.stylex_css_injection_target.as_ref())
+                    .and_then(super::facts::fn_handle)
+                {
+                    let host = &client_host.as_ref().expect("the handle's host").host;
+                    for name in &names {
+                        let answer = host
+                            .call_start_fn(handle, &serde_json::json!([name]))
+                            .await
+                            .map_err(|e| anyhow::anyhow!("stylex cssInjectionTarget: {e}"))?;
+                        if super::chunks::truthy(&answer) {
+                            picked = Some(name.clone());
+                            break;
+                        }
+                    }
+                }
+                let picked = picked.or_else(|| {
+                    oj_stylex::plugin::pick_css_asset(&names).map(|at| names[at].clone())
+                });
                 emitter
-                    .append_generated_css("stylex.css", &sheet)
+                    .append_generated_css_to(picked, "stylex.css", &sheet)
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }

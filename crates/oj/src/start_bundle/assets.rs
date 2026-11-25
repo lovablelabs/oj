@@ -971,6 +971,44 @@ impl Emitter {
         })
     }
 
+    /// An asset imported by `id` (its query included) or named by a CSS
+    /// `url()`: its data URL when Vite's build would inline it
+    /// (`fileToBuiltUrl` → `shouldInline`: never with `?no-inline`, always
+    /// with `?inline`, never an `.html` or an svg with a fragment, else under
+    /// the client's `build.assetsInlineLimit` unless a Git LFS pointer), else
+    /// emitted as [`Emitter::emit`] emits it. An svg inlines as
+    /// `data:image/svg+xml,…` (svgToDataURL), anything else base64.
+    pub async fn asset_url(&self, path: &Path, id: &str) -> Result<String, String> {
+        let is_svg = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+        let inline = if oj_server::has_word_param(id, "no-inline") {
+            false
+        } else if oj_server::has_word_param(id, "inline") {
+            true
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("html"))
+            || (is_svg && id.contains('#'))
+        {
+            false
+        } else {
+            let limit = self.styles.inline_limit();
+            std::fs::metadata(path).is_ok_and(|m| m.len() < limit)
+        };
+        if inline {
+            let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if !bytes.starts_with(b"version https://git-lfs.github.com") {
+                return Ok(if is_svg {
+                    oj_server::svg_to_data_url(&bytes)
+                } else {
+                    oj_server::asset_data_url(path, &bytes)
+                });
+            }
+        }
+        self.emit(path).await
+    }
+
     /// A stylesheet's text emitted as the file at `path` (a CSS module's
     /// scoped sheet is not the file's bytes): Tailwind when it uses it, the
     /// "normal" plugin transforms of `slots`, its `url()`s emitted, minified
@@ -1112,28 +1150,44 @@ impl Emitter {
     /// plugin's generateBundle does (`current + '\n' + css`): the file keeps
     /// the name it was hashed and linked under. With no stylesheet it is the
     /// plugin's writeBundle fallback, `assets/<name>`, linked from nowhere.
+    #[cfg(test)]
     pub fn append_generated_css(&self, name: &str, css: &str) -> Result<(), String> {
-        // The stylesheet the plugin's generateBundle picks out of the bundle,
-        // whose assets Rolldown lists by file name: the first `index-<hash>.css`
-        // (the entry's), else the first `style-<hash>.css`, else the first
-        // sheet; a `?url` sheet counts as well (the app links that one itself).
-        let picked = {
-            let mut names: Vec<String> = self
-                .chunk_sheets
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|s| s.file.clone())
-                .collect();
-            for url in self.emitted_css.lock().unwrap().iter() {
-                names.push(self.file_of(url));
-            }
-            for url in self.standalone.lock().unwrap().values() {
-                names.push(self.file_of(url));
-            }
-            names.sort();
-            oj_stylex::plugin::pick_css_asset(&names).map(|at| names[at].clone())
-        };
+        let names = self.css_file_names();
+        let picked = oj_stylex::plugin::pick_css_asset(&names).map(|at| names[at].clone());
+        self.append_generated_css_to(picked, name, css)
+    }
+
+    /// Every stylesheet the client emitted, by file name under the out dir
+    /// (the chunks' sheets, the `?url` ones, a plugin's own), sorted: what
+    /// the StyleX plugin's generateBundle picks its target from.
+    pub fn css_file_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .chunk_sheets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.file.clone())
+            .collect();
+        for url in self.emitted_css.lock().unwrap().iter() {
+            names.push(self.file_of(url));
+        }
+        for url in self.standalone.lock().unwrap().values() {
+            names.push(self.file_of(url));
+        }
+        names.sort();
+        names
+    }
+
+    /// [`Emitter::append_generated_css`] onto `picked` (a name from
+    /// [`Emitter::css_file_names`]); the plugin's default pick is the first
+    /// `index-<hash>.css` (the entry's), else the first `style-<hash>.css`,
+    /// else the first sheet, and its `cssInjectionTarget` chooses before it.
+    pub fn append_generated_css_to(
+        &self,
+        picked: Option<String>,
+        name: &str,
+        css: &str,
+    ) -> Result<(), String> {
         let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
         let file = match picked {
             Some(file) => out_dir.join(file),
@@ -1202,7 +1256,7 @@ impl Emitter {
                 continue;
             }
             let suffix = &target[clean.len()..];
-            let url = self.emit(&normalize(&abs)).await?;
+            let url = self.asset_url(&normalize(&abs), target).await?;
             out.push_str(&format!(
                 "url({})",
                 serde_json::Value::String(format!("{url}{suffix}"))
@@ -1656,12 +1710,15 @@ impl StartAssetsPlugin {
     /// Vite's `fileToDevUrl` inlines it ([`dev_svg_inline`]), anything else
     /// its served url; the build's emitter inlines or emits by the same rule.
     async fn asset_url_for(&self, path: &Path, id: &str) -> Result<String, String> {
-        if let AssetMode::Dev { .. } = &self.mode {
-            if let Some(data) = dev_svg_inline(path, id, self.styles.inline_limit()) {
-                return Ok(data);
+        match &self.mode {
+            AssetMode::Dev { .. } => {
+                if let Some(data) = dev_svg_inline(path, id, self.styles.inline_limit()) {
+                    return Ok(data);
+                }
+                self.url_for(path).await
             }
+            AssetMode::Build { emitter, .. } => emitter.asset_url(path, id).await,
         }
-        self.url_for(path).await
     }
 
     /// A worker's URL: the dev pipeline's (root-relative, `/@fs` outside the

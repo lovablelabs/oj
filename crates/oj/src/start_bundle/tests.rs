@@ -395,6 +395,10 @@ async fn built_sheets_link_in_execution_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_build_emits_assets_once_by_content_hash() {
+    // Over `build.assetsInlineLimit`, so the files are emitted (a smaller
+    // asset inlines as its data URL, as under Vite).
+    let same_bytes = "same-bytes".repeat(500);
+    let font = "font".repeat(1200);
     let app = App::new(&[
         (
             "src/entry.js",
@@ -404,9 +408,9 @@ import "./style.css";
 console.log(a, b);
 "#,
         ),
-        ("src/logo.png", "same-bytes"),
-        ("src/copy.png", "same-bytes"),
-        ("src/font.woff2", "font"),
+        ("src/logo.png", same_bytes.as_str()),
+        ("src/copy.png", same_bytes.as_str()),
+        ("src/font.woff2", font.as_str()),
         ("src/style.css", ".a { background: url(./font.woff2) }"),
     ]);
     let start = app.start();

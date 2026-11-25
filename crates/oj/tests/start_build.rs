@@ -1161,9 +1161,10 @@ fn a_url_sheets_imports_are_inlined_like_vites() {
         css.contains(".fonts-part") && css.contains(".fonts-root"),
         "the imported sheet's rules are missing:\n{css}"
     );
+    // A small svg inlines as its data URL, as Vite's build inlines it.
     assert!(
-        css.contains("url(/assets/star-"),
-        "the imported sheet's url was not rewritten to the emitted asset:\n{css}"
+        css.contains("url(\"data:image/svg+xml,") || css.contains("url(data:image/svg+xml,"),
+        "the imported sheet's url was not rewritten as Vite's build rewrites it:\n{css}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1243,6 +1244,49 @@ fn a_worker_under_esbuild_minify_keeps_rolldowns_lines() {
         !entry.contains("\n\t"),
         "the page's chunks keep esbuild's whitespace minification:\n{}",
         &entry[..entry.len().min(400)]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The preload helper module (`\0vite/preload-helper.js`) is the one the
+/// app's own Vite composes, read off its vite:build-import-analysis plugin,
+/// so a chunk carries the helper of the Vite the app runs (a patched Vite's
+/// included); oj wrote its own copy, taken from a later Vite than the
+/// fixture's.
+#[test]
+fn the_preload_helper_is_the_apps_vites() {
+    let Some(root) = app("preload-helper") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let vite = std::fs::read_to_string(&config).unwrap().replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  build: { minify: false },",
+        1,
+    );
+    assert!(
+        vite.contains("minify: false"),
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(&config, vite).unwrap();
+    build(&root);
+    // The fixture's Vite (8.2.1) scans the document's links itself; oj's copy
+    // of the helper (a later Vite's) keeps a set of preloaded hrefs instead.
+    let entry = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .find_map(|p| {
+            let code = std::fs::read_to_string(&p).ok()?;
+            code.contains("__vitePreload = ").then_some(code)
+        })
+        .expect("a client chunk holds the preload helper");
+    let at = entry.find("__vitePreload = ").unwrap_or(0);
+    assert!(
+        entry.contains("getElementsByTagName(\"link\")") && !entry.contains("preloadedHrefs"),
+        "the helper is not the fixture Vite's own:\n{}",
+        &entry[at..(at + 600).min(entry.len())]
     );
     let _ = std::fs::remove_dir_all(&root);
 }
