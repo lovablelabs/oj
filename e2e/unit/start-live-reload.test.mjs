@@ -1165,3 +1165,38 @@ test("a disabled sheet is not re-linked, so it refreshes once the page enables i
   page.settleSheets("load");
   assert.deepEqual(hrefs(page.links), ["http://localhost/dark.css?t=2000"]);
 });
+
+test("a frame that comes while a new link loads counts when the page took the old link out", async () => {
+  const page = loadPage({ sheets: ["http://localhost/app.css"] });
+  page.open();
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  // The page drops the link being replaced (a router swapping the head's
+  // tags) and a second frame comes before the new one has loaded.
+  page.links[0].remove();
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  assert.deepEqual(page.requested, ["http://localhost/app.css?t=1000"]);
+  page.clock.now = 3000;
+  page.settleSheets("load");
+  assert.deepEqual(page.requested.slice(1), ["http://localhost/app.css?t=3000"], "the second frame's refresh");
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=3000"]);
+});
+
+test("a new link the page took out and put back does not stay beside the one that replaced it", async () => {
+  const page = loadPage({ sheets: ["http://localhost/app.css"] });
+  page.open();
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  const taken = page.links[1];
+  taken.remove();
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  // The page puts the first new link back, and it loads before the second.
+  page.links[0].after(taken);
+  taken.on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css", "http://localhost/app.css?t=2000"]);
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=2000"]);
+});
