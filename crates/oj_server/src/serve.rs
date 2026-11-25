@@ -692,7 +692,7 @@ async fn serve_compiled_from(
         None => url.to_string(),
     };
     let url = url_with_query.as_str();
-    let (key, module) = match ensure_module_from(state, file, url, preloaded).await {
+    let (_key, module) = match ensure_module_from(state, file, url, preloaded).await {
         Ok(pair) => pair,
         Err(err) => {
             send_error(state, &err);
@@ -706,9 +706,19 @@ async fn serve_compiled_from(
     let inline_env = state.runtime_env.as_ref().filter(|env| {
         crate::runtime_env::classic_script_request(headers) && env.imported_by(&module.code)
     });
+    // The validator is the transformed output's, as Vite's is (its transform
+    // result's `etag` is a hash of the code it serves), not the compile
+    // key's. The key is of the compile's inputs: the source, the url, the
+    // stamps of the imports and the settings. The output can change with
+    // none of them: an import that resolves elsewhere once a package's
+    // `exports` moved a target (a dependency of the workspace, after the
+    // restart its package.json makes), or a glob whose matches changed. A
+    // browser holding the old copy sent the key back, was answered 304, and
+    // ran code that imported a path the server no longer had.
+    let output = &blake3::hash(module.code.as_bytes()).to_hex()[..16];
     let etag = match inline_env {
-        Some(env) => format!("\"{key}-env{}\"", env.inlined_stamp()),
-        None => format!("\"{key}\""),
+        Some(env) => crate::etag::weak_etag(&format!("{output}-env{}", env.inlined_stamp())),
+        None => crate::etag::weak_etag(output),
     };
     if query.is_none() && crate::etag::not_modified(headers, &etag) {
         return (
