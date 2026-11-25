@@ -402,6 +402,7 @@ pub(crate) async fn build(
     // `out_dir` (the client's; a server environment that emits its assets
     // bundles its `?worker` imports beside its own output, as Vite's worker
     // plugin does there).
+    let minifier = out.minifier;
     let worker_bundler_for = |for_emitter: &Arc<Emitter>, out_dir: PathBuf| -> WorkerBundler {
         let start = Arc::clone(&start);
         let styles = Arc::clone(&styles);
@@ -413,7 +414,6 @@ pub(crate) async fn build(
             defines.push(("import.meta".into(), "{ url: self.location.href }".into()));
         }
         let resolve = resolve_client.clone();
-        let minify = minify.clone();
         let sourcemap_kind = out.sourcemap;
         let worker = worker_options.clone();
         Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
@@ -424,7 +424,6 @@ pub(crate) async fn build(
             let client_dir = out_dir.clone();
             let defines = defines.clone();
             let resolve = resolve.clone();
-            let minify = minify.clone();
             let worker = worker.clone();
             Box::pin(async move {
                 let emitter = emitter.ok_or("the build is over")?;
@@ -446,8 +445,13 @@ pub(crate) async fn build(
                     WorkerBundleOptions {
                         defines,
                         resolve,
-                        minify,
-                        comments,
+                        // Vite's bundleWorkerEntry: rolldown's own minify
+                        // under oxc, its default (`'dce-only'`, which prints
+                        // esbuild's chunk again, lines and all) under
+                        // esbuild, and rolldown's default comments. The page
+                        // bundles' settings are not the worker's.
+                        minify: crate::build::worker_minify(minifier),
+                        comments: rolldown_common::CommentsOptions::default(),
                         sourcemap: sourcemap_kind,
                     },
                 )

@@ -1005,6 +1005,17 @@ impl Emitter {
     ) -> Result<String, String> {
         self.emitting.lock().unwrap().insert(path.to_path_buf());
         let result = async {
+            // Plain `@import`s are inlined, as Vite's postcss-import step
+            // inlines them before anything else runs on a sheet, so the
+            // emitted sheet carries no import that 404s from `assets/` (a
+            // `?url` sheet of fonts importing a package's `@font-face`
+            // sheet shipped the bare `@import` itself). A Tailwind sheet
+            // resolves its own imports in the tailwind engine.
+            let css = if needs_css_compile(&css) {
+                css
+            } else {
+                oj_css::inline_imports_with(&css, path, &self.styles.inputs().resolve)?
+            };
             let css = self.styles.tailwind(path, css).await?;
             let css = oj_server::style_slot(slots, css, "normal").await?;
             let css = self

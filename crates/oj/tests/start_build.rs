@@ -1100,3 +1100,149 @@ fn a_lazy_routes_stylesheet_is_named_after_its_chunk_and_preloaded() {
     );
     let _ = std::fs::remove_dir_all(&app);
 }
+
+/// A stylesheet imported with `?url` is compiled as Vite's css plugin compiles
+/// any sheet: its `@import`s inlined (postcss-import) and its urls rewritten to
+/// the emitted assets. oj emitted a plain `.css` `?url` sheet as written, so a
+/// fonts sheet importing a package's `@font-face` rules shipped the bare
+/// `@import`, which 404s from `assets/`, and its fonts were never emitted.
+#[test]
+fn a_url_sheets_imports_are_inlined_like_vites() {
+    let Some(root) = app("url-sheet-imports") else {
+        return;
+    };
+    std::fs::write(
+        root.join("styles/fonts.css"),
+        "@import \"./fonts-part.css\";\n\n.fonts-root { color: red }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("styles/fonts-part.css"),
+        ".fonts-part { background: url(../src/star.svg) }\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport fontsUrl from \"../../styles/fonts.css?url\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }],\n    links: [{ rel: \"stylesheet\", href: fontsUrl }],",
+            1,
+        );
+    assert!(
+        source.contains("fontsUrl }"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let sheet = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().is_some_and(|f| {
+                let f = f.to_string_lossy();
+                f.starts_with("fonts-") && f.ends_with(".css")
+            })
+        })
+        .expect("the ?url sheet is emitted as fonts-<hash>.css");
+    let css = std::fs::read_to_string(&sheet).unwrap();
+    assert!(
+        !css.contains("@import"),
+        "the sheet's @import was not inlined:\n{css}"
+    );
+    assert!(
+        css.contains(".fonts-part") && css.contains(".fonts-root"),
+        "the imported sheet's rules are missing:\n{css}"
+    );
+    assert!(
+        css.contains("url(/assets/star-"),
+        "the imported sheet's url was not rewritten to the emitted asset:\n{css}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A worker bundle under `build.minify: "esbuild"` comes out as Vite writes
+/// it: Vite's bundleWorkerEntry hands rolldown no `minify` (its default,
+/// `'dce-only'`), vite:esbuild-transpile mangles and compresses the chunk in
+/// renderChunk, and rolldown's DCE pass prints the result again with its own
+/// whitespace, so the worker keeps its lines (tab-indented) while the page's
+/// chunks lose theirs. oj minified the worker in full, 20% to 30% smaller
+/// than Vite's.
+#[test]
+fn a_worker_under_esbuild_minify_keeps_rolldowns_lines() {
+    let Some(root) = app("worker-esbuild-minify") else {
+        return;
+    };
+    std::fs::write(
+        root.join("src/wk.ts"),
+        "class CaptureProcessor {\n  batchOfSamples = new Float32Array(1024);\n  filledSamples = 0;\n  process(inputChannels: Float32Array[]) {\n    const frameCount = inputChannels[0]?.length ?? 0;\n    for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {\n      let summed = 0;\n      for (const channel of inputChannels) summed += channel[frameIndex];\n      this.batchOfSamples[this.filledSamples++] = summed / inputChannels.length;\n    }\n    return true;\n  }\n}\nself.onmessage = () => { postMessage(new CaptureProcessor().process([new Float32Array(2)])); };\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport wkUrl from \"../wk.ts?worker&url\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"wk\", content: wkUrl }],",
+            1,
+        );
+    assert!(
+        source.contains("content: wkUrl"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    let config = root.join("vite.config.ts");
+    let vite = std::fs::read_to_string(&config).unwrap().replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  build: { minify: \"esbuild\" },",
+        1,
+    );
+    assert!(
+        vite.contains("minify: \"esbuild\""),
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(&config, vite).unwrap();
+    build(&root);
+
+    let chunk = |prefix: &str| {
+        std::fs::read_dir(root.join("dist/client/assets"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name().is_some_and(|f| {
+                    let f = f.to_string_lossy();
+                    f.starts_with(prefix) && f.ends_with(".js")
+                })
+            })
+            .unwrap_or_else(|| panic!("a {prefix}*.js chunk"))
+    };
+    let worker = std::fs::read_to_string(chunk("wk-")).unwrap();
+    assert!(
+        worker.contains("\n\t") && worker.lines().count() > 8,
+        "the worker chunk lost its lines (rolldown prints esbuild's result again):\n{worker}"
+    );
+    assert!(
+        !worker.contains("frameIndex") && worker.contains("!0"),
+        "the worker chunk is not mangled and compressed by esbuild:\n{worker}"
+    );
+    let entry = std::fs::read_to_string(chunk("index-")).unwrap();
+    assert!(
+        !entry.contains("\n\t"),
+        "the page's chunks keep esbuild's whitespace minification:\n{}",
+        &entry[..entry.len().min(400)]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

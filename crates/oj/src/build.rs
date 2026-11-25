@@ -292,7 +292,8 @@ struct WorkerBundleOpts {
     config: oj_config::OjConfig,
     is_production: bool,
     define: Vec<(String, String)>,
-    minify: bool,
+    /// The client's `build.minify`, as Vite's bundleWorkerEntry reads it.
+    minifier: oj_config::Minifier,
     assets_dir: String,
     sourcemap: Option<SourceMapType>,
     /// The app's plugin host, where each worker bundle opens its container
@@ -1472,8 +1473,27 @@ fn worker_bundler_options(
         resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
         transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
         define: opts.map(|o| o.define.iter().cloned().collect()),
-        minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
+        minify: Some(worker_minify(
+            opts.map_or(oj_config::Minifier::Oxc, |o| o.minifier),
+        )),
         ..Default::default()
+    }
+}
+
+/// A worker bundle's rolldown minify, as Vite's bundleWorkerEntry sets it:
+/// rolldown's own under `"oxc"`, `'dce-only'` under `false`, and nothing
+/// under `"esbuild"`, which rolldown takes as `'dce-only'` too. Under esbuild
+/// the host's vite:esbuild-transpile mangles and compresses each chunk in
+/// renderChunk, and rolldown's pass prints the result again with its own
+/// whitespace, so a worker chunk keeps its lines where the page's lose
+/// theirs; oj minified the worker in full and its chunk was 20% to 30%
+/// smaller than Vite's.
+pub(crate) fn worker_minify(minifier: oj_config::Minifier) -> RawMinifyOptions {
+    match minifier {
+        oj_config::Minifier::Oxc => RawMinifyOptions::Bool(true),
+        oj_config::Minifier::Esbuild | oj_config::Minifier::Off => {
+            RawMinifyOptions::DeadCodeEliminationOnly
+        }
     }
 }
 
@@ -4278,6 +4298,13 @@ pub async fn build(
     ));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
+    // The minifier the client's setting names (an environment's `true` is
+    // Vite's default, rolldown's own).
+    let client_minifier = match (client_minify, oj_config::build_minifier(&config)) {
+        (false, _) => oj_config::Minifier::Off,
+        (true, oj_config::Minifier::Off) => oj_config::Minifier::Oxc,
+        (true, minifier) => minifier,
+    };
     let client_define: Vec<(String, String)> = {
         let mut pairs: Vec<(String, String)> = process_env_defines(&node_env);
         pairs.push(import_meta_hot_define());
@@ -4307,7 +4334,7 @@ pub async fn build(
             config: config.clone(),
             is_production,
             define: client_define.clone(),
-            minify: client_minify,
+            minifier: client_minifier,
             assets_dir: assets_dir.clone(),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             host: plugin_host.clone(),
