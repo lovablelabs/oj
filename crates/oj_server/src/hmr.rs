@@ -437,7 +437,9 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
 /// stamp among its imports: two updates in one millisecond (two files of
 /// one batch) would share a stamp, and an importer compiled between them
 /// would be served again for the second with the first's urls baked in.
-pub(crate) fn hmr_now() -> u64 {
+/// The Start dev server stamps the editor's `update` frames with it too
+/// (`start_hot::EditorUpdate`), as they go out.
+pub fn hmr_now() -> u64 {
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     use std::sync::atomic::Ordering::Relaxed;
     let now = now_millis() as u64;

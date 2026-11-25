@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: the `update` frames the editor's socket gets for an edit the pages took in place are stamped as Vite stamps its own, and there is one per file, as Vite sends one for each watcher event. Vite's `handleHMRUpdate` takes one `monotonicDateNow()` as it takes an event up, and the frame it sends carries that value; a gate on Vite replays the held watcher events at its flush, so they are taken up, and stamped, then. So each file is stamped by the HMR clock when the run takes it up, and again at the flush when the gate held its frame. The one frame for all the files was stamped when the rebuild ended and then parked until the flush, so a tool reading the stamp as the server's send time counted the hold: seconds of latency for a frame that travelled in milliseconds, from the version these frames first went out (0.4.19). Plain dev was never affected: its gate decides the update at the flush.
+
 ## [0.4.23] - 2026-11-25
 
 ### Fixed
