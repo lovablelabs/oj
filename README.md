@@ -193,8 +193,8 @@ Production builds (`oj build` vs `vite build`) produce the same output on the 10
 ## Misc
 
 ```sh
-cargo run -p oj -- dev                            # dev server for ./playground on :5199
-cargo run -p oj -- dev --ssr src/entry-server.tsx # streaming SSR + hydration
+cargo run -p oj -- dev playground                 # dev server for ./playground on :5199
+cargo run -p oj -- dev playground --ssr src/entry-server.tsx # streaming SSR + hydration
 cargo run -p oj -- build playground               # production build into playground/dist
 make test                                         # rust unit + integration tests (nextest, in parallel)
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
