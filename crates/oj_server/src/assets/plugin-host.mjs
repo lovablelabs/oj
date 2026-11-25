@@ -6380,8 +6380,10 @@ async function startFacts(c) {
     // bundle's stylesheet names that picks the sheet its generateBundle
     // appends the rules to (the plugin keeps it as a field of its own);
     // oj, compiling StyleX natively, asks it the same question.
+    // (An app wrapping the plugin under a name of its own spreads the field
+    // along with the rest, so the field is the mark, not the name.)
     stylexCssInjectionTarget: factValue(
-      c.rawPlugins.find((p) => p && p.name === "@stylexjs/unplugin")?.__stylexCssInjectionTarget ?? null,
+      c.rawPlugins.map((p) => p && p.__stylexCssInjectionTarget).find((t) => t != null) ?? null,
       fns,
     ),
     // How many resolveId hooks run on each side of the core resolver.

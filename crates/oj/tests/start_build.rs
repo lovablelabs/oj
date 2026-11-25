@@ -673,14 +673,16 @@ fn a_cloudflare_worker_is_written_to_starts_server_directory() {
         root.join("dist/client/assets").is_dir(),
         "the client stays in dist/client"
     );
-    // The entry chunk is the Worker itself. The plugin declares
-    // `preserveEntrySignatures: "strict"`, which the rolldown Vite 8.2 ships does
-    // not enforce with a facade; a facade `index.js` re-exporting
-    // `assets/worker-entry-*.js` is not what `vite build` writes.
+    // The plugin declares `preserveEntrySignatures: "strict"`, which rolldown
+    // 1.3 (Vite 8.4's) enforces with a facade: `index.js` re-exports the
+    // Worker's own chunk, `assets/worker-entry-*.js`, as `vite build` writes
+    // it (Vite 8.2's rolldown 1.2 wrote the chunk itself as `index.js`).
+    // This fixture's Worker needs no facade (nothing imports the entry's
+    // exports), so `index.js` is the chunk itself either way.
     let index = std::fs::read_to_string(root.join("dist/server/index.js")).unwrap();
     assert!(
-        !index.contains("/worker-entry-") && index.len() > 1024,
-        "index.js is the Worker's own chunk, not a facade re-exporting it:\n{}",
+        index.len() > 1024 && !root.join("dist/ssr").exists(),
+        "index.js is the Worker, under dist/server:\n{}",
         &index[..index.len().min(300)]
     );
     // Vite's `build.manifest`, which the plugin turns on for the entry Worker.

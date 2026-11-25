@@ -879,13 +879,13 @@ pub(crate) async fn build(
                         entry_filenames: Some("[name].js".to_string().into()),
                         chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
                         asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
-                        // The plugin declares `preserveEntrySignatures: "strict"`, which
-                        // the rolldown Vite 8.2 ships (1.2) does not enforce with a facade:
-                        // `vite build` writes the entry chunk itself as `index.js`, its
-                        // extension exports included, and other chunks import from it.
-                        // A facade would move the Worker's code to `assets/worker-entry-*.js`.
+                        // The plugin declares `preserveEntrySignatures: "strict"`. The
+                        // rolldown oj bundles with (1.3, Vite 8.4's) enforces it with a
+                        // facade, `index.js` re-exporting `assets/worker-entry-*.js`, as
+                        // `vite build` writes it there; Vite 8.2's rolldown (1.2) wrote
+                        // the chunk itself as `index.js`.
                         preserve_entry_signatures: Some(
-                            rolldown_common::PreserveEntrySignatures::AllowExtension,
+                            rolldown_common::PreserveEntrySignatures::Strict,
                         ),
                         ..Default::default()
                     })
