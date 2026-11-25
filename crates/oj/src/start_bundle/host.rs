@@ -245,9 +245,7 @@ impl StartHostPlugin {
     }
 
     fn chunk_sheets(&self) -> Option<crate::build::ChunkSheets> {
-        self.sheets
-            .as_ref()
-            .map(|emitter| crate::build::ChunkSheets::new(emitter.sheet_files()))
+        self.sheets.as_ref().map(|emitter| emitter.chunk_sheets())
     }
 
     /// Reports rolldown's moduleParsed to the host (a build), its code as JS.

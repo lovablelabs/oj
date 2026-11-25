@@ -548,6 +548,23 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
+/// `output.assetFileNames` for the sheets the Start build writes itself: the
+/// app's pattern, or its function on its host (called with the asset as
+/// Vite's `PreRenderedAsset` describes it); None for Vite's default.
+pub(crate) fn asset_namer(
+    value: Option<&Value>,
+    host: Option<&Arc<PluginHost>>,
+) -> Option<super::assets::AssetNamer> {
+    match (value, host) {
+        (Some(Value::String(pattern)), _) => {
+            Some(super::assets::AssetNamer::Pattern(pattern.clone()))
+        }
+        (Some(f), Some(host)) => {
+            fn_handle(f).map(|handle| super::assets::AssetNamer::Host(Arc::clone(host), handle))
+        }
+        _ => None,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

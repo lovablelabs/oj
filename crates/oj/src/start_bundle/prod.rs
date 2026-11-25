@@ -199,6 +199,23 @@ fn client_plugins(
             super::route_tree::ClientRouteTree::new(start),
         ));
     }
+    if matches!(target, CodeTarget::Client) {
+        // Vite's build import analysis (vite:build-import-analysis): every
+        // `import()` wrapped in `__vitePreload` for its preload list, the
+        // helper module imported where one is. Ahead of the host's plugins,
+        // whose renderChunk (esbuild's minify) then sees the modern flag set.
+        let relative = crate::build::is_relative_base(&start.base);
+        plugins.push(Pluginable::new_shared(
+            crate::build::vite_preload::BuildImportAnalysisPlugin {
+                preload_code: arcstr::ArcStr::from(crate::build::vite_preload::preload_code(
+                    &start.base,
+                    oj_config::module_preload_polyfill(&start.config),
+                    relative,
+                )),
+                is_relative_base: relative,
+            },
+        ));
+    }
     if let Some(h) = host {
         if !h.facts.alias.is_empty() {
             plugins.push(Pluginable::new_shared(AppAliasPlugin {
@@ -345,6 +362,12 @@ pub(crate) async fn build(
     let emit = Arc::new(EmitState::new(start.root.clone()));
     let empty_facts = Facts::default();
     let client_facts = client_host.as_ref().map_or(&empty_facts, |h| &h.facts);
+    // `output.assetFileNames` names the chunks' stylesheets (Vite's css-post
+    // emits them as assets).
+    emitter.set_asset_namer(super::chunks::asset_namer(
+        client_facts.asset_file_names.as_ref(),
+        client_host.as_ref().map(|h| &h.host),
+    ));
     let client_defines = start.client_defines(
         client_host.as_ref().map_or(&[][..], |h| &h.env_delta),
         client_host.as_ref().map_or(&[][..], |h| &h.defines),
@@ -375,12 +398,15 @@ pub(crate) async fn build(
     // script whose `import.meta.url` is its own URL (vite:worker-post). The
     // entry is emitted where it is imported, its chunks beside it.
     let worker_options = client_facts.worker.clone();
-    {
+    // The worker bundler of an emitter: `for_emitter`'s output lands under
+    // `out_dir` (the client's; a server environment that emits its assets
+    // bundles its `?worker` imports beside its own output, as Vite's worker
+    // plugin does there).
+    let worker_bundler_for = |for_emitter: &Arc<Emitter>, out_dir: PathBuf| -> WorkerBundler {
         let start = Arc::clone(&start);
         let styles = Arc::clone(&styles);
-        let weak_emitter = Arc::downgrade(&emitter);
+        let weak_emitter = Arc::downgrade(for_emitter);
         let app_host = client_host.clone();
-        let client_dir = client_dir.clone();
         let mut defines = client_defines.clone();
         if !worker_options.is_module() {
             defines.push(("import.meta.url".into(), "self.location.href".into()));
@@ -390,12 +416,12 @@ pub(crate) async fn build(
         let minify = minify.clone();
         let sourcemap_kind = out.sourcemap;
         let worker = worker_options.clone();
-        let bundler: WorkerBundler = Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
+        Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
             let start = Arc::clone(&start);
             let styles = Arc::clone(&styles);
             let emitter = weak_emitter.upgrade();
             let app_host = app_host.clone();
-            let client_dir = client_dir.clone();
+            let client_dir = out_dir.clone();
             let defines = defines.clone();
             let resolve = resolve.clone();
             let minify = minify.clone();
@@ -438,9 +464,12 @@ pub(crate) async fn build(
                 closed?;
                 Ok(bundle)
             })
-        });
-        emitter.set_worker_bundler(bundler, worker_options.is_module());
-    }
+        })
+    };
+    emitter.set_worker_bundler(
+        worker_bundler_for(&emitter, client_dir.clone()),
+        worker_options.is_module(),
+    );
 
     // Vite's prepareOutDir copies `public/` into the client's output before
     // its bundle writes, so a file the bundle emits under the same name
@@ -486,6 +515,8 @@ pub(crate) async fn build(
                 format: Some(OutputFormat::Esm),
                 minify: Some(minify.clone()),
                 comments: Some(comments),
+                // Vite declares every top-level binding with `var` (topLevelVar).
+                top_level_var: Some(true),
                 sourcemap: sourcemap(out.sourcemap),
                 entry_filenames: Some(super::chunks::file_names(
                     "entryFileNames",
@@ -524,7 +555,34 @@ pub(crate) async fn build(
             .await
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
         let output = checked(output)?;
-        emitter.order_links(&output.assets);
+        // The page links the entry chunk's closure of sheets (Start's
+        // manifest plugin lists a route's own from the chunks); with no
+        // plugin host to list them, every sheet.
+        emitter.link_sheets(&output.assets, client_host.is_none());
+        // Vite's build import analysis, once the chunks are written: each
+        // wrapped `import()` gets its preload list, so a lazy chunk's own
+        // dependencies and stylesheets load in parallel (and its CSS is
+        // applied before it runs).
+        {
+            let mut imports_map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for asset in &output.assets {
+                if let rolldown_common::Output::Chunk(chunk) = asset {
+                    imports_map.insert(
+                        chunk.filename.to_string(),
+                        chunk.imports.iter().map(|i| i.to_string()).collect(),
+                    );
+                }
+            }
+            crate::build::apply_preload_helper(
+                &output,
+                &client_dir,
+                &start.base,
+                &imports_map,
+                &emitter.chunk_css(&output.assets),
+                oj_config::module_preload_links(&start.config),
+            )?;
+        }
         // Vite's buildEnvironment closes an environment's bundle as soon as
         // its output is written, before the next environment builds.
         if let Some(h) = &client_host {
@@ -571,11 +629,8 @@ pub(crate) async fn build(
             None => oj_config::environment_manifest_name(&start.config, "client"),
         };
         if let Some(name) = manifest_name {
-            let manifest = crate::build::vite_manifest(
-                &output.assets,
-                &start.root,
-                &crate::build::ChunkSheets::new(emitter.sheet_files()),
-            );
+            let manifest =
+                crate::build::vite_manifest(&output.assets, &start.root, &emitter.chunk_sheets());
             let dest = client_dir.join(&name);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -618,6 +673,32 @@ pub(crate) async fn build(
             server_host.as_ref().map_or(&[][..], |h| &h.env_delta),
             server_host.as_ref().map_or(&[][..], |h| &h.defines),
         );
+        // The server environment's `build.emitAssets` (a Cloudflare Worker's
+        // is on): its bundle writes its chunks' sheets and their `url()`
+        // files under its own output directory, as Vite's does; else its
+        // stylesheets only compile (for the class names a render agrees on)
+        // and any file an import names is the client's.
+        let server_emits_assets = server_host.as_ref().is_some_and(|h| h.facts.emit_assets);
+        let server_emitter = if server_emits_assets {
+            let e = Arc::new(Emitter::for_server(
+                &server_out_dir,
+                &start.base,
+                Arc::clone(&styles),
+            ));
+            e.set_asset_namer(super::chunks::asset_namer(
+                server_host
+                    .as_ref()
+                    .and_then(|h| h.facts.asset_file_names.as_ref()),
+                server_host.as_ref().map(|h| &h.host),
+            ));
+            e.set_worker_bundler(
+                worker_bundler_for(&e, server_out_dir.clone()),
+                worker_options.is_module(),
+            );
+            e
+        } else {
+            Arc::clone(&emitter)
+        };
         // `conditions`: a Cloudflare worker's, for the `paths` step's package
         // lookups (the environment's own resolve conditions).
         let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
@@ -686,7 +767,7 @@ pub(crate) async fn build(
                     &start.root,
                     Arc::clone(&styles),
                     AssetMode::Build {
-                        emitter: Arc::clone(&emitter),
+                        emitter: Arc::clone(&server_emitter),
                         server: true,
                         worker_chain: Vec::new(),
                     },
@@ -755,6 +836,8 @@ pub(crate) async fn build(
                         format: Some(OutputFormat::Esm),
                         minify: Some(minify.clone()),
                         comments: Some(comments),
+                        // Vite declares every top-level binding with `var` (topLevelVar).
+                        top_level_var: Some(true),
                         experimental: Some(crate::build::vite_mode_experimental()),
                         sourcemap: sourcemap(out.sourcemap),
                         entry_filenames: Some("[name].js".to_string().into()),
@@ -790,7 +873,7 @@ pub(crate) async fn build(
                     let manifest = crate::build::vite_manifest(
                         &output.assets,
                         &start.root,
-                        &crate::build::ChunkSheets::new(Vec::new()),
+                        &server_emitter.chunk_sheets(),
                     );
                     let dest = dir.join(&name);
                     if let Some(parent) = dest.parent() {
@@ -824,6 +907,8 @@ pub(crate) async fn build(
                         format: Some(OutputFormat::Esm),
                         minify: Some(minify.clone()),
                         comments: Some(comments),
+                        // Vite declares every top-level binding with `var` (topLevelVar).
+                        top_level_var: Some(true),
                         experimental: Some(crate::build::vite_mode_experimental()),
                         sourcemap: sourcemap(out.sourcemap),
                         entry_filenames: Some("[name].mjs".to_string().into()),
@@ -1029,6 +1114,7 @@ async fn bundle_worker(
             format: Some(format),
             minify: Some(options.minify),
             comments: Some(options.comments),
+            top_level_var: Some(true),
             experimental: Some(crate::build::vite_mode_experimental()),
             sourcemap: sourcemap(options.sourcemap),
             entry_filenames: Some(name(&worker.entry_file_names, "assets/[name]-[hash].js").into()),

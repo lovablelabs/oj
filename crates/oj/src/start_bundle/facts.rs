@@ -50,9 +50,15 @@ pub(crate) struct Facts {
     /// handle, `None` where neither the config nor a plugin names them.
     pub entry_file_names: Option<Value>,
     pub chunk_file_names: Option<Value>,
+    /// `output.assetFileNames`, the same way, for the sheets oj writes.
+    pub asset_file_names: Option<Value>,
     /// The environment's `build.manifest`: the file to write, if any
     /// (`true` is `.vite/manifest.json`).
     pub manifest: Option<String>,
+    /// The environment's `build.emitAssets`: whether its bundle writes its
+    /// stylesheets and the files they reference (on for the client; a
+    /// Worker environment's is on, a Node server's off by default).
+    pub emit_assets: bool,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -83,11 +89,16 @@ impl Facts {
             worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
             entry_file_names: v.get("entryFileNames").filter(|e| !e.is_null()).cloned(),
             chunk_file_names: v.get("chunkFileNames").filter(|e| !e.is_null()).cloned(),
+            asset_file_names: v.get("assetFileNames").filter(|e| !e.is_null()).cloned(),
             manifest: match v.get("manifest") {
                 Some(Value::Bool(true)) => Some(".vite/manifest.json".to_string()),
                 Some(Value::String(name)) if !name.is_empty() => Some(name.clone()),
                 _ => None,
             },
+            emit_assets: v
+                .get("emitAssets")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

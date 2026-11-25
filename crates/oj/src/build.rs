@@ -3477,35 +3477,62 @@ pub(crate) fn serialize_bundle_with_sheets(
 /// The stylesheets a build emitted outside its bundle, by source module:
 /// what a chunk "imported" is the sheets of the modules it holds, which is
 /// what Vite's css plugin records as a chunk's `viteMetadata.importedCss`.
-pub(crate) struct ChunkSheets(std::collections::HashMap<PathBuf, String>);
+pub(crate) struct ChunkSheets {
+    by_module: std::collections::HashMap<PathBuf, String>,
+    /// The sheets a chunk took over from the pure CSS chunks it imported, by
+    /// the chunk's preliminary file name.
+    inherited: std::collections::HashMap<String, Vec<String>>,
+}
 
 impl ChunkSheets {
     /// `sheets`: each source file and the file it was written as, relative
     /// to the output directory (`assets/app-<hash>.css`).
     pub fn new(sheets: Vec<(PathBuf, String)>) -> Self {
-        Self(sheets.into_iter().collect())
+        Self {
+            by_module: sheets.into_iter().collect(),
+            inherited: Default::default(),
+        }
     }
 
-    /// The sheets of `chunk`'s modules, in module order, each once.
+    pub fn with_inherited(
+        mut self,
+        inherited: std::collections::HashMap<String, Vec<String>>,
+    ) -> Self {
+        self.inherited = inherited;
+        self
+    }
+
+    /// The sheets of `chunk`'s modules, in module order, each once, then
+    /// those it took over from pure CSS chunks.
     pub fn of(&self, chunk: &rolldown_common::OutputChunk) -> Vec<String> {
         let mut files: Vec<String> = Vec::new();
-        if self.0.is_empty() {
+        if self.by_module.is_empty() && self.inherited.is_empty() {
             return files;
         }
         for id in &chunk.module_ids {
             let id: &str = id.as_ref();
             let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
-            if let Some(file) = self.0.get(path) {
+            if let Some(file) = self.by_module.get(path) {
                 if !files.contains(file) {
                     files.push(file.clone());
                 }
+            }
+        }
+        for file in self
+            .inherited
+            .get(&chunk.preliminary_filename)
+            .into_iter()
+            .flatten()
+        {
+            if !files.contains(file) {
+                files.push(file.clone());
             }
         }
         files
     }
 
     fn rows(&self) -> Vec<(&PathBuf, &String)> {
-        let mut rows: Vec<_> = self.0.iter().collect();
+        let mut rows: Vec<_> = self.by_module.iter().collect();
         rows.sort();
         rows
     }
@@ -6832,7 +6859,7 @@ fn normalize_base(base: &str) -> String {
     b
 }
 
-fn is_relative_base(base: &str) -> bool {
+pub(crate) fn is_relative_base(base: &str) -> bool {
     base == "./"
 }
 
@@ -6913,7 +6940,7 @@ fn transitive_imports(
 /// the order `vite build` links a page's stylesheets in, so a module stylesheet
 /// can override a vendor one at equal specificity. A chunk reachable from more
 /// than one entry is emitted once, even if the imports form a cycle.
-fn ordered_sync_chunks(
+pub(crate) fn ordered_sync_chunks(
     entries: &[String],
     map: &std::collections::HashMap<String, Vec<String>>,
 ) -> Vec<String> {
@@ -7020,7 +7047,12 @@ struct CssAssetOpts<'a> {
 
 /// Render Vite/rolldown `assetFileNames` placeholders (`[name]`, `[hash]`,
 /// `[ext]`, `[extname]`); the default is Vite's `assets/[name]-[hash][extname]`.
-fn render_asset_name(pattern: Option<&str>, name: &str, hash: &str, ext: &str) -> String {
+pub(crate) fn render_asset_name(
+    pattern: Option<&str>,
+    name: &str,
+    hash: &str,
+    ext: &str,
+) -> String {
     let pattern = pattern.unwrap_or("assets/[name]-[hash][extname]");
     let extname = if ext.is_empty() {
         String::new()
@@ -7334,7 +7366,7 @@ const MODULEPRELOAD_POLYFILL_ID: &str = "\0vite/modulepreload-polyfill.js";
 /// stylesheets, when that is more than the chunk itself), with the chunk's
 /// `__vite__mapDeps` table prepended, as Vite's generateBundle does after the
 /// file names are fixed. Its sourcemap follows the edits.
-fn apply_preload_helper(
+pub(crate) fn apply_preload_helper(
     output: &rolldown::BundleOutput,
     out_dir: &Path,
     base: &str,
@@ -7342,10 +7374,10 @@ fn apply_preload_helper(
     chunk_css: &[(String, String)],
     module_preload: bool,
 ) -> anyhow::Result<()> {
-    let css_of: std::collections::HashMap<&str, &str> = chunk_css
-        .iter()
-        .map(|(c, css)| (c.as_str(), css.as_str()))
-        .collect();
+    let mut css_of: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for (chunk, css) in chunk_css {
+        css_of.entry(chunk.as_str()).or_default().push(css.as_str());
+    }
     let relative = is_relative_base(base);
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
@@ -7361,7 +7393,7 @@ fn apply_preload_helper(
             Some(vite_preload::Dependency {
                 js: Some(name.as_str()),
                 imports: imports.as_slice(),
-                css: css_of.get(f).copied(),
+                css: css_of.get(f).map_or(&[][..], |v| v.as_slice()),
             })
         };
         let Some(vite_preload::FilledChunk {
@@ -7674,11 +7706,17 @@ pub(crate) fn vite_manifest(
             entry.css = css;
         }
     }
+    // Vite's css-post emits a chunk's sheet under the chunk's own original
+    // file name (getChunkOriginalFileName), and the manifest keeps an asset
+    // row only when no JS chunk holds that key: a sheet a chunk lists under
+    // `css` has no row of its own.
     for (source, file) in sheets.rows() {
         let Some(key) = chunk_source_key(source.to_str(), root) else {
             continue;
         };
-        if entries.iter().any(|e| e.key == key) || assets.iter().any(|a| a.key == key) {
+        if entries.iter().any(|e| e.key == key || e.css.contains(file))
+            || assets.iter().any(|a| a.key == key)
+        {
             continue;
         }
         assets.push(ManifestAsset {
@@ -7827,7 +7865,7 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
 
 pub(crate) mod bundle_graph;
 mod html_tags;
-mod vite_preload;
+pub(crate) mod vite_preload;
 
 // The plugin-API build contract (emitFile, generateBundle, hook gating, ...)
 // end to end through `build`: real plugins in the in-process host, assertions

@@ -55,7 +55,7 @@ const IS_MODERN_FLAG: &str = "__VITE_IS_MODERN__";
 /// Vite's getPreloadCode: the `\0vite/preload-helper.js` module. With the
 /// polyfill on, `scriptRel` is `'modulepreload'`; deps resolve against the
 /// importer under a relative base, else against `base`.
-pub(super) fn preload_code(base: &str, polyfill: bool, relative_base: bool) -> String {
+pub(crate) fn preload_code(base: &str, polyfill: bool, relative_base: bool) -> String {
     let script_rel = if polyfill {
         "'modulepreload'".to_string()
     } else {
@@ -77,7 +77,7 @@ pub(super) fn preload_code(base: &str, polyfill: bool, relative_base: bool) -> S
 /// The client build's import analysis: the helper module, the `import()`
 /// rewrite and the modern flag.
 #[derive(Debug)]
-pub(super) struct BuildImportAnalysisPlugin {
+pub(crate) struct BuildImportAnalysisPlugin {
     pub preload_code: ArcStr,
     pub is_relative_base: bool,
 }
@@ -451,10 +451,10 @@ impl<'a> ImportAnalysisVisitor<'a> {
 }
 
 /// What a chunk contributes to a preload list (Vite's collectPreloadDependencies).
-pub(super) struct Dependency<'d> {
+pub(crate) struct Dependency<'d> {
     pub js: Option<&'d str>,
     pub imports: &'d [String],
-    pub css: Option<&'d str>,
+    pub css: &'d [&'d str],
 }
 
 /// Vite's collectPreloadDependencies: the chunk, then what it imports
@@ -480,8 +480,8 @@ fn collect_preload_dependencies<'d>(
         for import in dep.imports {
             visit(import, dependency, visited, out);
         }
-        if let Some(css) = dep.css {
-            out.push(css.to_string());
+        for css in dep.css {
+            out.push((*css).to_string());
         }
     }
     let mut visited = std::collections::HashSet::from([owner.to_string()]);
@@ -599,7 +599,7 @@ struct Edit {
 /// A chunk with its markers filled: the code, the `__vite__mapDeps` table line
 /// it needs (if any), and each edit as `(start, end, replacement length)` in
 /// the original code, for its sourcemap.
-pub(super) struct FilledChunk {
+pub(crate) struct FilledChunk {
     pub code: String,
     pub table: Option<String>,
     pub spans: Vec<(usize, usize, usize)>,
@@ -607,7 +607,7 @@ pub(super) struct FilledChunk {
 
 /// The written chunk `code` with its markers filled as Vite's generateBundle
 /// fills them; None when the chunk has no marker.
-pub(super) fn fill_preload_markers<'d>(
+pub(crate) fn fill_preload_markers<'d>(
     code: &str,
     file: &str,
     relative_base: bool,
@@ -716,7 +716,7 @@ pub(super) fn fill_preload_markers<'d>(
 /// The chunk's sourcemap after `fill_preload_markers`: each replaced span's
 /// width change shifts what follows it on its line, and a table line inserted
 /// at `inserted` moves that line and the ones after it down one.
-pub(super) fn shift_sourcemap(
+pub(crate) fn shift_sourcemap(
     map_json: &str,
     code: &str,
     spans: &[(usize, usize, usize)],
@@ -773,7 +773,7 @@ mod tests {
                 .map(|(f, imports, css)| Dependency {
                     js: Some(f),
                     imports,
-                    css: *css,
+                    css: css.as_ref().map_or(&[][..], std::slice::from_ref),
                 })
         }
     }

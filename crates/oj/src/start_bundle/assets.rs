@@ -423,6 +423,61 @@ type WorkerBundling = HashMap<(PathBuf, Vec<PathBuf>), Arc<tokio::sync::OnceCell
 /// The build's content-hash emitter: every asset, stylesheet and worker the
 /// client, server and worker bundles import is written once into
 /// `<client>/assets/<name>-<hash><ext>`, at the same URL for all of them.
+/// A chunk's stylesheet as Vite's css-post emits it in renderChunk: the
+/// chunk's CSS modules' sheets concatenated in module order, named after the
+/// chunk and hashed by its content. `pure`: the chunk holds nothing but plain
+/// CSS (no exports, no JS), so generateBundle drops it and the chunks that
+/// imported it take its sheet, as Vite drops a pure CSS chunk.
+struct ChunkSheet {
+    /// The chunk's file name as renderChunk sees it (rolldown's preliminary
+    /// name, a hash placeholder in it until the bundle is written).
+    chunk: String,
+    /// The sheet's file, relative to the client's output directory.
+    file: String,
+    url: String,
+    modules: Vec<PathBuf>,
+    pure: bool,
+}
+
+/// `output.assetFileNames` for the sheets written here: a pattern, or the
+/// app's function, called in the plugin host with the asset as Vite's
+/// `PreRenderedAsset` describes it.
+pub(crate) enum AssetNamer {
+    Pattern(String),
+    Host(Arc<oj_server::plugins::PluginHost>, u64),
+}
+
+/// Rolldown's sanitizeFileName for a `[name]`: the characters a file system
+/// or a URL could take amiss become `_`; a `/` stays, so a chunk group's
+/// `dir/name` keeps its directory.
+fn sanitize_file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '\u{0}'..='\u{1f}' | '\u{7f}' => '_',
+            '"' | '#' | '$' | '%' | '&' | '*' | '+' | ',' | ':' | ';' | '<' | '=' | '>' | '?'
+            | '[' | ']' | '^' | '`' | '{' | '|' | '}' => '_',
+            c => c,
+        })
+        .collect()
+}
+
+/// The `[name]` of a chunk's stylesheet, as Vite's css-post names the asset:
+/// an entry's (whose facade is not a stylesheet) is the chunk name's base
+/// name with `.css` appended (`index`); any other chunk's is the chunk name
+/// with its extension replaced by `.css` (`ensureFileExt`: `routeTree.gen`
+/// becomes `routeTree`, `dir/name` keeps its directory).
+pub(crate) fn chunk_sheet_stem(name: &str, is_entry: bool, facade_is_css: bool) -> String {
+    if is_entry && !facade_is_css {
+        return name.rsplit('/').next().unwrap_or(name).to_string();
+    }
+    let base_start = name.rfind('/').map_or(0, |i| i + 1);
+    match name[base_start..].rfind('.') {
+        // A leading dot is a hidden file's, not an extension's.
+        Some(i) if i > 0 => name[..base_start + i].to_string(),
+        _ => name.to_string(),
+    }
+}
+
 pub(crate) struct Emitter {
     assets_dir: PathBuf,
     base: String,
@@ -430,10 +485,29 @@ pub(crate) struct Emitter {
     written: Mutex<std::collections::HashSet<String>>,
     /// Stylesheets mid-emit (a sheet's own `url()` naming itself must not recurse).
     emitting: Mutex<std::collections::HashSet<PathBuf>>,
-    /// The emitted client stylesheets, in emit order: the root route's links.
+    /// The client stylesheets the root route links, in link order.
     css_urls: Mutex<Vec<String>>,
-    /// The URL each client stylesheet was emitted at, by its module.
-    sheets: Mutex<HashMap<PathBuf, String>>,
+    /// The finished sheet of each client CSS module (compiled, its `url()`s
+    /// emitted, minified), waiting for the chunk that holds the module: as
+    /// Vite's css-post keeps a module's CSS in `styles` until renderChunk
+    /// emits the chunk's one sheet, so a sheet is named after its chunk.
+    module_css: Mutex<HashMap<PathBuf, String>>,
+    /// The chunks' stylesheets, as renderChunk wrote them.
+    chunk_sheets: Mutex<Vec<ChunkSheet>>,
+    /// The sheets a chunk took over from the pure CSS chunks it imported
+    /// (generateBundle dropped them), by the chunk's preliminary file name.
+    inherited: Mutex<HashMap<String, Vec<String>>>,
+    /// A plugin's CSS for a module no chunk holds (`plugin_css`), by module.
+    standalone: Mutex<HashMap<PathBuf, String>>,
+    /// `output.assetFileNames` for the sheets written here.
+    asset_namer: Mutex<Option<AssetNamer>>,
+    /// The environment's `build.cssMinify` (the client's, or ssr's for a
+    /// server bundle that emits its assets).
+    minify: bool,
+    /// A server bundle's emitter (`build.emitAssets` on, as a Cloudflare
+    /// Worker's is): its sheets and `url()` files go under its own output
+    /// directory, as Vite's css-post and asset plugin write them there.
+    server: bool,
     /// Every stylesheet emitted, linked or a `?url` asset, in emit order.
     emitted_css: Mutex<Vec<String>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
@@ -454,6 +528,7 @@ pub(crate) struct Emitter {
 
 impl Emitter {
     pub fn new(client_dir: &Path, base: &str, styles: Arc<Styles>) -> Emitter {
+        let minify = styles.minify_client;
         Emitter {
             assets_dir: client_dir.join("assets"),
             base: base.to_string(),
@@ -461,7 +536,13 @@ impl Emitter {
             written: Mutex::new(Default::default()),
             emitting: Mutex::new(Default::default()),
             css_urls: Mutex::new(Vec::new()),
-            sheets: Mutex::new(HashMap::new()),
+            module_css: Mutex::new(HashMap::new()),
+            chunk_sheets: Mutex::new(Vec::new()),
+            inherited: Mutex::new(HashMap::new()),
+            standalone: Mutex::new(HashMap::new()),
+            asset_namer: Mutex::new(None),
+            minify,
+            server: false,
             emitted_css: Mutex::new(Vec::new()),
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
@@ -492,40 +573,332 @@ impl Emitter {
         self.css_urls.lock().unwrap().clone()
     }
 
-    /// Every client stylesheet emitted so far: its source module and the
-    /// file it was written as, relative to the client's output directory.
+    /// A server bundle's own emitter, writing under `server_dir` and
+    /// minifying under ssr's `cssMinify`, for an environment whose
+    /// `build.emitAssets` is on.
+    pub fn for_server(server_dir: &Path, base: &str, styles: Arc<Styles>) -> Emitter {
+        let minify = styles.minify_ssr;
+        Emitter {
+            minify,
+            server: true,
+            ..Emitter::new(server_dir, base, styles)
+        }
+    }
+
+    /// Whether a server bundle on this emitter writes its sheets.
+    pub fn is_server(&self) -> bool {
+        self.server
+    }
+
+    /// `output.assetFileNames` for the sheets written here.
+    pub fn set_asset_namer(&self, namer: Option<AssetNamer>) {
+        *self.asset_namer.lock().unwrap() = namer;
+    }
+
+    /// Every client stylesheet written so far, by the modules it holds: each
+    /// CSS module and the file of its chunk's sheet (a plugin's standalone
+    /// sheet by its module), relative to the client's output directory.
     pub fn sheet_files(&self) -> Vec<(PathBuf, String)> {
-        let mut files: Vec<(PathBuf, String)> = self
-            .sheets
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(source, url)| {
-                let file = url.strip_prefix(self.base.as_str()).unwrap_or(url);
-                (source.clone(), file.trim_start_matches('/').to_string())
-            })
-            .collect();
+        let mut files: Vec<(PathBuf, String)> = Vec::new();
+        for sheet in self.chunk_sheets.lock().unwrap().iter() {
+            for module in &sheet.modules {
+                files.push((module.clone(), sheet.file.clone()));
+            }
+        }
+        for (source, url) in self.standalone.lock().unwrap().iter() {
+            files.push((source.clone(), self.file_of(url)));
+        }
         files.sort();
         files
     }
 
-    /// Puts the linked sheets in the client bundle's execution order, the
-    /// order Vite's css-post collects them in: they were linked as their
-    /// loads finished, which rolldown runs concurrently.
-    pub fn order_links(&self, outputs: &[rolldown_common::Output]) {
-        let order = module_order(outputs);
-        let sheets = self.sheets.lock().unwrap();
-        let mut at: HashMap<&str, usize> = HashMap::new();
-        for (path, url) in sheets.iter() {
-            if let Some(&i) = path.to_str().and_then(|p| order.get(p)) {
-                let slot = at.entry(url.as_str()).or_insert(i);
-                *slot = (*slot).min(i);
+    /// The chunks' stylesheets for the bundle hooks and the manifest: by
+    /// module, with what each chunk took over from the pure CSS chunks it
+    /// imported.
+    pub fn chunk_sheets(&self) -> crate::build::ChunkSheets {
+        crate::build::ChunkSheets::new(self.sheet_files())
+            .with_inherited(self.inherited.lock().unwrap().clone())
+    }
+
+    fn file_of(&self, url: &str) -> String {
+        let file = url.strip_prefix(self.base.as_str()).unwrap_or(url);
+        file.trim_start_matches('/').to_string()
+    }
+
+    /// Links the sheets the page gets render-blocking, in the order Vite's
+    /// css-post collects them: the written client bundle's entry chunk and
+    /// what it reaches by static imports (dependencies first), each chunk's
+    /// own sheet and those it took over; `every` links every chunk's sheet
+    /// in that order instead (no Start manifest plugin lists a route's).
+    /// A plugin's standalone sheets follow.
+    pub fn link_sheets(&self, outputs: &[rolldown_common::Output], every: bool) {
+        use rolldown_common::Output;
+        let chunks: Vec<&rolldown_common::OutputChunk> = outputs
+            .iter()
+            .filter_map(|o| match o {
+                Output::Chunk(c) => Some(&**c),
+                Output::Asset(_) => None,
+            })
+            .collect();
+        let imports: HashMap<String, Vec<String>> = chunks
+            .iter()
+            .map(|c| {
+                (
+                    c.filename.to_string(),
+                    c.imports.iter().map(|i| i.to_string()).collect(),
+                )
+            })
+            .collect();
+        let entries: Vec<String> = chunks
+            .iter()
+            .filter(|c| every || c.is_entry)
+            .map(|c| c.filename.to_string())
+            .collect();
+        let by_file: HashMap<&str, &rolldown_common::OutputChunk> =
+            chunks.iter().map(|c| (c.filename.as_str(), *c)).collect();
+        let sheets = self.chunk_sheets.lock().unwrap();
+        let inherited = self.inherited.lock().unwrap();
+        let mut urls: Vec<String> = Vec::new();
+        let mut push = |url: String| {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        };
+        for file in crate::build::ordered_sync_chunks(&entries, &imports) {
+            let Some(chunk) = by_file.get(file.as_str()) else {
+                continue;
+            };
+            let prelim = chunk.preliminary_filename.as_str();
+            for file in inherited.get(prelim).into_iter().flatten() {
+                push(format!("{}{file}", self.base));
+            }
+            if let Some(sheet) = sheets.iter().find(|s| s.chunk == prelim) {
+                push(sheet.url.clone());
             }
         }
-        self.css_urls
+        let mut standalone: Vec<String> =
+            self.standalone.lock().unwrap().values().cloned().collect();
+        standalone.sort();
+        for url in standalone {
+            push(url);
+        }
+        *self.css_urls.lock().unwrap() = urls;
+    }
+
+    /// Each written chunk and the sheets it loads (its own, then those it
+    /// took over), by the chunks' final file names: what a dynamic import's
+    /// preload list names for the chunk.
+    pub fn chunk_css(&self, outputs: &[rolldown_common::Output]) -> Vec<(String, String)> {
+        let sheets = self.chunk_sheets.lock().unwrap();
+        let inherited = self.inherited.lock().unwrap();
+        let mut out = Vec::new();
+        for o in outputs {
+            let rolldown_common::Output::Chunk(chunk) = o else {
+                continue;
+            };
+            let prelim = chunk.preliminary_filename.as_str();
+            if let Some(sheet) = sheets.iter().find(|s| s.chunk == prelim) {
+                out.push((chunk.filename.to_string(), sheet.file.clone()));
+            }
+            for file in inherited.get(prelim).into_iter().flatten() {
+                out.push((chunk.filename.to_string(), file.clone()));
+            }
+        }
+        out
+    }
+
+    /// The pattern a sheet named `name` (with its `.css`) is written under:
+    /// Vite's default, the app's `assetFileNames`, or what its function
+    /// answers for the asset.
+    async fn asset_pattern(&self, name: &str, source: &str) -> Result<String, String> {
+        let namer = match self.asset_namer.lock().unwrap().as_ref() {
+            None => return Ok("assets/[name]-[hash][extname]".to_string()),
+            Some(AssetNamer::Pattern(p)) => return Ok(p.clone()),
+            Some(AssetNamer::Host(host, handle)) => (Arc::clone(host), *handle),
+        };
+        let (host, handle) = namer;
+        let asset = serde_json::json!([{
+            "type": "asset",
+            "name": name,
+            "names": [name],
+            "originalFileName": null,
+            "originalFileNames": [],
+            "source": source,
+        }]);
+        let pattern = host.call_start_fn(handle, &asset).await?;
+        pattern.as_str().map(str::to_string).ok_or_else(|| {
+            format!("output.assetFileNames returned {pattern}, not a file name pattern")
+        })
+    }
+
+    /// Vite's css-post renderChunk for `chunk`: its CSS modules' sheets as
+    /// one file named after the chunk (the entry's after its base name,
+    /// `index.css`; a group's `dir/name` keeps its directory), hashed by its
+    /// content and written under `assetFileNames`. The sheet's file, or None
+    /// for a chunk with no CSS. `js_empty`: the chunk rendered no JS, which
+    /// with no exports and only plain CSS modules makes it a pure CSS chunk.
+    pub async fn chunk_sheet(
+        &self,
+        chunk: &rolldown_common::RollupRenderedChunk,
+        js_empty: bool,
+    ) -> Result<Option<String>, String> {
+        if let Some(file) = self.chunk_sheet_name(chunk.filename.as_str()) {
+            return Ok(Some(file));
+        }
+        let mut css = String::new();
+        let mut modules: Vec<PathBuf> = Vec::new();
+        let mut pure = chunk.exports.is_empty();
+        {
+            let module_css = self.module_css.lock().unwrap();
+            for id in &chunk.module_ids {
+                let id: &str = id.as_ref();
+                let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
+                match module_css.get(path) {
+                    Some(sheet) => {
+                        // A CSS module's class map is JS the chunk keeps.
+                        if is_css_module(&path.to_string_lossy()) {
+                            pure = false;
+                        }
+                        css.push_str(sheet);
+                        modules.push(path.to_path_buf());
+                    }
+                    None if !(js_empty && !chunk.is_entry) => pure = false,
+                    None => {}
+                }
+            }
+        }
+        if modules.is_empty() {
+            return Ok(None);
+        }
+        let facade_is_css = chunk
+            .facade_module_id
+            .as_ref()
+            .is_some_and(|f| is_style_path(f.as_str().split('?').next().unwrap_or("")));
+        let stem = chunk_sheet_stem(chunk.name.as_str(), chunk.is_entry, facade_is_css);
+        let pattern = self.asset_pattern(&format!("{stem}.css"), &css).await?;
+        let file = crate::build::render_asset_name(
+            Some(&pattern),
+            &sanitize_file_name(&stem),
+            &crate::build::css_asset_hash(&css),
+            "css",
+        );
+        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+        let dest = out_dir.join(&file);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        if !dest.is_file() {
+            std::fs::write(&dest, css.as_bytes())
+                .map_err(|e| format!("{}: {e}", dest.display()))?;
+        }
+        let mut sheets = self.chunk_sheets.lock().unwrap();
+        if let Some(sheet) = sheets.iter().find(|s| s.chunk == chunk.filename.as_str()) {
+            return Ok(Some(sheet.file.clone()));
+        }
+        sheets.push(ChunkSheet {
+            chunk: chunk.filename.to_string(),
+            url: format!("{}{file}", self.base),
+            file: file.clone(),
+            modules,
+            pure,
+        });
+        Ok(Some(file))
+    }
+
+    /// The sheet renderChunk wrote for the chunk with preliminary file name
+    /// `chunk`, if any (vite:css-post's augmentChunkHash names it).
+    pub fn chunk_sheet_name(&self, chunk: &str) -> Option<String> {
+        self.chunk_sheets
             .lock()
             .unwrap()
-            .sort_by_key(|url| at.get(url.as_str()).copied().unwrap_or(usize::MAX));
+            .iter()
+            .find(|s| s.chunk == chunk)
+            .map(|s| s.file.clone())
+    }
+
+    /// Vite's css-post generateBundle for the pure CSS chunks: each is
+    /// dropped from `bundle` (its map with it), the chunks that imported it
+    /// lose the import (the statement from their code, the file from their
+    /// `imports`) and take over its sheet, which their preload lists and
+    /// `viteMetadata.importedCss` then name.
+    pub fn drop_pure_chunks(&self, bundle: &mut Vec<rolldown_common::Output>) {
+        use rolldown_common::Output;
+        let pure_prelims: std::collections::HashSet<String> = {
+            let sheets = self.chunk_sheets.lock().unwrap();
+            sheets
+                .iter()
+                .filter(|s| s.pure)
+                .map(|s| s.chunk.clone())
+                .collect()
+        };
+        if pure_prelims.is_empty() {
+            return;
+        }
+        // Final file name -> preliminary, and the pure chunks' final names.
+        let mut prelim_of: HashMap<String, String> = HashMap::new();
+        let mut pure_files: Vec<String> = Vec::new();
+        for o in bundle.iter() {
+            if let Output::Chunk(c) = o {
+                prelim_of.insert(c.filename.to_string(), c.preliminary_filename.clone());
+                if pure_prelims.contains(&c.preliminary_filename) {
+                    pure_files.push(c.filename.to_string());
+                }
+            }
+        }
+        if pure_files.is_empty() {
+            return;
+        }
+        let basenames: Vec<String> = pure_files
+            .iter()
+            .map(|f| regex::escape(f.rsplit('/').next().unwrap_or(f)))
+            .collect();
+        let empty_import = regex::Regex::new(&format!(
+            r#"\bimport\s*["'][^"']*(?:{})["'];"#,
+            basenames.join("|")
+        ))
+        .expect("a file-name alternation is a valid pattern");
+        let mut inherited = self.inherited.lock().unwrap();
+        let sheets = self.chunk_sheets.lock().unwrap();
+        for o in bundle.iter_mut() {
+            let Output::Chunk(chunk) = o else { continue };
+            if !chunk
+                .imports
+                .iter()
+                .any(|i| pure_files.contains(&i.to_string()))
+            {
+                continue;
+            }
+            let chunk = Arc::make_mut(chunk);
+            let mut took: Vec<String> = Vec::new();
+            chunk.imports.retain(|import| {
+                let import = import.to_string();
+                if !pure_files.contains(&import) {
+                    return true;
+                }
+                if let Some(prelim) = prelim_of.get(&import) {
+                    if let Some(sheet) = sheets.iter().find(|s| &s.chunk == prelim) {
+                        took.push(sheet.file.clone());
+                    }
+                    for file in inherited.get(prelim).cloned().unwrap_or_default() {
+                        took.push(file);
+                    }
+                }
+                false
+            });
+            let mine = inherited
+                .entry(chunk.preliminary_filename.clone())
+                .or_default();
+            for file in took {
+                if !mine.contains(&file) {
+                    mine.push(file);
+                }
+            }
+            chunk.code = empty_import.replace_all(&chunk.code, "").into_owned();
+        }
+        bundle.retain(|o| match o {
+            Output::Chunk(c) => !pure_files.contains(&c.filename.to_string()),
+            Output::Asset(_) => true,
+        });
     }
 
     /// Writes `bytes` as the file at `path` names it, content-hashed; its URL.
@@ -567,7 +940,7 @@ impl Emitter {
     /// sheet, minified under cssMinify, linked from nowhere.
     pub fn worker_css(&self, entry: &Path, css: &str) -> Result<String, String> {
         let path = entry.with_extension("css");
-        let css = if self.styles.minify_client {
+        let css = if self.minify {
             format!("{}\n", self.styles.minify(&path, css)?)
         } else {
             css.to_string()
@@ -591,7 +964,7 @@ impl Emitter {
             {
                 let css = std::fs::read_to_string(path)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
-                return self.css(path, css, None).await;
+                return self.css_asset(path, css, None).await;
             }
             let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
             self.write(path, &bytes)
@@ -637,31 +1010,27 @@ impl Emitter {
             let css = self
                 .rewrite_urls(&css, path.parent().unwrap_or(path))
                 .await?;
-            let css = if self.styles.minify_client {
+            let css = if self.minify {
                 format!("{}\n", self.styles.minify(path, &css)?)
             } else {
                 css
             };
-            // A compiled .scss/.less sheet ships as .css.
-            let url = self.write(&path.with_extension("css"), css.as_bytes())?;
-            {
+            if !link {
+                // A compiled .scss/.less sheet ships as .css.
+                let url = self.write(&path.with_extension("css"), css.as_bytes())?;
                 let mut emitted = self.emitted_css.lock().unwrap();
                 if !emitted.contains(&url) {
                     emitted.push(url.clone());
                 }
-            }
-            if !link {
                 return Ok(url);
             }
-            let mut urls = self.css_urls.lock().unwrap();
-            if !urls.contains(&url) {
-                urls.push(url.clone());
-            }
-            self.sheets
+            // A linked sheet waits for its chunk: renderChunk writes the
+            // chunk's one sheet (`chunk_sheet`), named after the chunk.
+            self.module_css
                 .lock()
                 .unwrap()
-                .insert(path.to_path_buf(), url.clone());
-            Ok(url)
+                .insert(path.to_path_buf(), css);
+            Ok(String::new())
         }
         .await;
         self.emitting.lock().unwrap().remove(path);
@@ -678,24 +1047,39 @@ impl Emitter {
             "" => self.assets_dir.join("plugin.css"),
             clean => PathBuf::from(clean),
         };
-        let css = if self.styles.minify_client {
+        let css = if self.minify {
             format!("{}\n", self.styles.minify(&path, css)?)
         } else {
             css.to_string()
         };
-        let url = self.write(&path.with_extension("css"), css.as_bytes())?;
-        let old = self
-            .sheets
-            .lock()
-            .unwrap()
-            .insert(path.clone(), url.clone());
-        if let Some(old) = &old {
-            for u in self.emitted_css.lock().unwrap().iter_mut() {
-                if u == old {
-                    *u = url.clone();
-                }
-            }
+        // The module's chunk sheet, rewritten with the plugin's CSS in the
+        // module's place; the file keeps the name it was hashed and linked
+        // under, as Vite's asset keeps its name when a plugin's generateBundle
+        // rewrites its source.
+        let holder = {
+            let sheets = self.chunk_sheets.lock().unwrap();
+            sheets
+                .iter()
+                .find(|s| s.modules.contains(&path))
+                .map(|s| (s.file.clone(), s.modules.clone()))
+        };
+        if let Some((file, modules)) = holder {
+            let mut module_css = self.module_css.lock().unwrap();
+            module_css.insert(path, css);
+            let joined: String = modules
+                .iter()
+                .filter_map(|m| module_css.get(m))
+                .cloned()
+                .collect();
+            let dest = self
+                .assets_dir
+                .parent()
+                .unwrap_or(&self.assets_dir)
+                .join(&file);
+            return std::fs::write(&dest, joined).map_err(|e| format!("{}: {e}", dest.display()));
         }
+        let url = self.write(&path.with_extension("css"), css.as_bytes())?;
+        let old = self.standalone.lock().unwrap().insert(path, url.clone());
         let mut urls = self.css_urls.lock().unwrap();
         match old.and_then(|old| urls.iter().position(|u| *u == old).map(|i| (i, old))) {
             Some((i, old)) if old != url => {
@@ -718,11 +1102,30 @@ impl Emitter {
     /// the name it was hashed and linked under. With no stylesheet it is the
     /// plugin's writeBundle fallback, `assets/<name>`, linked from nowhere.
     pub fn append_generated_css(&self, name: &str, css: &str) -> Result<(), String> {
-        // The first CSS asset in the bundle, a `?url` one as well (the app
-        // links that one itself).
-        let first = self.emitted_css.lock().unwrap().first().cloned();
-        let file = match first.as_deref().and_then(|u| u.rsplit_once("assets/")) {
-            Some((_, file)) => self.assets_dir.join(file),
+        // The stylesheet the plugin's generateBundle picks out of the bundle,
+        // whose assets Rolldown lists by file name: the first `index-<hash>.css`
+        // (the entry's), else the first `style-<hash>.css`, else the first
+        // sheet; a `?url` sheet counts as well (the app links that one itself).
+        let picked = {
+            let mut names: Vec<String> = self
+                .chunk_sheets
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| s.file.clone())
+                .collect();
+            for url in self.emitted_css.lock().unwrap().iter() {
+                names.push(self.file_of(url));
+            }
+            for url in self.standalone.lock().unwrap().values() {
+                names.push(self.file_of(url));
+            }
+            names.sort();
+            oj_stylex::plugin::pick_css_asset(&names).map(|at| names[at].clone())
+        };
+        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+        let file = match picked {
+            Some(file) => out_dir.join(file),
             None => {
                 std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
                 return std::fs::write(self.assets_dir.join(name), css).map_err(|e| e.to_string());
@@ -1457,12 +1860,26 @@ impl StartAssetsPlugin {
                     AssetMode::Build {
                         emitter,
                         server: false,
+                        worker_chain,
+                    } => {
+                        if worker_chain.is_empty() {
+                            emitter.css(path, css(), slots).await?;
+                        } else {
+                            // Vite's worker build emits the worker's sheet as
+                            // an asset the page does not link.
+                            emitter.css_asset(path, css(), slots).await?;
+                        }
+                    }
+                    AssetMode::Build {
+                        emitter,
+                        server: true,
                         ..
                     } => {
-                        emitter.css(path, css(), slots).await?;
-                    }
-                    AssetMode::Build { server: true, .. } => {
-                        if slots.is_some() {
+                        if emitter.is_server() {
+                            // `build.emitAssets`: the server bundle writes
+                            // its chunks' sheets too, as a Worker's does.
+                            emitter.css(path, css(), slots).await?;
+                        } else if slots.is_some() {
                             let css = self.styles.tailwind(path, css()).await?;
                             oj_server::style_slot(slots, css, "normal").await?;
                         }
@@ -1474,6 +1891,27 @@ impl StartAssetsPlugin {
     }
 }
 
+impl StartAssetsPlugin {
+    /// The emitter whose bundle's chunks get stylesheets: the client's, or a
+    /// server's that emits its assets (a worker's sheets are assets, as
+    /// Vite's worker build emits them).
+    fn client_emitter(&self) -> Option<&Arc<Emitter>> {
+        match &self.mode {
+            AssetMode::Build {
+                emitter,
+                server: false,
+                worker_chain,
+            } if worker_chain.is_empty() => Some(emitter),
+            AssetMode::Build {
+                emitter,
+                server: true,
+                ..
+            } if emitter.is_server() => Some(emitter),
+            _ => None,
+        }
+    }
+}
+
 impl Plugin for StartAssetsPlugin {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("oj:start-assets")
@@ -1481,6 +1919,51 @@ impl Plugin for StartAssetsPlugin {
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
         rolldown_plugin::HookUsage::Load
+            | rolldown_plugin::HookUsage::RenderChunk
+            | rolldown_plugin::HookUsage::AugmentChunkHash
+            | rolldown_plugin::HookUsage::GenerateBundle
+    }
+
+    /// vite:css-post's renderChunk for a client chunk: its stylesheet,
+    /// named after it, written now so the bundle hooks see it.
+    async fn render_chunk(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        args: &rolldown_plugin::HookRenderChunkArgs<'_>,
+    ) -> rolldown_plugin::HookRenderChunkReturn {
+        if let Some(emitter) = self.client_emitter() {
+            emitter
+                .chunk_sheet(&args.chunk, args.code.is_empty())
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        Ok(None)
+    }
+
+    /// vite:css-post's augmentChunkHash: a chunk's hash covers its sheet's
+    /// name, so the chunk is renamed when only its CSS changes.
+    async fn augment_chunk_hash(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        chunk: Arc<rolldown_common::RollupRenderedChunk>,
+    ) -> rolldown_plugin::HookAugmentChunkHashReturn {
+        Ok(self
+            .client_emitter()
+            .and_then(|emitter| emitter.chunk_sheet_name(chunk.filename.as_str())))
+    }
+
+    /// vite:css-post's generateBundle: the pure CSS chunks go, their
+    /// importers take their sheets. After the plugins' own generateBundle
+    /// (the host's), which see the chunks as Vite's user plugins do.
+    async fn generate_bundle(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        args: &mut rolldown_plugin::HookGenerateBundleArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if let Some(emitter) = self.client_emitter() {
+            emitter.drop_pure_chunks(args.bundle);
+        }
+        Ok(())
     }
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {

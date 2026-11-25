@@ -401,19 +401,21 @@ fn the_client_environments_manifest_is_written() {
         "a chunk imports {lazy_key} dynamically:\n{raw}"
     );
 
-    // The stylesheet: a row of its own by source, and under `css` of the
-    // chunk that imports it.
-    let sheet = &manifest["styles/app.css"];
-    let file = sheet["file"].as_str().unwrap_or_default();
+    // The root route's stylesheet is the entry chunk's sheet, named after
+    // the chunk as Vite's css-post names it, listed under the entry's `css`;
+    // a sheet a chunk lists has no row of its own (Vite keys the asset by
+    // the chunk's original file name, which the chunk's row holds).
+    let css = entries[0]["css"].as_array().cloned().unwrap_or_default();
     assert!(
-        file.starts_with("assets/app-") && file.ends_with(".css"),
-        "styles/app.css is a row: {sheet}\n{raw}"
+        css.len() == 1
+            && css[0]
+                .as_str()
+                .is_some_and(|f| f.starts_with("assets/index-") && f.ends_with(".css")),
+        "the entry lists its own sheet: {raw}"
     );
     assert!(
-        manifest.values().any(|r| r["css"]
-            .as_array()
-            .is_some_and(|c| c.iter().any(|f| f == file))),
-        "a chunk lists {file} under css:\n{raw}"
+        !manifest.contains_key("styles/app.css"),
+        "no row for a sheet a chunk lists:\n{raw}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -451,8 +453,13 @@ function chunkCssProbe(): Plugin {
 }
 "#;
 
-fn chunk_css_app(name: &str, top_level: &str) -> Option<(PathBuf, serde_json::Value)> {
+fn chunk_css_app(
+    name: &str,
+    top_level: &str,
+    setup: impl FnOnce(&Path),
+) -> Option<(PathBuf, serde_json::Value)> {
     let app = app(name)?;
+    setup(&app);
     let config = app.join("vite.config.ts");
     let source = std::fs::read_to_string(&config).unwrap();
     let source = source
@@ -488,7 +495,7 @@ fn bundle_text(root: &Path) -> String {
 
 #[test]
 fn a_chunk_names_the_stylesheets_of_its_modules() {
-    let Some((app, probe)) = chunk_css_app("chunk-css", "") else {
+    let Some((app, probe)) = chunk_css_app("chunk-css", "", |_| {}) else {
         return;
     };
     assert_eq!(probe["sets"], true, "every chunk has the two Sets: {probe}");
@@ -560,9 +567,11 @@ fn served_manifest(root: &Path) -> serde_json::Value {
 /// with the option on, which is how the environment's config reads.
 #[test]
 fn a_build_with_css_code_split_off_links_its_stylesheets() {
-    let Some((app, probe)) =
-        chunk_css_app("css-code-split-off", "  build: { cssCodeSplit: false },\n")
-    else {
+    let Some((app, probe)) = chunk_css_app(
+        "css-code-split-off",
+        "  build: { cssCodeSplit: false },\n",
+        |_| {},
+    ) else {
         return;
     };
     assert_eq!(probe["codeSplit"], true, "{probe}");
@@ -688,6 +697,28 @@ fn a_cloudflare_worker_is_written_to_starts_server_directory() {
             .as_str()
             .is_some_and(|f| root.join("dist/server").join(f).is_file())),
         "every row names a file of dist/server:\n{raw}"
+    );
+    // The Worker environment's `build.emitAssets` (the plugin turns it on):
+    // the Worker's chunks write their stylesheets under dist/server/assets,
+    // named after the chunk as the client's are, and the manifest's entry
+    // row lists the entry's; a Node server build writes none.
+    let server_css: Vec<String> = std::fs::read_dir(root.join("dist/server/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|f| f.ends_with(".css"))
+        .collect();
+    assert!(
+        !server_css.is_empty(),
+        "the Worker's chunks write their sheets under dist/server/assets"
+    );
+    assert!(
+        manifest
+            .values()
+            .any(|r| r["css"].as_array().is_some_and(|c| c.iter().any(|f| f
+                .as_str()
+                .is_some_and(|f| f.starts_with("assets/") && f.ends_with(".css"))))),
+        "a Worker chunk's manifest row lists its sheet:\n{raw}"
     );
     // The plugin's client generateBundle emits `.assetsignore` (the public
     // directory's, plus the two files Workers Assets must not serve); it lands
@@ -899,4 +930,173 @@ startTransition(() => {
         entry.display()
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Vite's css code splitting on the Start client: a lazy route's stylesheet
+/// is one file named after the route's chunk (css-post's renderChunk), the
+/// entry's after the entry (`index-<hash>.css`); the root route links the
+/// entry's alone, the route's chunk lists its own under `viteMetadata` and
+/// the manifest's `css`; a chunk holding nothing but a shared sheet (a pure
+/// CSS chunk) is dropped, its importers taking the sheet; and every dynamic
+/// `import()` is wrapped in Vite's preload helper with a `__vite__mapDeps`
+/// table that names the lazy chunk's stylesheets. oj wrote one sheet per CSS
+/// module and linked them all on the root, with no preload helper.
+/// Two routes lazily load a widget each; the widgets import a sheet of their
+/// own (about's) and one they share, so the shared sheet lands in a chunk of
+/// its own with no JS (a pure CSS chunk).
+fn lazy_css_widgets(app: &Path) {
+    let lazy = |route: &str, widget: &str, marker: &str| {
+        let path = app.join("src/routes").join(route);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source = source
+            .replacen(
+                "import { createRoute } from \"@tanstack/react-router\";\n",
+                &format!(
+                    "import {{ createRoute }} from \"@tanstack/react-router\";\nimport {{ lazy, Suspense }} from \"react\";\nconst Widget = lazy(() => import(\"../{widget}\"));\n"
+                ),
+                1,
+            )
+            .replacen(
+                marker,
+                &format!("{marker}\n      <Suspense fallback={{null}}><Widget /></Suspense>"),
+                1,
+            );
+        assert!(
+            source.contains("const Widget") && source.contains("<Widget />"),
+            "the fixture's {route} changed shape; update this test"
+        );
+        std::fs::write(&path, source).unwrap();
+    };
+    lazy(
+        "about.tsx",
+        "about-widget",
+        "<h1 className=\"fixture-heading\">about-page-marker</h1>",
+    );
+    lazy(
+        "user.tsx",
+        "user-widget",
+        "<h1 className=\"fixture-heading\">{`user-${id}-marker`}</h1>",
+    );
+    std::fs::write(
+        app.join("src/about.css"),
+        ".about-widget { color: teal; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/shared.css"),
+        ".shared-widget { margin: 1px; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/about-widget.tsx"),
+        "import \"./about.css\";\nimport \"./shared.css\";\nexport default function AboutWidget() {\n  return <p className=\"about-widget shared-widget\">about-widget</p>;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/user-widget.tsx"),
+        "import \"./shared.css\";\nexport default function UserWidget() {\n  return <p className=\"shared-widget\">user-widget</p>;\n}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_lazy_routes_stylesheet_is_named_after_its_chunk_and_preloaded() {
+    let Some((app, probe)) = chunk_css_app(
+        "lazy-css",
+        "  build: { manifest: true },\n",
+        lazy_css_widgets,
+    ) else {
+        return;
+    };
+    let assets = app.join("dist/client/assets");
+    let names: Vec<String> = std::fs::read_dir(&assets)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let find = |prefix: &str, ext: &str| {
+        names
+            .iter()
+            .find(|n| n.starts_with(prefix) && n.ends_with(ext))
+            .cloned()
+    };
+    let index_css = find("index-", ".css").expect("the entry's sheet, index-<hash>.css");
+    let about_css = find("about-widget-", ".css").unwrap_or_else(|| {
+        panic!("the about widget's sheet, about-widget-<hash>.css, among {names:?}")
+    });
+    let shared_css = find("shared-", ".css").unwrap_or_else(|| {
+        panic!("the shared sheet of two lazy routes, shared-<hash>.css, among {names:?}")
+    });
+    assert!(
+        find("shared-", ".js").is_none(),
+        "the pure CSS chunk holding shared.css is dropped: {names:?}"
+    );
+    assert!(
+        find("app-", ".css").is_none(),
+        "no sheet is named after a CSS module: {names:?}"
+    );
+
+    // The about chunk took the pure chunk's sheet: no import of the dropped
+    // chunk remains in it, and its generateBundle metadata lists both sheets.
+    let about_js = find("about-widget-", ".js").expect("the about widget's chunk");
+    let about_code = std::fs::read_to_string(assets.join(&about_js)).unwrap();
+    assert!(
+        !about_code.contains("/shared-"),
+        "the import of the dropped chunk is gone from {about_js}:\n{}",
+        &about_code[..about_code.len().min(400)]
+    );
+    let css_of = |chunk: &str| -> Vec<String> {
+        probe["css"][format!("assets/{chunk}")]
+            .as_array()
+            .map(|c| {
+                c.iter()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let about_sheets = css_of(&about_js);
+    assert!(
+        about_sheets.contains(&format!("assets/{about_css}")),
+        "the about chunk lists its own sheet: {about_sheets:?}\n{probe}"
+    );
+
+    // The manifest: the about chunk's row lists its sheet; the entry's its own.
+    let raw = std::fs::read_to_string(app.join("dist/client/.vite/manifest.json")).unwrap();
+    let manifest: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    let about_row = manifest
+        .values()
+        .find(|r| r["file"] == format!("assets/{about_js}"))
+        .unwrap_or_else(|| panic!("a manifest row for {about_js}:\n{raw}"));
+    assert!(
+        about_row["css"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|f| f == &format!("assets/{about_css}"))),
+        "the about row lists its sheet: {about_row}"
+    );
+
+    // The root links the entry's sheet alone: a lazy widget's sheet arrives
+    // with the widget, through the preload helper.
+    let served = served_manifest(&app);
+    assert_eq!(
+        served["routes"]["__root__"]["css"],
+        serde_json::json!([format!("/assets/{index_css}")]),
+        "{served}"
+    );
+
+    // Vite's preload helper: the chunk that imports the about route lazily
+    // carries a `__vite__mapDeps` table naming the about chunk and its sheets.
+    let importer = std::fs::read_dir(&assets)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .find(|code| code.contains("__vite__mapDeps") && code.contains(&about_js))
+        .expect("a chunk preloads the about route's chunk through __vite__mapDeps");
+    assert!(
+        importer.contains(&about_css) && importer.contains(&shared_css),
+        "the preload list names the about route's sheets"
+    );
+    let _ = std::fs::remove_dir_all(&app);
 }

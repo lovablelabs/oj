@@ -6346,9 +6346,25 @@ async function startFacts(c) {
   const facts = JSON.stringify({
     entryFileNames: fileNames.entry === undefined ? null : factValue(fileNames.entry, fns),
     chunkFileNames: fileNames.chunk === undefined ? null : factValue(fileNames.chunk, fns),
+    assetFileNames: fileNames.asset === undefined ? null : factValue(fileNames.asset, fns),
     // `build.manifest` of this environment (its own before the top level's):
     // true, a file name, or off.
     manifest: self.build?.manifest ?? cfg.build?.manifest ?? null,
+    // `build.emitAssets` of this environment: Vite's default is on for the
+    // client and off for a server. The environment named `ssr` is special:
+    // resolveConfig overrides its value with `build.ssrEmitAssets || the
+    // top level's`, but Vite's builder (no `sharedConfigBuild`, Start's way)
+    // resolves each environment's config again on that environment's own
+    // build options, so for `ssr` the override reads the environment's own
+    // declared value: `ssrEmitAssets || what the plugins' config hooks or
+    // the config declared` (a Worker environment's hook declares true).
+    emitAssets:
+      c.environment.name === "ssr"
+        ? (cfg.build?.ssrEmitAssets ?? false) ||
+          (pluginConfigDelta?.environments?.ssr?.build?.emitAssets ??
+            userViteConfig?.environments?.ssr?.build?.emitAssets ??
+            false)
+        : (self.build?.emitAssets ?? c.environment.name === "client"),
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
     codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting, fns),
@@ -6430,17 +6446,24 @@ function chunkPolicy(output, build) {
 async function outputFileNames(c, cfg, output) {
   if (command !== "build") return {};
   const hooks = pluginsWithHook(c, "outputOptions");
-  if (output.entryFileNames === undefined && output.chunkFileNames === undefined && hooks.length === 0) return {};
+  if (
+    output.entryFileNames === undefined &&
+    output.chunkFileNames === undefined &&
+    output.assetFileNames === undefined &&
+    hooks.length === 0
+  )
+    return {};
   const assetsDir = cfg.environments?.[c.environment.name]?.build?.assetsDir ?? cfg.build?.assetsDir ?? "assets";
   const pattern = [assetsDir, "[name]-[hash].js"].filter(Boolean).join("/");
   let options = { ...output };
   options.entryFileNames ??= pattern;
   options.chunkFileNames ??= pattern;
+  options.assetFileNames ??= [assetsDir, "[name]-[hash][extname]"].filter(Boolean).join("/");
   for (const { p, fn } of hooks) {
     const next = await fn.call(ctxFor(c, p), options);
     if (next != null) options = next;
   }
-  return { entry: options.entryFileNames, chunk: options.chunkFileNames };
+  return { entry: options.entryFileNames, chunk: options.chunkFileNames, asset: options.assetFileNames };
 }
 const stringOr = (v) => (typeof v === "string" ? v : null);
 // Vite's resolved worker options: `format` (iife by default) and
