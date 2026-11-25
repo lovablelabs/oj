@@ -5020,6 +5020,27 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
     let (Some(id), Some(client)) = (param("id"), param("clientId")) else {
         return (StatusCode::BAD_REQUEST, "oj start: lazy: id and clientId").into_response();
     };
+    // The modules the page found it lacks after an earlier answer (see
+    // `ClientBundler::lazy_chunk`). Said once per ask, so the log is the
+    // record of how often the bundler's account of a page was wrong.
+    let raw = |name: &str| {
+        query
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+    };
+    let lacks = lacked_modules(raw("lacks"));
+    if let Some(first) = lacks.first() {
+        println!(
+            "  oj start: a page lacks {} the bundler took it to hold ({first}{}); sending them with its import",
+            if lacks.len() == 1 {
+                "a module".to_string()
+            } else {
+                format!("{} modules", lacks.len())
+            },
+            if lacks.len() > 1 { ", …" } else { "" },
+        );
+    }
     let module = |code: String| {
         (
             [
@@ -5054,6 +5075,10 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         bundler: Arc::clone(&state.bundler),
         client: client.clone(),
     };
+    // Told to the bundler with the first compile: what it forgets of the
+    // page stays forgotten, and a compile the hold has asked again must
+    // not forget what a chunk delivered meanwhile.
+    let mut lacks_to_tell = lacks;
     let end = tokio::time::Instant::now() + LAZY_WAIT_CAP;
     // When a flush was seen with its patches still to be sent.
     let mut flushed_at: Option<tokio::time::Instant> = None;
@@ -5078,7 +5103,8 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
             // Named by the request, or not yet known to the page (its
             // live-reload client, the document's last tag, has not run).
             let named = param("g").is_some() || param("h").is_some();
-            tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed, named).await })
+            let lacks = std::mem::take(&mut lacks_to_tell);
+            tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed, named, &lacks).await })
         };
         let answer = match tokio::time::timeout_at(end, compile).await {
             Ok(Ok(answer)) => answer,
@@ -5203,6 +5229,23 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         )),
         LazyAnswer::Restored(code) => module(code),
         LazyAnswer::Unknown => (StatusCode::NOT_FOUND, "oj start: no such module").into_response(),
+        // The page's bundle imports by an id the current bundle has no
+        // boundary for: a module that reloads the page onto the current
+        // bundle, once (the runtime's missing-factory guard: a page that
+        // asks for the same id again right after its reload is not reloaded
+        // for it again), and otherwise rejects the import. The import waits
+        // while the page reloads, where its rejection would put the app's
+        // error screen up over a page about to be replaced.
+        LazyAnswer::Gone => {
+            let target = rolldown_common::lazy_proxy_target(&id).unwrap_or(&id);
+            module(format!(
+                "if (globalThis.__rolldown_runtime__?.hmr?.missingFactory({})) await new Promise(() => {{}});\nthrow new Error({});\nexport {{}};\n",
+                serde_json::Value::String(target.to_string()),
+                serde_json::Value::String(format!(
+                    "[oj] the current bundle has no module behind this import: {target}; reload the page"
+                )),
+            ))
+        }
         // A module that throws, with the error as the bundler gave it, after
         // showing it in the overlay of the page that asked (Vite's client
         // shows the error of a failed transform).
@@ -5220,6 +5263,22 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
 /// How long frames may stay parked after a flush before an `import()` stops
 /// waiting for them to go out.
 const PARKED_AFTER_FLUSH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The modules a page says it lacks in its request for an `import()`'s
+/// module (`lacks` as written in the query: the ids its registry knows them
+/// by, each percent-encoded, comma separated, so a comma in an id is
+/// `%2C`), each once, in the order said; none for a request that names
+/// none.
+fn lacked_modules(lacks: Option<&str>) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in lacks.unwrap_or("").split(',') {
+        let id = percent_decode(id);
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
 
 /// Tells the bundler, ten seconds after a request for a module ends, to
 /// forget the page that made it unless its socket is open by then (it
@@ -8031,6 +8090,18 @@ mod tests {
         assert_eq!(percent_decode("a%"), "a%");
         assert_eq!(percent_decode("a%2"), "a%2");
         assert_eq!(percent_decode("a%zz"), "a%zz");
+    }
+
+    // The ids a page says it lacks: each decoded on its own, so a comma in
+    // an id (`%2C`) is not the list's; each once; none for none.
+    #[test]
+    fn the_modules_a_page_lacks_are_read_one_by_one() {
+        assert_eq!(lacked_modules(None), Vec::<String>::new());
+        assert_eq!(lacked_modules(Some("")), Vec::<String>::new());
+        assert_eq!(
+            lacked_modules(Some("src%2Fa.ts,src%2Fa.ts,src%2Fb%2Cc.ts?tsr-shared%3D1,")),
+            ["src/a.ts", "src/b,c.ts?tsr-shared=1"]
+        );
     }
 
     #[test]

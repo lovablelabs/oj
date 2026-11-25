@@ -52,6 +52,14 @@ pub(crate) enum LazyAnswer {
     Restored(String),
     /// No module of a hot bundle goes by that id.
     Unknown,
+    /// The engine's graph has no lazy boundary by that id: the page's
+    /// bundle was made before the graph lost it (an `import()` an edit
+    /// removed, then a full build; a route's component no longer split off
+    /// keeps its boundary in the graph until one), and the page kept
+    /// asking by the old id. Under Vite the `import()` names the module's
+    /// file, which the server still has; here nothing can answer it but a
+    /// reload onto the current bundle.
+    Gone,
     /// The engine did not compile the module: for an error that may be the
     /// module's own or another's (an edit that does not compile, whatever
     /// module it is in, fails every compile), or because no engine runs.
@@ -552,12 +560,24 @@ impl DevBundler {
     ///
     /// `owed`: the page is behind the bundle; `named`: its request said
     /// what it has (see [`DevBundler::told`]).
+    ///
+    /// `lacks`: modules (by the ids the page's registry knows them by) the
+    /// page found it had no factory for after an answer that left them out
+    /// as ones it holds. The engine's record of the page is what a page
+    /// that loaded the newest output and applied every patch holds, and a
+    /// page can be behind that record (a hot update it never got, a change
+    /// that moved a module from a lazy chunk into the entry's graph, a
+    /// record made anew after a change); only the page knows what it ran.
+    /// Those modules, and whatever the record took the page to hold, are
+    /// sent with this answer, as Vite answers each import a module runs
+    /// from the file whatever the page loaded before.
     pub(crate) async fn lazy_chunk(
         &self,
         proxy: &str,
         client: &str,
         owed: bool,
         named: bool,
+        lacks: &[String],
     ) -> LazyAnswer {
         // Only the id of an `import()`'s boundary: the engine would scan
         // any other module of the graph it is given as if it had changed.
@@ -630,6 +650,13 @@ impl DevBundler {
             ),
         )
         .await;
+        if !lacks.is_empty() {
+            on_rolldown(
+                &self.start.rolldown,
+                engine.forget_client_modules(client, lacks),
+            )
+            .await;
+        }
         let result = on_rolldown(
             &self.start.rolldown,
             engine.compile_lazy_entry(proxy.to_string(), client.to_string()),
@@ -646,7 +673,11 @@ impl DevBundler {
             Err(errs) => {
                 let err = BundleError::from_diagnostics(&errs.into_vec());
                 if err.message.contains("Lazy entry module not found") {
-                    LazyAnswer::Unknown
+                    if self.boundary_in_app(proxy) {
+                        LazyAnswer::Gone
+                    } else {
+                        LazyAnswer::Unknown
+                    }
                 } else {
                     // The engine's error is not always the module's own:
                     // with a broken module anywhere in the graph it fails
@@ -655,6 +686,35 @@ impl DevBundler {
                     LazyAnswer::Unavailable(err)
                 }
             }
+        }
+    }
+
+    /// Whether the boundary `proxy` stands for a module of a file of the
+    /// app, under a query or not: one in the app, or one of a package the
+    /// app installed, wherever its `node_modules` is (a sandbox keeps it
+    /// beside the app). One a bundle of the app can have had, as against an
+    /// id that names no file, or a file outside the app (`/etc/passwd`),
+    /// which no bundle of the app ever held and no page is reloaded for.
+    fn boundary_in_app(&self, proxy: &str) -> bool {
+        let Some(target) = rolldown_common::lazy_proxy_target(proxy) else {
+            return false;
+        };
+        if target.starts_with('\0') {
+            return false;
+        }
+        let path = target.split(['?', '#']).next().unwrap_or(target);
+        let file = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            self.start.root.join(path)
+        };
+        let installed = file.components().any(|c| c.as_os_str() == "node_modules");
+        match (
+            std::fs::canonicalize(&file),
+            std::fs::canonicalize(&self.start.root),
+        ) {
+            (Ok(file), Ok(root)) => file.is_file() && (installed || file.starts_with(&root)),
+            _ => false,
         }
     }
 

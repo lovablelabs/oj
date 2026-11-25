@@ -334,6 +334,7 @@ test("hot.send posts a custom event for the dev server's ws listeners", () => {
 const LAZY_STUB = `class DevRuntime {
   constructor(id) { this.clientId = id; this.moduleCache = new Map(); this.factories = new Map(); this.lazyRequests = new Map(); }
   registerFactory(id, fn) { this.factories.set(id, fn); }
+  hasFactory(id) { return this.factories.has(id); }
   removeModuleCache(id) { this.moduleCache.delete(id); this.lazyRequests.delete(id); }
   initModule(id) { if (!this.moduleCache.has(id)) this.factories.get(id)(id); return this.moduleCache.get(id); }
   requestLazy(id, proxy) {
@@ -939,4 +940,89 @@ test("a module still missing right after the reload it asked for is not reloaded
   const third = load();
   assert.throws(() => third.initModule("src/gone.ts"));
   assert.equal(asked(third), 1);
+});
+
+// The server compiles a chunk against its account of what the page holds
+// (what its bundle evaluates as it loads, and what it was sent since), and
+// that account can name a module the page never got: a hot update it was
+// behind, a module a change moved from a lazy chunk into the entry's graph,
+// an account made anew after a change. The page is the one that knows what
+// it holds (Vite answers each import a module runs from the file): it asks
+// for the modules it lacks by name, once.
+test("an import() whose chunk refers to a module the page lacks asks for that module by name", async () => {
+  const proxy = "/abs/src/note.ts?rolldown-lazy=1";
+  const runtime = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  runtime.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  runtime.staticImports = new Map();
+  const asked = [];
+  runtime.ojImport = async (url) => {
+    asked.push(url);
+    if (asked.length === 1) {
+      // The chunk: the module's factory, importing a module the server took
+      // the page to hold (`src/lib/shared.ts`) and one the page has run.
+      runtime.registerFactory("src/note.ts", () => {});
+      runtime.staticImports.set("src/note.ts", { edges: ["src/lib/shared.ts", "src/lib/ran.ts"] });
+    } else {
+      runtime.registerFactory("src/lib/shared.ts", () => {});
+    }
+  };
+  runtime.moduleCache.set("src/lib/ran.ts", {});
+  assert.deepEqual([...runtime.ojLacking("src/note.ts")], ["src/note.ts"], "before the chunk, the module itself");
+
+  await runtime.loadLazyChunk(proxy);
+  assert.equal(asked.length, 2, asked.join("\n"));
+  assert.match(asked[1], /&g=1f-3&h=2&lacks=src%2Flib%2Fshared\.ts$/);
+  assert.deepEqual([...runtime.ojLacking("src/note.ts")], [], "the second answer brought it");
+
+  // A chunk whose modules the page can all run is followed by nothing.
+  const whole = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  whole.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  whole.staticImports = new Map([["src/note.ts", { edges: ["src/lib/ran.ts"] }]]);
+  whole.moduleCache.set("src/lib/ran.ts", {});
+  const wholeAsked = [];
+  whole.ojImport = async (url) => {
+    wholeAsked.push(url);
+    whole.registerFactory("src/note.ts", () => {});
+  };
+  await whole.loadLazyChunk(proxy);
+  assert.equal(wholeAsked.length, 1);
+
+  // Two modules lacking, each named once, each encoded on its own with the
+  // list's commas between them; a module they import that the page lacks
+  // too has a row only once they came, and is named in turn.
+  const chain = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  chain.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  chain.staticImports = new Map();
+  const chainAsked = [];
+  chain.ojImport = async (url) => {
+    chainAsked.push(url);
+    if (chainAsked.length === 1) {
+      chain.registerFactory("src/note.ts", () => {});
+      chain.staticImports.set("src/note.ts", { edges: ["src/a,b.ts", "src/b.ts", "src/a,b.ts"] });
+    } else if (chainAsked.length === 2) {
+      chain.registerFactory("src/a,b.ts", () => {});
+      chain.staticImports.set("src/a,b.ts", { edges: ["src/c.ts"] });
+      chain.registerFactory("src/b.ts", () => {});
+    } else {
+      chain.registerFactory("src/c.ts", () => {});
+    }
+  };
+  await chain.loadLazyChunk(proxy);
+  assert.equal(chainAsked.length, 3, chainAsked.join("\n"));
+  assert.match(chainAsked[1], /&lacks=src%2Fa%2Cb\.ts,src%2Fb\.ts$/);
+  assert.match(chainAsked[2], /&lacks=src%2Fc\.ts$/);
+
+  // A module no answer brings is asked for a few times, then left to the
+  // runtime's `initModule`, which reloads the page for it.
+  const never = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  never.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  never.staticImports = new Map([["src/note.ts", { edges: ["src/x.ts"] }]]);
+  const neverAsked = [];
+  never.ojImport = async (url) => {
+    neverAsked.push(url);
+    never.registerFactory("src/note.ts", () => {});
+  };
+  await never.loadLazyChunk(proxy);
+  assert.equal(neverAsked.length, 1 + 3, neverAsked.join("\n"));
+  assert.ok(neverAsked.slice(1).every((url) => /&lacks=src%2Fx\.ts$/.test(url)));
 });
