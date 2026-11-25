@@ -2339,8 +2339,8 @@ async fn rebundle_worker(
         // The pages took the change in place: the editor hears an update,
         // released with the pages' own frames.
         if (hot || restyled) && !reload {
-            if let Some(frame) = editor_update_frame(&root, &served) {
-                state.bundler.hot.tell_editor(frame);
+            if let Some(update) = editor_update_frame(&root, &served) {
+                state.bundler.hot.tell_editor(update);
             }
         }
         // The hold was taken at the watcher event. A flush that came while this
@@ -2407,13 +2407,11 @@ const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*","ojStart":
 
 /// Vite's `update` payload for the files a run changed and the pages took in
 /// place, for the editor's socket: one entry per file, a stylesheet's a
-/// `css-update`, stamped now. The pages never read it (their patches came on
-/// Start's socket); the editor counts it, and reads the stamp as the time
-/// the server sent the update. `None` with no file to name.
-fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
+/// `css-update`, stamped as it goes out (`EditorUpdate`). The pages never
+/// read it (their patches came on Start's socket); the editor counts it,
+/// and reads the stamp as the time the server sent the update. `None` with
+/// no file to name.
+fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<crate::start_hot::EditorUpdate> {
     let mut files: Vec<&PathBuf> = changed.iter().filter(|p| watch_relevant(p)).collect();
     files.sort();
     files.dedup();
@@ -2432,13 +2430,10 @@ fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
                 "type": if style { "css-update" } else { "js-update" },
                 "path": path,
                 "acceptedPath": path,
-                "timestamp": timestamp,
             })
         })
         .collect();
-    (!updates.is_empty()).then(|| {
-        serde_json::json!({ "type": "update", "updates": updates, "ojStart": true }).to_string()
-    })
+    crate::start_hot::EditorUpdate::new(updates)
 }
 
 /// A gate flush taking effect: the parked reloads publish, and the parked
@@ -9657,7 +9652,7 @@ mod tests {
             ],
         )
         .expect("files to name");
-        let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        let frame: serde_json::Value = serde_json::from_str(&frame.stamped(7)).unwrap();
         assert_eq!(frame["type"], "update");
         assert_eq!(frame["ojStart"], true, "not for a page on oj's client");
         let entries: Vec<(&str, &str)> = frame["updates"]
@@ -9676,11 +9671,10 @@ mod tests {
         );
         for update in frame["updates"].as_array().unwrap() {
             assert_eq!(update["acceptedPath"], update["path"]);
-            assert!(update["timestamp"].as_u64().is_some_and(|t| t > 0));
+            assert_eq!(update["timestamp"], 7, "the stamp it was sent with");
         }
-        assert_eq!(
-            editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]),
-            None,
+        assert!(
+            editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]).is_none(),
             "nothing to name, no frame"
         );
     }

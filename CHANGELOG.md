@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev, under the editor's HMR gate: the `update` frame the editor's socket gets for an edit the pages took in place is stamped when it goes out, at the gate's flush, by the HMR clock, as Vite stamps its own: the editor's gate plugin replays the held watcher events at the flush, one by one, and Vite's `updateModules` stamps the update it sends for each then (server/hmr.ts, `monotonicDateNow()` at the event). The frame was stamped when the rebuild ended and then parked until the flush, so a tool reading the stamp as the server's send time counted the hold: seconds of latency for a frame that travelled in milliseconds, from the version these frames first went out (0.4.19). Plain dev was never affected: its gate decides the update at the flush.
+
 ## [0.4.23] - 2026-11-25
 
 ### Fixed
