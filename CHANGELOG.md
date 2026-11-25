@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.23] - 2026-11-25
+
 ### Fixed
 
 - `oj dev`, `oj dev-typecheck`, `oj build` and `oj preview` with no root named use the directory they start in, as Vite does. They took `playground/` as the root when it held an `index.html`, so an app with such a folder was served and built from it. To run oj's own playground from the repo, name it: `oj dev playground`.
