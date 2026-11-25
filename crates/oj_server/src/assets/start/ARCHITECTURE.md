@@ -140,8 +140,8 @@ Framework entries (synthesized, what the TanStack Vite plugin would inject):
   `createServerEntry`, the same surface as the package's
   `@tanstack/react-start/server-entry`, so an app's own entry imports from it
   as it would from the package.
-- `client-entry.tsx` hydrates the document with `<StartClient/>`.
-- `start-entry.ts`, `plugin-adapters.ts`, `manifest.ts` fill the remaining
+- `client-entry.tsx` hydrates the document with `<StartClient/>`; an app with its own `src/client.tsx` (or a configured `client.entry`) enters there instead.
+- `start-entry.ts`, `empty-plugin-adapters.ts`, `manifest.ts` fill the remaining
   seam specifiers.
 - `fn-stubs.mjs` is a runtime `createIsomorphicFn` that branches on
   `typeof document` (the compiler stub defaults to the server impl otherwise).

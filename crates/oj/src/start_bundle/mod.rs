@@ -118,6 +118,17 @@ impl StartConfig {
         crate::start_dev::configured_start_server_entry(&self.config, &self.root)
     }
 
+    /// The client bundle's entry: the app's own Start client entry
+    /// (`tanstackStart({ client: { entry } })`, or `src/client.tsx` by
+    /// convention), as `virtual:tanstack-start-client-entry` resolves under
+    /// Vite; else oj's stub of the framework's default (hydrateRoot of
+    /// StartClient). The app's file is the chunk's facade, so `vite build`'s
+    /// manifest keys the entry by it.
+    pub fn client_entry(&self) -> PathBuf {
+        crate::start_dev::configured_start_client_entry(&self.config, &self.root)
+            .unwrap_or_else(|| self.cache.join("client-entry.tsx"))
+    }
+
     /// The framework seam every client bundle fills in (what TanStack's Vite
     /// plugin resolves): the router, the start instance, the plugin adapter
     /// list, the manifest, the injected head scripts and the fn stubs.
@@ -127,7 +138,7 @@ impl StartConfig {
             ("#tanstack-start-entry".into(), self.start_entry()),
             (
                 "#tanstack-start-plugin-adapters".into(),
-                self.cache.join("plugin-adapters.ts"),
+                self.cache.join("empty-plugin-adapters.ts"),
             ),
             (
                 "tanstack-start-manifest:v".into(),
@@ -167,28 +178,31 @@ impl StartConfig {
     }
 
     /// The defines of a client bundle, in application order (a later key
-    /// wins): `process.env` as the Start runtime reads it, `global`,
-    /// `import.meta.env`, then the config's `define`, the client
-    /// environment's own and what plugin config hooks added, as Vite's define
-    /// plugin layers them.
+    /// wins): Vite's define plugin's `process.env` (an empty object, NODE_ENV
+    /// its one key, under `global` and `globalThis` too), the server-fn base
+    /// Start's plugin defines, `import.meta.env`, then the config's `define`,
+    /// the client environment's own and what plugin config hooks added, as
+    /// Vite's define plugin layers them. No `global` alias and no banner: a
+    /// chunk of `vite build` carries neither.
     pub fn client_defines(
         &self,
         env_delta: &[(String, String)],
         plugin_defines: &[(String, String)],
     ) -> Vec<(String, String)> {
-        let node_env = self.node_env();
-        let process_env = serde_json::json!({
-            "NODE_ENV": node_env,
-            "TSS_SERVER_FN_BASE": SERVER_FN_BASE,
-        })
-        .to_string();
+        let node_env = serde_json::Value::String(self.node_env().to_string()).to_string();
+        let fn_base = serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string();
         let mut out = vec![
-            ("process.env".to_string(), process_env),
+            ("process.env".to_string(), "{}".to_string()),
+            ("global.process.env".to_string(), "{}".to_string()),
+            ("globalThis.process.env".to_string(), "{}".to_string()),
+            ("process.env.NODE_ENV".to_string(), node_env.clone()),
+            ("global.process.env.NODE_ENV".to_string(), node_env.clone()),
+            ("globalThis.process.env.NODE_ENV".to_string(), node_env),
             (
-                "process.env.NODE_ENV".to_string(),
-                serde_json::Value::String(node_env.to_string()).to_string(),
+                "process.env.TSS_SERVER_FN_BASE".to_string(),
+                fn_base.clone(),
             ),
-            ("global".to_string(), "globalThis".to_string()),
+            ("import.meta.env.TSS_SERVER_FN_BASE".to_string(), fn_base),
         ];
         out.extend(self.app_env.import_meta_env_defines(
             oj_env::get(),
@@ -223,6 +237,10 @@ impl StartConfig {
             ),
             (
                 "process.env.TSS_SERVER_FN_BASE".to_string(),
+                serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string(),
+            ),
+            (
+                "import.meta.env.TSS_SERVER_FN_BASE".to_string(),
                 serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string(),
             ),
             ("import.meta.hot".to_string(), "undefined".to_string()),

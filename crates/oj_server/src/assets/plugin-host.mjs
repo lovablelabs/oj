@@ -110,6 +110,21 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
   return merged;
 }
 
+// Vite's mergeWithDefaults: a default is replaced by the user's value, never
+// joined with it (mergeConfigLite joins arrays, as Vite's mergeConfig does
+// for two user configs: a string default and the user's `build.target` list
+// made `["modules", ...]`).
+function mergeWithDefaults(defaults, value) {
+  const out = { ...defaults };
+  for (const key of Object.keys(value ?? {})) {
+    const v = value[key];
+    if (v == null) continue;
+    const d = out[key];
+    out[key] = isPlainObject(d) && isPlainObject(v) ? mergeWithDefaults(d, v) : v;
+  }
+  return out;
+}
+
 const pluginsPath = ojEngineBoot ? ojEngineBoot.pluginsPath : process.argv[2];
 const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.argv[3]) ?? "{}");
 
@@ -218,7 +233,6 @@ if (ojEngineBoot) {
   } catch {}
 }
 
-process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 // Vite's ConfigEnv (config.ts): `{ mode, command, isSsrBuild, isPreview }`.
 // Vite computes it once, before any environment exists, from the inline
 // config alone (`command === "build" && !!config.build?.ssr`); oj passes no
@@ -629,7 +643,7 @@ function lightningcssTargets(esbuildTarget) {
 
 function withResolvedDefaults(config) {
   const c = config ?? {};
-  const merged = mergeConfigLite(
+  const merged = mergeWithDefaults(
     {
       command: env.command,
       mode: env.mode,
@@ -640,18 +654,19 @@ function withResolvedDefaults(config) {
       // custom `--mode staging` build is still a production build.
       isProduction: process.env.NODE_ENV === "production",
       experimental: {},
-      // Vite's resolved `build` carries defaults plugins read in configResolved
+      // Vite 8's resolved `build` defaults, which plugins read in configResolved
       // (e.g. UnoCSS resolves `config.build.outDir` and reads
-      // `config.build.rollupOptions.output`). User config overrides these.
+      // `config.build.rollupOptions.output`) and oj's own build reads back (the
+      // minifier, the target esbuild gets). User config overrides these.
       build: {
-        target: "modules",
+        target: BASELINE_WIDELY_AVAILABLE_TARGET,
         outDir: "dist",
         assetsDir: "assets",
         assetsInlineLimit: 4096,
         cssCodeSplit: true,
         sourcemap: false,
         rollupOptions: {},
-        minify: "esbuild",
+        minify: "oxc",
         reportCompressedSize: true,
         chunkSizeWarningLimit: 500,
       },
@@ -673,6 +688,8 @@ function withResolvedDefaults(config) {
     },
     c,
   );
+  // resolveBuildEnvironmentOptions: the named baseline is its browser list.
+  if (merged.build?.target === "baseline-widely-available") merged.build.target = [...BASELINE_WIDELY_AVAILABLE_TARGET];
   // resolveCSSOptions: the lightningcss transformer gets Vite's baseline
   // browser targets unless the user set their own.
   if (merged.css?.transformer === "lightningcss") {
@@ -1755,6 +1772,8 @@ async function loadViteConfig(configPath) {
         { mode: env.mode, command: env.command, isSsrBuild: env.isSsrBuild, isPreview: env.isPreview },
         configPath,
         appRoot,
+        undefined,
+        quietNativeLoaderLogger(vite),
       ),
     );
     if (loaded && loaded.config) {
@@ -1789,6 +1808,23 @@ async function loadViteConfig(configPath) {
     mod = await import(pathToFileURL(configPath).href);
   }
   return typeof mod.default === "function" ? await mod.default(env) : mod.default;
+}
+
+// Vite's config loader warns, per incompatibility, that the config would not
+// load under `configLoader: "native"`: advice for a Vite the app is not
+// running (oj is the native-loader world), so it is dropped here, at the
+// logger. Not through VITE_CONFIG_NATIVE_IGNORE_WARNING in process.env: the
+// config reads that environment too (`loadEnv(mode, root, "")` gathers it
+// whole), and a Cloudflare Worker's wrangler.json carried the variable.
+function quietNativeLoaderLogger(vite) {
+  if (typeof vite.createLogger !== "function") return undefined;
+  const logger = vite.createLogger();
+  const warn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (typeof msg === "string" && msg.includes("configLoader: 'native'")) return;
+    warn(msg, options);
+  };
+  return logger;
 }
 
 let allPlugins = [];
@@ -1830,7 +1866,68 @@ function hostedPlugins(list, userConfig, c = main) {
       throw e;
     }
   });
-  return out.sort((a, b) => enforceRank(a) - enforceRank(b));
+  out.sort((a, b) => enforceRank(a) - enforceRank(b));
+  // Vite's build post plugins come after the user's own post plugins.
+  if (env.command === "build" && applyConfig.build?.minify === "esbuild") out.push(esbuildMinifyPlugin());
+  return out;
+}
+// Vite's vite:esbuild-transpile for `build.minify: "esbuild"`: every chunk
+// minified by esbuild's transform in renderChunk, after every other plugin's
+// (a worker bundle's too: Vite resolves its plugins the same way), with the
+// options resolveEsbuildTranspileOptions and transformWithEsbuild hand it: the
+// environment's `build.target`, the resolved `esbuild` options (utf8, no
+// legal comments), dynamic-import and import-meta supported, loader js, the
+// file name as sourcefile, `useDefineForClassFields: false`. rolldown's own
+// minifier stays off for such a build (the Rust side passes `minify: false`).
+function esbuildMinifyPlugin() {
+  let esbuild = null;
+  const load = async () => {
+    if (esbuild) return esbuild;
+    const root = initial.config?.root ?? process.cwd();
+    const req = createRequire(root + "/package.json");
+    let path;
+    try {
+      path = req.resolve("esbuild");
+    } catch {
+      // Vite 8 no longer depends on esbuild; an app that minifies with it has it.
+      path = req.resolve("esbuild", { paths: [dirname(req.resolve("vite/package.json"))] });
+    }
+    return (esbuild = await import(pathToFileURL(path).href));
+  };
+  return {
+    name: "vite:esbuild-transpile",
+    enforce: "post",
+    applyToEnvironment(environment) {
+      return environment.config?.esbuild !== false;
+    },
+    async renderChunk(code, chunk, opts) {
+      const config = this.environment?.config ?? {};
+      const rc = main.resolvedConfig ?? {};
+      if ((config.build?.minify ?? rc.build?.minify) !== "esbuild") return null;
+      const own = config.esbuild ?? rc.esbuild;
+      if (own === false) return null;
+      // Vite's resolved `esbuild` options (config.ts) under the user's.
+      const esbuildOptions = { charset: "utf8", legalComments: "none", ...own };
+      let target = config.build?.target ?? rc.build?.target;
+      if (target === "baseline-widely-available") target = [...BASELINE_WIDELY_AVAILABLE_TARGET];
+      const { include: _i, exclude: _e, jsxInject: _j, ...options } = esbuildOptions;
+      const raw = typeof options.tsconfigRaw === "object" && options.tsconfigRaw ? options.tsconfigRaw : {};
+      const { transform } = await load();
+      const result = await transform(code, {
+        sourcemap: true,
+        sourcefile: chunk.fileName,
+        ...options,
+        loader: "js",
+        target: target || undefined,
+        format: { es: "esm", cjs: "cjs" }[opts?.format ?? "es"],
+        supported: { "dynamic-import": true, "import-meta": true, ...esbuildOptions.supported },
+        minify: true,
+        treeShaking: true,
+        tsconfigRaw: { ...raw, compilerOptions: { useDefineForClassFields: false, ...raw.compilerOptions } },
+      });
+      return { code: result.code, map: JSON.parse(result.map) };
+    },
+  };
 }
 // Whether oj does `p`'s work itself, so this host leaves it out: the
 // top-level list and what applyToEnvironment returns alike.

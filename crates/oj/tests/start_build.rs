@@ -202,7 +202,7 @@ fn a_plugin_transforms_starts_manifest_in_the_server_bundle() {
     let code = probe["code"].as_str().unwrap_or_default();
     assert!(
         code.starts_with("export const tsrStartManifest = () => (")
-            && code.contains("/assets/client-"),
+            && code.contains("/assets/index-"),
         "Start's own manifest, naming the client entry: {code}"
     );
 
@@ -325,7 +325,7 @@ fn chunk_file_names_come_from_the_config_and_the_output_options_hooks() {
     let assets = names("dist/client/assets");
     let entry = assets
         .iter()
-        .find(|f| f.starts_with("client-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("the client entry: {assets:?}"));
     let code = std::fs::read_to_string(root.join("dist/client/assets").join(entry)).unwrap();
     assert!(
@@ -379,7 +379,7 @@ fn the_client_environments_manifest_is_written() {
         entries[0]["file"]
             .as_str()
             .unwrap()
-            .starts_with("assets/client-"),
+            .starts_with("assets/index-"),
         "{raw}"
     );
 
@@ -535,8 +535,10 @@ fn served_manifest(root: &Path) -> serde_json::Value {
         .flatten()
         .map(|e| e.path())
         .find(|p| {
-            p.file_name()
-                .is_some_and(|f| f.to_string_lossy().starts_with("manifest-sheets-"))
+            p.file_name().is_some_and(|f| {
+                f.to_string_lossy()
+                    .starts_with("_tanstack-start-manifest_v-")
+            })
         })
         .expect("the server bundle's manifest chunk");
     let out = Command::new("node")
@@ -642,7 +644,7 @@ fn a_cloudflare_worker_is_written_to_starts_server_directory() {
     let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
     let config = config.replacen(
         "    cloudflare(",
-        "    { name: \"reads-out-dirs\", configResolved(c) { process.getBuiltinModule(\"node:fs\").writeFileSync(\"out-dirs.json\", JSON.stringify([c.environments.client.build.outDir, c.environments.ssr.build.outDir])); } },\n    cloudflare(",
+        "    { name: \"reads-out-dirs\", configResolved(c) { process.getBuiltinModule(\"node:fs\").writeFileSync(\"out-dirs.json\", JSON.stringify([c.environments.client.build.outDir, c.environments.ssr.build.outDir, process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ?? null])); } },\n    cloudflare(",
         1,
     );
     std::fs::write(root.join("vite.config.ts"), config).unwrap();
@@ -662,6 +664,37 @@ fn a_cloudflare_worker_is_written_to_starts_server_directory() {
         root.join("dist/client/assets").is_dir(),
         "the client stays in dist/client"
     );
+    // The entry chunk is the Worker itself. The plugin declares
+    // `preserveEntrySignatures: "strict"`, which the rolldown Vite 8.2 ships does
+    // not enforce with a facade; a facade `index.js` re-exporting
+    // `assets/worker-entry-*.js` is not what `vite build` writes.
+    let index = std::fs::read_to_string(root.join("dist/server/index.js")).unwrap();
+    assert!(
+        !index.contains("/worker-entry-") && index.len() > 1024,
+        "index.js is the Worker's own chunk, not a facade re-exporting it:\n{}",
+        &index[..index.len().min(300)]
+    );
+    // Vite's `build.manifest`, which the plugin turns on for the entry Worker.
+    let raw = std::fs::read_to_string(root.join("dist/server/.vite/manifest.json"))
+        .expect("dist/server/.vite/manifest.json is written for the Worker environment");
+    let manifest: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    let entries: Vec<_> = manifest.values().filter(|r| r["isEntry"] == true).collect();
+    assert!(
+        entries.len() == 1 && entries[0]["file"] == "index.js",
+        "one entry row, the Worker:\n{raw}"
+    );
+    assert!(
+        manifest.values().all(|r| r["file"]
+            .as_str()
+            .is_some_and(|f| root.join("dist/server").join(f).is_file())),
+        "every row names a file of dist/server:\n{raw}"
+    );
+    // The plugin's client generateBundle emits `.assetsignore` (the public
+    // directory's, plus the two files Workers Assets must not serve); it lands
+    // over the public copy, as Vite copies `public/` before the bundle writes.
+    let ignore = std::fs::read_to_string(root.join("dist/client/.assetsignore"))
+        .expect("dist/client/.assetsignore is written");
+    assert_eq!(ignore, "wrangler.json\n.dev.vars\n");
     let deploy = std::fs::read_to_string(root.join(".wrangler/deploy/config.json")).unwrap();
     assert!(
         deploy.contains("dist/server/wrangler.json"),
@@ -677,8 +710,8 @@ fn a_cloudflare_worker_is_written_to_starts_server_directory() {
     );
     let seen = std::fs::read_to_string(root.join("out-dirs.json")).unwrap();
     assert_eq!(
-        seen, r#"["dist/client","dist/server"]"#,
-        "the resolved config names both directories"
+        seen, r#"["dist/client","dist/server",null]"#,
+        "the resolved config names both directories, and oj's own environment (the Vite warning switch it used to set) stays out of the config's: `loadEnv(mode, root, \"\")` would hand it to the Worker's wrangler.json vars"
     );
     let _ = std::fs::remove_dir_all(&parent);
 }
@@ -707,4 +740,163 @@ fn a_cloudflare_worker_follows_the_top_level_out_dir() {
     );
     assert!(!root.join("dist").exists(), "nothing lands in dist");
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+/// The client's chunks read `process.env` as `vite build` writes them: Vite's
+/// define plugin makes `process.env` an empty object with NODE_ENV its one
+/// key, Start's plugin defines the server-fn base, and no chunk opens with a
+/// `globalThis.process` banner (oj's chunks did; a chunk of `vite build`
+/// carries none, so every chunk differed from Vite's by that line).
+#[test]
+fn a_client_chunk_defines_process_env_as_vite_does() {
+    let Some(root) = app("process-env") else {
+        return;
+    };
+    build(&root);
+    let assets = root.join("dist/client/assets");
+    let mut chunks = 0;
+    let mut fn_base = false;
+    for entry in std::fs::read_dir(&assets).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "js") {
+            continue;
+        }
+        let code = std::fs::read_to_string(&path).unwrap();
+        chunks += 1;
+        assert!(
+            !code.contains("globalThis.process="),
+            "{}: no process banner",
+            path.display()
+        );
+        assert!(
+            !code.contains("process.env.TSS_SERVER_FN_BASE"),
+            "{}: the server-fn base is defined, not read",
+            path.display()
+        );
+        fn_base |= code.contains("/_serverFn/");
+    }
+    assert!(
+        chunks > 0 && fn_base,
+        "a chunk carries the defined server-fn base ({chunks} chunks)"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `build.minify: "esbuild"`: each chunk is minified by esbuild in renderChunk
+/// (Vite's vite:esbuild-transpile, after every other plugin's), rolldown's own
+/// minifier off, so a plugin's renderChunk sees the chunk as rolldown wrote it,
+/// and no annotation comment survives (Vite's output options drop them).
+#[test]
+fn minify_esbuild_minifies_each_chunk_in_render_chunk() {
+    let Some(root) = app("minify-esbuild") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let probe = r#"    react(),
+    {
+      name: "render-chunk-probe",
+      enforce: "post",
+      renderChunk(code, chunk) {
+        if (this.environment.name === "client" && chunk.isEntry) writeSeen("render-chunk-seen.txt", code);
+        return null;
+      },
+    },"#;
+    let source = source
+        .replacen(
+            "export default defineConfig({",
+            "import { writeFileSync as writeSeen } from \"node:fs\";\nexport default defineConfig({\n  build: { minify: \"esbuild\" },",
+            1,
+        )
+        .replacen("    react(),", probe, 1);
+    assert!(
+        source.contains("render-chunk-probe") && source.contains("minify: \"esbuild\""),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    build(&root);
+
+    let seen = std::fs::read_to_string(root.join("render-chunk-seen.txt"))
+        .expect("the probe saw the client entry chunk");
+    assert!(
+        seen.lines().count() > 20,
+        "a post renderChunk hook sees the chunk before esbuild minifies it:\n{}",
+        &seen[..seen.len().min(300)]
+    );
+    let entry = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().is_some_and(|f| {
+                let f = f.to_string_lossy();
+                f.starts_with("index-") && f.ends_with(".js")
+            })
+        })
+        .expect("the client entry chunk");
+    let code = std::fs::read_to_string(&entry).unwrap();
+    // The hook saw rolldown's unminified output (spaced assignments by the
+    // thousand); the written chunk is esbuild's (no spaced assignment, no
+    // annotation comment, and `const` kept, which rolldown's minifier lowers).
+    assert!(
+        seen.matches(" = ").count() > 100,
+        "the hook saw unminified code: {}",
+        &seen[..seen.len().min(300)]
+    );
+    assert!(
+        code.len() > 200
+            && code.len() * 10 < seen.len() * 7
+            && !code.contains(" = ")
+            && !code.contains("/* @__PURE__ */")
+            && code.contains("const "),
+        "esbuild minified the written entry chunk ({} bytes from {}):\n{}",
+        code.len(),
+        seen.len(),
+        &code[..code.len().min(300)]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The client bundle enters at the app's own Start client entry (`src/client.tsx`
+/// by convention, or `tanstackStart({ client: { entry } })`), as Vite's does
+/// through `virtual:tanstack-start-client-entry`: its code is in the entry
+/// chunk, named `index-<hash>.js` after Start's input, and the manifest keys
+/// the entry by the app's file. oj entered at its own stub, so an app's
+/// polyfills and boot-time setup were missing from the build.
+#[test]
+fn the_client_bundle_enters_at_the_apps_client_entry() {
+    let Some(root) = app("client-entry") else {
+        return;
+    };
+    std::fs::write(
+        root.join("src/client.tsx"),
+        r#"import { StartClient } from "@tanstack/react-start/client";
+import { StrictMode, startTransition } from "react";
+import { hydrateRoot } from "react-dom/client";
+(globalThis as { __fixtureClientEntry?: string }).__fixtureClientEntry = "fixture-client-entry-ran";
+startTransition(() => {
+  hydrateRoot(document, <StrictMode><StartClient /></StrictMode>);
+});
+"#,
+    )
+    .unwrap();
+    build(&root);
+    let entry = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name().is_some_and(|f| {
+                let f = f.to_string_lossy();
+                f.starts_with("index-") && f.ends_with(".js")
+            })
+        })
+        .expect("the client entry chunk, index-<hash>.js");
+    let code = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        code.contains("fixture-client-entry-ran"),
+        "the app's client entry is the bundle's entry: {}",
+        entry.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

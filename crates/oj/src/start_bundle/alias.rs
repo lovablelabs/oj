@@ -76,7 +76,8 @@ impl Plugin for AppAliasPlugin {
 /// manifest names no stylesheet: oj links the client's sheets itself and
 /// settles their URLs after the client bundle is written (a plugin's late CSS
 /// replaces a sheet). So the framework's import goes to a wrapper oj writes
-/// (`manifest-sheets.ts`), which imports the manifest by the same specifier
+/// (`_tanstack-start-manifest_v.ts`, named for the chunk name Vite's virtual
+/// manifest module gets), which imports the manifest by the same specifier
 /// and adds the sheets to the root route. With no Start plugin answering,
 /// the wrapper's import ends at oj's own manifest through the alias.
 #[derive(Debug)]
@@ -343,6 +344,48 @@ impl Plugin for DedupePlugin {
         }
         Ok(Some(HookResolveIdOutput::from_resolved_id(
             rolldown_common::ResolvedId::from(from_root),
+        )))
+    }
+}
+
+/// `#tanstack-start-plugin-adapters`, as Start resolves it with no
+/// serialization adapters configured: the framework's own
+/// `empty-plugin-adapters.js` beside the importing module (start-client-core's
+/// and start-server-core's dist each carry one), so the chunk it makes is
+/// named as under `vite build`; where no such sibling exists, oj's stub of
+/// the same module.
+#[derive(Debug)]
+pub(crate) struct StartPluginAdapters {
+    pub stub: std::path::PathBuf,
+}
+
+pub(crate) const START_PLUGIN_ADAPTERS: &str = "#tanstack-start-plugin-adapters";
+
+impl Plugin for StartPluginAdapters {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:start-plugin-adapters")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        if args.specifier != START_PLUGIN_ADAPTERS {
+            return Ok(None);
+        }
+        let sibling = args
+            .importer
+            .and_then(|from| Path::new(from).parent())
+            .map(|dir| dir.join("empty-plugin-adapters.js"))
+            .filter(|file| file.is_file());
+        let id = sibling.unwrap_or_else(|| self.stub.clone());
+        Ok(Some(HookResolveIdOutput::from_id(
+            id.to_string_lossy().into_owned(),
         )))
     }
 }

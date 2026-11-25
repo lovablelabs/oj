@@ -59,6 +59,26 @@ pub fn build_minify(config: &OjConfig) -> bool {
     build_opt(config, |b| b.minify.as_ref()).is_none_or(flag_on)
 }
 
+/// The minifier `build.minify` names. Vite's default (`true`, `"oxc"`) is
+/// rolldown's own; `"esbuild"` minifies each chunk with esbuild's transform in
+/// renderChunk (Vite's vite:esbuild-transpile), rolldown's minifier off;
+/// `"terser"` is taken as rolldown's (no terser pass); `false` turns it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Minifier {
+    Off,
+    Oxc,
+    Esbuild,
+}
+
+pub fn build_minifier(config: &OjConfig) -> Minifier {
+    match build_opt(config, |b| b.minify.as_ref()) {
+        None => Minifier::Oxc,
+        Some(BoolOrString::Str(s)) if s == "esbuild" => Minifier::Esbuild,
+        Some(v) if flag_on(v) => Minifier::Oxc,
+        Some(_) => Minifier::Off,
+    }
+}
+
 /// `build.assetsDir`, normalized to a `/`-separated outDir-relative directory
 /// with no surrounding slashes (Vite's default is `assets`; an empty string
 /// puts hashed files at the outDir root).

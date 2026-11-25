@@ -641,7 +641,7 @@ fn process_env_defines(node_env: &str) -> Vec<(String, String)> {
 /// Vite's output `comments`: a minified build keeps none (no annotation,
 /// JSDoc or legal comments), an unminified one keeps them all, and an ES
 /// library keeps its annotations so a consumer can still tree-shake it.
-fn vite_output_comments(minify: bool, es_lib: bool) -> rolldown_common::CommentsOptions {
+pub(crate) fn vite_output_comments(minify: bool, es_lib: bool) -> rolldown_common::CommentsOptions {
     rolldown_common::CommentsOptions {
         legal: !minify,
         annotation: !minify || es_lib,
@@ -650,7 +650,7 @@ fn vite_output_comments(minify: bool, es_lib: bool) -> rolldown_common::Comments
 }
 
 /// Vite builds every environment with rolldown's `experimental.viteMode`.
-fn vite_mode_experimental() -> rolldown_common::ExperimentalOptions {
+pub(crate) fn vite_mode_experimental() -> rolldown_common::ExperimentalOptions {
     rolldown_common::ExperimentalOptions {
         vite_mode: Some(true),
         ..Default::default()

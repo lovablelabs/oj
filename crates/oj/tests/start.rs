@@ -216,7 +216,7 @@ fn build_renders_every_fixture_feature() {
         .flatten()
     {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("client-") && name.ends_with(".js")) {
+        if !(name.starts_with("index-") && name.ends_with(".js")) {
             continue;
         }
         let code = std::fs::read_to_string(entry.path()).unwrap();

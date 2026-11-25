@@ -38,6 +38,7 @@ pub(crate) struct BuildOutput {
     pub out_dir: PathBuf,
     pub sourcemap: oj_config::Sourcemap,
     pub minify: bool,
+    pub minifier: oj_config::Minifier,
     /// `build.prerender` routes.
     pub prerender: Vec<String>,
 }
@@ -186,6 +187,9 @@ fn client_plugins(
     emit: &Arc<EmitState>,
 ) -> Vec<SharedPluginable> {
     let mut plugins: Vec<SharedPluginable> = Vec::new();
+    plugins.push(Pluginable::new_shared(super::alias::StartPluginAdapters {
+        stub: start.cache.join("empty-plugin-adapters.ts"),
+    }));
     if let Some(plugin) = &start.stylex {
         plugins.push(crate::stylex_plugin::transform(plugin));
     }
@@ -351,7 +355,15 @@ pub(crate) async fn build(
         start.client_main_fields(),
         Some(start.client_conditions()),
     );
-    let minify = crate::build::rolldown_minify(out.minify);
+    // rolldown's minifier for the bundles. With `build.minify: "esbuild"` it
+    // stays off and the plugin host's vite:esbuild-transpile minifies each chunk
+    // in renderChunk, as Vite's build does. Comments as Vite's output options
+    // set them: none survive a minified build.
+    let minify = match out.minifier {
+        oj_config::Minifier::Esbuild => rolldown_common::RawMinifyOptions::Bool(false),
+        _ => crate::build::rolldown_minify(out.minify),
+    };
+    let comments = crate::build::vite_output_comments(out.minify, false);
 
     // `?worker` / `?worker&url` in a build: Vite's bundleWorkerEntry bundles
     // the worker entry on its own (the client's transform and define) with
@@ -409,6 +421,7 @@ pub(crate) async fn build(
                         defines,
                         resolve,
                         minify,
+                        comments,
                         sourcemap: sourcemap_kind,
                     },
                 )
@@ -429,6 +442,13 @@ pub(crate) async fn build(
         emitter.set_worker_bundler(bundler, worker_options.is_module());
     }
 
+    // Vite's prepareOutDir copies `public/` into the client's output before
+    // its bundle writes, so a file the bundle emits under the same name
+    // (@cloudflare/vite-plugin's `.assetsignore`) replaces the copy.
+    if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
+        copy_dir_over(&public_dir, &client_dir)?;
+    }
+
     let build_all = async {
         // The client.
         let policy = match &client_host {
@@ -446,7 +466,10 @@ pub(crate) async fn build(
                 &emit,
             ))
             .with_options(BundlerOptions {
-                input: Some(vec![input("client", &start.cache.join("client-entry.tsx"))]),
+                // Start's client environment input is `{ index: <client entry> }`:
+                // the chunk is `index-<hash>.js`, keyed in the manifest by the
+                // app's entry file.
+                input: Some(vec![input("index", &start.client_entry())]),
                 cwd: Some(start.root.clone()),
                 platform: Some(Platform::Browser),
                 transform: Some(start.transform_options()),
@@ -462,6 +485,7 @@ pub(crate) async fn build(
                 dir: Some(client_dir.to_string_lossy().into_owned()),
                 format: Some(OutputFormat::Esm),
                 minify: Some(minify.clone()),
+                comments: Some(comments),
                 sourcemap: sourcemap(out.sourcemap),
                 entry_filenames: Some(super::chunks::file_names(
                     "entryFileNames",
@@ -476,7 +500,6 @@ pub(crate) async fn build(
                     "assets/[name]-[hash].js",
                 )),
                 asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
-                banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
                 code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
                 preserve_entry_signatures: Some(
                     policy
@@ -485,11 +508,10 @@ pub(crate) async fn build(
                             p.preserve_entry_signatures
                         }),
                 ),
-                experimental: policy.as_ref().and_then(|p| p.chunk_optimization).map(|o| {
-                    rolldown_common::ExperimentalOptions {
-                        chunk_optimization: Some(o),
-                        ..Default::default()
-                    }
+                // Vite builds every environment with rolldown's `experimental.viteMode`.
+                experimental: Some(rolldown_common::ExperimentalOptions {
+                    chunk_optimization: policy.as_ref().and_then(|p| p.chunk_optimization),
+                    ..crate::build::vite_mode_experimental()
                 }),
                 ..Default::default()
             })
@@ -575,7 +597,10 @@ pub(crate) async fn build(
             ),
         )?;
 
-        let manifest_sheets = start.cache.join("manifest-sheets.ts");
+        // The wrapper's file name is its chunk's name (rolldown names a chunk after
+        // its facade module): `_tanstack-start-manifest_v`, as rolldown sanitizes
+        // Start's own virtual id `\0tanstack-start-manifest:v` under `vite build`.
+        let manifest_sheets = start.cache.join("_tanstack-start-manifest_v.ts");
         std::fs::write(
             &manifest_sheets,
             super::alias::StartManifestSheets::module(&css, &client_url),
@@ -597,6 +622,9 @@ pub(crate) async fn build(
         // lookups (the environment's own resolve conditions).
         let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
+            plugins.push(Pluginable::new_shared(super::alias::StartPluginAdapters {
+                stub: start.cache.join("empty-plugin-adapters.ts"),
+            }));
             plugins.push(Pluginable::new_shared(super::alias::StartManifestSheets {
                 wrapper: manifest_sheets.clone(),
             }));
@@ -726,10 +754,20 @@ pub(crate) async fn build(
                         dir: Some(dir.to_string_lossy().into_owned()),
                         format: Some(OutputFormat::Esm),
                         minify: Some(minify.clone()),
+                        comments: Some(comments),
+                        experimental: Some(crate::build::vite_mode_experimental()),
                         sourcemap: sourcemap(out.sourcemap),
                         entry_filenames: Some("[name].js".to_string().into()),
                         chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
                         asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
+                        // The plugin declares `preserveEntrySignatures: "strict"`, which
+                        // the rolldown Vite 8.2 ships (1.2) does not enforce with a facade:
+                        // `vite build` writes the entry chunk itself as `index.js`, its
+                        // extension exports included, and other chunks import from it.
+                        // A facade would move the Worker's code to `assets/worker-entry-*.js`.
+                        preserve_entry_signatures: Some(
+                            rolldown_common::PreserveEntrySignatures::AllowExtension,
+                        ),
                         ..Default::default()
                     })
                     .build()
@@ -744,7 +782,22 @@ pub(crate) async fn build(
                     .map_err(|errs| {
                         anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
                     })?;
-                checked(output)?;
+                let output = checked(output)?;
+                // Vite's `build.manifest` for the Worker environment
+                // (@cloudflare/vite-plugin turns it on for the entry Worker): its
+                // chunks by source under `.vite/manifest.json`, as the client's.
+                if let Some(name) = server_host.as_ref().and_then(|h| h.facts.manifest.clone()) {
+                    let manifest = crate::build::vite_manifest(
+                        &output.assets,
+                        &start.root,
+                        &crate::build::ChunkSheets::new(Vec::new()),
+                    );
+                    let dest = dir.join(&name);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&dest, serde_json::to_string_pretty(&manifest)?)?;
+                }
                 Some(dir)
             }
             None => {
@@ -770,6 +823,8 @@ pub(crate) async fn build(
                         dir: Some(dist.to_string_lossy().into_owned()),
                         format: Some(OutputFormat::Esm),
                         minify: Some(minify.clone()),
+                        comments: Some(comments),
+                        experimental: Some(crate::build::vite_mode_experimental()),
                         sourcemap: sourcemap(out.sourcemap),
                         entry_filenames: Some("[name].mjs".to_string().into()),
                         chunk_filenames: Some("chunks/[name]-[hash].mjs".to_string().into()),
@@ -805,10 +860,6 @@ pub(crate) async fn build(
                 .close_bundle()
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin closeBundle failed:\n{e}"))?;
-        }
-
-        if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
-            copy_dir_over(&public_dir, &client_dir)?;
         }
 
         if !out.prerender.is_empty() {
@@ -852,7 +903,7 @@ pub(crate) async fn build(
     let built = serde_json::json!({
         "client": {
             "outDir": client_dir.display().to_string(),
-            "input": start.cache.join("client-entry.tsx").display().to_string(),
+            "input": start.client_entry().display().to_string(),
         },
         server_env_name.clone(): {
             "outDir": server_out_dir.display().to_string(),
@@ -908,6 +959,7 @@ struct WorkerBundleOptions {
     defines: Vec<(String, String)>,
     resolve: rolldown_common::ResolveOptions,
     minify: rolldown_common::RawMinifyOptions,
+    comments: rolldown_common::CommentsOptions,
     sourcemap: oj_config::Sourcemap,
 }
 
@@ -958,7 +1010,14 @@ async fn bundle_worker(
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
-            input: Some(vec![input("worker", file)]),
+            // Named after its file, as Vite names a worker bundle's input (so
+            // `[name]` of its chunk reads `foo.worker-<hash>.js`).
+            input: Some(vec![input(
+                file.file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("worker"),
+                file,
+            )]),
             cwd: Some(start.root.clone()),
             platform: Some(Platform::Browser),
             transform: Some(start.transform_options()),
@@ -969,6 +1028,8 @@ async fn bundle_worker(
             external,
             format: Some(format),
             minify: Some(options.minify),
+            comments: Some(options.comments),
+            experimental: Some(crate::build::vite_mode_experimental()),
             sourcemap: sourcemap(options.sourcemap),
             entry_filenames: Some(name(&worker.entry_file_names, "assets/[name]-[hash].js").into()),
             chunk_filenames: Some(name(&worker.chunk_file_names, "assets/[name]-[hash].js").into()),
@@ -1037,8 +1098,8 @@ async fn bundle_worker(
     entry.ok_or_else(|| format!("the worker bundle of {} has no entry chunk", file.display()))
 }
 
-/// `public/` copied over the client output (a file there wins, as Vite's
-/// copyPublicDir writes after the bundle).
+/// `public/` copied into the client output before the bundle writes, as
+/// Vite's prepareOutDir does: a file the bundle emits replaces the copy.
 fn copy_dir_over(src: &Path, dest: &Path) -> anyhow::Result<()> {
     if !src.is_dir() {
         return Ok(());

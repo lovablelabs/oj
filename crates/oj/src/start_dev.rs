@@ -2747,7 +2747,28 @@ pub(crate) fn configured_start_server_entry(
         .into_iter()
         .find(|(find, _)| find == "virtual:tanstack-start-server-entry")
         .map(|(_, replacement)| replacement)?;
-    let path = PathBuf::from(target.split('?').next().unwrap_or(&target));
+    app_entry_file(root, &target)
+}
+
+/// The app's own Start client entry (`tanstackStart({ client: { entry } })`, or
+/// its `src/client.tsx` by convention), as Start's config hook aliases
+/// `virtual:tanstack-start-client-entry` to it: an app file, never the
+/// framework's default entry under node_modules (oj's stub stands in for that).
+pub(crate) fn configured_start_client_entry(
+    config: &oj_config::OjConfig,
+    root: &Path,
+) -> Option<PathBuf> {
+    let target = oj_config::resolve_alias(config, "client")
+        .into_iter()
+        .find(|(find, _)| find == "virtual:tanstack-start-client-entry")
+        .map(|(_, replacement)| replacement)?;
+    app_entry_file(root, &target)
+}
+
+/// `target`, an alias replacement, as an app file: absolute or root-relative,
+/// under the root, outside node_modules, and a file.
+fn app_entry_file(root: &Path, target: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(target.split('?').next().unwrap_or(target));
     let path = if path.is_absolute() {
         path
     } else {
@@ -2849,6 +2870,7 @@ pub async fn start_build(
         out_dir: out_dir.clone(),
         sourcemap: oj_config::build_sourcemap(&config),
         minify: oj_config::build_minify(&config),
+        minifier: oj_config::build_minifier(&config),
         prerender: build_cfg.prerender.clone().unwrap_or_default(),
     };
     let start = crate::start_bundle::StartConfig {

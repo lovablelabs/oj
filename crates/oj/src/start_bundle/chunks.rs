@@ -138,7 +138,6 @@ fn manual(
             include_dependencies_recursively: g
                 .get("includeDependenciesRecursively")
                 .and_then(Value::as_bool),
-            ..Default::default()
         });
     }
     Ok(ManualCodeSplittingOptions {
