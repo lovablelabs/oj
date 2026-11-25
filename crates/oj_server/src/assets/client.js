@@ -261,13 +261,34 @@ function clearOverlay() {
   overlayEl = null;
 }
 
+// Links a newer one is replacing (Vite's `outdatedLinkTags`), each with that
+// newer link: an update that comes before the newer one loads swaps that
+// one, not the link on its way out. Each link then goes when its own
+// replacement loads, and a burst of updates ends on one link, the newest.
+// A replacement the page took out of the document never loads, so the link
+// it was to replace is swapped again; Vite would find no link and leave the
+// sheet as it is.
+const outdatedLinks = new WeakMap();
+// A link to the one it was put in to replace.
+const replaced = new WeakMap();
+
 function swapCss(update) {
   const links = [...document.querySelectorAll("link[rel=stylesheet]")];
-  const link = links.find((l) => new URL(l.href).pathname === update.path);
+  const link = links.find((l) => !outdatedLinks.get(l)?.isConnected && new URL(l.href).pathname === update.path);
   if (link) {
     const next = link.cloneNode();
     next.href = update.path + "?t=" + update.timestamp;
-    next.addEventListener("load", () => link.remove());
+    // The old link goes when the new one loads or fails to, as in Vite, and
+    // with it the links before it that are still there: one whose own
+    // replacement was removed while it loaded hears nothing of it.
+    const drop = () => {
+      if (!next.isConnected) return;
+      for (let old = link; old; old = replaced.get(old)) old.remove();
+    };
+    replaced.set(next, link);
+    next.addEventListener("load", drop);
+    next.addEventListener("error", drop);
+    outdatedLinks.set(link, next);
     link.after(next);
     console.log(`[oj] css updated ${update.path}`);
     return;
