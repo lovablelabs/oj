@@ -261,13 +261,23 @@ function clearOverlay() {
   overlayEl = null;
 }
 
+// Links a newer one is replacing (Vite's `outdatedLinkTags`): an update that
+// comes before the newer one loads swaps that one, not the link on its way
+// out. Each link then goes when its own replacement loads, and a burst of
+// updates ends on one link, the newest.
+const outdatedLinks = new WeakSet();
+
 function swapCss(update) {
   const links = [...document.querySelectorAll("link[rel=stylesheet]")];
-  const link = links.find((l) => new URL(l.href).pathname === update.path);
+  const link = links.find((l) => !outdatedLinks.has(l) && new URL(l.href).pathname === update.path);
   if (link) {
     const next = link.cloneNode();
     next.href = update.path + "?t=" + update.timestamp;
-    next.addEventListener("load", () => link.remove());
+    // The old link goes when the new one loads or fails to, as in Vite.
+    const drop = () => link.remove();
+    next.addEventListener("load", drop);
+    next.addEventListener("error", drop);
+    outdatedLinks.add(link);
     link.after(next);
     console.log(`[oj] css updated ${update.path}`);
     return;

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev: css updates for one stylesheet link that come faster than the sheet loads no longer leave links behind. Each update swapped the original link, and only the first new link's load removed it, so a burst of N updates left N−1 links for good. An update now swaps the newest link, as Vite's client does (`outdatedLinkTags`), and the old link also goes when the new one fails to load.
+
 ## [0.4.23] - 2026-11-25
 
 ### Fixed

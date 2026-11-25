@@ -17,8 +17,29 @@ function loadPage({
   hmrHost = null,
   worker = false,
   forwardConsole = '{"enabled":false}',
+  // The urls of the document's stylesheet links, in document order.
+  sheets = [],
 } = {}) {
   const log = [];
+  // The document's stylesheet links, in order, each with its load and error
+  // listeners.
+  const links = [];
+  const link = (href) => {
+    const el = { rel: "stylesheet", href, on: {} };
+    el.addEventListener = (type, fn) => (el.on[type] ??= []).push(fn);
+    el.cloneNode = () => link(el.href);
+    el.after = (next) => {
+      // The browser resolves the href a script sets against the page.
+      next.href = new URL(next.href, `http://${hostname}/`).href;
+      links.splice(links.indexOf(el) + 1, 0, next);
+    };
+    el.remove = () => {
+      const i = links.indexOf(el);
+      if (i >= 0) links.splice(i, 1);
+    };
+    return el;
+  };
+  for (const href of sheets) links.push(link(href));
   const docListeners = {};
   const listeners = {};
   const sockets = [];
@@ -58,7 +79,7 @@ function loadPage({
     location: { protocol: "http:", host: hostname, hostname, port: "", reload: () => log.push(["reload"]) },
     document: {
       visibilityState: "visible",
-      querySelectorAll: () => [],
+      querySelectorAll: (sel) => (sel === "link[rel=stylesheet]" ? links.slice() : []),
       addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
     },
     addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
@@ -100,7 +121,7 @@ function loadPage({
   const settle = () => new Promise((r) => setImmediate(r));
   const fire = (type) => (listeners[type] ?? []).forEach((fn) => fn({}));
   const fireDoc = (type) => (docListeners[type] ?? []).forEach((fn) => fn({}));
-  return { page, log, sockets, ws, timers, intervals, clock, said, advanceTo, settle, fire, fireDoc };
+  return { page, log, sockets, ws, timers, intervals, clock, said, advanceTo, settle, fire, fireDoc, links };
 }
 
 const PING = '{"type":"ping"}';
@@ -438,4 +459,39 @@ test("forwarding console lines, the watchdog's own line does not loop back into 
   // A loop would end only in a stack overflow the console wrapper swallows,
   // having printed the line once per frame.
   assert.equal(page.said.filter((line) => /no word from the dev server/.test(line)).length, 1);
+});
+
+// Vite's client marks a link outdated once a newer one is put after it, so
+// the next update swaps the newer one. Each link goes when its replacement
+// settles, and a burst that outruns the loads still ends on one link.
+test("a burst of css updates for one sheet ends on one link, the newest", async () => {
+  const page = loadPage({ sheets: ["http://app.test/src/app.css", "http://app.test/src/other.css"] });
+  page.ws().emit("open");
+  const update = (timestamp) =>
+    page.ws().emit("message", {
+      data: JSON.stringify({ type: "css-update", path: "/src/app.css", timestamp }),
+    });
+  const hrefs = () => page.links.map((el) => el.href);
+  for (const t of [1, 2, 3]) update(t);
+  await page.settle();
+  // Each update swapped the link the one before it added.
+  assert.deepEqual(hrefs(), [
+    "http://app.test/src/app.css",
+    "http://app.test/src/app.css?t=1",
+    "http://app.test/src/app.css?t=2",
+    "http://app.test/src/app.css?t=3",
+    "http://app.test/src/other.css",
+  ]);
+  // They settle in any order, the middle one failing: one link stays.
+  const [, first, second, third] = page.links;
+  third.on.load.forEach((fn) => fn());
+  first.on.load.forEach((fn) => fn());
+  second.on.error.forEach((fn) => fn());
+  assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=3", "http://app.test/src/other.css"]);
+  assert.deepEqual(page.log, [], "no reload");
+  // The next update swaps the link that stayed.
+  update(4);
+  await page.settle();
+  page.links[1].on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=4", "http://app.test/src/other.css"]);
 });
