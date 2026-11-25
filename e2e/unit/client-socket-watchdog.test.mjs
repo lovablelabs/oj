@@ -25,21 +25,23 @@ function loadPage({
   // listeners.
   const links = [];
   const link = (href) => {
-    const el = { rel: "stylesheet", href, on: {} };
+    const el = { rel: "stylesheet", href, isConnected: false, on: {} };
     el.addEventListener = (type, fn) => (el.on[type] ??= []).push(fn);
     el.cloneNode = () => link(el.href);
     el.after = (next) => {
       // The browser resolves the href a script sets against the page.
       next.href = new URL(next.href, `http://${hostname}/`).href;
       links.splice(links.indexOf(el) + 1, 0, next);
+      next.isConnected = true;
     };
     el.remove = () => {
       const i = links.indexOf(el);
       if (i >= 0) links.splice(i, 1);
+      el.isConnected = false;
     };
     return el;
   };
-  for (const href of sheets) links.push(link(href));
+  for (const href of sheets) links.push(Object.assign(link(href), { isConnected: true }));
   const docListeners = {};
   const listeners = {};
   const sockets = [];
@@ -482,11 +484,13 @@ test("a burst of css updates for one sheet ends on one link, the newest", async 
     "http://app.test/src/app.css?t=3",
     "http://app.test/src/other.css",
   ]);
-  // They settle in any order, the middle one failing: one link stays.
-  const [, first, second, third] = page.links;
+  // The newest loads first. The links it replaces go with it, the ones
+  // still loading among them, which a browser then tells nothing of.
+  const [, first, , third] = page.links;
   third.on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=3", "http://app.test/src/other.css"]);
+  // Should one still be told, nothing changes.
   first.on.load.forEach((fn) => fn());
-  second.on.error.forEach((fn) => fn());
   assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=3", "http://app.test/src/other.css"]);
   assert.deepEqual(page.log, [], "no reload");
   // The next update swaps the link that stayed.
@@ -494,4 +498,20 @@ test("a burst of css updates for one sheet ends on one link, the newest", async 
   await page.settle();
   page.links[1].on.load.forEach((fn) => fn());
   assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=4", "http://app.test/src/other.css"]);
+  // The page takes a loading link out (a router swapping the head's tags):
+  // it never loads, and the next update swaps the link it was to replace,
+  // where finding none would reload the page.
+  update(5);
+  await page.settle();
+  page.links[1].remove();
+  update(6);
+  await page.settle();
+  assert.deepEqual(hrefs(), [
+    "http://app.test/src/app.css?t=4",
+    "http://app.test/src/app.css?t=6",
+    "http://app.test/src/other.css",
+  ]);
+  page.links[1].on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(), ["http://app.test/src/app.css?t=6", "http://app.test/src/other.css"]);
+  assert.deepEqual(page.log, [], "no reload");
 });
