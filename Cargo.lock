@@ -6624,6 +6624,7 @@ dependencies = [
  "deno_package_json",
  "deno_path_util",
  "deno_resolver",
+ "futures-util",
  "libc",
  "node_resolver",
  "oj_deno_napi",

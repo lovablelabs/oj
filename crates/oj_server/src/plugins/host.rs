@@ -118,6 +118,9 @@ pub(crate) struct HostCore {
     /// liveness (and logs progress); never a budget the hook must finish
     /// within. Tests compress it.
     probe_wait: std::time::Duration,
+    /// The last probe's verdict and when it came: the calls waiting at the
+    /// same time share it instead of each pinging the host (see `probe`).
+    probe_gate: tokio::sync::Mutex<Option<(tokio::time::Instant, ProbeVerdict)>>,
     /// Last "still initializing" progress line, so concurrent init-gated calls
     /// print one line per interval, not one each.
     init_progress: Mutex<std::time::Instant>,
@@ -1177,6 +1180,7 @@ impl PluginHost {
             resync_done: tokio::sync::watch::channel(0).0,
             init_progress_seen: tokio::sync::watch::channel(0).0,
             probe_wait,
+            probe_gate: tokio::sync::Mutex::new(None),
             init_progress: Mutex::new(std::time::Instant::now()),
             boot: BootContext {
                 boot_seed,
@@ -3082,30 +3086,31 @@ impl HostCore {
                 r = &mut call => return self.finish_call(hook, generation, r),
                 _ = self.host_gone_wait() => return Err("plugin host exited".into()),
                 _ = probe.tick() => {
-                    // The probe is deliberately UNGUARDED (no engine deadline):
-                    // an armed watchdog terminates whatever executes on the
-                    // isolate, which could be someone else's healthy work.
-                    let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
-                    match tokio::time::timeout(2 * self.probe_wait, ping).await {
-                        Ok(Err(oj_js::EngineError::Closed)) => {
-                            return Err("plugin host exited".into());
+                    let (verdict, fresh) = self.probe(&engine).await;
+                    match verdict {
+                        ProbeVerdict::Exited => return Err("plugin host exited".into()),
+                        ProbeVerdict::Alive(answer) => {
+                            // One line per probe, from the call that made it;
+                            // the calls that took its answer say nothing.
+                            if fresh {
+                                eprintln!(
+                                    "{}",
+                                    long_hooks_notice(hook, args, started.elapsed().as_secs(), &answer)
+                                );
+                            }
                         }
-                        Ok(answer) => {
-                            let running = answer
-                                .ok()
-                                .as_ref()
-                                .map(running_hooks_of)
-                                .unwrap_or_default();
-                            eprintln!(
-                                "{}",
-                                long_hook_notice(hook, args, started.elapsed().as_secs(), &running)
-                            );
-                        }
-                        Err(_) => {
+                        ProbeVerdict::Silent => {
                             let msg = format!(
                                 "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
                                 (2 * self.probe_wait).as_secs()
                             );
+                            // Where its JS is, when V8 reaches an interrupt
+                            // check in time: the one lead on what wedged it.
+                            if fresh {
+                                if let Some(stack) = engine.dump_stack(std::time::Duration::from_secs(3)) {
+                                    eprintln!("oj: the plugin host's JS stack:\n{stack}");
+                                }
+                            }
                             self.declare_gone(&msg, generation);
                             return Err(msg);
                         }
@@ -3113,6 +3118,40 @@ impl HostCore {
                 }
             }
         }
+    }
+
+    /// One ping for every call waiting at the same time: the first to ask
+    /// pings, and the others take its verdict while it is younger than half
+    /// a probe window (`fresh` tells the two apart). Each waiting call used
+    /// to ping for itself, and the host answered each with every hook in
+    /// flight: a build resolving a large graph has thousands of calls
+    /// waiting at once, so the host spent its time on pings about itself,
+    /// and was declared wedged for it.
+    ///
+    /// The ping is deliberately UNGUARDED (no engine deadline): an armed
+    /// watchdog terminates whatever executes on the isolate, which could be
+    /// someone else's healthy work.
+    async fn probe(&self, engine: &std::sync::Arc<oj_js::JsEngine>) -> (ProbeVerdict, bool) {
+        let mut gate = self.probe_gate.lock().await;
+        if let Some((at, verdict)) = &*gate {
+            if at.elapsed() < self.probe_wait / 2 {
+                return (verdict.clone(), false);
+            }
+        }
+        let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
+        let verdict = match tokio::time::timeout(2 * self.probe_wait, ping).await {
+            Ok(Err(oj_js::EngineError::Closed)) => ProbeVerdict::Exited,
+            Ok(answer) => ProbeVerdict::Alive(
+                answer
+                    .ok()
+                    .as_ref()
+                    .map(probe_answer_of)
+                    .unwrap_or_default(),
+            ),
+            Err(_) => ProbeVerdict::Silent,
+        };
+        *gate = Some((tokio::time::Instant::now(), verdict.clone()));
+        (verdict, true)
     }
 
     /// Maps one engine reply to the hook result, latching init or death as it proves.
@@ -3338,15 +3377,46 @@ pub struct RunningHook {
     pub ms: u64,
 }
 
-/// The running hooks a ping answered with (an older host answers `true`: none).
+/// A ping's answer: how many hook calls the host has in flight, and the
+/// oldest of them (up to eight; every one when there are no more).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbeAnswer {
+    pub total: usize,
+    pub oldest: Vec<RunningHook>,
+}
+
+/// What a probe found: the engine gone, the host answering (with what it
+/// runs), or an isolate that gave no answer in two probe windows.
+#[derive(Debug, Clone)]
+enum ProbeVerdict {
+    Exited,
+    Alive(ProbeAnswer),
+    Silent,
+}
+
+/// The running hooks a ping answered with, oldest first (an older host
+/// answers `true`: none; one older still answers the whole list).
 pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
+    probe_answer_of(answer).oldest
+}
+
+pub(crate) fn probe_answer_of(answer: &serde_json::Value) -> ProbeAnswer {
     let text = answer.as_str().unwrap_or("");
-    let Ok(serde_json::Value::Array(list)) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Vec::new();
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ProbeAnswer::default();
+    };
+    let (total, list) = match &parsed {
+        serde_json::Value::Array(list) => (list.len(), list.as_slice()),
+        serde_json::Value::Object(_) => (
+            parsed["total"].as_u64().unwrap_or(0) as usize,
+            parsed["oldest"].as_array().map_or(&[][..], Vec::as_slice),
+        ),
+        _ => return ProbeAnswer::default(),
     };
     let string =
         |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).map(str::to_string);
-    list.iter()
+    let oldest = list
+        .iter()
         .map(|v| RunningHook {
             hook: string(v, "hook").unwrap_or_default(),
             id: string(v, "id"),
@@ -3354,7 +3424,8 @@ pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
             plugin: string(v, "plugin"),
             ms: v.get("ms").and_then(serde_json::Value::as_u64).unwrap_or(0),
         })
-        .collect()
+        .collect();
+    ProbeAnswer { total, oldest }
 }
 
 /// The hooks whose identical concurrent calls share one run (see
@@ -3497,6 +3568,36 @@ pub(crate) fn long_hook_notice(
     }
     line.push_str(" (the plugin host is responsive)…");
     line
+}
+
+/// [`long_hook_notice`] for the call that probed, when other calls are
+/// waiting too: the one line names how many, and the oldest of them.
+pub(crate) fn long_hooks_notice(
+    hook: &str,
+    args: &[&str],
+    elapsed_secs: u64,
+    answer: &ProbeAnswer,
+) -> String {
+    if answer.total <= 1 {
+        return long_hook_notice(hook, args, elapsed_secs, &answer.oldest);
+    }
+    let describe = |r: &RunningHook| {
+        let mut s = hook_name(&r.hook).to_string();
+        if let Some(id) = &r.id {
+            s.push_str(&format!(" of {id}"));
+        }
+        if let Some(plugin) = &r.plugin {
+            s.push_str(&format!(" in plugin {plugin}"));
+        }
+        s.push_str(&format!(" ({}s)", r.ms / 1000));
+        s
+    };
+    let oldest: Vec<String> = answer.oldest.iter().take(3).map(describe).collect();
+    format!(
+        "oj: {} plugin hook calls are running, this {hook} for {elapsed_secs}s (the plugin host is responsive); the oldest: {}…",
+        answer.total,
+        oldest.join("; ")
+    )
 }
 
 /// The plugin hook a host call runs: a phase call is still the plugins' `transform` or `load`.

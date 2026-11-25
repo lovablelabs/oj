@@ -3,10 +3,13 @@
 
 //! The engine thread: call jobs run concurrently on the one isolate. A call
 //! is set up (module load + evaluate + invoke) before the next job is
-//! accepted, then parked as a pending promise; the loop interleaves accepting new jobs, polling every
-//! parked call, and driving the event loop, so a call that awaits a fetch
-//! back into the caller (an SSR loader hitting its own dev server) never
-//! deadlocks behind itself.
+//! accepted, then parked as a pending promise; the loop interleaves accepting
+//! new jobs, settling the parked calls whose promises woke, and driving the
+//! event loop, so a call that awaits a fetch back into the caller (an SSR
+//! loader hitting its own dev server) never deadlocks behind itself. The
+//! parked calls sit in a [`FuturesUnordered`], so a tick polls only the ones
+//! that were woken: a build with thousands of hook calls parked at once used
+//! to poll every one of them on every tick, and spent the thread on that.
 //!
 //! A parked call's deadline is part of its future (`tokio::time::timeout_at`),
 //! so expiry arrives through the same settlement path as success — there is
@@ -25,6 +28,8 @@ use std::time::Duration;
 
 use deno_core::url::Url;
 use deno_core::v8;
+use futures_util::stream::FuturesUnordered;
+use futures_util::Stream;
 use tokio::sync::mpsc;
 use tokio::time::error::Elapsed;
 
@@ -89,7 +94,7 @@ type ParkedOutcome = Result<SettledResult, Elapsed>;
 
 enum Tick {
     Job(Job),
-    Settled(usize, ParkedOutcome),
+    Settled(u64, ParkedOutcome),
     /// The event loop failed (an uncaught error) with calls still pending:
     /// nothing can settle them anymore.
     Broken(deno_core::error::CoreError),
@@ -102,17 +107,19 @@ enum Tick {
 }
 
 /// A call whose module ran and whose function was invoked, waiting for the
-/// returned promise to settle while the scheduler drives the event loop.
-struct ParkedCall {
-    fut: Pin<Box<dyn Future<Output = ParkedOutcome>>>,
-    reply: Reply,
-}
+/// returned promise to settle while the scheduler drives the event loop:
+/// its number, and the outcome when it comes.
+type ParkedCall = Pin<Box<dyn Future<Output = (u64, ParkedOutcome)>>>;
 
 struct Scheduler {
     isolate: Isolate,
     config: EngineConfig,
     root_url: Url,
-    calls: Vec<ParkedCall>,
+    /// The parked calls, polled as their promises wake them.
+    calls: FuturesUnordered<ParkedCall>,
+    /// Each parked call's reply, by its number; the count of calls parked.
+    replies: std::collections::HashMap<u64, Reply>,
+    next_call: u64,
     /// The event loop drained completely (no ops, no live timers). Only tells
     /// the shutdown path whether a final flush is needed; the loop is polled
     /// on every wake regardless (see [`Scheduler::next_tick`]).
@@ -134,7 +141,9 @@ impl Scheduler {
             isolate,
             config,
             root_url,
-            calls: Vec::new(),
+            calls: FuturesUnordered::new(),
+            replies: std::collections::HashMap::new(),
+            next_call: 0,
             event_loop_idle: false,
             eval_counter: 0,
         })
@@ -189,9 +198,11 @@ impl Scheduler {
                 Poll::Ready(None) => return Poll::Ready(Tick::Closed),
                 Poll::Pending => {}
             }
-            for (i, call) in self.calls.iter_mut().enumerate() {
-                if let Poll::Ready(outcome) = call.fut.as_mut().poll(cx) {
-                    return Poll::Ready(Tick::Settled(i, outcome));
+            // Only the parked calls whose promises woke are polled; an
+            // empty set answers None and takes the next call as before.
+            if !self.calls.is_empty() {
+                if let Poll::Ready(Some((id, outcome))) = Pin::new(&mut self.calls).poll_next(cx) {
+                    return Poll::Ready(Tick::Settled(id, outcome));
                 }
             }
             match self.isolate.poll_events(cx) {
@@ -220,8 +231,9 @@ impl Scheduler {
     /// Fails every parked call as MemoryLimit and cancels the heap-limit
     /// callback's termination.
     fn fail_all_parked(&mut self) {
-        for call in std::mem::take(&mut self.calls) {
-            let _ = call.reply.send(Err(EngineError::MemoryLimit));
+        self.calls.clear();
+        for (_, reply) in self.replies.drain() {
+            let _ = reply.send(Err(EngineError::MemoryLimit));
         }
         self.isolate.cancel_termination();
     }
@@ -231,7 +243,7 @@ impl Scheduler {
     /// is enforced by the parked call's own timer alone (Node parity: an
     /// elapsed clock never stops running JS).
     fn arm_alone(&self, deadline: Option<Duration>) -> Option<DeadlineGuard> {
-        self.calls
+        self.replies
             .is_empty()
             .then(|| self.isolate.arm(deadline))
             .flatten()
@@ -269,11 +281,16 @@ impl Scheduler {
                     let _ = reply.send(Err(EngineError::Deadline));
                 }
                 Verdict::Clean => {
-                    let fut: Pin<Box<dyn Future<Output = ParkedOutcome>>> = match deadline_at {
-                        Some(at) => Box::pin(tokio::time::timeout_at(at, fut)),
-                        None => Box::pin(async move { Ok(fut.await) }),
+                    let id = self.next_call;
+                    self.next_call += 1;
+                    let fut: ParkedCall = match deadline_at {
+                        Some(at) => {
+                            Box::pin(async move { (id, tokio::time::timeout_at(at, fut).await) })
+                        }
+                        None => Box::pin(async move { (id, Ok(fut.await)) }),
                     };
-                    self.calls.push(ParkedCall { fut, reply });
+                    self.replies.insert(id, reply);
+                    self.calls.push(fut);
                 }
                 // Setup outlived the deadline but completed anyway (the
                 // termination raced completion): expired, not broken.
@@ -288,8 +305,10 @@ impl Scheduler {
         }
     }
 
-    fn settled(&mut self, i: usize, outcome: ParkedOutcome) {
-        let call = self.calls.swap_remove(i);
+    fn settled(&mut self, id: u64, outcome: ParkedOutcome) {
+        let Some(reply) = self.replies.remove(&id) else {
+            return;
+        };
         let result = match outcome {
             Ok(settled) => Some(settled_to_json(&mut self.isolate.worker, settled)),
             // Timed out while parked: dropping the future abandons the
@@ -297,7 +316,7 @@ impl Scheduler {
             Err(_elapsed) => None,
         };
         let verdict = self.settle(None);
-        let _ = call.reply.send(match result {
+        let _ = reply.send(match result {
             Some(result) => verdict.apply(result),
             None => Err(verdict.cutoff()),
         });
@@ -306,7 +325,7 @@ impl Scheduler {
     fn memory_exhausted(&mut self) {
         let _ = self.isolate.take_oom();
         // With nothing parked the OOM would otherwise vanish: say it.
-        if self.calls.is_empty() {
+        if self.replies.is_empty() {
             eprintln!(
                 "oj_js: background work exceeded the engine heap limit; the isolate is condemned"
             );
@@ -319,7 +338,7 @@ impl Scheduler {
     /// with the error.
     fn broken(&mut self, e: deno_core::error::CoreError) {
         let error = e.to_string();
-        if self.calls.is_empty() {
+        if self.replies.is_empty() {
             eprintln!("oj_js: uncaught error on the engine event loop: {error}");
         }
         // The OOM flag is read ONCE for the whole batch: per-call reads would
@@ -327,15 +346,26 @@ impl Scheduler {
         // termination error to the rest.
         let oom_fired = self.isolate.take_oom();
         let mut cx = Context::from_waker(Waker::noop());
-        for mut call in std::mem::take(&mut self.calls) {
-            let result = match call.fut.as_mut().poll(&mut cx) {
-                Poll::Ready(Ok(settled)) => settled_to_json(&mut self.isolate.worker, settled),
-                Poll::Ready(Err(_)) if oom_fired => Err(EngineError::MemoryLimit),
-                Poll::Ready(Err(_)) => Err(EngineError::Deadline),
-                Poll::Pending if oom_fired => Err(EngineError::MemoryLimit),
-                Poll::Pending => Err(EngineError::Js(error.clone())),
+        // The calls that settled on the final turn answer with what they
+        // settled to; the rest, still pending, with the error.
+        while let Poll::Ready(Some((id, outcome))) = Pin::new(&mut self.calls).poll_next(&mut cx) {
+            let Some(reply) = self.replies.remove(&id) else {
+                continue;
             };
-            let _ = call.reply.send(result);
+            let result = match outcome {
+                Ok(settled) => settled_to_json(&mut self.isolate.worker, settled),
+                Err(_) if oom_fired => Err(EngineError::MemoryLimit),
+                Err(_) => Err(EngineError::Deadline),
+            };
+            let _ = reply.send(result);
+        }
+        self.calls.clear();
+        for (_, reply) in self.replies.drain() {
+            let _ = reply.send(if oom_fired {
+                Err(EngineError::MemoryLimit)
+            } else {
+                Err(EngineError::Js(error.clone()))
+            });
         }
         self.isolate.cancel_termination();
     }

@@ -7461,11 +7461,26 @@ function leavePlugin(outer) {
 // answers instantly, so no answer means the isolate is wedged in synchronous
 // JS or native code (the Rust side then declares the host gone). It answers
 // with the hooks in flight (see runningHooks).
+// It answers with how many hooks are in flight and the oldest few of them,
+// not the whole list: a build resolving a large graph has thousands in
+// flight, and a ping that described them all, asked by every call waiting
+// on one, kept the host busy with pings about itself.
 export function ojPing() {
   const now = Date.now();
-  return JSON.stringify(
-    [...runningHooks].map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
-  );
+  const oldest = [];
+  for (const r of runningHooks) {
+    if (oldest.length < 8) {
+      oldest.push(r);
+      oldest.sort((a, b) => a.since - b.since);
+    } else if (r.since < oldest[7].since) {
+      oldest[7] = r;
+      oldest.sort((a, b) => a.since - b.since);
+    }
+  }
+  return JSON.stringify({
+    total: runningHooks.size,
+    oldest: oldest.map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
+  });
 }
 
 // The configureServer hooks run here, after every top-level declaration of
