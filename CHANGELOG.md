@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a burst of style refreshes no longer multiplies a page's stylesheet links. Each `oj:css` frame re-linked every stylesheet link in the page, the new links still loading from earlier frames among them, so the links doubled with every frame that came before they loaded. A gate's flush sends all the frames it held at once: 12 frames within 110 ms left 2,048 links to one sheet and some 2,800 requests for it, and a large page spent minutes restyling, unresponsive. A sheet now has one new link loading at a time; the frames that come while it loads ask for one more after it, for the sheet as it is after the last of them. A new link that fails to load, or that the page takes out, does not hold its sheet back from the next frame, and a disabled link, which the browser never fetches, is not re-linked.
+
 ## [0.4.23] - 2026-11-25
 
 ### Fixed
