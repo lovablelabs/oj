@@ -1961,8 +1961,8 @@ async function hasEditorHmrGate(raw) {
   }
 }
 
-// The option values that cross to Rust: functions (cssInjectionTarget) and
-// other non-JSON values are dropped.
+// The option values that cross to Rust: functions (`cssInjectionTarget`, which
+// the plugin host asks on its own) and other non-JSON values are dropped.
 function jsonOptions(value) {
   try {
     return JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "function" ? undefined : v)));
@@ -1987,9 +1987,6 @@ async function stylexPlugin(raw) {
           "its options and compiles StyleX with the defaults",
       );
       return { options: {} };
-    }
-    if (typeof options.cssInjectionTarget === "function") {
-      warn("@stylexjs/unplugin cssInjectionTarget is not applied: the StyleX sheet joins the build's entry stylesheet");
     }
     const babel = options.babelConfig;
     if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {

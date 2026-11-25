@@ -1350,7 +1350,7 @@ fn stylex_rules_join_the_sheet_css_injection_target_picks() {
     let config = root.join("vite.config.ts");
     let source = std::fs::read_to_string(&config).unwrap().replacen(
         "stylex.vite()",
-        "stylex.vite({ cssInjectionTarget: (fileName: string) => /(^|\\/)extra-[\\w-]+\\.css$/.test(fileName) })",
+        "stylex.vite({ cssInjectionTarget: (fileName: string) => /(^|\\/)zeta-[\\w-]+\\.css$/.test(fileName) })",
         1,
     );
     assert!(
@@ -1358,26 +1358,22 @@ fn stylex_rules_join_the_sheet_css_injection_target_picks() {
         "the fixture's vite.config.ts changed shape"
     );
     std::fs::write(&config, source).unwrap();
-    std::fs::write(
-        root.join("src/extra.css"),
-        ".extra-marker { color: teal }\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("src/zeta.css"), ".zeta-marker { color: teal }\n").unwrap();
     let route = root.join("src/routes/__root.tsx");
     let source = std::fs::read_to_string(&route).unwrap();
     let source = source
         .replacen(
             "import appCss from \"../styles.css?url\";",
-            "import appCss from \"../styles.css?url\";\nimport extraCss from \"../extra.css?url\";",
+            "import appCss from \"../styles.css?url\";\nimport zetaCss from \"../zeta.css?url\";",
             1,
         )
         .replacen(
             "links: [{ rel: \"stylesheet\", href: appCss }, ...devLinks],",
-            "links: [{ rel: \"stylesheet\", href: appCss }, { rel: \"stylesheet\", href: extraCss }, ...devLinks],",
+            "links: [{ rel: \"stylesheet\", href: appCss }, { rel: \"stylesheet\", href: zetaCss }, ...devLinks],",
             1,
         );
     assert!(
-        source.contains("href: extraCss"),
+        source.contains("href: zetaCss"),
         "the fixture's __root.tsx changed shape"
     );
     std::fs::write(&route, source).unwrap();
@@ -1397,17 +1393,19 @@ fn stylex_rules_join_the_sheet_css_injection_target_picks() {
         .collect();
     let extra = sheets
         .iter()
-        .find(|(name, _)| name.starts_with("extra-"))
-        .expect("the ?url sheet extra-<hash>.css");
-    // A rule of Card.tsx's `stylex.create`, as the plugin's sheet writes it.
+        .find(|(name, _)| name.starts_with("zeta-"))
+        .expect("the ?url sheet zeta-<hash>.css");
+    // Card.tsx's `stylex.keyframes` (opacity 0 to 1), as the plugin's sheet writes it.
     assert!(
-        extra.1.contains("animation-duration:1ms") && extra.1.contains(".extra-marker"),
+        extra.1.contains("@keyframes")
+            && extra.1.contains("opacity")
+            && extra.1.contains(".zeta-marker"),
         "the StyleX rules did not join the sheet cssInjectionTarget picked:\n{}",
         &extra.1[..extra.1.len().min(400)]
     );
     for (name, css) in &sheets {
         assert!(
-            name.starts_with("extra-") || !css.contains("animation-duration:1ms"),
+            name.starts_with("zeta-") || !css.contains("@keyframes"),
             "the StyleX rules also landed in {name}"
         );
     }

@@ -6403,10 +6403,14 @@ async function startFacts(c) {
     // bundle's stylesheet names that picks the sheet its generateBundle
     // appends the rules to (the plugin keeps it as a field of its own);
     // oj, compiling StyleX natively, asks it the same question.
-    // (An app wrapping the plugin under a name of its own spreads the field
-    // along with the rest, so the field is the mark, not the name.)
+    // The plugin here is oj's stand-in for the package (oj_js stand_ins),
+    // which records the options it was given; the real plugin keeps the
+    // target as a field. An app wrapping the plugin under a name of its own
+    // spreads either along, so the fields are the mark, not the name.
     stylexCssInjectionTarget: factValue(
-      c.rawPlugins.map((p) => p && p.__stylexCssInjectionTarget).find((t) => t != null) ?? null,
+      c.rawPlugins
+        .map((p) => p && (p.__ojStylexOptions?.cssInjectionTarget ?? p.__stylexCssInjectionTarget))
+        .find((t) => t != null) ?? null,
       fns,
     ),
     // How many resolveId hooks run on each side of the core resolver.

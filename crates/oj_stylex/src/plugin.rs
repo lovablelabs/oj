@@ -527,8 +527,8 @@ fn require_target(target: &Value) -> Option<&str> {
 /// The plugin's `pickCssAssetFromRollupBundle` over the file names of the
 /// stylesheets a build emits, in bundle order (Rolldown's: by file name): the
 /// first `index.css`, bare or hashed, else the first `style.css`, else the
-/// first sheet. `None` with no stylesheet. (`cssInjectionTarget`, a function,
-/// never reaches oj.)
+/// first sheet. `None` with no stylesheet. (A `cssInjectionTarget` function is
+/// asked first, through the plugin host, by the Start build.)
 pub fn pick_css_asset<S: AsRef<str>>(file_names: &[S]) -> Option<usize> {
     let named = |stem: &str| {
         file_names
