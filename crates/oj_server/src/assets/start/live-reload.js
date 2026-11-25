@@ -130,17 +130,40 @@
   // A Tailwind sheet scans the sources it styles, so an edit applied in place
   // can need new rules: re-link each same-origin stylesheet (Vite's css-update
   // swap: the old sheet stays until the new one loads, no unstyled flash).
+  // A sheet has one new link loading at a time: the frames that come while
+  // it loads (a gate's flush sends every frame it held at once) ask for one
+  // more after it, so a burst costs each sheet two requests.
+  const relinking = new WeakMap();
+  const incoming = new WeakSet();
+  function relink(el) {
+    const url = new URL(el.href, location.href);
+    url.searchParams.set("t", Date.now());
+    const next = el.cloneNode();
+    next.href = url.href;
+    const swap = { next, again: false };
+    relinking.set(el, swap);
+    incoming.add(next);
+    const settle = () => {
+      incoming.delete(next);
+      // Taken out by the page: the old link stays for the next frame to re-link.
+      if (!next.isConnected) return;
+      relinking.delete(el);
+      el.remove();
+      if (swap.again) relink(next);
+    };
+    next.addEventListener("load", settle);
+    next.addEventListener("error", settle);
+    el.after(next);
+  }
   function refreshStyles() {
     for (const el of document.querySelectorAll('link[rel="stylesheet"]')) {
-      const url = new URL(el.href, location.href);
-      if (url.origin !== location.origin) continue;
-      url.searchParams.set("t", Date.now());
-      const next = el.cloneNode();
-      next.href = url.href;
-      const drop = () => el.remove();
-      next.addEventListener("load", drop);
-      next.addEventListener("error", drop);
-      el.after(next);
+      // A disabled link is never fetched: a new one would never load.
+      if (incoming.has(el) || el.disabled) continue;
+      if (new URL(el.href, location.href).origin !== location.origin) continue;
+      const swap = relinking.get(el);
+      // A new link the page took out of the document never loads.
+      if (swap && swap.next.isConnected) swap.again = true;
+      else relink(el);
     }
   }
 
