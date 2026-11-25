@@ -2022,6 +2022,9 @@ async fn rebundle_worker(
         // The server graphs' changed files: the batch's, and the glob
         // importers its created and deleted files re-expand.
         let served: Vec<PathBuf> = paths.iter().chain(run.globbed.iter()).cloned().collect();
+        // What the editor hears if the pages take this in place, stamped as
+        // the run takes the files up (Vite stamps an event as it takes it up).
+        let editor_update = editor_update_frame(&root, &served);
         let regen_files = regen_output_files(&routes.tree, &cache);
         // The gate: a batch whose paths miss the last bundle's input closure
         // cannot change the client bundle (rollup watch semantics; Vite only
@@ -2339,7 +2342,7 @@ async fn rebundle_worker(
         // The pages took the change in place: the editor hears an update,
         // released with the pages' own frames.
         if (hot || restyled) && !reload {
-            if let Some(update) = editor_update_frame(&root, &served) {
+            if let Some(update) = editor_update {
                 state.bundler.hot.tell_editor(update);
             }
         }
@@ -2405,12 +2408,12 @@ async fn rebundle_worker(
 /// client module graph, and is told what to do by that graph alone.
 const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*","ojStart":true}"#;
 
-/// Vite's `update` payload for the files a run changed and the pages took in
-/// place, for the editor's socket: one entry per file, a stylesheet's a
-/// `css-update`, stamped as it goes out (`EditorUpdate`). The pages never
-/// read it (their patches came on Start's socket); the editor counts it,
-/// and reads the stamp as the time the server sent the update. `None` with
-/// no file to name.
+/// Vite's `update` frames for the files a run changed, for the editor's
+/// socket when the pages take them in place: one frame per file, a
+/// stylesheet's a `css-update`, each stamped now (`EditorUpdate`). The pages
+/// never read them (their patches came on Start's socket); the editor
+/// counts them, and reads the stamp as the time the server sent the update.
+/// `None` with no file to name.
 fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<crate::start_hot::EditorUpdate> {
     let mut files: Vec<&PathBuf> = changed.iter().filter(|p| watch_relevant(p)).collect();
     files.sort();
@@ -9652,14 +9655,26 @@ mod tests {
             ],
         )
         .expect("files to name");
-        let frame: serde_json::Value = serde_json::from_str(&frame.stamped(7)).unwrap();
-        assert_eq!(frame["type"], "update");
-        assert_eq!(frame["ojStart"], true, "not for a page on oj's client");
-        let entries: Vec<(&str, &str)> = frame["updates"]
-            .as_array()
-            .unwrap()
+        let before = oj_server::hmr_now();
+        let frames: Vec<serde_json::Value> = frame
+            .frames()
             .iter()
-            .map(|u| (u["type"].as_str().unwrap(), u["path"].as_str().unwrap()))
+            .map(|f| serde_json::from_str(f).unwrap())
+            .collect();
+        // One frame per file, as Vite sends one per watcher event.
+        let entries: Vec<(&str, &str)> = frames
+            .iter()
+            .map(|f| {
+                assert_eq!(f["type"], "update");
+                assert_eq!(f["ojStart"], true, "not for a page on oj's client");
+                let updates = f["updates"].as_array().unwrap();
+                assert_eq!(updates.len(), 1, "{f}");
+                assert_eq!(updates[0]["acceptedPath"], updates[0]["path"]);
+                (
+                    updates[0]["type"].as_str().unwrap(),
+                    updates[0]["path"].as_str().unwrap(),
+                )
+            })
             .collect();
         assert_eq!(
             entries,
@@ -9669,10 +9684,14 @@ mod tests {
                 ("js-update", "/@fs/outside/lib.ts"),
             ]
         );
-        for update in frame["updates"].as_array().unwrap() {
-            assert_eq!(update["acceptedPath"], update["path"]);
-            assert_eq!(update["timestamp"], 7, "the stamp it was sent with");
-        }
+        // Each stamped on its own when the files were named, not when the
+        // frames were made.
+        let stamps: Vec<u64> = frames
+            .iter()
+            .map(|f| f["updates"][0]["timestamp"].as_u64().unwrap())
+            .collect();
+        assert!(stamps.windows(2).all(|w| w[0] < w[1]), "{stamps:?}");
+        assert!(stamps[0] > 0 && stamps[2] < before, "{stamps:?} {before}");
         assert!(
             editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]).is_none(),
             "nothing to name, no frame"

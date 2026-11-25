@@ -72,34 +72,57 @@ pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 /// Takes a frame for the editor's socket (see [`HotUpdates::tell_editor`]).
 pub(crate) type Editor = Arc<dyn Fn(String) + Send + Sync>;
 
-/// Vite's `update` payload for the editor's socket: one entry per file the
-/// pages took in place, stamped as it goes out ([`EditorUpdate::stamped`])
-/// by the HMR clock (`oj_server::hmr_now`, strictly increasing as Vite's
-/// `monotonicDateNow` is). The editor reads the stamp as the time the
-/// server sent the update and measures its receipt against it. One the gate
-/// holds goes out at the flush, so it is stamped then, as under Vite: the
-/// editor's gate plugin buffers the watcher events and replays them at its
-/// flush, one by one, and Vite's `updateModules` stamps the update it sends
-/// for each (server/hmr.ts, `monotonicDateNow()` at the event). Stamped
-/// when built, a held update read as the hold: seconds of latency for an
-/// update that travelled in milliseconds.
-pub(crate) struct EditorUpdate(Vec<serde_json::Value>);
+/// Vite's `update` frames for the editor's socket: one per file the pages
+/// took in place, as Vite sends one for each watcher event. The editor
+/// counts them, reads each stamp as the time the server sent the update and
+/// measures its receipt against it.
+///
+/// The stamps are Vite's: its `handleHMRUpdate` takes one
+/// `monotonicDateNow()` as it takes an event up, and the frame it sends once
+/// the update is worked out carries that value (server/hmr.ts). So each file
+/// is stamped by the HMR clock (`oj_server::hmr_now`, strictly increasing as
+/// `monotonicDateNow` is) when the run takes it up ([`EditorUpdate::new`]),
+/// and the frames carry those stamps when they go out at once. Ones the
+/// gate holds are stamped again at its flush ([`EditorUpdate::taken_now`]):
+/// under Vite the editor's gate plugin buffers the watcher events and
+/// replays them at the flush, so Vite takes them up, and stamps them, then.
+/// Keeping the first stamp, a held update read as the hold: seconds of
+/// latency for an update that travelled in milliseconds.
+pub(crate) struct EditorUpdate(Vec<(serde_json::Value, u64)>);
 
 impl EditorUpdate {
-    /// `updates`: Vite's `js-update`/`css-update` entries, unstamped. `None`
-    /// with none.
+    /// `updates`: Vite's `js-update`/`css-update` entries, one per file,
+    /// unstamped. Each is stamped now, in order. `None` with none.
     pub(crate) fn new(updates: Vec<serde_json::Value>) -> Option<EditorUpdate> {
-        (!updates.is_empty()).then_some(EditorUpdate(updates))
+        (!updates.is_empty()).then(|| EditorUpdate(updates.into_iter().map(stamp_now).collect()))
     }
 
-    /// The frame, every entry stamped `timestamp`: Vite's `update` payload,
-    /// marked as Start's (a page on oj's own client reads this channel too).
-    pub(crate) fn stamped(mut self, timestamp: u64) -> String {
-        for update in &mut self.0 {
-            update["timestamp"] = serde_json::Value::from(timestamp);
-        }
-        serde_json::json!({ "type": "update", "updates": self.0, "ojStart": true }).to_string()
+    /// The same files, taken up now: each stamped again, in order.
+    fn taken_now(self) -> EditorUpdate {
+        EditorUpdate(
+            self.0
+                .into_iter()
+                .map(|(update, _)| stamp_now(update))
+                .collect(),
+        )
     }
+
+    /// One frame per file, with its stamp: Vite's `update` payload, marked
+    /// as Start's (a page on oj's own client reads this channel too).
+    pub(crate) fn frames(self) -> Vec<String> {
+        self.0
+            .into_iter()
+            .map(|(mut update, timestamp)| {
+                update["timestamp"] = serde_json::Value::from(timestamp);
+                serde_json::json!({ "type": "update", "updates": [update], "ojStart": true })
+                    .to_string()
+            })
+            .collect()
+    }
+}
+
+fn stamp_now(update: serde_json::Value) -> (serde_json::Value, u64) {
+    (update, oj_server::hmr_now())
 }
 
 pub(crate) struct HotUpdates {
@@ -278,8 +301,8 @@ impl HotUpdates {
     /// client channel tells it (`update`: its `update` payload). It goes when
     /// the pages' own frames do: at once, or held by the gate until its
     /// flush, and dropped with them when that flush reloads the pages
-    /// instead (the reload is what the editor hears then). Stamped as it
-    /// goes ([`EditorUpdate::stamped`]).
+    /// instead (the reload is what the editor hears then). One frame per
+    /// file, stamped as Vite stamps its own ([`EditorUpdate`]).
     pub(crate) fn tell_editor(&self, update: EditorUpdate) {
         let Some(editor) = self.editor.get() else {
             return;
@@ -295,7 +318,7 @@ impl HotUpdates {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(update);
         } else {
-            editor(update.stamped(oj_server::hmr_now()));
+            update.frames().into_iter().for_each(|frame| editor(frame));
         }
     }
 
@@ -318,10 +341,12 @@ impl HotUpdates {
             .drain(..)
             .collect();
         if let Some(editor) = self.editor.get() {
-            // Each stamped as it goes out: the flush is when, and Vite stamps
-            // each replayed event on its own.
+            // The flush is when Vite would take these up: all stamped now,
+            // before any goes out, as its replayed events are.
+            let held: Vec<EditorUpdate> = held.into_iter().map(EditorUpdate::taken_now).collect();
             held.into_iter()
-                .for_each(|update| editor(update.stamped(oj_server::hmr_now())));
+                .flat_map(EditorUpdate::frames)
+                .for_each(|frame| editor(frame));
         }
     }
 
@@ -967,8 +992,8 @@ mod tests {
 
     // The editor hears of an update when the pages do: at once with no
     // hold, at the flush with one, and not at all when that flush reloads
-    // the pages instead (the reload is what it hears then). Each is stamped
-    // as it goes out: a held one with the flush's time, not the hold's.
+    // the pages instead (the reload is what it hears then). One frame per
+    // file, stamped when taken up: a held one at the flush, not at the hold.
     #[test]
     fn the_editor_hears_an_update_when_the_gate_lets_the_pages_have_it() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1007,26 +1032,25 @@ mod tests {
                 .unwrap()
         };
 
-        // The wall clock: the HMR clock never lags it, and runs ahead of it
-        // by a millisecond per call within one.
-        let wall = || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as u64)
-        };
-
-        let before = wall();
-        hot.tell_editor(update("first"));
+        let taken = oj_server::hmr_now();
+        let first = update("first");
+        let sent = oj_server::hmr_now();
+        hot.tell_editor(first);
         assert_eq!(heard(), ["first"], "no hold: at once");
-        assert!(stamp(0) >= before, "stamped as sent");
+        assert!(
+            taken < stamp(0) && stamp(0) < sent,
+            "stamped when taken up, not when sent: {taken} {} {sent}",
+            stamp(0)
+        );
         assert_eq!(frames.lock().unwrap()[0]["ojStart"], true);
 
         held.store(true, Ordering::SeqCst);
         hot.tell_editor(update("second"));
         hot.tell_editor(update("third"));
         assert_eq!(heard(), ["first"], "held with the pages' frames");
-        let parked = wall();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // The HMR clock never repeats: a stamp above this reading was taken
+        // after it, whatever the wall clock does.
+        let parked = oj_server::hmr_now();
         held.store(false, Ordering::SeqCst);
         hot.release();
         assert_eq!(
@@ -1035,10 +1059,9 @@ mod tests {
             "in order, at the flush"
         );
         assert!(
-            stamp(1) >= parked + 20 && stamp(2) >= parked + 20,
-            "stamped at the flush, not when parked: {} {} vs {parked}",
-            stamp(1),
-            stamp(2)
+            stamp(1) > parked,
+            "stamped again at the flush, not as parked: {} vs {parked}",
+            stamp(1)
         );
         assert!(
             stamp(2) > stamp(1),
@@ -1046,6 +1069,25 @@ mod tests {
             stamp(1),
             stamp(2)
         );
+
+        // An update of two files: a frame each, each with its own stamp.
+        hot.tell_editor(
+            EditorUpdate::new(vec![
+                serde_json::json!({ "path": "a" }),
+                serde_json::json!({ "path": "b" }),
+            ])
+            .unwrap(),
+        );
+        assert_eq!(heard(), ["first", "second", "third", "a", "b"]);
+        assert!(stamp(4) > stamp(3), "{} {}", stamp(3), stamp(4));
+        assert_eq!(
+            frames.lock().unwrap()[3]["updates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        frames.lock().unwrap().truncate(3);
         hot.release();
         assert_eq!(heard().len(), 3, "once");
 
