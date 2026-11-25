@@ -25,8 +25,45 @@ function loadPage({
   // What `fetch` answers (a Response-like), or throws: the dev server's
   // answer to the page's own request.
   fetch = async () => ({ ok: true }),
+  // The urls of the document's stylesheet links, in document order.
+  sheets = [],
 } = {}) {
   const log = [];
+  // The document's stylesheet links, in order: each its rel, href, load and
+  // error listeners, and whether it is in the document. `requested` lists
+  // the href of every link put into it, the requests the browser makes.
+  const links = [];
+  const requested = [];
+  const link = (href) => {
+    const el = { rel: "stylesheet", href, disabled: false, isConnected: false, on: {} };
+    el.addEventListener = (type, fn) => (el.on[type] ??= []).push(fn);
+    el.cloneNode = () => Object.assign(link(el.href), { disabled: el.disabled });
+    el.after = (next) => {
+      links.splice(links.indexOf(el) + 1, 0, next);
+      next.isConnected = true;
+      requested.push(next.href);
+    };
+    el.remove = () => {
+      const i = links.indexOf(el);
+      if (i >= 0) links.splice(i, 1);
+      el.isConnected = false;
+    };
+    return el;
+  };
+  for (const href of sheets) {
+    const el = link(href);
+    el.isConnected = true;
+    links.push(el);
+  }
+  // Each link in the document that is waiting on its sheet gets `type`; a
+  // disabled one is never fetched, so never settles.
+  const settleSheets = (type) => {
+    for (const el of links.filter((el) => !el.disabled)) {
+      const fns = el.on[type] ?? [];
+      el.on = {};
+      fns.forEach((fn) => fn());
+    }
+  };
   const sockets = [];
   const timers = [];
   const intervals = [];
@@ -75,6 +112,7 @@ function loadPage({
       protocol: "http:",
       host: hostname,
       hostname,
+      origin: `http://${hostname}`,
       pathname: "/",
       href: `http://${hostname}/`,
       reload: () => log.push(["reload"]),
@@ -88,7 +126,8 @@ function loadPage({
       readyState: "loading",
       activeElement: null,
       visibilityState: "visible",
-      querySelectorAll: (sel) => (sel === "vite-error-overlay" ? overlays : []),
+      querySelectorAll: (sel) =>
+        sel === "vite-error-overlay" ? overlays : sel === 'link[rel="stylesheet"]' ? links.slice() : [],
       querySelector: (sel) => {
         const el = elements[sel];
         return el ? { nonce: el.nonce ?? "", getAttribute: (name) => el.attrs?.[name] ?? null } : null;
@@ -163,6 +202,9 @@ function loadPage({
   return {
     bus: page.__ojStartHmr,
     added,
+    links,
+    requested,
+    settleSheets,
     log,
     open,
     receive,
@@ -1041,4 +1083,120 @@ test("an uncaught failed import of a hot update or of the answer to an import() 
     await page.rejected(new TypeError(`Failed to fetch dynamically imported module: ${url}`));
     assert.equal(reloadsIn(page.log), 0, url);
   }
+});
+
+// The client re-links each sheet for every hot edit, and a gate's flush sends
+// the frames it held back to back: 12 frames within 110 ms, before any of
+// the new links has loaded.
+const burst = async ({ clock, receive }, frames = 12) => {
+  for (let i = 0; i < frames; i++) {
+    clock.now = 1000 + i * 10;
+    await receive({ type: "oj:css", add: [], change: i + 1 });
+  }
+};
+const hrefs = (links) => links.map((el) => el.href);
+
+test("a burst of css frames keeps one new link loading per sheet, and ends on the newest sheet", async () => {
+  const page = loadPage({
+    sheets: ["http://localhost/app.css", "http://localhost/fonts.css", "https://cdn.example/lib.css"],
+  });
+  page.open();
+  await burst(page);
+  // The cross-origin sheet is left alone; each of the others is loading one
+  // new link, whatever the number of frames.
+  assert.equal(page.links.length, 5);
+  assert.deepEqual(page.requested, ["http://localhost/app.css?t=1000", "http://localhost/fonts.css?t=1000"]);
+  // They load: the frames that came meanwhile ask once more, for the sheet
+  // as it is after the last of them.
+  page.clock.now = 2000;
+  page.settleSheets("load");
+  assert.equal(page.links.length, 5);
+  assert.deepEqual(page.requested.slice(2), ["http://localhost/app.css?t=2000", "http://localhost/fonts.css?t=2000"]);
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), [
+    "http://localhost/app.css?t=2000",
+    "http://localhost/fonts.css?t=2000",
+    "https://cdn.example/lib.css",
+  ]);
+  assert.equal(page.requested.length, 4);
+});
+
+test("a new link that fails to load, or that the page takes out, does not leave its sheet waiting", async () => {
+  const page = loadPage({ sheets: ["http://localhost/app.css"] });
+  page.open();
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  // It fails: as in Vite's swap, the old link goes, and the next frame
+  // re-links the failed one.
+  page.settleSheets("error");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=1000"]);
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  assert.deepEqual(page.requested, ["http://localhost/app.css?t=1000", "http://localhost/app.css?t=2000"]);
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=2000"]);
+  // The page takes the loading link out (a router swapping the head's tags):
+  // it never loads, and the next frame re-links the sheet it was to replace.
+  page.clock.now = 3000;
+  await page.receive({ type: "oj:css", add: [], change: 3 });
+  const taken = page.links[1];
+  taken.remove();
+  // Should it still load, the sheet it was to replace stays.
+  taken.on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=2000"]);
+  page.clock.now = 4000;
+  await page.receive({ type: "oj:css", add: [], change: 4 });
+  assert.deepEqual(page.requested.slice(2), ["http://localhost/app.css?t=3000", "http://localhost/app.css?t=4000"]);
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=4000"]);
+});
+
+test("a disabled sheet is not re-linked, so it refreshes once the page enables it", async () => {
+  const page = loadPage({ sheets: ["http://localhost/dark.css"] });
+  page.open();
+  page.links[0].disabled = true;
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  page.settleSheets("load");
+  assert.deepEqual(page.requested, []);
+  page.links[0].disabled = false;
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/dark.css?t=2000"]);
+});
+
+test("a frame that comes while a new link loads counts when the page took the old link out", async () => {
+  const page = loadPage({ sheets: ["http://localhost/app.css"] });
+  page.open();
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  // The page drops the link being replaced (a router swapping the head's
+  // tags) and a second frame comes before the new one has loaded.
+  page.links[0].remove();
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  assert.deepEqual(page.requested, ["http://localhost/app.css?t=1000"]);
+  page.clock.now = 3000;
+  page.settleSheets("load");
+  assert.deepEqual(page.requested.slice(1), ["http://localhost/app.css?t=3000"], "the second frame's refresh");
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=3000"]);
+});
+
+test("a new link the page took out and put back does not stay beside the one that replaced it", async () => {
+  const page = loadPage({ sheets: ["http://localhost/app.css"] });
+  page.open();
+  page.clock.now = 1000;
+  await page.receive({ type: "oj:css", add: [], change: 1 });
+  const taken = page.links[1];
+  taken.remove();
+  page.clock.now = 2000;
+  await page.receive({ type: "oj:css", add: [], change: 2 });
+  // The page puts the first new link back, and it loads before the second.
+  page.links[0].after(taken);
+  taken.on.load.forEach((fn) => fn());
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css", "http://localhost/app.css?t=2000"]);
+  page.settleSheets("load");
+  assert.deepEqual(hrefs(page.links), ["http://localhost/app.css?t=2000"]);
 });

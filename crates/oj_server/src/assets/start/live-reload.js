@@ -130,17 +130,52 @@
   // A Tailwind sheet scans the sources it styles, so an edit applied in place
   // can need new rules: re-link each same-origin stylesheet (Vite's css-update
   // swap: the old sheet stays until the new one loads, no unstyled flash).
+  // A sheet has one new link loading at a time: the frames that come while
+  // it loads (a gate's flush sends every frame it held at once) ask for one
+  // more after it, so a burst costs each sheet a request per load, not one
+  // per frame. `relinking`: a link to the swap replacing it; `incoming`: a
+  // new link to the swap it is loading for.
+  const relinking = new WeakMap();
+  const incoming = new WeakMap();
+  function relink(el) {
+    const url = new URL(el.href, location.href);
+    url.searchParams.set("t", Date.now());
+    const next = el.cloneNode();
+    next.href = url.href;
+    const swap = { next, again: false };
+    relinking.set(el, swap);
+    incoming.set(next, swap);
+    const settle = () => {
+      incoming.delete(next);
+      // Taken out by the page: the old link stays for the next frame to re-link.
+      if (!next.isConnected) return;
+      // Taken out, re-linked since, and put back: the newer link replaces
+      // the old one, and this one would stay beside it.
+      if (relinking.get(el) !== swap) return next.remove();
+      relinking.delete(el);
+      el.remove();
+      if (swap.again) relink(next);
+    };
+    next.addEventListener("load", settle);
+    next.addEventListener("error", settle);
+    el.after(next);
+  }
   function refreshStyles() {
     for (const el of document.querySelectorAll('link[rel="stylesheet"]')) {
-      const url = new URL(el.href, location.href);
-      if (url.origin !== location.origin) continue;
-      url.searchParams.set("t", Date.now());
-      const next = el.cloneNode();
-      next.href = url.href;
-      const drop = () => el.remove();
-      next.addEventListener("load", drop);
-      next.addEventListener("error", drop);
-      el.after(next);
+      // Still loading: once more when it has. Asked of the new link itself,
+      // so the frame counts when the page took the old one out meanwhile.
+      const loading = incoming.get(el);
+      if (loading) {
+        loading.again = true;
+        continue;
+      }
+      // A disabled link is never fetched: a new one would never load.
+      if (el.disabled) continue;
+      if (new URL(el.href, location.href).origin !== location.origin) continue;
+      // Its new link is in the document, and was asked above. One the page
+      // took out never loads: re-link the old one.
+      const swap = relinking.get(el);
+      if (!swap || !swap.next.isConnected) relink(el);
     }
   }
 
