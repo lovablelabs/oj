@@ -691,8 +691,9 @@ impl DevBundler {
 
     /// Whether the boundary `proxy` stands for a module of a file of the
     /// app, under a query or not: one in the app, or one of a package the
-    /// app installed, wherever its `node_modules` is (a sandbox keeps it
-    /// beside the app). One a bundle of the app can have had, as against an
+    /// app installed: in the `node_modules` of the app or of a directory
+    /// above it, wherever that is a link to (a sandbox keeps it beside the
+    /// app). One a bundle of the app can have had, as against an
     /// id that names no file, or a file outside the app (`/etc/passwd`),
     /// which no bundle of the app ever held and no page is reloaded for.
     fn boundary_in_app(&self, proxy: &str) -> bool {
@@ -708,14 +709,20 @@ impl DevBundler {
         } else {
             self.start.root.join(path)
         };
-        let installed = file.components().any(|c| c.as_os_str() == "node_modules");
-        match (
+        // Asked of the paths with their links and `..` resolved: the id is
+        // the request's, and a `node_modules/../..` in it names any file.
+        let (Ok(file), Ok(root)) = (
             std::fs::canonicalize(&file),
             std::fs::canonicalize(&self.start.root),
-        ) {
-            (Ok(file), Ok(root)) => file.is_file() && (installed || file.starts_with(&root)),
-            _ => false,
-        }
+        ) else {
+            return false;
+        };
+        file.is_file()
+            && (file.starts_with(&root)
+                || root.ancestors().any(|dir| {
+                    std::fs::canonicalize(dir.join("node_modules"))
+                        .is_ok_and(|installed| file.starts_with(installed))
+                }))
     }
 
     /// The client bundle's banner. A hot bundle's entry first imports the

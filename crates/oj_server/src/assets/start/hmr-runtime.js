@@ -31,6 +31,9 @@ var RESEND_WAIT = 10000;
 // to that it lacks (`ojAskedLacking`), each answer bringing the rows of the
 // modules it names.
 var LACKS_ASKS = 3;
+// How many modules one such request names: the list is part of its URL, and
+// a proxy refuses a long one. The rest are named by the next request.
+var LACKS_NAMED = 64;
 
 class OjHotContext {
   constructor(client, id) {
@@ -554,13 +557,24 @@ class OjDevRuntime extends DevRuntime {
   async ojAskedLacking(proxyModuleId) {
     const id = this.lazyTargets?.get(proxyModuleId);
     if (id == null) return;
+    let named;
     for (let asks = 0; asks < LACKS_ASKS; asks++) {
-      const lacking = this.ojLacking(id);
+      const lacking = this.ojLacking(id).slice(0, LACKS_NAMED);
       if (!lacking.length) return;
-      console.debug(`[oj] the import of ${id} needs ${lacking.join(", ")}, which this page lacks: asking for them`);
       // Each id encoded on its own: the commas between them are the list's.
       const lacks = lacking.map(encodeURIComponent).join(",");
-      await this.ojImport(`${this.lazyChunkUrl(proxyModuleId)}&lacks=${lacks}`);
+      // The answer brought none of them: the next would not either.
+      if (lacks === named) return;
+      named = lacks;
+      console.debug(`[oj] the import of ${id} needs ${lacking.join(", ")}, which this page lacks: asking for them`);
+      try {
+        await this.ojImport(`${this.lazyChunkUrl(proxyModuleId)}&lacks=${lacks}`);
+      } catch {
+        // The chunk itself arrived: a request for more that fails (the
+        // network, a build that broke since) leaves the module to
+        // `initModule`, as with no such request, not the import rejected.
+        return;
+      }
     }
   }
   // The modules the run of `id` reaches through static imports that this

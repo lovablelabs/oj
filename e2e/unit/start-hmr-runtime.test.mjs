@@ -1012,8 +1012,8 @@ test("an import() whose chunk refers to a module the page lacks asks for that mo
   assert.match(chainAsked[1], /&lacks=src%2Fa%2Cb\.ts,src%2Fb\.ts$/);
   assert.match(chainAsked[2], /&lacks=src%2Fc\.ts$/);
 
-  // A module no answer brings is asked for a few times, then left to the
-  // runtime's `initModule`, which reloads the page for it.
+  // A module the answer does not bring is not asked for again: it is left
+  // to the runtime's `initModule`, which reloads the page for it.
   const never = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
   never.lazyTargets = new Map([[proxy, "src/note.ts"]]);
   never.staticImports = new Map([["src/note.ts", { edges: ["src/x.ts"] }]]);
@@ -1023,6 +1023,33 @@ test("an import() whose chunk refers to a module the page lacks asks for that mo
     never.registerFactory("src/note.ts", () => {});
   };
   await never.loadLazyChunk(proxy);
-  assert.equal(neverAsked.length, 1 + 3, neverAsked.join("\n"));
-  assert.ok(neverAsked.slice(1).every((url) => /&lacks=src%2Fx\.ts$/.test(url)));
+  assert.equal(neverAsked.length, 1 + 1, neverAsked.join("\n"));
+  assert.match(neverAsked[1], /&lacks=src%2Fx\.ts$/);
+
+  // A chain longer than the page asks for: three asks, then `initModule`.
+  const deep = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  deep.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  deep.staticImports = new Map();
+  const deepAsked = [];
+  deep.ojImport = async (url) => {
+    const n = deepAsked.push(url);
+    const at = n === 1 ? "src/note.ts" : `src/d${n - 1}.ts`;
+    deep.registerFactory(at, () => {});
+    deep.staticImports.set(at, { edges: [`src/d${n}.ts`] });
+  };
+  await deep.loadLazyChunk(proxy);
+  assert.equal(deepAsked.length, 1 + 3, deepAsked.join("\n"));
+
+  // A request for the lacking modules that fails does not reject the
+  // import: the chunk arrived, and `initModule` decides as before.
+  const failing = lazyRuntime({ stamp: "1f-3", hotHas: () => 2 });
+  failing.lazyTargets = new Map([[proxy, "src/note.ts"]]);
+  failing.staticImports = new Map([["src/note.ts", { edges: ["src/x.ts"] }]]);
+  let failingAsked = 0;
+  failing.ojImport = async () => {
+    if (++failingAsked > 1) throw new TypeError("Failed to fetch dynamically imported module");
+    failing.registerFactory("src/note.ts", () => {});
+  };
+  await failing.loadLazyChunk(proxy);
+  assert.equal(failingAsked, 2);
 });

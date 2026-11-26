@@ -644,6 +644,12 @@ fn an_import_of_a_boundary_of_no_file_in_the_app_is_not_answered() {
     for proxy in [
         about_proxy(&dev).replace("about.tsx", "gone.tsx"),
         "/etc/passwd?rolldown-lazy=1".to_string(),
+        // A file that is there, named through `node_modules`.
+        "node_modules/../../../../../../../../../../etc/passwd?rolldown-lazy=1".to_string(),
+        format!(
+            "{}/node_modules/../../../../../../../../../../etc/passwd?rolldown-lazy=1",
+            dir.display()
+        ),
     ] {
         let (status, body) = dev.request(
             "GET",

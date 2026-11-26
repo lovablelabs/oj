@@ -5032,12 +5032,15 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
     let lacks = lacked_modules(raw("lacks"));
     if let Some(first) = lacks.first() {
         println!(
-            "  oj start: a page lacks {} the bundler took it to hold ({first}{}); sending them with its import",
+            "  oj start: a page lacks {} the bundler took it to hold ({}{}); sending them with its import",
             if lacks.len() == 1 {
                 "a module".to_string()
             } else {
                 format!("{} modules", lacks.len())
             },
+            // The id is the request's: no control character of it reaches
+            // the terminal, and no more of it than a path is long.
+            first.chars().take(200).collect::<String>().escape_debug(),
             if lacks.len() > 1 { ", …" } else { "" },
         );
     }
@@ -5075,9 +5078,10 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
         bundler: Arc::clone(&state.bundler),
         client: client.clone(),
     };
-    // Told to the bundler with the first compile: what it forgets of the
-    // page stays forgotten, and a compile the hold has asked again must
-    // not forget what a chunk delivered meanwhile.
+    // Told to the bundler until a compile took them: what it forgets of
+    // the page stays forgotten, and a compile the hold has asked again must
+    // not forget what a chunk delivered meanwhile. A compile the bundler
+    // did not start (a build that failed, no engine yet) forgot nothing.
     let mut lacks_to_tell = lacks;
     let end = tokio::time::Instant::now() + LAZY_WAIT_CAP;
     // When a flush was seen with its patches still to be sent.
@@ -5103,7 +5107,7 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
             // Named by the request, or not yet known to the page (its
             // live-reload client, the document's last tag, has not run).
             let named = param("g").is_some() || param("h").is_some();
-            let lacks = std::mem::take(&mut lacks_to_tell);
+            let lacks = lacks_to_tell.clone();
             tokio::spawn(async move { bundler.lazy_chunk(&id, &client, owed, named, &lacks).await })
         };
         let answer = match tokio::time::timeout_at(end, compile).await {
@@ -5114,6 +5118,9 @@ async fn lazy_chunk(state: &StartState, query: Option<&str>) -> Response {
                 ))
             }
         };
+        if !matches!(answer, LazyAnswer::Unavailable(_)) {
+            lacks_to_tell.clear();
+        }
         let now = tokio::time::Instant::now();
         match &answer {
             // While the editor's gate holds changes, a chunk that carries a
@@ -5268,10 +5275,11 @@ const PARKED_AFTER_FLUSH: std::time::Duration = std::time::Duration::from_secs(5
 /// module (`lacks` as written in the query: the ids its registry knows them
 /// by, each percent-encoded, comma separated, so a comma in an id is
 /// `%2C`), each once, in the order said; none for a request that names
-/// none.
+/// none. No more than the page names in one request (`LACKS_NAMED` in the
+/// runtime): the list is the request's.
 fn lacked_modules(lacks: Option<&str>) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
-    for id in lacks.unwrap_or("").split(',') {
+    for id in lacks.unwrap_or("").split(',').take(64) {
         let id = percent_decode(id);
         if !id.is_empty() && !ids.contains(&id) {
             ids.push(id);
