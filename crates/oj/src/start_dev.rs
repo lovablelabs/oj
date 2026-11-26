@@ -478,7 +478,22 @@ pub async fn start_dev(
             .await
         }
     };
-    let (bundle_res, built_res) = tokio::join!(bundle, built_task);
+    // The port opens once the dev server is built and its watcher covers
+    // the root, not once the client bundle is: Vite's `listen` awaits the
+    // plugins' `buildStart` and each environment's `listen`, which starts
+    // the dependency optimizer and does not wait for it, so its port accepts
+    // connections while the dependencies are still being bundled and the
+    // requests that need them wait (`depsOptimizer.scanProcessing`). The
+    // client bundle is that work here, and on a large app it took most of a
+    // cold start: a host that waits for the port (a sandbox's readiness
+    // probe) gave up on it and answered its visitors 502. A connection made
+    // meanwhile is accepted by the socket and answered when the server
+    // serves, below.
+    let bundle = tokio::spawn(bundle);
+    let (built, watch_rx) = built_task.await??;
+    let (listener, port) = built.bind_listener().await?;
+    oj_server::boot_phase(&format!("listening (port {port})"));
+    let bundle_res = bundle.await?;
     // A build error in the app's code (client-error.json records it) keeps
     // the server up, as Vite's bundled dev does: pages render the overlay and
     // the next edit rebundles. Anything else (the bundler failing to load)
@@ -499,7 +514,6 @@ pub async fn start_dev(
     // run's leftovers go (see `start_chunks::keep_chunk_files`).
     let chunks_dir = cache.join("client-chunks");
     crate::start_chunks::keep_chunk_files(&pinned, &chunks_dir);
-    let (built, watch_rx) = built_res??;
     // The gate's hold decides when a change reaches the pages.
     let reloads = Arc::new(crate::start_reloads::Epochs::new(
         built
@@ -924,8 +938,7 @@ pub async fn start_dev(
     let app = built.router.clone();
 
     let _ = app_tx.send(app.clone());
-    let (listener, port) = built.bind_listener().await?;
-    oj_server::boot_phase("listening");
+    oj_server::boot_phase("serving");
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);
     }

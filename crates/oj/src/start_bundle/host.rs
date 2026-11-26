@@ -187,6 +187,10 @@ pub(crate) struct StartHostPlugin {
     /// Start's compiler, run in its Vite slot: between the host's
     /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
     compile: Option<Arc<super::code::StartCodePlugin>>,
+    /// The dev client bundle leaves its dependencies to the bundler (see
+    /// [`StartHostPlugin::leaving_deps_to_the_bundler`]): the packages of
+    /// `optimizeDeps.exclude`, which the plugins still see.
+    deps_excluded: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -220,7 +224,31 @@ impl StartHostPlugin {
             warned_virtual: Mutex::new(HashSet::new()),
             map_warnings: Arc::default(),
             compile: None,
+            deps_excluded: None,
         }
+    }
+
+    /// The dev client bundle's dependencies take no plugin `resolveId`,
+    /// `load` or `transform`, as under Vite: its dev server pre-bundles the
+    /// app's dependencies with its own resolver and no plugin of the app
+    /// (optimizer/index.ts `runOptimizeDeps`, whose bundle gets Vite's dep
+    /// plugin alone), and the plugins see the modules a page asks for, which
+    /// are the app's. Here every module of the client graph went to the
+    /// plugins, the dependencies' thousands among them, all on the plugin
+    /// host's one thread before the server answered its first page. A
+    /// package in `exclude` (`optimizeDeps.exclude`) is not pre-bundled by
+    /// Vite and is served through the plugins, so its modules keep them; a
+    /// linked package resolves to its real path outside `node_modules` and
+    /// keeps them the same way.
+    pub fn leaving_deps_to_the_bundler(mut self, exclude: Vec<String>) -> Self {
+        self.deps_excluded = Some(exclude);
+        self
+    }
+
+    fn is_bundled_dep(&self, id: &str) -> bool {
+        self.deps_excluded
+            .as_deref()
+            .is_some_and(|excluded| is_bundled_dep(excluded, id))
     }
 
     /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
@@ -353,6 +381,45 @@ fn file_behind_query(id: &str) -> Option<&str> {
         .then_some(clean)
 }
 
+/// Whether `id` is a module of a dependency Vite's dev server would
+/// pre-bundle: a script under `node_modules` (what its optimizer bundles
+/// itself; a stylesheet or an asset a dependency imports is left out of the
+/// pre-bundle and served through the plugins), with no query (`?raw`, `?url`,
+/// `?worker` are served, not pre-bundled), of a package `excluded`
+/// (`optimizeDeps.exclude`) does not name.
+fn is_bundled_dep(excluded: &[String], id: &str) -> bool {
+    if id.starts_with('\0') || id.contains(['?', '#']) {
+        return false;
+    }
+    let Some((_, inside)) = id.rsplit_once("/node_modules/") else {
+        return false;
+    };
+    let script = matches!(
+        Path::new(id).extension().and_then(|e| e.to_str()),
+        Some("js" | "mjs" | "cjs" | "ts" | "mts" | "cts" | "jsx" | "tsx")
+    );
+    if !script {
+        return false;
+    }
+    let mut parts = inside.split('/');
+    let name = match parts.next() {
+        Some(scope) if scope.starts_with('@') => match parts.next() {
+            Some(pkg) => format!("{scope}/{pkg}"),
+            None => return false,
+        },
+        Some(pkg) => pkg.to_string(),
+        None => return false,
+    };
+    // Vite's `moduleListContains`: the entry, or a path under it. An entry
+    // that names a path inside the package (`pkg/sub`) keeps the whole
+    // package with the plugins: the file behind it is not known here.
+    !excluded.iter().any(|e| {
+        e == &name
+            || e.strip_prefix(name.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 fn is_app_source(path: &str) -> bool {
     !path.contains("/node_modules/")
         && matches!(
@@ -455,7 +522,10 @@ impl Plugin for StartHostPlugin {
         let kind = args.kind;
         // oj's own module ids are answered by the plugins that minted them.
         let ours = spec.starts_with("\0oj-");
-        let wants = !ours && self.host.hook_wants_resolve_id(&spec);
+        // An import inside a pre-bundled dependency is the bundler's to
+        // resolve (Vite's optimizer resolves it with no plugin of the app).
+        let in_dep = importer.as_deref().is_some_and(|i| self.is_bundled_dep(i));
+        let wants = !ours && !in_dep && self.host.hook_wants_resolve_id(&spec);
         let (pre, post) = (
             self.pre && wants,
             self.post && wants && !asset_owned(&self.root, &spec),
@@ -513,7 +583,8 @@ impl Plugin for StartHostPlugin {
         let id = args.id.to_string();
         let plugin = self.name();
         let host = Arc::clone(&self.host);
-        let wants = !id.starts_with("\0oj-") && self.host.hook_wants_load(&id);
+        let wants =
+            !id.starts_with("\0oj-") && !self.is_bundled_dep(&id) && self.host.hook_wants_load(&id);
         let dev = self.command == Command::Serve;
         let root = self.root.clone();
         let warned = !self
@@ -621,7 +692,7 @@ impl Plugin for StartHostPlugin {
         // oj's own modules take no plugin transform. A `.svg` takes them
         // all, as in Vite: its load (svgr's, or the asset URL) only produced
         // the module's code, which the transforms then see.
-        let eligible = !id.starts_with("\0oj-") && !proxy;
+        let eligible = !id.starts_with("\0oj-") && !proxy && !self.is_bundled_dep(id);
         if let Some(file) = file_behind_query(id).filter(|_| !proxy) {
             ctx.add_watch_file(file);
         }
@@ -953,6 +1024,58 @@ mod tests {
 
     /// A skipped buildStart names its plugin, from either environment's
     /// container, and keeps only the error's first line.
+    // The modules Vite's optimizer bundles with no plugin of the app: a
+    // dependency's scripts, the packages of `optimizeDeps.exclude` aside.
+    #[test]
+    fn a_dependencys_scripts_are_the_bundlers_and_an_excluded_package_is_not() {
+        let none: [String; 0] = [];
+        for id in [
+            "/app/node_modules/react/index.js",
+            "/app/node_modules/@scope/pkg/dist/esm/a.mjs",
+            "/app/node_modules/.pnpm/a@1.0.0/node_modules/a/lib/b.cjs",
+            "/app/node_modules/a/src/c.tsx",
+        ] {
+            assert!(is_bundled_dep(&none, id), "{id}");
+        }
+        for id in [
+            // The app's own modules, and a linked package's (its real path).
+            "/app/src/main.tsx",
+            "/repo/packages/ui/src/button.tsx",
+            // What the optimizer leaves to the dev server.
+            "/app/node_modules/antd/lib/button/style/index.less",
+            "/app/node_modules/a/dist/a.css",
+            "/app/node_modules/a/logo.svg",
+            "/app/node_modules/a/data.json",
+            "/app/node_modules/a/index.js?raw",
+            "/app/node_modules/a/worker.js?worker",
+            "\0virtual:/app/node_modules/a/index.js",
+        ] {
+            assert!(!is_bundled_dep(&none, id), "{id}");
+        }
+        let excluded = [
+            "a".to_string(),
+            "@scope/pkg".to_string(),
+            "b/sub".to_string(),
+        ];
+        for id in [
+            "/app/node_modules/a/index.js",
+            "/app/node_modules/@scope/pkg/dist/esm/a.mjs",
+            // A path inside a package keeps the package.
+            "/app/node_modules/b/index.js",
+            // The nearest package is the module's.
+            "/app/node_modules/c/node_modules/a/index.js",
+        ] {
+            assert!(!is_bundled_dep(&excluded, id), "{id}");
+        }
+        for id in [
+            "/app/node_modules/ab/index.js",
+            "/app/node_modules/@scope/pkg2/index.js",
+            "/app/node_modules/a/node_modules/c/index.js",
+        ] {
+            assert!(is_bundled_dep(&excluded, id), "{id}");
+        }
+    }
+
     #[test]
     fn a_skipped_build_start_names_its_plugin() {
         let line = build_start_skipped(

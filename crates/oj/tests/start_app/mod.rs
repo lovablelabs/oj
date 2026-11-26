@@ -192,7 +192,19 @@ impl Server {
     /// [`Server::oj_dev_with`], running `on` as soon as the output shows
     /// `line`, before the server listens: a step that has to land mid-boot.
     pub fn oj_dev_at(root: &Path, env: &[(&str, &str)], line: &str, on: impl FnOnce()) -> Server {
-        let mut server = Server::spawn_oj_dev(root, free_port(), &[], env);
+        Server::oj_dev_at_on(root, free_port(), env, line, on)
+    }
+
+    /// [`Server::oj_dev_at`] on a port the caller chose, for a step that
+    /// needs it before the server says where it listens.
+    pub fn oj_dev_at_on(
+        root: &Path,
+        port: u16,
+        env: &[(&str, &str)],
+        line: &str,
+        on: impl FnOnce(),
+    ) -> Server {
+        let mut server = Server::spawn_oj_dev(root, port, &[], env);
         let deadline = Instant::now() + WAIT;
         while !server.output().contains(line) {
             server.assert_alive("oj dev", deadline);
