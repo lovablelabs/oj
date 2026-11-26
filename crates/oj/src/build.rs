@@ -3551,6 +3551,15 @@ impl ChunkSheets {
         }
         for id in &chunk.module_ids {
             let id: &str = id.as_ref();
+            // A `?url`, `?inline`, `?raw` or `?transform-only` module of a
+            // sheet brings the chunk no sheet (see the emitter's chunk_sheet).
+            let query = id.split_once('?').map(|(_, q)| q).unwrap_or("");
+            if query
+                .split('&')
+                .any(|p| matches!(p, "url" | "inline" | "raw" | "transform-only"))
+            {
+                continue;
+            }
             let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
             if let Some(file) = self.by_module.get(path) {
                 if !files.contains(file) {

@@ -371,8 +371,16 @@ impl StartCodePlugin {
                     oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
+                // Start's build splits a server module: the provider
+                // (`?tss-serverfn-split`, what the resolver imports) keeps
+                // the handlers, the module itself calls them through
+                // `createSsrRpc`.
+                CodeTarget::Server if id.contains("tss-serverfn-split") => {
+                    oj_compiler::server_fns::rewrite_server_provider(&code, &rel, &modules)
+                }
                 CodeTarget::Server => {
-                    oj_compiler::server_fns::rewrite_server(&code, &rel, &modules)
+                    oj_compiler::server_fns::rewrite_ssr_caller(&code, &rel, &modules)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
                 CodeTarget::Worker { .. } => None,
             };

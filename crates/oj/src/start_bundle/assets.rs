@@ -387,13 +387,11 @@ impl Styles {
     }
 }
 
-/// Whether a sheet needs Tailwind (`@tailwind`, `@apply`, `@plugin`, an
-/// `@import "tailwindcss"`).
+/// Whether a sheet needs Tailwind: any of its directives, as the server's
+/// own gate decides (a second list here fell behind it, and a sheet with a
+/// `@reference` alone was emitted as written).
 pub(crate) fn needs_css_compile(src: &str) -> bool {
-    src.contains("tailwindcss")
-        || src.contains("@tailwind")
-        || src.contains("@plugin")
-        || src.contains("@apply")
+    oj_server::needs_css_compile(src)
 }
 
 /// A worker entry's bundle: the entry chunk's code and the file name the

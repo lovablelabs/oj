@@ -1795,3 +1795,61 @@ fn a_dynamically_imported_plain_sheet_leaves_no_chunk_as_in_vite() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A server function's module is built in two, as Start's compiler builds
+/// it: the module itself, where the handler is a `createSsrRpc(id)` stub,
+/// and the provider (`<file>?tss-serverfn-split`) holding the handler, a
+/// chunk of its own the resolver imports when the function is first called.
+/// oj kept every handler in its module, one chunk where `vite build` writes
+/// two.
+#[test]
+fn a_server_functions_handler_lives_in_its_provider_chunk_alone() {
+    let Some(root) = app("server-fn-provider") else {
+        return;
+    };
+    build(&root);
+    let mut server: Vec<(PathBuf, String)> = Vec::new();
+    for dir in ["dist", "dist/chunks"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "mjs") {
+                let code = std::fs::read_to_string(&path).unwrap();
+                server.push((path, code));
+            }
+        }
+    }
+    let holders: Vec<&PathBuf> = server
+        .iter()
+        .filter(|(_, code)| code.contains("server-fn-marker"))
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(
+        holders.len(),
+        1,
+        "the handler's body is in one chunk, the provider's: {holders:?}"
+    );
+    let provider = holders[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        provider.starts_with("data-"),
+        "the provider chunk is named after its module: {provider}"
+    );
+    let provider_code = &server.iter().find(|(p, _)| p == holders[0]).unwrap().1;
+    assert!(
+        provider_code.contains("getGreeting_createServerFn_handler"),
+        "the provider exports the handler's sibling: {provider_code}"
+    );
+    let resolver = server
+        .iter()
+        .find(|(_, code)| code.contains("Server function info not found"))
+        .expect("the resolver is in the server bundle");
+    assert!(
+        resolver.1.contains(&format!("./{provider}")),
+        "the resolver imports the provider chunk: {}",
+        resolver.0.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

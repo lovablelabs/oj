@@ -414,7 +414,16 @@ pub(crate) fn write_server_fn_resolver(
         // edited, as the engine keeps the errored module (Vite's too).
         let var = format!("__m{module_count}");
         module_count += 1;
-        let spec = server_fn_module(cache, path);
+        // A build's resolver imports the provider module (`?tss-serverfn-split`,
+        // the handlers alone), as Start's does; dev's imports the module.
+        let spec = if dev {
+            server_fn_module(cache, path)
+        } else {
+            json(&format!(
+                "{}?tss-serverfn-split",
+                oj_compiler::glob::relative_import(cache, path)
+            ))
+        };
         modules.push_str(&format!(
             "let {var};\nconst {var}_load = async () => ({var} ??= await import({spec}));\n"
         ));
