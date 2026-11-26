@@ -1624,3 +1624,174 @@ fn a_pure_module_a_packages_side_effects_glob_covers_drops_out_as_in_vite() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A sheet a module imports plainly and another imports as `?url` joins its
+/// chunk's stylesheet once: vite:css-post reads a chunk's sheet off each
+/// module's own id, and a `?url` module (or the `?transform-only` one its
+/// compile runs under) carries none. oj keyed the sheets by path, so the
+/// chunk took the sheet once per id (Lovable's app-boot sheet carried
+/// Partners.css three times over, and its manifest row named another
+/// chunk's sheet).
+#[test]
+fn a_sheet_imported_plainly_and_by_url_joins_its_chunks_sheet_once() {
+    let Some(root) = app("sheet-plain-and-url") else {
+        return;
+    };
+    std::fs::write(
+        root.join("styles/dual.css"),
+        ".dual-marker { color: red }\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport \"../../styles/dual.css\";\nimport dualUrl from \"../../styles/dual.css?url\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-dual\", content: dualUrl }],",
+            1,
+        );
+    assert!(
+        source.contains("content: dualUrl }"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let sheets: Vec<(PathBuf, String)> = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "css"))
+        .map(|p| {
+            let css = std::fs::read_to_string(&p).unwrap();
+            (p, css)
+        })
+        .collect();
+    let with_marker: Vec<&PathBuf> = sheets
+        .iter()
+        .filter(|(_, css)| css.contains(".dual-marker"))
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        with_marker.iter().any(|p| p
+            .file_name()
+            .is_some_and(|f| f.to_string_lossy().starts_with("dual-"))),
+        "the ?url import emits the sheet as dual-<hash>.css: {with_marker:?}"
+    );
+    assert_eq!(
+        with_marker.len(),
+        2,
+        "the sheet is in its chunk's stylesheet and the ?url asset, nowhere else: {with_marker:?}"
+    );
+    for (p, css) in &sheets {
+        assert_eq!(
+            css.matches(".dual-marker").count() <= 1,
+            true,
+            "{} carries the sheet more than once",
+            p.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A plain sheet imported with `import()` leaves no JS chunk behind, as
+/// under `vite build`: its module is empty, the chunk holding it alone is a
+/// pure CSS chunk that generateBundle drops, and the import becomes
+/// `Promise.resolve({})` with the sheet alone in its preload list. oj's
+/// module exported an object, so the chunk stayed, one request for nothing
+/// (Lovable's katex.min and x-theme sheets).
+#[test]
+fn a_dynamically_imported_plain_sheet_leaves_no_chunk_as_in_vite() {
+    let Some(root) = app("dynamic-sheet-chunk") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen(
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") } },"#,
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") }, build: { manifest: true } },"#,
+        1,
+    );
+    assert!(
+        source.contains("manifest: true"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    std::fs::write(
+        root.join("styles/lazy-only.css"),
+        ".lazy-only-marker { color: blue }\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source.replacen(
+        "import \"../../styles/app.css\";",
+        "import \"../../styles/app.css\";\nif (typeof window !== \"undefined\") void import(\"../../styles/lazy-only.css\");",
+        1,
+    );
+    assert!(
+        source.contains("lazy-only.css"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let assets: Vec<String> = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !assets
+            .iter()
+            .any(|f| f.starts_with("lazy-only-") && f.contains(".js")),
+        "no JS chunk (nor its map) remains for the sheet: {assets:?}"
+    );
+    let sheet = assets
+        .iter()
+        .find(|f| f.starts_with("lazy-only-") && f.ends_with(".css"))
+        .expect("the sheet is emitted as lazy-only-<hash>.css");
+    let client: String = assets
+        .iter()
+        .filter(|f| f.ends_with(".js"))
+        .map(|f| std::fs::read_to_string(root.join("dist/client/assets").join(f)).unwrap())
+        .collect();
+    assert!(
+        client.contains("Promise.resolve({"),
+        "the import of the dropped chunk is Promise.resolve({{}}), as Vite rewrites it"
+    );
+    assert!(
+        client.contains(&format!("assets/{sheet}")),
+        "the sheet is in the preload dependency table"
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("dist/client/.vite/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let rows = manifest.as_object().unwrap();
+    assert!(
+        !rows.values().any(|r| r["file"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("assets/lazy-only-") && f.ends_with(".js"))),
+        "the manifest names no chunk for the sheet"
+    );
+    assert!(
+        rows.values()
+            .all(|r| r["dynamicImports"].as_array().is_none_or(|d| !d
+                .iter()
+                .any(|k| k.as_str().is_some_and(|k| k.contains("lazy-only.css"))))),
+        "no row lists the dropped chunk among its dynamicImports"
+    );
+    assert_eq!(
+        rows.get("styles/lazy-only.css")
+            .and_then(|r| r["file"].as_str()),
+        Some(format!("assets/{sheet}").as_str()),
+        "the sheet has its own row, as Vite's manifest keys a dropped pure CSS chunk's sheet"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

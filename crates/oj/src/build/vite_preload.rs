@@ -494,6 +494,8 @@ fn collect_preload_dependencies<'d>(
 /// static url (es-module-lexer's `e` and `n`).
 struct DynamicImport {
     specifier_end: usize,
+    /// The `import(...)` expression itself.
+    expr: (usize, usize),
     url: Option<String>,
 }
 
@@ -513,6 +515,7 @@ fn dynamic_imports(code: &str) -> Option<Vec<DynamicImport>> {
             let span = oxc_span::GetSpan::span(&it.source);
             self.0.push(DynamicImport {
                 specifier_end: span.end as usize,
+                expr: (it.span.start as usize, it.span.end as usize),
                 url,
             });
             oxc_ast_visit::walk::walk_import_expression(self, it);
@@ -624,9 +627,15 @@ pub(crate) fn fill_preload_markers<'d>(
     let mut rewrote: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let dir = Path::new(file).parent().unwrap_or(Path::new(""));
     for (import, marker) in imports.iter().zip(&markers) {
+        // A pure CSS chunk generateBundle dropped answers with its sheets
+        // alone (no `js`): the import of it becomes `Promise.resolve({})`,
+        // as Vite's build import analysis rewrites it, and its sheets are
+        // preloaded even when they are the only dependency.
+        let mut removed_pure = false;
         let deps: Vec<String> = match &import.url {
             Some(url) => {
                 let normalized = normalize_posix(&dir.join(url));
+                removed_pure = dependency(&normalized).is_some_and(|d| d.js.is_none());
                 let mut seen = std::collections::HashSet::new();
                 collect_preload_dependencies(&normalized, file, dependency)
                     .into_iter()
@@ -635,8 +644,17 @@ pub(crate) fn fill_preload_markers<'d>(
             }
             None => Vec::new(),
         };
+        if removed_pure {
+            let (start, end) = import.expr;
+            let pad = (end - start).saturating_sub("Promise.resolve({})".len());
+            edits.push(Edit {
+                start,
+                end,
+                with: format!("Promise.resolve({{{}}})", " ".repeat(pad)),
+            });
+        }
         let Some(marker) = *marker else { continue };
-        let deps: Vec<String> = if deps.len() > 1 {
+        let deps: Vec<String> = if deps.len() > 1 || (removed_pure && !deps.is_empty()) {
             if module_preload {
                 deps
             } else {

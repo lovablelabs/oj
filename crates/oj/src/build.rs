@@ -4973,6 +4973,7 @@ pub async fn build(
             &base,
             &imports_map,
             &chunk_css,
+            &std::collections::HashMap::new(),
             oj_config::module_preload_links(&config),
         )?;
     }
@@ -7422,12 +7423,19 @@ pub(crate) fn apply_preload_helper(
     base: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
+    removed_pure: &std::collections::HashMap<String, Vec<String>>,
     module_preload: bool,
 ) -> anyhow::Result<()> {
     let mut css_of: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (chunk, css) in chunk_css {
         css_of.entry(chunk.as_str()).or_default().push(css.as_str());
     }
+    // The pure CSS chunks generateBundle dropped: a dependency of sheets
+    // alone, as Vite's removedPureCssFilesCache answers for one.
+    let removed_css_of: std::collections::HashMap<&str, Vec<&str>> = removed_pure
+        .iter()
+        .map(|(file, css)| (file.as_str(), css.iter().map(String::as_str).collect()))
+        .collect();
     let relative = is_relative_base(base);
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
@@ -7439,6 +7447,13 @@ pub(crate) fn apply_preload_helper(
             continue;
         };
         let dependency = |f: &str| -> Option<vite_preload::Dependency<'_>> {
+            if let Some(css) = removed_css_of.get(f) {
+                return Some(vite_preload::Dependency {
+                    js: None,
+                    imports: &[],
+                    css: css.as_slice(),
+                });
+            }
             let (name, imports) = imports_map.get_key_value(f)?;
             Some(vite_preload::Dependency {
                 js: Some(name.as_str()),

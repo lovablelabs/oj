@@ -497,6 +497,12 @@ pub(crate) struct Emitter {
     /// The sheets a chunk took over from the pure CSS chunks it imported
     /// (generateBundle dropped them), by the chunk's preliminary file name.
     inherited: Mutex<HashMap<String, Vec<String>>>,
+    /// The pure CSS chunks generateBundle dropped, by final file name, each
+    /// with its sheets (its own and the ones it had taken over): a chunk
+    /// that imported one with `import()` still names the file, and the
+    /// preload helper answers for it as Vite's does (its sheets alone, the
+    /// import itself replaced).
+    removed_pure: Mutex<HashMap<String, Vec<String>>>,
     /// A plugin's CSS for a module no chunk holds (`plugin_css`), by module.
     standalone: Mutex<HashMap<PathBuf, String>>,
     /// `output.assetFileNames` for the sheets written here.
@@ -539,6 +545,7 @@ impl Emitter {
             module_css: Mutex::new(HashMap::new()),
             chunk_sheets: Mutex::new(Vec::new()),
             inherited: Mutex::new(HashMap::new()),
+            removed_pure: Mutex::new(HashMap::new()),
             standalone: Mutex::new(HashMap::new()),
             asset_namer: Mutex::new(None),
             minify,
@@ -753,22 +760,47 @@ impl Emitter {
             for id in &chunk.module_ids {
                 let id: &str = id.as_ref();
                 let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
+                // vite:css-post reads a chunk's sheet off each module's own
+                // id: a `?url`, `?inline` or `?raw` module of a sheet
+                // carries none (the asset plugin, or an inlined string,
+                // answered it), and a `?transform-only` one's compile went
+                // into the `?url` asset, so it is passed over. oj keyed the
+                // sheets by path, and a chunk holding `x.css?url` and
+                // `x.css?transform-only` took the sheet of `x.css` twice
+                // (Lovable's app-boot sheet carried Partners.css twice over).
+                let query = id.split_once('?').map(|(_, q)| q).unwrap_or("");
+                let has_param = |name: &str| query.split('&').any(|p| p == name);
+                let transform_only = has_param("transform-only");
+                let asset_module = ["url", "inline", "raw"].iter().any(|p| has_param(p));
                 match module_css.get(path) {
-                    Some(sheet) => {
+                    Some(_) if transform_only => {}
+                    Some(sheet) if !asset_module => {
                         // A CSS module's class map is JS the chunk keeps.
                         if is_css_module(&path.to_string_lossy()) {
                             pure = false;
                         }
-                        css.push_str(sheet);
+                        // Vite minifies a chunk's sheet whole, so its modules'
+                        // sheets meet with nothing between them; oj minified
+                        // each on its own, with esbuild's trailing newline,
+                        // and a sheet of several modules carried one newline
+                        // per module (and a hash of its own for it).
+                        if self.minify {
+                            css.push_str(sheet.trim_end_matches('\n'));
+                        } else {
+                            css.push_str(sheet);
+                        }
                         modules.push(path.to_path_buf());
                     }
-                    None if !(js_empty && !chunk.is_entry) => pure = false,
-                    None => {}
+                    _ if !(js_empty && !chunk.is_entry) => pure = false,
+                    _ => {}
                 }
             }
         }
         if modules.is_empty() {
             return Ok(None);
+        }
+        if self.minify && !css.is_empty() {
+            css.push('\n');
         }
         let facade_is_css = chunk
             .facade_module_id
@@ -859,16 +891,43 @@ impl Emitter {
         .expect("a file-name alternation is a valid pattern");
         let mut inherited = self.inherited.lock().unwrap();
         let sheets = self.chunk_sheets.lock().unwrap();
+        {
+            // What each dropped chunk brought: a chunk importing it with
+            // `import()` keeps the statement, and the preload helper reads
+            // its sheets off this record (Vite's removedPureCssFilesCache).
+            let mut removed = self.removed_pure.lock().unwrap();
+            for file in &pure_files {
+                let Some(prelim) = prelim_of.get(file) else {
+                    continue;
+                };
+                let mut css: Vec<String> = Vec::new();
+                if let Some(sheet) = sheets.iter().find(|s| &s.chunk == prelim) {
+                    css.push(sheet.file.clone());
+                }
+                for inherited_file in inherited.get(prelim).cloned().unwrap_or_default() {
+                    if !css.contains(&inherited_file) {
+                        css.push(inherited_file);
+                    }
+                }
+                removed.insert(file.clone(), css);
+            }
+        }
         for o in bundle.iter_mut() {
             let Output::Chunk(chunk) = o else { continue };
-            if !chunk
-                .imports
-                .iter()
-                .any(|i| pure_files.contains(&i.to_string()))
-            {
+            let names_one = |files: &[arcstr::ArcStr]| {
+                files.iter().any(|i| pure_files.contains(&i.to_string()))
+            };
+            if !names_one(&chunk.imports) && !names_one(&chunk.dynamic_imports) {
                 continue;
             }
             let chunk = Arc::make_mut(chunk);
+            // The chunk's own `import()` of a dropped chunk stays in its
+            // code for the preload helper to rewrite; the file leaves the
+            // chunk's list, as the manifest's dynamicImports never names a
+            // chunk the bundle lost.
+            chunk
+                .dynamic_imports
+                .retain(|import| !pure_files.contains(&import.to_string()));
             let mut took: Vec<String> = Vec::new();
             chunk.imports.retain(|import| {
                 let import = import.to_string();
@@ -895,10 +954,18 @@ impl Emitter {
             }
             chunk.code = empty_import.replace_all(&chunk.code, "").into_owned();
         }
+        let pure_maps: Vec<String> = pure_files.iter().map(|f| format!("{f}.map")).collect();
         bundle.retain(|o| match o {
             Output::Chunk(c) => !pure_files.contains(&c.filename.to_string()),
-            Output::Asset(_) => true,
+            // A dropped chunk's sourcemap goes with it.
+            Output::Asset(a) => !pure_maps.contains(&a.filename.to_string()),
         });
+    }
+
+    /// The pure CSS chunks [`Self::drop_pure_chunks`] dropped, by final file
+    /// name, with their sheets.
+    pub fn removed_pure_css(&self) -> HashMap<String, Vec<String>> {
+        self.removed_pure.lock().unwrap().clone()
     }
 
     /// Writes `bytes` as the file at `path` names it, content-hashed; its URL.
@@ -1953,7 +2020,18 @@ impl StartAssetsPlugin {
                         }
                     }
                 }
-                compiled.map_or_else(|| "export default {};".to_string(), |c| c.code)
+                // A plain sheet's module is empty in a build, as vite:css-post
+                // leaves it (`code = ""`): a chunk of sheets alone is then a
+                // pure CSS chunk, dropped with its sheet handed to the chunks
+                // importing it, with `import()` as with `import`. Dev keeps
+                // an object for the module's default.
+                compiled.map_or_else(
+                    || match &self.mode {
+                        AssetMode::Build { .. } => String::new(),
+                        AssetMode::Dev { .. } => "export default {};".to_string(),
+                    },
+                    |c| c.code,
+                )
             }
         }))
     }

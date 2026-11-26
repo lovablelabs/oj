@@ -591,6 +591,7 @@ pub(crate) async fn build(
                 &start.base,
                 &imports_map,
                 &emitter.chunk_css(&output.assets),
+                &emitter.removed_pure_css(),
                 oj_config::module_preload_links(&start.config),
             )?;
         }
