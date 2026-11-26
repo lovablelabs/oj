@@ -69,6 +69,11 @@ pub(crate) struct Facts {
     /// a plugin of its own from oj's stand-in for @stylexjs/unplugin, hooks
     /// and all, so oj's native StyleX stands down for the bundle.
     pub stylex_host_driven: bool,
+    /// vite:oxc's filters as the environment's `oxc` resolved them
+    /// (`include`, `exclude`, `jsxRefreshInclude`, `jsxRefreshExclude`, each
+    /// a pattern or list of patterns, a regex as `{ $regex, flags }`);
+    /// `false` with `oxc: false`, `None` when the host said nothing.
+    pub oxc_filters: Option<Value>,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -122,6 +127,7 @@ impl Facts {
                 .get("stylexHostDriven")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            oxc_filters: v.get("oxc").cloned(),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

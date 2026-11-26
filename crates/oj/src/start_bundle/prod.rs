@@ -248,16 +248,20 @@ fn client_plugins(
                 StartCodePlugin::new(&start.root, target.clone())
                     .with_route_tree(start.route_tree())
                     .with_alias(h.facts.alias.clone())
+                    .with_built_urls(Arc::clone(emitter), worker_chain.clone())
                     .routes_split_in_host(true),
             )
             // vite:oxc at its slot: the module lowered and printed as a
             // build's rolldown prints it, between the "pre" plugins and
             // the normal ones (see vite_transform).
-            .lowering(super::vite_transform::ViteTransform::new(
-                start.root.clone(),
-                false,
-                start.transform_options(),
-            )),
+            .lowering(
+                super::vite_transform::ViteTransform::new(
+                    start.root.clone(),
+                    false,
+                    start.transform_options(),
+                )
+                .with_filters(h.facts.oxc_filters.as_ref()),
+            ),
         ));
     }
     // After the app's plugins, where vite:resolve sits, as `vite build`.
@@ -284,6 +288,7 @@ fn client_plugins(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())
             .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
+            .with_built_urls(Arc::clone(emitter), worker_chain.clone())
             .compiled_in_host(host.is_some()),
     ));
     plugins.push(Pluginable::new_shared(
@@ -806,11 +811,14 @@ pub(crate) async fn build(
                             .with_route_tree(start.route_tree())
                             .with_alias(h.facts.alias.clone()),
                     )
-                    .lowering(super::vite_transform::ViteTransform::new(
-                        start.root.clone(),
-                        true,
-                        start.transform_options(),
-                    )),
+                    .lowering(
+                        super::vite_transform::ViteTransform::new(
+                            start.root.clone(),
+                            true,
+                            start.transform_options(),
+                        )
+                        .with_filters(h.facts.oxc_filters.as_ref()),
+                    ),
                 ));
             }
             plugins.extend(crate::build::tsconfig_paths_plugin_with(

@@ -827,6 +827,10 @@ pub fn has_scheme(file: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaUrlTarget {
     File(PathBuf),
+    /// The file's built URL, known already (a build that bundled the worker
+    /// or wrote the asset as it resolved the site): the literal Vite's
+    /// plugins leave once renderChunk fills their placeholder in.
+    Literal(String),
     /// A worker starting its own entry: `self.location.href`.
     SelfWorker,
     Unresolved,
@@ -898,6 +902,29 @@ pub fn apply_import_meta_urls(code: &str, sites: &[MetaUrl], targets: &[MetaUrlT
                     site.start,
                     site.end,
                     format!("new URL({href}, '' + import.meta.url)"),
+                ));
+            }
+            // The built URL as Vite's plugins leave it (the worker plugin's
+            // `/* @vite-ignore */`, the asset plugin's not): a string in the
+            // call, nothing hoisted.
+            (MetaUrlKind::Worker { .. }, MetaUrlTarget::Literal(url)) => edits.push((
+                site.start,
+                site.end,
+                format!(
+                    "new URL(/* @vite-ignore */ {}, '' + import.meta.url)",
+                    json(url)
+                ),
+            )),
+            (MetaUrlKind::Asset { postfix, .. }, MetaUrlTarget::Literal(url)) => {
+                let href = if postfix.starts_with('#') {
+                    format!("{url}{postfix}")
+                } else {
+                    url.clone()
+                };
+                edits.push((
+                    site.start,
+                    site.end,
+                    format!("new URL({}, '' + import.meta.url)", json(&href)),
                 ));
             }
             (MetaUrlKind::Asset { .. }, MetaUrlTarget::SelfWorker) => {}

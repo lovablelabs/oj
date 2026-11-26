@@ -20,6 +20,8 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_transformer::Transformer;
 use rolldown_common::{BundlerTransformOptions, Either, ModuleType};
+use rolldown_utils::js_regex::HybridRegex;
+use rolldown_utils::pattern_filter::{filter as pattern_filter, StringOrRegex};
 
 pub(crate) struct ViteTransform {
     root: PathBuf,
@@ -29,12 +31,32 @@ pub(crate) struct ViteTransform {
     transform_options: BundlerTransformOptions,
     /// The nearest tsconfig of a TypeScript module (rolldown's discovery).
     resolver: Resolver,
+    /// `oxc: false`: the plugin is off.
+    disabled: bool,
+    /// The plugin's filters (`oxc.include`, `oxc.exclude`): with neither,
+    /// the module type decides.
+    include: Vec<StringOrRegex>,
+    exclude: Vec<StringOrRegex>,
+    /// The Fast Refresh filters a plugin's config hook adds (plugin-react
+    /// names every `.[tj]sx?` module): a module the include names is
+    /// transformed as well, whatever the module type.
+    jsx_refresh_include: Vec<StringOrRegex>,
+    jsx_refresh_exclude: Vec<StringOrRegex>,
 }
 
 /// A lowered module: the printed code and its map (JSON), when asked for.
 pub(crate) struct Lowered {
     pub code: String,
     pub map: Option<String>,
+}
+
+/// The plugin's jsxRefreshFilter answer.
+#[derive(PartialEq, Eq)]
+enum RefreshFilter {
+    /// No refresh filters at all.
+    None,
+    True,
+    False,
 }
 
 impl ViteTransform {
@@ -51,42 +73,130 @@ impl ViteTransform {
                 tsconfig: Some(TsconfigDiscovery::Auto),
                 ..ResolveOptions::default()
             }),
+            disabled: false,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            jsx_refresh_include: Vec::new(),
+            jsx_refresh_exclude: Vec::new(),
         }
     }
 
-    /// Whether the plugin takes `id`: Vite's default filter (no `oxc.include`
-    /// or `exclude`) is the module type off the extension, jsx, tsx or ts;
-    /// a virtual id (a NUL byte) never.
+    /// The filters off the host's `oxc` fact (`Facts::oxc_filters`): each a
+    /// pattern or list of patterns, a regex as `{ $regex, flags }`.
+    pub fn with_filters(mut self, facts: Option<&serde_json::Value>) -> Self {
+        let Some(facts) = facts else {
+            return self;
+        };
+        if facts.as_bool() == Some(false) {
+            self.disabled = true;
+            return self;
+        }
+        let patterns = |key: &str| -> Vec<StringOrRegex> {
+            let value = facts.get(key).unwrap_or(&serde_json::Value::Null);
+            let items: Vec<&serde_json::Value> = match value {
+                serde_json::Value::Array(items) => items.iter().collect(),
+                serde_json::Value::Null => Vec::new(),
+                one => vec![one],
+            };
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(s) => Some(StringOrRegex::String(s.clone())),
+                    serde_json::Value::Object(o) => {
+                        let source = o.get("$regex")?.as_str()?;
+                        let flags = o.get("flags").and_then(|f| f.as_str()).unwrap_or("");
+                        HybridRegex::with_flags(source, flags)
+                            .ok()
+                            .map(StringOrRegex::Regex)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        self.include = patterns("include");
+        self.exclude = patterns("exclude");
+        self.jsx_refresh_include = patterns("jsxRefreshInclude");
+        self.jsx_refresh_exclude = patterns("jsxRefreshExclude");
+        self
+    }
+
+    fn cwd(&self) -> String {
+        self.root.to_string_lossy().into_owned()
+    }
+
+    /// The plugin's jsxRefreshFilter.
+    fn jsx_refresh_filter(&self, id: &str, cwd: &str) -> RefreshFilter {
+        if self.jsx_refresh_include.is_empty() && self.jsx_refresh_exclude.is_empty() {
+            return RefreshFilter::None;
+        }
+        let exclude =
+            (!self.jsx_refresh_exclude.is_empty()).then_some(self.jsx_refresh_exclude.as_slice());
+        let include =
+            (!self.jsx_refresh_include.is_empty()).then_some(self.jsx_refresh_include.as_slice());
+        if pattern_filter(exclude, include, id, cwd).inner() {
+            RefreshFilter::True
+        } else {
+            RefreshFilter::False
+        }
+    }
+
+    /// Whether the plugin takes `id` (its `filter`): a virtual id (a NUL
+    /// byte) never; with no `include` or `exclude`, a jsx, tsx or ts module
+    /// by extension; else the filters over the id and the id without its
+    /// query; else a module the refresh include names.
     pub fn handles(&self, id: &str) -> bool {
-        if id.contains('\0') {
+        if self.disabled || id.contains('\0') {
             return false;
         }
-        let ext = Path::new(id.split(['?', '#']).next().unwrap_or(id))
-            .extension()
-            .map(|e| e.to_string_lossy());
-        let Some(ext) = ext else {
-            return false;
-        };
-        matches!(
-            ModuleType::from_str_with_fallback(ext.as_ref()),
-            ModuleType::Jsx | ModuleType::Tsx | ModuleType::Ts
-        )
+        let cwd = self.cwd();
+        if self.include.is_empty() && self.exclude.is_empty() {
+            let ext = Path::new(id.split(['?', '#']).next().unwrap_or(id))
+                .extension()
+                .map(|e| e.to_string_lossy());
+            let Some(ext) = ext else {
+                return false;
+            };
+            return matches!(
+                ModuleType::from_str_with_fallback(ext.as_ref()),
+                ModuleType::Jsx | ModuleType::Tsx | ModuleType::Ts
+            );
+        }
+        let exclude = (!self.exclude.is_empty()).then_some(self.exclude.as_slice());
+        let include = (!self.include.is_empty()).then_some(self.include.as_slice());
+        if pattern_filter(exclude, include, id, &cwd).inner() {
+            return true;
+        }
+        let cleaned = id.split(['?', '#']).next().unwrap_or(id);
+        if cleaned != id && pattern_filter(exclude, include, cleaned, &cwd).inner() {
+            return true;
+        }
+        self.jsx_refresh_filter(id, &cwd) == RefreshFilter::True
     }
 
     /// The module lowered and printed as the plugin prints it.
     pub fn lower(&self, id: &str, code: &str, sourcemap: bool) -> anyhow::Result<Lowered> {
+        let cwd = self.cwd();
         let clean = id.split(['?', '#']).next().unwrap_or(id);
         let ext = Path::new(clean).extension().map(|e| e.to_string_lossy());
-        let source_type = match ext.as_deref() {
-            Some("js" | "cjs" | "mjs") => SourceType::mjs(),
-            Some("jsx") => SourceType::jsx(),
-            Some("ts" | "cts" | "mts") => SourceType::ts(),
-            Some("tsx") => SourceType::tsx(),
-            _ => anyhow::bail!("Failed to detect the lang of {id}."),
+        // A module only the refresh include names, with an extension of its
+        // own (an .mdx), is read as JavaScript.
+        let refresh_lang = self.jsx_refresh_filter(id, &cwd) == RefreshFilter::True
+            && !matches!(ext.as_deref(), Some("js" | "jsx" | "mjs" | "ts" | "tsx"));
+        let source_type = if refresh_lang {
+            SourceType::mjs()
+        } else {
+            match ext.as_deref() {
+                Some("js" | "cjs" | "mjs") => SourceType::mjs(),
+                Some("jsx") => SourceType::jsx(),
+                Some("ts" | "cts" | "mts") => SourceType::ts(),
+                Some("tsx") => SourceType::tsx(),
+                _ => anyhow::bail!("Failed to detect the lang of {id}."),
+            }
         };
         let mut options = self.transform_options.clone();
-        // Fast Refresh is off on the server, and in a module that is neither
-        // JSX by extension nor imports the JSX runtime.
+        // Fast Refresh is off on the server, off a module the refresh
+        // filters leave out, and off a module that is neither JSX by
+        // extension nor imports the JSX runtime.
         if let Some(Either::Right(jsx)) = &mut options.jsx {
             if jsx.refresh.is_some() {
                 let import_source = self
@@ -101,6 +211,7 @@ impl ViteTransform {
                 let imports_runtime = code.contains(&format!("{import_source}/jsx-runtime"))
                     || code.contains(&format!("{import_source}/jsx-dev-runtime"));
                 let disabled = self.is_server_consumer
+                    || self.jsx_refresh_filter(id, &cwd) == RefreshFilter::False
                     || !(ext.as_deref().is_some_and(|e| e.ends_with('x')) || imports_runtime);
                 if disabled {
                     jsx.refresh = None;
@@ -208,5 +319,32 @@ mod tests {
         assert!(out.map.is_some());
         assert!(transform().handles("/app/src/f.tsx") && transform().handles("/app/x.ts?v=1"));
         assert!(!transform().handles("/app/src/f.js") && !transform().handles("\0virtual"));
+    }
+
+    /// With plugin-react's refresh include (`/\.[tj]sx?$/`), a `.js` module
+    /// is transformed too, as rolldown's plugin takes a module the refresh
+    /// include names; `oxc: false` turns the plugin off.
+    #[test]
+    fn the_refresh_include_takes_a_js_module() {
+        let facts = serde_json::json!({
+            "include": null,
+            "exclude": null,
+            "jsxRefreshInclude": [{ "$regex": "\\.[tj]sx?$", "flags": "" }, { "$regex": "\\.[tj]sx?\\?", "flags": "" }],
+            "jsxRefreshExclude": null,
+        });
+        let t = transform().with_filters(Some(&facts));
+        assert!(t.handles("/app/node_modules/dep/index.js") && t.handles("/app/src/a.js?v=1"));
+        assert!(!t.handles("/app/src/a.css") && !t.handles("/app/src/a.json"));
+        let out = t
+            .lower(
+                "/app/src/a.js",
+                "// gone\n/** kept */\nexport const a = 1;\n",
+                false,
+            )
+            .unwrap();
+        assert_eq!(out.code, "/** kept */\nexport const a = 1;\n");
+        assert!(!transform()
+            .with_filters(Some(&serde_json::Value::Bool(false)))
+            .handles("/app/src/f.tsx"));
     }
 }

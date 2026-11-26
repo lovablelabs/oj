@@ -66,6 +66,11 @@ pub(crate) struct StartCodePlugin {
     /// the tree's modification time.
     route_files: Mutex<Option<(std::time::SystemTime, HashSet<PathBuf>)>>,
     warned: Mutex<HashSet<String>>,
+    /// A build's emitter and this bundle's worker chain: a `new URL(file,
+    /// import.meta.url)` site takes its file's built URL as a string, as
+    /// Vite's plugins leave it, the worker bundled or the asset written as
+    /// the site resolves. Without (dev), the site imports the URL.
+    urls: Option<(Arc<super::assets::Emitter>, Vec<PathBuf>)>,
 }
 
 impl std::fmt::Debug for StartCodePlugin {
@@ -86,7 +91,19 @@ impl StartCodePlugin {
             route_tree: root.join("src").join("routeTree.gen.ts"),
             route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
+            urls: None,
         }
+    }
+
+    /// A build: a `new URL(file, import.meta.url)` site takes its file's
+    /// built URL as a string (see `urls`).
+    pub fn with_built_urls(
+        mut self,
+        emitter: Arc<super::assets::Emitter>,
+        worker_chain: Vec<PathBuf>,
+    ) -> Self {
+        self.urls = Some((emitter, worker_chain));
+        self
     }
 
     /// The route tree the app's Start generates, when not Start's default.
@@ -225,7 +242,41 @@ impl Plugin for StartCodePlugin {
                             CodeTarget::Worker { entry } if *entry == abs => {
                                 MetaUrlTarget::SelfWorker
                             }
-                            _ => MetaUrlTarget::File(abs),
+                            _ => match &self.urls {
+                                // A build: the worker bundled, the asset
+                                // written, and the site given the URL as a
+                                // string, as Vite's plugins leave it. A
+                                // stylesheet keeps its import (compiled
+                                // through the plugins as a `?url` sheet).
+                                Some((emitter, chain))
+                                    if !super::assets::is_style_path(
+                                        &abs.to_string_lossy(),
+                                    ) =>
+                                {
+                                    let url = match &site.kind {
+                                        meta_glob::MetaUrlKind::Worker { .. } => {
+                                            Some(emitter.worker(&abs, chain).await)
+                                        }
+                                        meta_glob::MetaUrlKind::Asset { postfix, .. } => {
+                                            let query = if postfix.starts_with('#') {
+                                                ""
+                                            } else {
+                                                postfix.as_str()
+                                            };
+                                            let asset_id = format!("{}{query}", abs.display());
+                                            Some(emitter.asset_url(&abs, &asset_id).await)
+                                        }
+                                        meta_glob::MetaUrlKind::Template { .. } => None,
+                                    };
+                                    match url {
+                                        Some(url) => MetaUrlTarget::Literal(
+                                            url.map_err(|e| anyhow::anyhow!("{id}: {e}"))?,
+                                        ),
+                                        None => MetaUrlTarget::File(abs),
+                                    }
+                                }
+                                _ => MetaUrlTarget::File(abs),
+                            },
                         },
                         None => {
                             // Vite's warning for a file that is not there; a

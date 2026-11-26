@@ -6523,6 +6523,24 @@ async function startFacts(c) {
     // app made of the stand-in, hooks and all (see nativeStylexStandIn), so
     // oj's native StyleX stands down for the bundle.
     stylexHostDriven: c.rawPlugins.some((p) => p && p.__ojStylexOptions && typeof p.transform === "function"),
+    // vite:oxc's filters as the environment's `oxc` resolved them: the
+    // app's `include`/`exclude`, and the Fast Refresh include/exclude a
+    // plugin's config hook adds (plugin-react names every `.[tj]sx?`
+    // module), which a build's native transform takes a module by as well.
+    oxc: (() => {
+      const oxc = self.oxc ?? cfg.oxc;
+      if (oxc === false) return false;
+      const o = oxc && typeof oxc === "object" ? oxc : {};
+      return factValue(
+        {
+          include: o.include ?? null,
+          exclude: o.exclude ?? null,
+          jsxRefreshInclude: o.jsxRefreshInclude ?? null,
+          jsxRefreshExclude: o.jsxRefreshExclude ?? null,
+        },
+        fns,
+      );
+    })(),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
       (n, { p, rank }) => {
