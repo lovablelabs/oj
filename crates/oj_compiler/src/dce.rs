@@ -128,6 +128,27 @@ pub(crate) fn drop_dead_bindings(
     after
 }
 
+/// `code` with its unreferenced module-level bindings gone, every binding a
+/// candidate: what Start's provider compile leaves once a module's exports
+/// go local (the route and its component, and the imports only they used),
+/// as its dead-code pass removes them.
+pub(crate) fn drop_unreferenced_module_bindings(mut code: String, path: &str) -> String {
+    let Some(module) = Analysis::of(&code, path, |a| {
+        a.decls
+            .iter()
+            .filter(|d| d.module && !d.exported)
+            .map(|d| d.name.clone())
+            .collect::<HashSet<String>>()
+    }) else {
+        return code;
+    };
+    let nested = HashSet::new();
+    while let Some((out, _)) = drop_pass(&code, path, &module, &nested) {
+        code = out;
+    }
+    code
+}
+
 fn source_type(path: &str) -> SourceType {
     SourceType::from_path(path.split('?').next().unwrap_or(path))
         .unwrap_or_else(|_| SourceType::tsx())

@@ -81,12 +81,13 @@ pub struct ServerFn {
 /// The id a server function is registered and called under in a build, as
 /// Start's compiler gives it (`generateFunctionId` in build mode, with no
 /// `serverFns.generateFunctionId` configured): the hex sha256 of
-/// `"<app-relative path>--<name>"`. An earlier Start encoded
-/// `"<path>#<name>"` as base64url, which oj kept, so a client built by one
-/// tool could not call a server built by the other.
+/// `"<app-relative path>--<name>_createServerFn_handler"` (the handler's
+/// sibling name). An earlier Start encoded `"<path>#<name>"` as base64url,
+/// which oj kept, so a client built by one tool could not call a server
+/// built by the other.
 pub fn server_fn_id(rel: &str, name: &str) -> String {
     use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(format!("{rel}--{name}").as_bytes());
+    let digest = sha2::Sha256::digest(format!("{rel}--{name}_createServerFn_handler").as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -1045,6 +1046,13 @@ pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> 
         let lines = code[start..end].matches('\n').count();
         out.replace_range(start..end, &format!("{text}{}", "\n".repeat(lines)));
     }
+    // With the exports local, what nothing reads goes (the route and its
+    // component, the imports only they used), as the compiler's dead-code
+    // pass takes it; the siblings stay, exported.
+    let out = crate::dce::drop_unreferenced_module_bindings(
+        format!("{out}\nexport {{ {} }};\n", handlers.join(", ")),
+        rel,
+    );
     let at = prologue_end(&parsed.program, code);
     let sep = if at > 0 && !code[..at].ends_with('\n') {
         " "
@@ -1052,10 +1060,9 @@ pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> 
         ""
     };
     Some(format!(
-        "{}{sep}import {{ createServerRpc }} from \"@tanstack/react-start/server-rpc\"; {}\nexport {{ {} }};\n",
+        "{}{sep}import {{ createServerRpc }} from \"@tanstack/react-start/server-rpc\"; {}",
         &out[..at],
-        &out[at..],
-        handlers.join(", ")
+        &out[at..]
     ))
 }
 
@@ -1294,8 +1301,8 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("\nconst helper = 1;\n"),
-            "exports go local: {out}"
+            !out.contains("helper"),
+            "an export nothing reads goes with its export: {out}"
         );
         assert!(
             out.contains("const a_createServerFn_handler = createServerRpc({ id: "),
@@ -1303,18 +1310,13 @@ mod tests {
         );
         assert!(out.contains("const a = createServerFn().inputValidator((d: string) => d).handler(a_createServerFn_handler, async () => \"a-secret\");"), "{out}");
         assert!(
-            out.contains("\n\nfunction Page() { return a(); }"),
-            "a named default keeps its declaration: {out}"
+            !out.contains("function Page"),
+            "a default export nothing reads goes: {out}"
         );
         assert!(!out.contains("export { b };"), "an export list goes: {out}");
         assert!(
             out.ends_with("\nexport { a_createServerFn_handler, b_createServerFn_handler };\n"),
             "{out}"
-        );
-        assert_eq!(
-            out.matches('\n').count(),
-            code.matches('\n').count() + 2,
-            "the body keeps its lines: {out}"
         );
         parses(&out, rel);
 
@@ -1375,11 +1377,11 @@ mod tests {
 
     #[test]
     /// Start's build id, byte for byte: `crypto.createHash("sha256")
-    /// .update("src/a.ts--fn").digest("hex")` in Node.
+    /// .update("src/a.ts--fn_createServerFn_handler").digest("hex")` in Node.
     fn ids_match_starts_build_compiler() {
         assert_eq!(
             server_fn_id("src/a.ts", "fn"),
-            "b616079c3e7e98da39edc02e23721eea4907d726e716477ddf17774ff9e890d7"
+            "4b207f3574b43104400e700f332ee8ee151a07a49b4beb52af08ada389b98aeb"
         );
     }
 
@@ -1752,7 +1754,7 @@ mod tests {
         parses(&out, rel);
         let server = rewrite_server(&code, rel).unwrap();
         assert!(
-            server.contains("export const b_createServerFn_handler = createServerRpc({ id: \"f3b2b23e64f3659dd9ea2aab5339b7ca1bd89d729f12cc3ca93f05c93d033c52\", name: \"b\", filename: \"src/abc.ts\" }, (opts) => b.__executeServer(opts)); var b = createServerFn().handler(b_createServerFn_handler, async () => \"b-secret\");"),
+            server.contains("export const b_createServerFn_handler = createServerRpc({ id: \"8ad150d11648c88f59524e2900801270a15b00e264896493383d83ab8f5b4f92\", name: \"b\", filename: \"src/abc.ts\" }, (opts) => b.__executeServer(opts)); var b = createServerFn().handler(b_createServerFn_handler, async () => \"b-secret\");"),
             "{server}"
         );
         assert!(

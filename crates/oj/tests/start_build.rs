@@ -1956,3 +1956,63 @@ fn a_browser_field_false_mapping_is_vites_browser_external_stub() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A bare import nothing resolves, from a package that lists it as an
+/// optional peer dependency, is Vite's `__vite-optional-peer-dep` module, a
+/// module that throws when it runs (framer-motion's `@emotion/is-prop-valid`);
+/// rolldown left a `require()` of it to its runtime's require shim, which
+/// Vite's bundle never carries.
+#[test]
+fn an_optional_peer_dependency_nothing_resolves_is_vites_throwing_module() {
+    let Some(root) = app("optional-peer-dep") else {
+        return;
+    };
+    let pkg = root.join("fxpeer");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("package.json"),
+        "{ \"name\": \"fxpeer\", \"private\": true, \"peerDependencies\": { \"not-installed-dep\": \"*\" }, \"peerDependenciesMeta\": { \"not-installed-dep\": { \"optional\": true } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg.join("index.js"),
+        "var dep;\ntry { dep = require(\"not-installed-dep\"); } catch (e) { dep = { kind: \"fx-peer-fallback\" }; }\nmodule.exports = { kind: dep.kind };\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport fxpeer from \"../../fxpeer/index.js\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-peer\", content: fxpeer.kind }],",
+            1,
+        );
+    assert!(
+        source.contains("fxpeer.kind"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let client: String = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    assert!(
+        client.contains("Could not resolve ") && client.contains("Is it installed?"),
+        "the optional peer dependency is Vite's throwing module"
+    );
+    assert!(
+        !client.contains("in an environment that doesn't expose the "),
+        "rolldown's require shim is not in the bundle"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

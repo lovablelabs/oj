@@ -291,7 +291,11 @@ fn client_plugins(
         production: true,
     }));
     // Last: Vite's side-effects verdict on what rolldown's resolver answers.
-    plugins.push(Pluginable::new_shared(super::side_effects::ViteSideEffects));
+    plugins.push(Pluginable::new_shared(
+        super::side_effects::ViteSideEffects {
+            root: start.root.clone(),
+        },
+    ));
     plugins
 }
 
@@ -820,7 +824,11 @@ pub(crate) async fn build(
                 )
                 .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
             ));
-            plugins.push(Pluginable::new_shared(super::side_effects::ViteSideEffects));
+            plugins.push(Pluginable::new_shared(
+                super::side_effects::ViteSideEffects {
+                    root: start.root.clone(),
+                },
+            ));
             plugins
         };
         let mut server_aliases = start.server_aliases();
