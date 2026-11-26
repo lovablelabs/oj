@@ -194,7 +194,11 @@ impl Plugin for NodeBuiltinShims {
                         }),
                     )
                     .await?;
-                if let Ok(found) = found {
+                // A `browser` field mapping the builtin to `false` (node-forge's
+                // `crypto`) resolves to rolldown's empty module; Vite's
+                // resolver answers it with the same stub as an unresolved
+                // builtin, so it takes the stub below.
+                if let Ok(found) = found.ok().filter(|r| !r.id.is_empty_module()).ok_or(()) {
                     return Ok(Some(HookResolveIdOutput::from_resolved_id(found)));
                 }
                 spec

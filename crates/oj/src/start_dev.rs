@@ -2902,6 +2902,9 @@ pub async fn start_build(
 /// generate.mjs); a generator built into oj is keyed by oj's version alone.
 /// `env`: what the codegen script's `process.env` holds; the route tree's
 /// generator runs app code (virtual route configs) that can read it.
+/// What the server-fn resolver oj writes looks like; bumped with it.
+const SERVER_FN_RESOLVER_SHAPE: &str = "providers:tss-serverfn-split;ids:sha256(file--name)";
+
 fn codegen_store(
     root: &Path,
     cache: &Path,
@@ -2941,6 +2944,13 @@ fn codegen_store(
     .to_vec();
     // The server-fn finder resolves an import through the tsconfig `paths`.
     if kind.starts_with("server-fn") {
+        // The resolver's shape is oj's own: a change to what it writes (the
+        // provider ids it imports, the function ids it keys) must miss a
+        // cache a build of the same oj version left, or the bundle's callers
+        // and resolver disagree (a stale resolver imported the modules whole,
+        // and the split callers had no handler to reach).
+        extra.extend_from_slice(SERVER_FN_RESOLVER_SHAPE.as_bytes());
+        extra.push(0);
         names.extend(
             resolution_configs(root)
                 .iter()

@@ -1872,3 +1872,77 @@ fn a_server_functions_handler_lives_in_its_provider_chunk_alone() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// An import a package's `browser` field maps to `false` (node-forge's
+/// `crypto`) is Vite's browser-external stub, the one module every stubbed
+/// builtin shares (`__vite-browser-external`, `module.exports = {}`); oj let
+/// rolldown answer with an empty module named for the package's directory,
+/// so the client bundle held one stub per package and a module id no Vite
+/// build has.
+#[test]
+fn a_browser_field_false_mapping_is_vites_browser_external_stub() {
+    let Some(root) = app("browser-field-false") else {
+        return;
+    };
+    let pkg = root.join("fxbrowser");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("package.json"),
+        "{ \"name\": \"fxbrowser\", \"private\": true, \"browser\": { \"crypto\": false } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg.join("index.js"),
+        "var crypto = require(\"crypto\");\nmodule.exports = { cryptoKind: typeof crypto.randomBytes };\n",
+    )
+    .unwrap();
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        source.replacen(
+            "export default defineConfig({\n",
+            "export default defineConfig({\n  build: { minify: false },\n",
+            1,
+        ),
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport fxbrowser from \"../../fxbrowser/index.js\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-crypto\", content: fxbrowser.cryptoKind }],",
+            1,
+        );
+    assert!(
+        source.contains("fxbrowser.cryptoKind"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let client: String = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    // rolldown names the stub's wrapper after its id (`require___vite_browser_external`).
+    assert!(
+        client.contains("__vite_browser_external")
+            || client.contains("\"__vite-browser-external\""),
+        "the mapped-away import is Vite's browser-external module"
+    );
+    assert!(
+        !client.contains("require(\"crypto\")") && !client.contains("from \"crypto\""),
+        "no import of the builtin itself remains"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

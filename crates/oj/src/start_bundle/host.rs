@@ -138,6 +138,14 @@ async fn answer(
         .await
         .map_err(|e| e.to_string())?;
     Ok(match resolved {
+        // A `browser` field mapping the import to `false` (node-forge's
+        // `crypto`): rolldown answers with an empty module named for the
+        // package's directory; Vite's resolver answers with its browser
+        // external stub, the one module every stubbed builtin shares.
+        Ok(r) if r.id.is_empty_module() => serde_json::json!({
+            "id": "__vite-browser-external",
+            "external": false,
+        }),
         Ok(r) => serde_json::json!({
             "id": r.id.as_str(),
             "external": !matches!(r.external, ResolvedExternal::Bool(false)),

@@ -728,8 +728,17 @@ pub(crate) fn ctx_rpc(
             } else {
                 resolver.resolve(&dir, source)
             };
-            let Ok(p) = resolved else {
-                return Ok(serde_json::Value::Null);
+            let p = match resolved {
+                Ok(p) => p,
+                // A package's `browser` field mapping the import to `false`
+                // (node-forge's `crypto`): Vite's resolver answers with its
+                // browser-external stub, one module for every such import
+                // and every builtin; rolldown's own answer was an empty
+                // module named for the package's directory.
+                Err(failure) if failure.ignored && !server => {
+                    return Ok(serde_json::Value::String("__vite-browser-external".into()));
+                }
+                Err(_) => return Ok(serde_json::Value::Null),
             };
             // The client's deps optimizer answers for the client alone: Vite
             // gives any other environment its own (or none).
