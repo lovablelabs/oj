@@ -1470,3 +1470,157 @@ fn a_plugin_resolved_module_keeps_its_packages_format() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A chunk's sourcemap names the app's code, not the stylesheets, `?raw`
+/// text or asset URLs it imports: Vite's asset, worker and CSS plugins hand
+/// rolldown an empty map (`{ mappings: "" }`) for the module they produce,
+/// and rolldown lists no source for such a module. oj's loaders returned no
+/// map, so every sheet and asset text travelled in `sources` and
+/// `sourcesContent`.
+#[test]
+fn a_chunks_sourcemap_names_no_stylesheet_or_asset_module() {
+    let Some(root) = app("sourcemap-sources") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    assert!(source.contains("export default defineConfig({\n"));
+    std::fs::write(
+        &config,
+        source.replacen(
+            "export default defineConfig({\n",
+            "export default defineConfig({\n  build: { sourcemap: true },\n",
+            1,
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/content/sourcemap-note.txt"),
+        "a note the chunk inlines\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport sourcemapNote from \"../content/sourcemap-note.txt?raw\";\nimport sourcemapStar from \"../star.svg?url\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-note\", content: sourcemapNote }, { name: \"x-star\", content: sourcemapStar }],",
+            1,
+        );
+    assert!(
+        source.contains("content: sourcemapStar }"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let maps: Vec<(PathBuf, serde_json::Value)> =
+        std::fs::read_dir(root.join("dist/client/assets"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "map"))
+            .map(|p| {
+                let map = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                (p, map)
+            })
+            .collect();
+    assert!(!maps.is_empty(), "build.sourcemap: true writes .map files");
+    let sources = |map: &serde_json::Value| -> Vec<String> {
+        map["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    let (root_map, root_sources) = maps
+        .iter()
+        .map(|(p, m)| (p, sources(m)))
+        .find(|(_, s)| s.iter().any(|s| s.ends_with("src/routes/__root.tsx")))
+        .expect("a chunk's map names the root route as a source");
+    let stray: Vec<&String> = root_sources
+        .iter()
+        .filter(|s| s.ends_with(".css") || s.contains("?raw") || s.contains("?url"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "{} lists asset-like modules as sources, which Vite's maps never do: {stray:?}",
+        root_map.display()
+    );
+    for (p, map) in &maps {
+        let stray: Vec<String> = sources(map)
+            .into_iter()
+            .filter(|s| s.ends_with(".css") || s.contains("?raw") || s.contains("?url"))
+            .collect();
+        assert!(stray.is_empty(), "{} lists {stray:?}", p.display());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A module a package's `sideEffects` glob covers is still dropped when it
+/// is pure and imported for nothing, as `vite build` drops it: Vite's
+/// resolver answers every resolution with the package's verdict as
+/// `moduleSideEffects`, and rolldown takes a `true` as "analyze the module",
+/// not as a side effect in itself. oj's answers carried no verdict, so
+/// rolldown read the field itself and kept the module, and the importing
+/// chunk kept an `import "./other-chunk.js"` for it (Lovable's StyleX tokens
+/// under `**/*.stylex.ts`). A module with real side effects stays either way.
+#[test]
+fn a_pure_module_a_packages_side_effects_glob_covers_drops_out_as_in_vite() {
+    let Some(root) = app("side-effects-glob") else {
+        return;
+    };
+    let pkg = root.join("fxpkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("package.json"),
+        "{ \"name\": \"fxpkg\", \"private\": true, \"sideEffects\": [\"**/*.fx.js\"] }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg.join("tokens.fx.js"),
+        "export const tokens = { marker: \"fx-pure-marker\" };\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pkg.join("effect.fx.js"),
+        "console.log(\"fx-effect-marker\");\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source.replacen(
+        "import \"../../styles/app.css\";",
+        "import \"../../styles/app.css\";\nimport \"../../fxpkg/tokens.fx.js\";\nimport \"../../fxpkg/effect.fx.js\";",
+        1,
+    );
+    assert!(
+        source.contains("fxpkg/effect.fx.js"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let client: String = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    assert!(
+        client.contains("fx-effect-marker"),
+        "a module with side effects the glob covers stays in the client bundle"
+    );
+    assert!(
+        !client.contains("fx-pure-marker"),
+        "a pure module the glob covers is dropped, as Vite's build drops it; oj kept it"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

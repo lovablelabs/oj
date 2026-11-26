@@ -71,7 +71,7 @@ pub fn is_tailwind_css(source: &str) -> bool {
             }
             continue;
         }
-        for directive in ["@tailwind", "@theme", "@utility", "@apply", "@source"] {
+        for directive in crate::style_file::TAILWIND_DIRECTIVES {
             if let Some(after) = rest.strip_prefix(directive) {
                 if after
                     .chars()

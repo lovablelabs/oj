@@ -744,10 +744,16 @@ pub(crate) fn ctx_rpc(
                 // as rolldown's resolver answers: a plugin passing the answer
                 // on keeps the module's format with it.
                 OptimizedAnswer::File => match nearest_package_json(&p) {
-                    Some(pkg) => serde_json::json!({
-                        "id": p.display().to_string(),
-                        "packageJsonPath": pkg,
-                    }),
+                    Some(pkg) => {
+                        let mut answer = serde_json::json!({
+                            "id": p.display().to_string(),
+                            "packageJsonPath": pkg.path,
+                        });
+                        if let Some(side_effects) = pkg.side_effects {
+                            answer["moduleSideEffects"] = serde_json::Value::Bool(side_effects);
+                        }
+                        answer
+                    }
                     None => serde_json::Value::String(p.display().to_string()),
                 },
                 OptimizedAnswer::ScanPending => serde_json::json!({ "scanPending": true }),
@@ -3707,17 +3713,105 @@ impl HostTransform {
     }
 }
 
-/// The `package.json` nearest above `file`, by its real path (rolldown reads
-/// a module's format, ESM or CommonJS, off its `type` field where the file's
-/// extension does not say).
-fn nearest_package_json(file: &Path) -> Option<String> {
+/// What a module's nearest `package.json` says about it, as Vite's resolver
+/// answers a resolution: the file's real path (rolldown reads the module's
+/// format, ESM or CommonJS, off its `type` field where the extension does
+/// not say) and, when the package declares `sideEffects`, whether the
+/// module is covered. Vite returns that as `moduleSideEffects`, and rolldown
+/// takes a `true` as "analyze the module", not as a side effect in itself,
+/// so a pure module a glob covers (a StyleX tokens file under
+/// `**/*.stylex.ts`) still drops out of a chunk that imports it for
+/// nothing; without the answer rolldown reads the field itself and keeps
+/// the module, and the chunk its import.
+struct PackageFacts {
+    path: String,
+    side_effects: Option<bool>,
+}
+
+fn nearest_package_json(file: &Path) -> Option<PackageFacts> {
     let mut dir = file.parent()?;
     loop {
         let candidate = dir.join("package.json");
         if candidate.is_file() {
             let real = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-            return Some(real.to_string_lossy().into_owned());
+            let side_effects = std::fs::read_to_string(&real)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|json| {
+                    let relative = std::fs::canonicalize(file)
+                        .ok()
+                        .and_then(|f| f.strip_prefix(real.parent()?).ok().map(Path::to_path_buf))
+                        .unwrap_or_else(|| file.to_path_buf());
+                    package_side_effects(json.get("sideEffects")?, &relative.to_string_lossy())
+                });
+            return Some(PackageFacts {
+                path: real.to_string_lossy().into_owned(),
+                side_effects,
+            });
         }
         dir = dir.parent()?;
+    }
+}
+
+/// Whether `sideEffects` (a package.json field: a boolean, a glob or a list
+/// of globs over the package's files) covers `relative`, the module's path
+/// from the package's directory. Globs match as rolldown matches them: one
+/// without a slash, or starting `./`, applies at any depth.
+fn package_side_effects(field: &serde_json::Value, relative: &str) -> Option<bool> {
+    let covers = |pattern: &str| {
+        let trimmed = pattern.trim_start_matches("./");
+        let glob = if trimmed.len() != pattern.len() || !trimmed.contains('/') {
+            format!("**/{trimmed}")
+        } else {
+            trimmed.to_string()
+        };
+        globset::GlobBuilder::new(&glob)
+            .literal_separator(true)
+            .build()
+            .map(|g| {
+                g.compile_matcher()
+                    .is_match(relative.trim_start_matches("./"))
+            })
+            .unwrap_or(false)
+    };
+    match field {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::String(pattern) => Some(covers(pattern)),
+        serde_json::Value::Array(patterns) => {
+            Some(patterns.iter().filter_map(|p| p.as_str()).any(covers))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod package_side_effects_tests {
+    use super::package_side_effects;
+    use serde_json::json;
+
+    #[test]
+    fn side_effects_globs_match_as_rolldowns_do() {
+        // A bare pattern applies at any depth; `./`-relative and slashed
+        // ones from the package root; a boolean answers for every file.
+        let field = json!(["*.css", "./src/setup.js", "lib/**/*.fx.js"]);
+        assert_eq!(package_side_effects(&field, "dist/a.css"), Some(true));
+        assert_eq!(package_side_effects(&field, "src/setup.js"), Some(true));
+        assert_eq!(
+            package_side_effects(&field, "lib/deep/tokens.fx.js"),
+            Some(true)
+        );
+        assert_eq!(package_side_effects(&field, "lib/tokens.js"), Some(false));
+        assert_eq!(
+            package_side_effects(&json!("**/*.stylex.ts"), "stylex/theme.stylex.ts"),
+            Some(true)
+        );
+        assert_eq!(package_side_effects(&json!(false), "any.js"), Some(false));
+        assert_eq!(package_side_effects(&json!(true), "any.js"), Some(true));
+        assert_eq!(package_side_effects(&json!(null), "any.js"), None);
+        // `*` stays within one path segment, as in rolldown's matcher.
+        assert_eq!(
+            package_side_effects(&json!(["src/*.js"]), "src/deep/a.js"),
+            Some(false)
+        );
     }
 }

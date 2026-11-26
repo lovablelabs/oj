@@ -6220,6 +6220,7 @@ function coreResolved(answer) {
   if (typeof answer === "object" && typeof answer.id === "string") {
     const out = { id: answer.id };
     if (typeof answer.packageJsonPath === "string") out.packageJsonPath = answer.packageJsonPath;
+    if (typeof answer.moduleSideEffects === "boolean") out.moduleSideEffects = answer.moduleSideEffects;
     return out;
   }
   return null;

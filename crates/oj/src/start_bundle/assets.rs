@@ -2066,6 +2066,9 @@ impl Plugin for StartAssetsPlugin {
             // chunk's modules.
             side_effects: (served || plain)
                 .then_some(rolldown_common::side_effects::HookSideEffects::NoTreeshake),
+            // An asset-like module, as Vite's plugins load one: its map is
+            // empty, so it names no source in its chunk's sourcemap.
+            map: crate::build::vite_asset_map(),
             ..Default::default()
         }))
     }

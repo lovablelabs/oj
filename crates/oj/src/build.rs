@@ -403,7 +403,8 @@ fn re_escape(s: &str) -> String {
     out
 }
 
-/// Chunking from `output.advancedChunks` (rolldown's native form; wins when
+/// Chunking from `output.codeSplitting` (rolldown's current name for its
+/// groups form; `advancedChunks` is the earlier spelling; either wins when
 /// present) or the Rollup `output.manualChunks` object. A manualChunks value is a
 /// module id: a bare package name matches that package under `node_modules`, a
 /// `./`-relative or absolute path matches that source file (Rollup semantics).
@@ -413,8 +414,8 @@ fn manual_chunks(
     root: &Path,
 ) -> Option<rolldown_common::CodeSplittingMode> {
     let output = ro_output(ro)?;
-    if let Some(adv) = output.get("advancedChunks") {
-        if let Some(mode) = advanced_chunks(adv) {
+    for key in ["codeSplitting", "advancedChunks"] {
+        if let Some(mode) = output.get(key).and_then(advanced_chunks) {
             return Some(mode);
         }
     }
@@ -422,7 +423,7 @@ fn manual_chunks(
     if is_fn_marker(mc) {
         warn_fn_option(
             "output.manualChunks",
-            "Use the object form ({ vendor: [\"react\"] }) or rolldown's output.advancedChunks groups.",
+            "Use the object form ({ vendor: [\"react\"] }) or rolldown's output.codeSplitting groups.",
         );
         return None;
     }
@@ -484,7 +485,7 @@ fn manual_chunks(
     ))
 }
 
-/// rolldown `output.advancedChunks` from its JSON form. A group `test` is a
+/// rolldown `output.codeSplitting` (or `advancedChunks`) groups from their JSON form. A group `test` is a
 /// regex source (a RegExp literal arrives as `{ __oj_regex__ }`, a string is
 /// taken as a regex like rolldown's own deserializer does); function tests and
 /// names are warned about and skipped.
@@ -502,7 +503,7 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
         let Some(g) = g.as_object() else { continue };
         let name = match g.get("name") {
             Some(serde_json::Value::String(s)) if s == FN_MARKER => {
-                warn_fn_option("output.advancedChunks.groups[].name", "Use a static name.");
+                warn_fn_option("output.codeSplitting.groups[].name", "Use a static name.");
                 continue;
             }
             Some(serde_json::Value::String(s)) => s.clone(),
@@ -512,7 +513,7 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(s)) if s == FN_MARKER => {
                 warn_fn_option(
-                    "output.advancedChunks.groups[].test",
+                    "output.codeSplitting.groups[].test",
                     "Use a RegExp or string.",
                 );
                 continue;
@@ -528,7 +529,7 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             Some(src) => match rolldown_utils::js_regex::HybridRegex::new(&src) {
                 Ok(re) => Some(rolldown_common::MatchGroupTest::Regex(re)),
                 Err(_) => {
-                    eprintln!("oj build: (!) advancedChunks group {name}: invalid test regex {src:?}; skipped");
+                    eprintln!("oj build: (!) codeSplitting group {name}: invalid test regex {src:?}; skipped");
                     continue;
                 }
             },
@@ -656,6 +657,14 @@ pub(crate) fn vite_mode_experimental() -> rolldown_common::ExperimentalOptions {
         vite_mode: Some(true),
         ..Default::default()
     }
+}
+
+/// The sourcemap Vite's asset, worker and CSS plugins return for the module
+/// they produce (`{ mappings: "" }`): rolldown then lists no source for the
+/// module, so a chunk's map names the app's code, not every stylesheet,
+/// `?raw` text or asset URL it imports.
+pub(crate) fn vite_asset_map() -> Option<rolldown_sourcemap::SourceMap> {
+    Some(rolldown_sourcemap::empty_sourcemap())
 }
 
 /// Vite maps `build.minify: false` to rolldown's `'dce-only'`: no mangling or
@@ -1991,6 +2000,7 @@ impl Plugin for OjCssPlugin {
                         Some(rolldown_plugin::HookLoadOutput {
                             code: arcstr::ArcStr::from(code),
                             module_type: Some(rolldown_common::ModuleType::Js),
+                            map: vite_asset_map(),
                             ..Default::default()
                         })
                     },
@@ -2071,6 +2081,7 @@ impl Plugin for OjCssPlugin {
                             serde_json::Value::String(transform_only)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
+                        map: vite_asset_map(),
                         ..Default::default()
                     }));
                 }
@@ -2080,6 +2091,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2104,6 +2116,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2136,6 +2149,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2175,6 +2189,7 @@ impl Plugin for OjCssPlugin {
                         serde_json::Value::String(text)
                     )),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2200,6 +2215,7 @@ impl Plugin for OjCssPlugin {
                             serde_json::Value::String(out.css)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
+                        map: vite_asset_map(),
                         ..Default::default()
                     }));
                 }
@@ -2216,6 +2232,7 @@ impl Plugin for OjCssPlugin {
                         b64(&bytes)
                     )),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2306,6 +2323,7 @@ impl Plugin for OjCssPlugin {
                             "const __oj_worker_code = {literal};\nexport default function (options) {{ const opts = Object.assign({{ type: \"module\" }}, options); const blob = typeof Blob !== \"undefined\" && new Blob([__oj_worker_code], {{ type: \"text/javascript;charset=utf-8\" }}); const url = blob ? URL.createObjectURL(blob) : \"data:text/javascript;charset=utf-8,\" + encodeURIComponent(__oj_worker_code); try {{ return new {ctor}(url, opts); }} finally {{ if (blob) setTimeout(() => URL.revokeObjectURL(url), 0); }} }};"
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
+                        map: vite_asset_map(),
                         ..Default::default()
                     }));
                 }
@@ -2336,6 +2354,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
                     ..Default::default()
                 }));
             }
@@ -2399,6 +2418,7 @@ impl Plugin for OjCssPlugin {
                 code: arcstr::ArcStr::from(js),
                 module_type: Some(rolldown_common::ModuleType::Js),
                 side_effects,
+                map: vite_asset_map(),
                 ..Default::default()
             }))
         };
@@ -9705,6 +9725,40 @@ mod tests {
             ro_treeshake(None),
             rolldown_common::TreeshakeOptions::Option(_)
         ));
+    }
+
+    #[test]
+    fn code_splitting_groups_reach_rolldown_under_either_name() {
+        // Vite 8 documents rolldown's groups as `output.codeSplitting`; the SPA
+        // build read only the earlier `advancedChunks` spelling and silently
+        // left the app's vendor groups unapplied.
+        let group_of = |ro: serde_json::Value| match manual_chunks(Some(&ro), Path::new("/app")) {
+            Some(rolldown_common::CodeSplittingMode::Advanced(m)) => m
+                .groups
+                .unwrap()
+                .into_iter()
+                .map(|g| match g.name {
+                    rolldown_common::MatchGroupName::Static(s) => s,
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("expected groups, got {}", other.is_some()),
+        };
+        let groups = serde_json::json!({ "groups": [{ "name": "vendor-react", "test": { "__oj_regex__": "node_modules[\\\\/](react|react-dom|scheduler)[\\\\/]" } }] });
+        assert_eq!(
+            group_of(serde_json::json!({ "output": { "codeSplitting": groups } })),
+            ["vendor-react"]
+        );
+        assert_eq!(
+            group_of(serde_json::json!({ "output": { "advancedChunks": groups } })),
+            ["vendor-react"]
+        );
+        // `codeSplitting: false` is the single-chunk switch, not a groups object.
+        assert!(manual_chunks(
+            Some(&serde_json::json!({ "output": { "codeSplitting": false } })),
+            Path::new("/app")
+        )
+        .is_none());
     }
 
     #[test]

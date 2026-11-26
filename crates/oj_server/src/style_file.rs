@@ -177,11 +177,26 @@ pub async fn compile_style_file(
 /// The sheets the app's Tailwind compiles (by its markers), in the Start dev
 /// server and the Start bundles alike (needsCssCompile there).
 pub fn needs_css_compile(src: &str) -> bool {
-    src.contains("tailwindcss")
-        || src.contains("@tailwind")
-        || src.contains("@plugin")
-        || src.contains("@apply")
+    // Tailwind v4's directives, each of which its PostCSS plugin (what Vite
+    // runs on every sheet under a postcss config) consumes: a sheet with a
+    // `@reference` alone was left as written, with lightningcss warning
+    // about the unknown at-rule.
+    src.contains("tailwindcss") || TAILWIND_DIRECTIVES.iter().any(|d| src.contains(d))
 }
+
+/// Tailwind v4's at-rules (`@import "tailwindcss"` aside).
+pub const TAILWIND_DIRECTIVES: [&str; 10] = [
+    "@tailwind",
+    "@plugin",
+    "@apply",
+    "@reference",
+    "@theme",
+    "@utility",
+    "@source",
+    "@variant",
+    "@custom-variant",
+    "@config",
+];
 
 /// The prefix Start's dev urls take under Vite's `base` (`/app/` gives
 /// `/app`), as the dev server resolves it (`dev_base`): empty at the
@@ -305,6 +320,13 @@ mod tests {
         assert!(needs_css_compile("@tailwind base;"));
         assert!(needs_css_compile("@plugin \"@tailwindcss/typography\";"));
         assert!(needs_css_compile(".btn { @apply px-2; }"));
+        assert!(needs_css_compile(
+            "@reference \"../theme.css\";\n.a { color: red }"
+        ));
+        assert!(needs_css_compile(
+            "@custom-variant dark (&:where(.dark, .dark *));"
+        ));
+        assert!(needs_css_compile("@utility tab-4 { tab-size: 4 }"));
         assert!(!needs_css_compile(".a { color: red }"));
         assert!(!needs_css_compile("@font-face { src: url(x.woff2) }"));
     }

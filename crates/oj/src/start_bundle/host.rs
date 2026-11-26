@@ -147,6 +147,15 @@ async fn answer(
                 .package_json
                 .as_ref()
                 .map(|p| p.realpath().to_string_lossy().into_owned()),
+            // And the package's `sideEffects` verdict on the module, as
+            // Vite's resolver answers every resolution (see the host's
+            // own "resolve" rpc for why it matters).
+            "moduleSideEffects": r.package_json.as_ref().and_then(|p| {
+                let relative = Path::new(r.id.as_str())
+                    .strip_prefix(p.realpath().parent()?)
+                    .unwrap_or(Path::new(r.id.as_str()));
+                p.check_side_effects_for(&relative.to_string_lossy())
+            }),
         }),
         Err(_) => serde_json::Value::Null,
     })
