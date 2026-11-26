@@ -514,6 +514,13 @@ pub(crate) struct Emitter {
     server: bool,
     /// Every stylesheet emitted, linked or a `?url` asset, in emit order.
     emitted_css: Mutex<Vec<String>>,
+    /// The assets written for a module (`?url` imports, workers, a sheet's
+    /// `url()`s), by the importing module's id: Vite's
+    /// `viteMetadata.importedAssets`, listed in the manifest's `assets`.
+    module_assets: Mutex<HashMap<String, Vec<String>>>,
+    /// Every asset written, with its source file: the manifest's asset rows
+    /// (Vite emits them through rolldown; oj writes them itself).
+    asset_rows: Mutex<Vec<(PathBuf, String)>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
     /// `worker.format` is "es": workers start as modules, not classic scripts.
     worker_module: std::sync::atomic::AtomicBool,
@@ -549,6 +556,8 @@ impl Emitter {
             minify,
             server: false,
             emitted_css: Mutex::new(Vec::new()),
+            module_assets: Mutex::new(HashMap::new()),
+            asset_rows: Mutex::new(Vec::new()),
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
@@ -623,6 +632,10 @@ impl Emitter {
     pub fn chunk_sheets(&self) -> crate::build::ChunkSheets {
         crate::build::ChunkSheets::new(self.sheet_files())
             .with_inherited(self.inherited.lock().unwrap().clone())
+            .with_assets(
+                self.module_assets.lock().unwrap().clone(),
+                self.asset_rows.lock().unwrap().clone(),
+            )
     }
 
     fn file_of(&self, url: &str) -> String {
@@ -993,6 +1006,10 @@ impl Emitter {
         };
         let hash = &hash[..8];
         let name = format!("{stem}-{hash}{ext}");
+        self.asset_rows
+            .lock()
+            .unwrap()
+            .push((path.to_path_buf(), format!("assets/{name}")));
         if self.written.lock().unwrap().insert(name.clone()) {
             std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
             std::fs::write(self.assets_dir.join(&name), bytes).map_err(|e| e.to_string())?;
@@ -1071,7 +1088,23 @@ impl Emitter {
                 });
             }
         }
-        self.emit(path).await
+        let url = self.emit(path).await?;
+        self.note_module_asset(id, &url);
+        Ok(url)
+    }
+
+    /// Records `url` (a written file's, not a data URL) as an asset of the
+    /// module `id`.
+    pub fn note_module_asset(&self, id: &str, url: &str) {
+        if url.starts_with("data:") {
+            return;
+        }
+        let file = self.file_of(url);
+        let mut assets = self.module_assets.lock().unwrap();
+        let files = assets.entry(id.to_string()).or_default();
+        if !files.contains(&file) {
+            files.push(file);
+        }
     }
 
     /// A stylesheet's text emitted as the file at `path` (a CSS module's
@@ -1930,7 +1963,11 @@ impl StartAssetsPlugin {
                         let url = if own {
                             "self.location.href".to_string()
                         } else {
-                            json(&self.worker_url_for(path, worker_type).await?)
+                            let worker_url = self.worker_url_for(path, worker_type).await?;
+                            if let AssetMode::Build { emitter, .. } = &self.mode {
+                                emitter.note_module_asset(id, &worker_url);
+                            }
+                            json(&worker_url)
                         };
                         if matches!(form, WorkerForm::Url) {
                             format!("export default {url};")

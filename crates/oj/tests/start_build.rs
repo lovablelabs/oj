@@ -2016,3 +2016,83 @@ fn an_optional_peer_dependency_nothing_resolves_is_vites_throwing_module() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The manifest lists an asset a module imports as `?url` (and a worker, a
+/// sheet's `url()`) on its chunk's `assets`, and gives every written asset a
+/// row keyed by its source, as Vite's manifest does; rolldown's bundle never
+/// holds the files oj writes itself, so they were missing (Lovable: 173
+/// rows and 16 chunks' `assets`).
+#[test]
+fn the_manifest_lists_a_chunks_url_assets_and_gives_each_asset_a_row() {
+    let Some(root) = app("manifest-url-assets") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen(
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") } },"#,
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") }, build: { manifest: true } },"#,
+        1,
+    );
+    assert!(
+        source.contains("manifest: true"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    // Over the inline limit, so it is written as a file.
+    std::fs::write(root.join("src/big-asset.bin"), vec![0x4f; 6000]).unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport bigAssetUrl from \"../big-asset.bin?url\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-big\", content: bigAssetUrl }],",
+            1,
+        );
+    assert!(
+        source.contains("content: bigAssetUrl }"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("dist/client/.vite/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let rows = manifest.as_object().unwrap();
+    let row = rows
+        .get("src/big-asset.bin")
+        .expect("the asset has a row keyed by its source");
+    let file = row["file"].as_str().unwrap();
+    assert!(
+        file.starts_with("assets/big-asset-") && file.ends_with(".bin"),
+        "{file}"
+    );
+    assert_eq!(row["src"].as_str(), Some("src/big-asset.bin"));
+    assert!(
+        root.join("dist/client").join(file).is_file(),
+        "the row names the written file"
+    );
+    let owner = rows
+        .values()
+        .find(|r| {
+            r["assets"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|f| f.as_str() == Some(file)))
+        })
+        .expect("the importing module's chunk lists the asset");
+    assert!(
+        owner["src"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("src/routes/__root.tsx"))
+            || owner["name"].as_str().is_some(),
+        "{owner}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

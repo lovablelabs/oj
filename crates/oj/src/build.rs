@@ -3522,6 +3522,10 @@ pub(crate) struct ChunkSheets {
     /// The sheets a chunk took over from the pure CSS chunks it imported, by
     /// the chunk's preliminary file name.
     inherited: std::collections::HashMap<String, Vec<String>>,
+    /// The assets written for a module, by module id (see `with_assets`).
+    assets_by_module: std::collections::HashMap<String, Vec<String>>,
+    /// Every asset written, with its source file.
+    asset_rows: Vec<(PathBuf, String)>,
 }
 
 impl ChunkSheets {
@@ -3531,6 +3535,8 @@ impl ChunkSheets {
         Self {
             by_module: sheets.into_iter().collect(),
             inherited: Default::default(),
+            assets_by_module: Default::default(),
+            asset_rows: Vec::new(),
         }
     }
 
@@ -3540,6 +3546,42 @@ impl ChunkSheets {
     ) -> Self {
         self.inherited = inherited;
         self
+    }
+
+    /// The assets the emitter wrote for a module (`?url` imports, workers,
+    /// a sheet's `url()`s), by module id, and every written asset with its
+    /// source: Vite's `viteMetadata.importedAssets` and the manifest's asset
+    /// rows, which rolldown's bundle never holds, as oj writes the files
+    /// itself.
+    pub fn with_assets(
+        mut self,
+        by_module: std::collections::HashMap<String, Vec<String>>,
+        rows: Vec<(PathBuf, String)>,
+    ) -> Self {
+        self.assets_by_module = by_module;
+        self.asset_rows = rows;
+        self
+    }
+
+    /// The assets of `chunk`'s modules (Vite's `importedAssets`), each once.
+    pub fn assets_of(&self, chunk: &rolldown_common::OutputChunk) -> Vec<String> {
+        let mut files: Vec<String> = Vec::new();
+        for id in &chunk.module_ids {
+            for file in self.assets_by_module.get(id.as_str()).into_iter().flatten() {
+                if !files.contains(file) {
+                    files.push(file.clone());
+                }
+            }
+        }
+        files
+    }
+
+    /// Every asset written, by source, as the manifest's rows list them.
+    fn asset_rows(&self) -> Vec<(&PathBuf, &String)> {
+        let mut rows: Vec<_> = self.asset_rows.iter().map(|(p, f)| (p, f)).collect();
+        rows.sort();
+        rows.dedup();
+        rows
     }
 
     /// The sheets of `chunk`'s modules, in module order, each once, then
@@ -3600,7 +3642,7 @@ fn bundle_map(
                 // Vite's css plugin sets this on every chunk (Sets there:
                 // the plugin host makes them so).
                 let vite_metadata = sheets.map(|sheets| {
-                    serde_json::json!({ "importedCss": sheets.of(c), "importedAssets": [] })
+                    serde_json::json!({ "importedCss": sheets.of(c), "importedAssets": sheets.assets_of(c) })
                 });
                 map.insert(
                     c.filename.to_string(),
@@ -7780,6 +7822,19 @@ pub(crate) fn vite_manifest(
             entry.css = css;
         }
     }
+    for out in bundle {
+        let Output::Chunk(chunk) = out else { continue };
+        let assets = sheets.assets_of(chunk);
+        if assets.is_empty() {
+            continue;
+        }
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|e| e.file == chunk.filename.as_str())
+        {
+            entry.assets = assets;
+        }
+    }
     // Vite's css-post emits a chunk's sheet under the chunk's own original
     // file name (getChunkOriginalFileName), and the manifest keeps an asset
     // row only when no JS chunk holds that key: a sheet a chunk lists under
@@ -7791,6 +7846,19 @@ pub(crate) fn vite_manifest(
         if entries.iter().any(|e| e.key == key || e.css.contains(file))
             || assets.iter().any(|a| a.key == key)
         {
+            continue;
+        }
+        assets.push(ManifestAsset {
+            key,
+            file: file.clone(),
+            name: None,
+        });
+    }
+    for (source, file) in sheets.asset_rows() {
+        let Some(key) = chunk_source_key(source.to_str(), root) else {
+            continue;
+        };
+        if entries.iter().any(|e| e.key == key) || assets.iter().any(|a| a.key == key) {
             continue;
         }
         assets.push(ManifestAsset {
