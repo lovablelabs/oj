@@ -43,6 +43,7 @@ mod dev_mode;
 mod dev_process_env;
 mod dunder_paths;
 mod dynamic_import;
+mod etag_transformed;
 mod fs_allow_node_modules;
 mod glob_alias;
 mod glob_as;

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - StyleX: a sheet whose rules the locale comparison could not put in one consistent order no longer stops the compiler with a panic in the sort. (#795)
+- Dev server: a module's ETag is of its transformed output, as Vite's is (its transform result's `etag` hashes the code it serves), where it was the compile key: the source's hash, the url, the imports' stamps and the compile settings. The output can change with none of those: an import that resolves elsewhere once a dependency's `exports` moved a target (a workspace package's package.json, whose change restarts the dev server), or an `import.meta.glob` whose matches changed. After such a restart the unchanged importers compiled to new code under the same key, a browser sending its old ETag was answered 304 and ran its old copy, which imported a path the server no longer had: a preview failing with `Failed to fetch dynamically imported module` on every load until the importers were touched. The ETag is weak now, as Vite's, which `If-None-Match` already compared weakly.
 
 ## [0.4.24] - 2026-11-25
 
