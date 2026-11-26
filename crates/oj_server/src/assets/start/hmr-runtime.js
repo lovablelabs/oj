@@ -27,6 +27,14 @@ function ojMissingFactory(err) {
 // (`applyInvalidate`) before it reloads instead.
 var RESEND_WAIT = 10000;
 
+// How many times a page asks for the modules an `import()`'s chunk refers
+// to that it lacks (`ojAskedLacking`), each answer bringing the rows of the
+// modules it names.
+var LACKS_ASKS = 3;
+// How many modules one such request names: the list is part of its URL, and
+// a proxy refuses a long one. The rest are named by the next request.
+var LACKS_NAMED = 64;
+
 class OjHotContext {
   constructor(client, id) {
     this.client = client;
@@ -528,7 +536,63 @@ class OjDevRuntime extends DevRuntime {
     // can import while the document still streams).
     const unnamed = !("stamp" in __ojBus);
     const chunk = this.ojImport(this.lazyChunkUrl(proxyModuleId));
-    return unnamed ? chunk.then(() => this.ojAskedUnnamed(proxyModuleId)) : chunk;
+    const asked = unnamed ? chunk.then(() => this.ojAskedUnnamed(proxyModuleId)) : chunk;
+    return asked.then(() => this.ojAskedLacking(proxyModuleId));
+  }
+  // The chunk leaves out the modules the server takes this page to hold:
+  // what its bundle evaluates as it loads, and what it was sent since. That
+  // record can name a module the page never got: one a hot update made
+  // part of the entry while the page was behind it, one a change moved
+  // from a lazy chunk into the entry's graph, one taken for the page's when
+  // its record was made anew. The chunk's module would then fail on the
+  // page with `No factory registered for module`. Under Vite each import a
+  // module runs is a request the server answers from the file, whatever
+  // the page loaded before; here the page is the one that knows what it
+  // holds, so it asks for the modules it lacks by name, and the server
+  // sends them whatever it took the page to hold. A module it was sent
+  // this way has a row in the graph only now, so what it imports may turn
+  // out lacking too: the page asks again, a few times at most (each ask is
+  // a compile for the server). A module still missing after that is left
+  // to `initModule`, which reloads the page for it.
+  async ojAskedLacking(proxyModuleId) {
+    const id = this.lazyTargets?.get(proxyModuleId);
+    if (id == null) return;
+    let named;
+    for (let asks = 0; asks < LACKS_ASKS; asks++) {
+      const lacking = this.ojLacking(id).slice(0, LACKS_NAMED);
+      if (!lacking.length) return;
+      // Each id encoded on its own: the commas between them are the list's.
+      const lacks = lacking.map(encodeURIComponent).join(",");
+      // The answer brought none of them: the next would not either.
+      if (lacks === named) return;
+      named = lacks;
+      console.debug(`[oj] the import of ${id} needs ${lacking.join(", ")}, which this page lacks: asking for them`);
+      try {
+        await this.ojImport(`${this.lazyChunkUrl(proxyModuleId)}&lacks=${lacks}`);
+      } catch {
+        // The chunk itself arrived: a request for more that fails (the
+        // network, a build that broke since) leaves the module to
+        // `initModule`, as with no such request, not the import rejected.
+        return;
+      }
+    }
+  }
+  // The modules the run of `id` reaches through static imports that this
+  // page has neither run nor has a factory for (rolldown's `isRunnableHere`,
+  // naming them). A module with no factory has no row in the graph either,
+  // so what it imports is the server's to send with it.
+  ojLacking(id) {
+    const lacking = [];
+    const seen = new Set([id]);
+    for (const current of seen) {
+      if (this.moduleCache.has(current)) continue;
+      if (!this.hasFactory(current)) {
+        lacking.push(current);
+        continue;
+      }
+      for (const dep of this.staticImports?.get(current)?.edges ?? []) seen.add(dep);
+    }
+    return lacking;
   }
   // The answer to a request that named no stamp was made for a page that
   // has everything the server's newest output loads. A page behind a change

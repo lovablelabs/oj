@@ -511,3 +511,154 @@ async fn a_page_the_bundler_takes_to_hold_nothing_is_sent_each_module_once_and_p
             .join("\n")
     );
 }
+
+/// The bundler's account of a page (what its bundle evaluates as it loads,
+/// and what it was sent since) is what a page that loaded the newest output
+/// and applied every patch holds, and a page can be behind it: a hot update
+/// it never got, a change that moved a module from a lazy chunk into the
+/// entry's graph, an account made anew after a change. Its `import()` is
+/// then answered without a module it has no factory for, and the module
+/// fails on the page with `No factory registered for module`. The page is
+/// the one that knows what it holds (under Vite each import a module runs
+/// is a request the server answers from the file): it asks again naming the
+/// modules it lacks, and is sent them whatever the bundler took it to hold.
+#[test]
+fn a_page_that_names_the_modules_it_lacks_is_sent_them_whatever_the_bundler_took_it_to_hold() {
+    let Some(app) = behind_app("lacks-named") else {
+        return;
+    };
+    let dir = app.0.clone();
+    let dev = Server::oj_dev_with(&dir, GATE);
+    let tag = engine_tag(&dev);
+    let proxy = about_proxy(&dev);
+
+    write(&dir, ROOT, &root(true));
+    until(&dev, "the held edit never rebuilt the bundle", || {
+        dev.output().contains("reload held for the editor's flush")
+    });
+    until_the_newest_output_has_the_button(&dev, &proxy, &tag);
+
+    // A page the bundler takes for one that loaded the newest output: the
+    // component is left out of the route's chunk, as a module it holds.
+    let (stamp, has) = document(&dev);
+    let current = format!("{tag}.current");
+    let without = route_code(&dev, &proxy, &current, &stamp, has);
+    assert!(
+        !without.contains(BUTTON_CODE),
+        "a current page's answer carries the component it is taken to hold:\n{without}"
+    );
+    // The page has no factory for it, and says so: the component comes.
+    let with = code_at(
+        &dev,
+        &format!(
+            "/@oj-start/hmr/lazy?id={}&clientId={current}&n=2&g={stamp}&h={has}&lacks={}",
+            encoded(&proxy),
+            encoded("src/components/button.tsx")
+        ),
+    );
+    assert!(
+        with.contains(BUTTON_CODE),
+        "the page that named the component it lacks got the route without it:\n{with}"
+    );
+    assert!(
+        dev.output().contains(
+            "a page lacks a module the bundler took it to hold (src/components/button.tsx)"
+        ),
+        "the dev server does not say that the page lacked a module:\n{}",
+        dev.output()
+    );
+}
+
+/// A page's bundle imports by a boundary id the engine's graph has not: the
+/// graph lost it (an `import()` an edit removed, then a full build) and the
+/// page kept asking by the old id. Under Vite the `import()` names the
+/// module's file, which the server still has. Here the answer was a 404,
+/// which the import rejected with, and the app showed its error screen
+/// until someone reloaded the tab: the answer now reloads the page onto the
+/// current bundle, through the runtime's missing-factory guard, which
+/// reloads once. For a boundary of a file in the app, and of a file of an
+/// installed package, wherever the app's `node_modules` is (the fixture's
+/// is a link to one outside the app, as a sandbox's is).
+#[test]
+fn an_import_of_a_boundary_the_bundle_no_longer_has_reloads_the_page() {
+    let Some(app) = behind_app("boundary-gone") else {
+        return;
+    };
+    let dir = app.0.clone();
+    let dev = Server::oj_dev_with(&dir, GATE);
+    let tag = engine_tag(&dev);
+    // Asked of the engine: the first edit starts it.
+    write(&dir, ROOT, &root(true));
+    until(&dev, "the held edit never rebuilt the bundle", || {
+        dev.output().contains("reload held for the editor's flush")
+    });
+    let (stamp, has) = document(&dev);
+    // A file of the app that is no boundary of the graph, and a file of an
+    // installed package that is none.
+    let in_app = about_proxy(&dev).replace("routes/about.tsx", "components/button.tsx");
+    let installed = format!(
+        "{}/node_modules/react/index.js?rolldown-lazy=1",
+        dir.display()
+    );
+    for (proxy, named) in [
+        (in_app, "components/button.tsx?tsr-split=component\")"),
+        (installed, "node_modules/react/index.js\")"),
+    ] {
+        let (status, body) = dev.request(
+            "GET",
+            &format!(
+                "/@oj-start/hmr/lazy?id={}&clientId={tag}.gone&n=1&g={stamp}&h={has}",
+                encoded(&proxy)
+            ),
+            &[],
+        );
+        assert_eq!(status, 200, "{proxy}: {body}");
+        assert!(
+            body.contains(".hmr?.missingFactory(") && body.contains(named),
+            "the import of a boundary the graph has not does not reload the page:\n{body}"
+        );
+        assert!(
+            body.contains("throw new Error("),
+            "a page not reloaded for it (reloaded for it just before) gets no rejection:\n{body}"
+        );
+    }
+}
+
+/// Only a boundary of a file in the app reloads the page: an id that names
+/// no file (a route deleted with its file, or an id no bundle of the app
+/// ever held) is a 404 the import rejects with, as before, and a file
+/// outside the app never reloads a page (see `start_hot_lazy_import`).
+#[test]
+fn an_import_of_a_boundary_of_no_file_in_the_app_is_not_answered() {
+    let Some(app) = behind_app("boundary-no-file") else {
+        return;
+    };
+    let dir = app.0.clone();
+    let dev = Server::oj_dev_with(&dir, GATE);
+    let tag = engine_tag(&dev);
+    write(&dir, ROOT, &root(true));
+    until(&dev, "the held edit never rebuilt the bundle", || {
+        dev.output().contains("reload held for the editor's flush")
+    });
+    let (stamp, has) = document(&dev);
+    for proxy in [
+        about_proxy(&dev).replace("about.tsx", "gone.tsx"),
+        "/etc/passwd?rolldown-lazy=1".to_string(),
+        // A file that is there, named through `node_modules`.
+        "node_modules/../../../../../../../../../../etc/passwd?rolldown-lazy=1".to_string(),
+        format!(
+            "{}/node_modules/../../../../../../../../../../etc/passwd?rolldown-lazy=1",
+            dir.display()
+        ),
+    ] {
+        let (status, body) = dev.request(
+            "GET",
+            &format!(
+                "/@oj-start/hmr/lazy?id={}&clientId={tag}.nofile&n=1&g={stamp}&h={has}",
+                encoded(&proxy)
+            ),
+            &[],
+        );
+        assert_eq!(status, 404, "{proxy}: {body}");
+    }
+}

@@ -342,6 +342,30 @@ impl DevEngine {
     }
   }
 
+  /// oj: the client reports that it holds no factory for the modules `ids` (stable ids), which
+  /// a lazy chunk compiled for it left out as copies it holds: those modules leave its
+  /// session's frozen top-level-evaluated map (a copy of its own: the map is shared by every
+  /// client of one build) and its ship map, so the next compile for it carries them. Only
+  /// those: the maps are the server's model of a page that loaded the newest output and
+  /// applied every patch, and a page that was behind a hot update, or whose session was
+  /// created after one, can lack a few modules of it, not most of the entry's graph; the
+  /// client names what else it lacks once it has the rows of these. A no-op for a client
+  /// with no session.
+  pub async fn forget_client_modules(&self, client_id: &str, ids: &[String]) {
+    if let Some(session) = self.clients.lock().await.get_mut(client_id) {
+      if ids.iter().any(|id| session.top_level_evaluated.contains_key(id.as_str())) {
+        let mut evaluated = (*session.top_level_evaluated).clone();
+        for id in ids {
+          evaluated.remove(id.as_str());
+        }
+        session.top_level_evaluated = Arc::new(evaluated);
+      }
+      for id in ids {
+        session.shipped.remove(id.as_str());
+      }
+    }
+  }
+
   /// Client-disconnect signal: drops the session together with any
   /// rendered-but-undelivered payloads addressed to it.
   pub async fn remove_client(&self, client_id: &str) {

@@ -12,6 +12,9 @@ Fork of [rolldown_dev](https://crates.io/crates/rolldown_dev) **1.3.2**
   session starts with nothing held (see below).
 - `DevEngine::forget_client_output` drops the frozen output of a client
   that was registered before oj could tell what it loaded (see below).
+- `DevEngine::forget_client_modules` drops modules a client reports it has
+  no factory for from its frozen output and its ship map, after a lazy chunk
+  left them out as copies it holds (see below).
 - `DevEngine::resend_files` has files handled as changed with nothing
   written (see the end).
 
@@ -50,7 +53,14 @@ is registered with `register_client`, and if the page then turns out to be
 behind, `forget_client_output` empties the frozen map of its session and
 keeps the record of what was delivered. Only such a session is emptied: one
 frozen for a page that had loaded the output stays right when the page falls
-behind later, since what a later change adds is not in it. Drop both once
+behind later, since what a later change adds is not in it. Either map can
+still name a module the page never got (a patch it was behind, a module a
+change moved into the entry's graph, a session made anew after a change),
+and only the page knows what it ran: when a lazy chunk compiled for it refers
+to modules it has no factory for, the page asks again naming them, and oj
+calls `forget_client_modules`, which drops those modules from a copy of the
+frozen map and from the ship map, so the next compile carries them; the page
+names in turn what those import and it lacks. Drop the three once
 `register_client` takes the build a client loaded.
 
 `oj.patch` is the whole difference from the published 1.3.2 sources
