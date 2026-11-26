@@ -6,13 +6,15 @@
 //!
 //! The app's dependencies take none of its plugins: Vite pre-bundles them
 //! with its own resolver and no plugin of the app, and the plugins see the
-//! modules a page asks for, which are the app's. A package in
-//! `optimizeDeps.exclude` is not pre-bundled and is served through the
-//! plugins. The dev client bundle sent every module of its graph to the
-//! plugins, the dependencies' thousands among them, on the plugin host's one
-//! thread, before the server answered.
+//! modules a page asks for, which are the app's. What Vite does not
+//! pre-bundle it serves through the plugins: a package in
+//! `optimizeDeps.exclude`, and what such a package imports (an import from a
+//! module served out of `node_modules` is not pre-bundled). The dev client
+//! bundle sent every module of its graph to the plugins, the dependencies'
+//! thousands among them, on the plugin host's one thread, before the server
+//! answered.
 //!
-//! And the port opens before the client bundle is built: Vite's `listen`
+//! And the server accepts before the client bundle is built: Vite's `listen`
 //! starts the dependency optimizer without waiting for it, and the requests
 //! that need it wait. A host that waits for the port gave up on a large app.
 
@@ -90,59 +92,80 @@ fn seen(log: &Path, hook: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_client_bundles_dependencies_take_no_plugin_and_an_excluded_package_takes_them() {
+fn the_client_bundles_dependencies_take_no_plugin_and_what_vite_serves_takes_them() {
     let Some(app) = start_app::app("cold-boot-deps") else {
         return;
     };
     let dir = app.0.clone();
     let log = dir.join("hooks.log");
-    with_recorder(&dir, &log, "\"@tanstack/react-router\"");
+    // `scheduler`: a package react-dom imports, excluded by the app. Start
+    // excludes its own packages itself (`@tanstack/react-router` among
+    // them), and `@tanstack/router-core` is one of those's dependencies.
+    with_recorder(&dir, &log, "\"scheduler\"");
     let dev = Server::oj_dev(&dir);
     let (status, body) = dev.request("GET", "/", &[]);
     assert_eq!(status, 200, "{body}\n{}", dev.output());
 
     for hook in ["resolveId", "load", "transform"] {
         let ids = seen(&log, hook);
+        let given = |package: &str| {
+            let dir = format!("/node_modules/{package}/");
+            ids.iter().any(|id| id.contains(&dir) && !id.contains('?'))
+        };
         assert!(
             ids.iter().any(|id| id.contains("/src/routes/")),
             "{hook}: the plugin was not given the app's own modules:\n{}",
             ids.join("\n")
         );
-        // A dependency Vite pre-bundles: its scripts are the bundler's.
-        let deps: Vec<&String> = ids
-            .iter()
-            .filter(|id| {
-                id.contains("/node_modules/react/") || id.contains("/node_modules/react-dom/")
-            })
-            .filter(|id| !id.contains('?'))
-            .collect();
+        // Dependencies Vite pre-bundles: their scripts are the bundler's.
+        for package in ["react", "react-dom"] {
+            assert!(
+                !given(package),
+                "{hook}: the plugin was given the modules of {package}, a pre-bundled dependency:\n{}",
+                ids.join("\n")
+            );
+        }
+        // What it serves through the plugins: a package the app excludes,
+        // one a plugin excludes, and one such a package depends on.
+        for package in ["@tanstack/react-router", "@tanstack/router-core"] {
+            assert!(
+                given(package),
+                "{hook}: the plugin was not given the modules of {package}, which Vite serves:\n{}",
+                ids.join("\n")
+            );
+        }
+    }
+    // `scheduler` is one file with no import of its own: no `resolveId` has
+    // it for an importer.
+    for hook in ["load", "transform"] {
+        let ids = seen(&log, hook);
         assert!(
-            deps.is_empty(),
-            "{hook}: the plugin was given a pre-bundled dependency's modules: {deps:?}"
-        );
-        // One it does not pre-bundle is served through the plugins.
-        assert!(
-            ids.iter()
-                .any(|id| id.contains("/node_modules/@tanstack/react-router/")),
-            "{hook}: the plugin was not given the modules of a package in optimizeDeps.exclude:\n{}",
+            ids.iter().any(|id| id.contains("/node_modules/scheduler/")),
+            "{hook}: the plugin was not given the modules of a package in the app's optimizeDeps.exclude:\n{}",
             ids.join("\n")
         );
     }
 }
 
 #[test]
-fn the_port_opens_before_the_client_bundle_is_built_and_a_request_made_then_is_answered() {
+fn the_server_accepts_before_the_client_bundle_is_built_and_answers_a_request_made_then() {
     let Some(app) = start_app::app("cold-boot-port") else {
         return;
     };
     let dir = app.0.clone();
-    let port = start_app::free_port();
-    let line = format!("listening (port {port})");
+    let line = "listening (port ";
     let mut early = None;
-    // `oj_dev_at_on` checks that the server has not printed its address
+    // `oj_dev_at_with` checks that the server has not printed its address
     // (its last step, once it serves) when the line shows, then runs the
-    // step: a connection made while the client bundle is still to come.
-    let dev = Server::oj_dev_at_on(&dir, port, &[("DEBUG", "oj:boot")], &line, || {
+    // step: a request made while the client bundle is still being built.
+    let dev = Server::oj_dev_at_with(&dir, &[("DEBUG", "oj:boot")], line, |dev| {
+        let out = dev.output();
+        let port: u16 = out[out.find(line).unwrap() + line.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap();
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
             .expect("the port takes no connection though the server says it listens");
         stream
@@ -151,18 +174,15 @@ fn the_port_opens_before_the_client_bundle_is_built_and_a_request_made_then_is_a
                     .as_bytes(),
             )
             .unwrap();
+        // Still to come when the request was written: the bundle is what
+        // the request waits for.
+        assert!(
+            !dev.output().contains("bundle+build joined"),
+            "the client bundle was built before the server listened:\n{}",
+            dev.output()
+        );
         early = Some(stream);
     });
-    let out = dev.output();
-    let (listening, joined) = (
-        out.find(&line).expect("no listening phase"),
-        out.find("bundle+build joined")
-            .expect("no client bundle phase"),
-    );
-    assert!(
-        listening < joined,
-        "the port opened after the client bundle was built:\n{out}"
-    );
     // The request made before the server served is answered once it does.
     let mut stream = early.expect("the step did not run");
     stream.set_read_timeout(Some(start_app::WAIT)).unwrap();

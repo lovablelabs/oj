@@ -478,20 +478,23 @@ pub async fn start_dev(
             .await
         }
     };
-    // The port opens once the dev server is built and its watcher covers
-    // the root, not once the client bundle is: Vite's `listen` awaits the
-    // plugins' `buildStart` and each environment's `listen`, which starts
-    // the dependency optimizer and does not wait for it, so its port accepts
-    // connections while the dependencies are still being bundled and the
-    // requests that need them wait (`depsOptimizer.scanProcessing`). The
-    // client bundle is that work here, and on a large app it took most of a
-    // cold start: a host that waits for the port (a sandbox's readiness
-    // probe) gave up on it and answered its visitors 502. A connection made
-    // meanwhile is accepted by the socket and answered when the server
-    // serves, below.
+    // The server listens and accepts once the dev server is built and its
+    // watcher covers the root, not once the client bundle is: Vite's
+    // `listen` awaits the plugins' `buildStart` and each environment's
+    // `listen`, which starts the dependency optimizer and does not wait for
+    // it, so its port accepts connections while the dependencies are still
+    // being bundled and the requests that need them wait
+    // (`depsOptimizer.scanProcessing`, an optimized file's `processing`).
+    // The client bundle is that work here, and on a large app it took most
+    // of a cold start: a host that waits for the port (a sandbox's readiness
+    // probe) gave up on it and answered its visitors 502. Every request
+    // waits for the router, the document's too (Vite answers that one at
+    // once; here it names the bundle's chunks).
     let bundle = tokio::spawn(bundle);
     let (built, watch_rx) = built_task.await??;
-    let (listener, port) = built.bind_listener().await?;
+    let (listener, port, interface) = built.bind_listener_unannounced().await?;
+    let (app_ready, held) = tokio::sync::watch::channel(None);
+    let serving = tokio::spawn(built.serve_owned(listener, held_until_ready(held)));
     oj_server::boot_phase(&format!("listening (port {port})"));
     let bundle_res = bundle.await?;
     // A build error in the app's code (client-error.json records it) keeps
@@ -591,12 +594,12 @@ pub async fn start_dev(
         init_deadline: h.init_warn_at(),
         confirm: oj_server::plugins::PROBE_WINDOW,
     });
-    // Filled once the router exists (BEFORE the listener binds): the
+    // Filled once the router exists (BEFORE the server serves): the
     // runner-environment warm below drives one render by calling the service
     // directly, Vite's work-before-listen shape — its monkey-patched
     // httpServer.listen runs every environment.listen (dep-optimizer init +
     // fire-and-forget warmupFiles) before the socket binds, so warming never
-    // queues behind bind. oj's bind additionally waits on the client bundle,
+    // queues behind bind. oj's first answer additionally waits on the client bundle,
     // which is exactly the wait this overlap removes. Calling the service
     // also sidesteps the bound-interface question a TCP self-request had
     // (::1 vs 127.0.0.1 vs a specific host): there is no socket to dial.
@@ -939,6 +942,10 @@ pub async fn start_dev(
 
     let _ = app_tx.send(app.clone());
     oj_server::boot_phase("serving");
+    // The plugins' `httpServer` hears "listening" now that a request is
+    // answered: a plugin dials the server from that event (a warmup fetch, a
+    // tunnel's handshake).
+    oj_server::plugins::dev_listener_bound(port, &interface);
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);
     }
@@ -955,8 +962,36 @@ pub async fn start_dev(
         oj_server::tls::url_scheme(built.https.as_ref()),
         built.base.as_deref(),
     );
-    built.serve(listener, app).await?;
+    let _ = app_ready.send(Some(app));
+    serving.await??;
     Ok(())
+}
+
+/// A router that holds each request until `ready` has the app's router,
+/// which answers it then: Vite's server accepts as soon as it listens, and
+/// the requests that need work still under way (its dependency optimizer)
+/// wait for it. A request whose client went away is dropped with its
+/// connection, where one left in the socket's queue would have filled it
+/// (128 connections) under a prober that asks again every second.
+fn held_until_ready(ready: tokio::sync::watch::Receiver<Option<axum::Router>>) -> axum::Router {
+    use tower::util::ServiceExt;
+    axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let mut ready = ready.clone();
+        async move {
+            let app = match ready.wait_for(Option::is_some).await {
+                Ok(app) => app.clone(),
+                Err(_) => None,
+            };
+            match app {
+                Some(app) => match app.oneshot(req).await {
+                    Ok(response) => response,
+                    Err(never) => match never {},
+                },
+                // The boot ended without a router: the process is going.
+                None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
+    })
 }
 
 /// Queues the bundle left unbuilt (a Cloudflare boot) or stale (edits while
@@ -1030,7 +1065,7 @@ async fn ensure_runner_fresh(state: &StartState) {
 
 /// One real GET / through oj's own router service — the serving path a user
 /// request takes (middleware forward, worker-environment render) minus the
-/// socket, so the warm needs no bound listener and overlaps bind and the
+/// socket, so the warm needs no serving listener and overlaps the
 /// client bundle (Vite's work-before-listen ordering: its patched
 /// httpServer.listen runs environment.listen, and with it warmupFiles,
 /// before the socket binds). Executing app server code with no request in
@@ -1046,7 +1081,7 @@ async fn runner_render_warm(app: axum::Router) -> bool {
     let warm = async {
         let Ok(request) = axum::http::Request::builder()
             .uri("/")
-            // Pre-bind there is no port to put in the origin: an app
+            // The warm names no port in the origin: an app
             // middleware building absolute URLs from Host sees a portless
             // localhost during the warm (the render's output is discarded, so
             // only the module caches it fills matter).

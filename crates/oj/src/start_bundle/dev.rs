@@ -1216,17 +1216,6 @@ impl DevBundler {
                     super::import_protection::ImportProtectionPlugin(ip),
                 ));
             }
-            // `optimizeDeps.noDiscovery` with nothing included: Vite
-            // pre-bundles no dependency, and serves them all through the
-            // plugins.
-            let (included, excluded, _) = oj_config::optimize_deps_lists(&start.config);
-            let no_prebundle = included.is_empty()
-                && start
-                    .config
-                    .optimize_deps
-                    .as_ref()
-                    .and_then(|o| o.no_discovery)
-                    .unwrap_or(false);
             let host_plugin = StartHostPlugin::new(
                 Arc::clone(&h.host),
                 h.ctx.clone(),
@@ -1236,8 +1225,20 @@ impl DevBundler {
                 Arc::clone(&emit),
                 start.jsx_config(),
             );
-            let host_plugin = if start.command == super::Command::Serve && !no_prebundle {
-                host_plugin.leaving_deps_to_the_bundler(excluded)
+            let host_plugin = if start.command == super::Command::Serve {
+                let (included, excluded, _) = oj_config::optimize_deps_lists(&start.config);
+                let no_discovery = start
+                    .config
+                    .optimize_deps
+                    .as_ref()
+                    .and_then(|o| o.no_discovery)
+                    .unwrap_or(false);
+                host_plugin.leaving_deps_to_the_bundler(super::host::BundledDeps::of(
+                    &start.root,
+                    &included,
+                    &excluded,
+                    no_discovery,
+                ))
             } else {
                 host_plugin
             };

@@ -188,9 +188,8 @@ pub(crate) struct StartHostPlugin {
     /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
     compile: Option<Arc<super::code::StartCodePlugin>>,
     /// The dev client bundle leaves its dependencies to the bundler (see
-    /// [`StartHostPlugin::leaving_deps_to_the_bundler`]): the packages of
-    /// `optimizeDeps.exclude`, which the plugins still see.
-    deps_excluded: Option<Vec<String>>,
+    /// [`StartHostPlugin::leaving_deps_to_the_bundler`]): which of them.
+    bundled_deps: Option<BundledDeps>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -224,7 +223,7 @@ impl StartHostPlugin {
             warned_virtual: Mutex::new(HashSet::new()),
             map_warnings: Arc::default(),
             compile: None,
-            deps_excluded: None,
+            bundled_deps: None,
         }
     }
 
@@ -235,20 +234,20 @@ impl StartHostPlugin {
     /// plugin alone), and the plugins see the modules a page asks for, which
     /// are the app's. Here every module of the client graph went to the
     /// plugins, the dependencies' thousands among them, all on the plugin
-    /// host's one thread before the server answered its first page. A
-    /// package in `exclude` (`optimizeDeps.exclude`) is not pre-bundled by
-    /// Vite and is served through the plugins, so its modules keep them; a
-    /// linked package resolves to its real path outside `node_modules` and
-    /// keeps them the same way.
-    pub fn leaving_deps_to_the_bundler(mut self, exclude: Vec<String>) -> Self {
-        self.deps_excluded = Some(exclude);
+    /// host's one thread before the server answered its first page. What
+    /// Vite does not pre-bundle is served through the plugins, and keeps
+    /// them here (see [`BundledDeps`]).
+    pub fn leaving_deps_to_the_bundler(mut self, deps: BundledDeps) -> Self {
+        self.bundled_deps = Some(deps);
         self
     }
 
+    /// A file on disk only: an id a plugin's `resolveId` made up under
+    /// `node_modules` is the plugin's to load.
     fn is_bundled_dep(&self, id: &str) -> bool {
-        self.deps_excluded
-            .as_deref()
-            .is_some_and(|excluded| is_bundled_dep(excluded, id))
+        self.bundled_deps
+            .as_ref()
+            .is_some_and(|deps| is_bundled_dep(deps, id) && Path::new(id).is_file())
     }
 
     /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
@@ -381,13 +380,100 @@ fn file_behind_query(id: &str) -> Option<&str> {
         .then_some(clean)
 }
 
+/// The dependencies Vite's dev server would pre-bundle, by package name.
+#[derive(Debug)]
+pub(crate) enum BundledDeps {
+    /// Every package but these: the packages of `optimizeDeps.exclude`,
+    /// which Vite serves through the plugins, and the packages they depend
+    /// on. An import from a module Vite serves out of `node_modules` is not
+    /// pre-bundled (resolve plugin, `skipOptimization`: the importer is in
+    /// `node_modules`) unless the optimizer already knows it, so what an
+    /// excluded package reaches is served like it; a package of
+    /// `optimizeDeps.include` is known, and stays pre-bundled.
+    AllBut(HashSet<String>),
+    /// `optimizeDeps.noDiscovery`: the packages of `optimizeDeps.include`
+    /// alone, and every other dependency is served.
+    Only(HashSet<String>),
+}
+
+impl BundledDeps {
+    /// From the resolved `optimizeDeps` of the client environment.
+    pub(crate) fn of(
+        root: &Path,
+        include: &[String],
+        exclude: &[String],
+        no_discovery: bool,
+    ) -> Self {
+        // `a > b`: the package `b`, reached through `a`.
+        let included: HashSet<String> = include
+            .iter()
+            .filter_map(|entry| entry.rsplit('>').next())
+            .map(|spec| package_of(spec.trim()).to_string())
+            .collect();
+        if no_discovery {
+            return Self::Only(included);
+        }
+        // Each excluded package and what it depends on, by its package.json:
+        // found from the package that asks, as the resolver finds it.
+        let mut served: HashSet<String> = HashSet::new();
+        let mut queue: Vec<(String, PathBuf)> = exclude
+            .iter()
+            .map(|entry| (package_of(entry).to_string(), root.to_path_buf()))
+            .collect();
+        while let Some((name, from)) = queue.pop() {
+            if !served.insert(name.clone()) {
+                continue;
+            }
+            let Some(dir) = from
+                .ancestors()
+                .map(|dir| dir.join("node_modules").join(&name))
+                .find(|dir| dir.join("package.json").is_file())
+            else {
+                continue;
+            };
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            let Some(pkg) = std::fs::read_to_string(dir.join("package.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            else {
+                continue;
+            };
+            for field in ["dependencies", "peerDependencies", "optionalDependencies"] {
+                for dep in pkg
+                    .get(field)
+                    .and_then(|d| d.as_object())
+                    .into_iter()
+                    .flatten()
+                {
+                    if !included.contains(dep.0) && !served.contains(dep.0) {
+                        queue.push((dep.0.clone(), dir.clone()));
+                    }
+                }
+            }
+        }
+        Self::AllBut(served)
+    }
+}
+
+/// The package a bare specifier or a path inside `node_modules` names:
+/// `pkg` of `pkg/sub`, `@scope/pkg` of `@scope/pkg/sub`.
+fn package_of(spec: &str) -> &str {
+    let mut slashes = spec.match_indices('/').map(|(at, _)| at);
+    let end = if spec.starts_with('@') {
+        slashes.nth(1)
+    } else {
+        slashes.next()
+    };
+    &spec[..end.unwrap_or(spec.len())]
+}
+
 /// Whether `id` is a module of a dependency Vite's dev server would
-/// pre-bundle: a script under `node_modules` (what its optimizer bundles
-/// itself; a stylesheet or an asset a dependency imports is left out of the
-/// pre-bundle and served through the plugins), with no query (`?raw`, `?url`,
-/// `?worker` are served, not pre-bundled), of a package `excluded`
-/// (`optimizeDeps.exclude`) does not name.
-fn is_bundled_dep(excluded: &[String], id: &str) -> bool {
+/// pre-bundle: a script under `node_modules` its optimizer bundles itself
+/// (`OPTIMIZABLE_ENTRY_RE`; a `.jsx`, a `.tsx`, a stylesheet or an asset a
+/// dependency imports is left out of the pre-bundle, `externalTypes`, and
+/// served through the plugins), with no query (`?raw`, `?url`, `?worker` are
+/// served, not pre-bundled), of a package `deps` takes for pre-bundled.
+fn is_bundled_dep(deps: &BundledDeps, id: &str) -> bool {
     if id.starts_with('\0') || id.contains(['?', '#']) {
         return false;
     }
@@ -396,28 +482,20 @@ fn is_bundled_dep(excluded: &[String], id: &str) -> bool {
     };
     let script = matches!(
         Path::new(id).extension().and_then(|e| e.to_str()),
-        Some("js" | "mjs" | "cjs" | "ts" | "mts" | "cts" | "jsx" | "tsx")
+        Some("js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
     );
-    if !script {
+    // A dot directory is a tool's (`node_modules/.cache`), not a package.
+    if !script || inside.starts_with('.') {
         return false;
     }
-    let mut parts = inside.split('/');
-    let name = match parts.next() {
-        Some(scope) if scope.starts_with('@') => match parts.next() {
-            Some(pkg) => format!("{scope}/{pkg}"),
-            None => return false,
-        },
-        Some(pkg) => pkg.to_string(),
-        None => return false,
-    };
-    // Vite's `moduleListContains`: the entry, or a path under it. An entry
-    // that names a path inside the package (`pkg/sub`) keeps the whole
-    // package with the plugins: the file behind it is not known here.
-    !excluded.iter().any(|e| {
-        e == &name
-            || e.strip_prefix(name.as_str())
-                .is_some_and(|rest| rest.starts_with('/'))
-    })
+    let name = package_of(inside);
+    if name.len() == inside.len() {
+        return false;
+    }
+    match deps {
+        BundledDeps::AllBut(served) => !served.contains(name),
+        BundledDeps::Only(included) => included.contains(name),
+    }
 }
 
 fn is_app_source(path: &str) -> bool {
@@ -1025,23 +1103,25 @@ mod tests {
     /// A skipped buildStart names its plugin, from either environment's
     /// container, and keeps only the error's first line.
     // The modules Vite's optimizer bundles with no plugin of the app: a
-    // dependency's scripts, the packages of `optimizeDeps.exclude` aside.
+    // dependency's scripts, the packages it serves aside.
     #[test]
-    fn a_dependencys_scripts_are_the_bundlers_and_an_excluded_package_is_not() {
-        let none: [String; 0] = [];
+    fn a_dependencys_scripts_are_the_bundlers_and_a_served_package_is_not() {
+        let all = BundledDeps::AllBut(HashSet::new());
         for id in [
             "/app/node_modules/react/index.js",
             "/app/node_modules/@scope/pkg/dist/esm/a.mjs",
             "/app/node_modules/.pnpm/a@1.0.0/node_modules/a/lib/b.cjs",
-            "/app/node_modules/a/src/c.tsx",
+            "/app/node_modules/a/src/c.ts",
         ] {
-            assert!(is_bundled_dep(&none, id), "{id}");
+            assert!(is_bundled_dep(&all, id), "{id}");
         }
         for id in [
             // The app's own modules, and a linked package's (its real path).
             "/app/src/main.tsx",
             "/repo/packages/ui/src/button.tsx",
             // What the optimizer leaves to the dev server.
+            "/app/node_modules/a/src/c.tsx",
+            "/app/node_modules/a/src/c.jsx",
             "/app/node_modules/antd/lib/button/style/index.less",
             "/app/node_modules/a/dist/a.css",
             "/app/node_modules/a/logo.svg",
@@ -1049,31 +1129,98 @@ mod tests {
             "/app/node_modules/a/index.js?raw",
             "/app/node_modules/a/worker.js?worker",
             "\0virtual:/app/node_modules/a/index.js",
+            // A tool's directory, and a file that is no package's.
+            "/app/node_modules/.cache/oj/v1/start/client-entry.js",
+            "/app/node_modules/loose.js",
         ] {
-            assert!(!is_bundled_dep(&none, id), "{id}");
+            assert!(!is_bundled_dep(&all, id), "{id}");
         }
-        let excluded = [
-            "a".to_string(),
-            "@scope/pkg".to_string(),
-            "b/sub".to_string(),
-        ];
+        let served = BundledDeps::AllBut(
+            ["a", "@scope/pkg"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
         for id in [
             "/app/node_modules/a/index.js",
             "/app/node_modules/@scope/pkg/dist/esm/a.mjs",
-            // A path inside a package keeps the package.
-            "/app/node_modules/b/index.js",
             // The nearest package is the module's.
             "/app/node_modules/c/node_modules/a/index.js",
         ] {
-            assert!(!is_bundled_dep(&excluded, id), "{id}");
+            assert!(!is_bundled_dep(&served, id), "{id}");
         }
         for id in [
             "/app/node_modules/ab/index.js",
             "/app/node_modules/@scope/pkg2/index.js",
-            "/app/node_modules/a/node_modules/c/index.js",
         ] {
-            assert!(is_bundled_dep(&excluded, id), "{id}");
+            assert!(is_bundled_dep(&served, id), "{id}");
         }
+        // `optimizeDeps.noDiscovery`: the included packages alone.
+        let only = BundledDeps::Only(["react".to_string()].into_iter().collect());
+        assert!(is_bundled_dep(&only, "/app/node_modules/react/index.js"));
+        assert!(!is_bundled_dep(&only, "/app/node_modules/a/index.js"));
+    }
+
+    // What Vite serves through the plugins: an excluded package and the
+    // packages it depends on, a package the optimizer is told of aside.
+    #[test]
+    fn an_excluded_package_takes_what_it_depends_on_with_it() {
+        let root = std::env::temp_dir().join(format!("oj-bundled-deps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pkg = |dir: &str, json: &str| {
+            let dir = root.join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("package.json"), json).unwrap();
+        };
+        pkg(
+            "node_modules/framework",
+            r#"{"dependencies":{"core":"1","@scope/store":"1"},"peerDependencies":{"react":"1"}}"#,
+        );
+        pkg(
+            "node_modules/core",
+            r#"{"dependencies":{"deep":"1","react":"1"}}"#,
+        );
+        // A package's own copy of a dependency is found from the package.
+        pkg(
+            "node_modules/core/node_modules/deep",
+            r#"{"dependencies":{"deepest":"1"}}"#,
+        );
+        pkg("node_modules/deepest", "{}");
+        pkg("node_modules/@scope/store", "{}");
+        pkg(
+            "node_modules/react",
+            r#"{"dependencies":{"scheduler":"1"}}"#,
+        );
+        pkg("node_modules/other", "{}");
+        let strings = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let deps = BundledDeps::of(
+            &root,
+            &strings(&["react", "react/jsx-runtime", "framework > deepest"]),
+            &strings(&["framework/sub", "missing"]),
+            false,
+        );
+        let BundledDeps::AllBut(served) = &deps else {
+            panic!("{deps:?}");
+        };
+        let mut names: Vec<&str> = served.iter().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["@scope/store", "core", "deep", "framework", "missing"]
+        );
+        let only = BundledDeps::of(
+            &root,
+            &strings(&["react/jsx-runtime", "a > @scope/b/x"]),
+            &[],
+            true,
+        );
+        let BundledDeps::Only(included) = &only else {
+            panic!("{only:?}");
+        };
+        let mut names: Vec<&str> = included.iter().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, ["@scope/b", "react"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
