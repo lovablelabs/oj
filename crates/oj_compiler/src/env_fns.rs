@@ -400,10 +400,13 @@ fn rewrite_outermost(
     }
     bindings.find_instances(&parsed.program);
     bindings.find_middlewares(&parsed.program);
+    let mut parens = ParenPositions::default();
+    parens.visit_program(&parsed.program);
     let mut finder = Finder {
         bindings: &bindings,
         env,
         code,
+        parens: &parens.0,
         edits: Vec::new(),
         kept: Vec::new(),
         error: None,
@@ -677,6 +680,9 @@ struct Finder<'b> {
     bindings: &'b Bindings,
     env: Env,
     code: &'b str,
+    /// The calls whose place needs parentheses around a function (see
+    /// [`ParenPositions`]).
+    parens: &'b HashSet<(u32, u32)>,
     edits: Vec<Edit>,
     /// The implementations kept as replacement text, as source spans.
     kept: Vec<(usize, usize)>,
@@ -684,6 +690,85 @@ struct Finder<'b> {
     error: Option<String>,
     /// The calls inside a middleware chain already seen, as spans.
     chain_inner: HashSet<(u32, u32)>,
+}
+
+/// The calls whose place needs parentheses around the function that takes
+/// it. TanStack's compiler puts the implementation node in the call's place
+/// and babel's generator prints the parentheses the position asks for: a
+/// callee, a member expression's object, a template's tag, a conditional's
+/// test, a unary, binary, logical or await operand, an expression
+/// statement's own expression. Anywhere else (`const f = <fn>`, an
+/// argument, a return) the function stands bare, and the chunk's minifier
+/// keeps the parentheses it is given, so a wrapped function differed from
+/// Vite's output by two bytes per call.
+#[derive(Default)]
+struct ParenPositions(HashSet<(u32, u32)>);
+
+impl ParenPositions {
+    fn note(&mut self, expr: &oxc_ast::ast::Expression<'_>) {
+        if let oxc_ast::ast::Expression::CallExpression(call) = expr.without_parentheses() {
+            self.0.insert((call.span.start, call.span.end));
+        }
+    }
+}
+
+impl<'a> Visit<'a> for ParenPositions {
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        self.note(&it.callee);
+        walk::walk_call_expression(self, it);
+    }
+    fn visit_new_expression(&mut self, it: &oxc_ast::ast::NewExpression<'a>) {
+        self.note(&it.callee);
+        walk::walk_new_expression(self, it);
+    }
+    fn visit_static_member_expression(&mut self, it: &oxc_ast::ast::StaticMemberExpression<'a>) {
+        self.note(&it.object);
+        walk::walk_static_member_expression(self, it);
+    }
+    fn visit_computed_member_expression(
+        &mut self,
+        it: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        self.note(&it.object);
+        walk::walk_computed_member_expression(self, it);
+    }
+    fn visit_private_field_expression(&mut self, it: &oxc_ast::ast::PrivateFieldExpression<'a>) {
+        self.note(&it.object);
+        walk::walk_private_field_expression(self, it);
+    }
+    fn visit_tagged_template_expression(
+        &mut self,
+        it: &oxc_ast::ast::TaggedTemplateExpression<'a>,
+    ) {
+        self.note(&it.tag);
+        walk::walk_tagged_template_expression(self, it);
+    }
+    fn visit_conditional_expression(&mut self, it: &oxc_ast::ast::ConditionalExpression<'a>) {
+        self.note(&it.test);
+        walk::walk_conditional_expression(self, it);
+    }
+    fn visit_binary_expression(&mut self, it: &oxc_ast::ast::BinaryExpression<'a>) {
+        self.note(&it.left);
+        self.note(&it.right);
+        walk::walk_binary_expression(self, it);
+    }
+    fn visit_logical_expression(&mut self, it: &oxc_ast::ast::LogicalExpression<'a>) {
+        self.note(&it.left);
+        self.note(&it.right);
+        walk::walk_logical_expression(self, it);
+    }
+    fn visit_unary_expression(&mut self, it: &oxc_ast::ast::UnaryExpression<'a>) {
+        self.note(&it.argument);
+        walk::walk_unary_expression(self, it);
+    }
+    fn visit_await_expression(&mut self, it: &oxc_ast::ast::AwaitExpression<'a>) {
+        self.note(&it.argument);
+        walk::walk_await_expression(self, it);
+    }
+    fn visit_expression_statement(&mut self, it: &oxc_ast::ast::ExpressionStatement<'a>) {
+        self.note(&it.expression);
+        walk::walk_expression_statement(self, it);
+    }
 }
 
 /// An isomorphic chain's implementations.
@@ -832,18 +917,36 @@ impl Finder<'_> {
         Some((text, moved))
     }
 
-    /// `arg` as replacement text, or `error` recorded when it is not one.
+    /// Whether the call at `start..end` sits where its replacement needs
+    /// parentheses (see [`ParenPositions`]).
+    fn needs_parens(&self, start: usize, end: usize) -> bool {
+        self.parens.contains(&(start as u32, end as u32))
+    }
+
+    /// `text`, a function, in the call at `start..end`'s place.
+    fn function_text(&self, start: usize, end: usize, text: &str) -> String {
+        if self.needs_parens(start, end) {
+            format!("({text})")
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// `arg` as the replacement of the call at `start..end`, or `error`
+    /// recorded when it is not one.
     fn arg_text(
         &mut self,
         arg: Arg,
+        call: (usize, usize),
         error: impl FnOnce() -> String,
     ) -> Option<(String, Vec<crate::dce::Moved>)> {
         match arg {
             Arg::Expr(start, end) => {
                 self.kept.push((start, end));
+                let wrapped = self.needs_parens(call.0, call.1);
                 Some((
-                    format!("({})", &self.code[start..end]),
-                    vec![(start, end, 1)],
+                    self.function_text(call.0, call.1, &self.code[start..end]),
+                    vec![(start, end, usize::from(wrapped))],
                 ))
             }
             Arg::NotAFunction => {
@@ -874,8 +977,8 @@ impl<'a> Visit<'a> for Finder<'_> {
                 Env::Client => (chain.client, "client"),
             };
             let text = match side {
-                None => Some(("(() => {})".to_string(), Vec::new())),
-                Some(arg) => self.arg_text(arg, || {
+                None => Some((self.function_text(start, end, "() => {}"), Vec::new())),
+                Some(arg) => self.arg_text(arg, (start, end), || {
                     format!("createIsomorphicFn().{name}(func) must be called with a function!")
                 }),
             };
@@ -909,18 +1012,16 @@ impl<'a> Visit<'a> for Finder<'_> {
                 _ => (Env::Client, "Client"),
             };
             let text = if self.env == target {
-                self.arg_text(first_arg(call), || {
+                self.arg_text(first_arg(call), (start, end), || {
                     format!("create{name}OnlyFn() must be called with a function!")
                 })
             } else {
                 let side = name.to_lowercase();
-                Some((
-                    format!(
-                        "(() => {{ throw new Error({:?}); }})",
-                        format!("create{name}OnlyFn() functions can only be called on the {side}!")
-                    ),
-                    Vec::new(),
-                ))
+                let stub = format!(
+                    "() => {{ throw new Error({:?}); }}",
+                    format!("create{name}OnlyFn() functions can only be called on the {side}!")
+                );
+                Some((self.function_text(start, end, &stub), Vec::new()))
             };
             if let Some((text, moved)) = text {
                 self.edits.push(Edit {
@@ -1088,12 +1189,15 @@ mod tests {
         let body = "export const f = createIsomorphicFn()\n  .server(() => secretOnServer())\n  .client(() => window.__X__);\n";
         let client = rewrite(body, Env::Client);
         assert!(
-            client.contains("export const f = (() => window.__X__)"),
+            client.contains("export const f = () => window.__X__"),
             "{client}"
         );
         assert!(!client.contains("secretOnServer"), "{client}");
         let server = rewrite(body, Env::Server);
-        assert!(server.contains("(() => secretOnServer())"), "{server}");
+        assert!(
+            server.contains("export const f = () => secretOnServer()"),
+            "{server}"
+        );
         assert!(!server.contains("window.__X__"), "{server}");
         for out in [&client, &server] {
             assert_eq!(
@@ -1110,7 +1214,7 @@ mod tests {
             "const f = createIsomorphicFn().server(() => db());\n",
             Env::Client,
         );
-        assert!(out.contains("const f = (() => {});"), "{out}");
+        assert!(out.contains("const f = () => {};"), "{out}");
         assert!(!out.contains("db()"), "{out}");
     }
 
@@ -1124,12 +1228,12 @@ mod tests {
             "{client}"
         );
         assert!(
-            client.contains("const c = (() => localStorage.x);"),
+            client.contains("const c = () => localStorage.x;"),
             "{client}"
         );
         let server = rewrite(body, Env::Server);
         assert!(
-            server.contains("const s = (() => readSecrets());"),
+            server.contains("const s = () => readSecrets();"),
             "{server}"
         );
         assert!(
@@ -1143,11 +1247,11 @@ mod tests {
         let code = "import { createIsomorphicFn as iso } from \"@tanstack/start-fn-stubs\";\nimport * as S from \"@tanstack/react-start\";\nexport const a = iso().client(() => S.createServerOnlyFn(() => inner())).server(() => 1);\nexport const b = S.createClientOnlyFn(() => 2);\n";
         let client = rewrite_env_fns(code, "a.js", Env::Client).unwrap().unwrap();
         assert!(
-            client.contains("export const a = (() => (() => { throw new Error("),
+            client.contains("export const a = () => () => { throw new Error("),
             "{client}"
         );
         assert!(!client.contains("inner()"), "{client}");
-        assert!(client.contains("export const b = (() => 2);"), "{client}");
+        assert!(client.contains("export const b = () => 2;"), "{client}");
     }
 
     #[test]
@@ -1177,7 +1281,7 @@ mod tests {
             "import { other } from \"./db\";",
             "import { unused } from \"./kept-as-it-was\";",
             "import \"./side-effect\";",
-            "export const who = (() => other);",
+            "export const who = () => other;",
         ] {
             assert!(client.contains(kept), "{kept}:\n{client}");
         }
@@ -1224,7 +1328,7 @@ mod tests {
         let out = rewrite_env_fns_with(code, "a.ts", Env::Client, &reexported, &[])
             .unwrap()
             .unwrap();
-        assert!(out.contains("export const f = (() => 2);"), "{out}");
+        assert!(out.contains("export const f = () => 2;"), "{out}");
     }
 
     #[test]
@@ -1271,7 +1375,7 @@ mod tests {
         );
         // The other side's argument is never looked at.
         let server = err(spread, Env::Server).unwrap().unwrap();
-        assert!(server.contains("const f = (() => 1);"), "{server}");
+        assert!(server.contains("const f = () => 1;"), "{server}");
         assert_eq!(
             err("const s = createServerOnlyFn();\n", Env::Server),
             Err("createServerOnlyFn() must be called with a function!".to_string())
@@ -1630,6 +1734,6 @@ mod tests {
         let nested = "const a = createIsomorphicFn().client(() => 1).server(() => createServerOnlyFn(() => 2));\n";
         let mut out = String::new();
         assert_eq!(passes(|| out = rewrite(nested, Env::Server)), 2);
-        assert!(out.contains("const a = (() => (() => 2));"), "{out}");
+        assert!(out.contains("const a = () => () => 2;"), "{out}");
     }
 }
