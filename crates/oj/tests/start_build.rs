@@ -1412,6 +1412,103 @@ fn stylex_rules_join_the_sheet_css_injection_target_picks() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// An app that makes a plugin of its own from `@stylexjs/unplugin`'s
+/// (spreading the plugin's hooks under a name of its own, as Lovable's
+/// two-instance split build does) runs under oj as under Vite: oj's
+/// stand-in for the package carries the real plugin's hooks over its shared
+/// rule store, with oj's compiler as the `transform`, and the host runs
+/// them. The plugin's generateBundle then appends the rules to the sheet it
+/// picks and re-emits it under a new hash, the old file gone and every
+/// reference (chunk code, the manifests) moved to the new name. oj's
+/// stand-in had no hooks, so such an app fell back to one unsplit instance
+/// (other class prefixes and layers: other chunk sizes, other chunk cuts).
+#[test]
+fn an_apps_own_plugin_made_of_stylexs_runs_the_real_hooks() {
+    let Some(root) = stylex_app("own-plugin") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config)
+        .unwrap()
+        .replacen(
+            "export default defineConfig({",
+            "const upstream = stylex.vite({ classNamePrefix: \"zz\" });\n\
+             const own = {\n\
+             \x20 ...upstream,\n\
+             \x20 name: \"app-stylex\",\n\
+             \x20 transform(code: string, id: string) {\n\
+             \x20   return (upstream.transform as Function).call(this, code, id);\n\
+             \x20 },\n\
+             };\n\
+             export default defineConfig({",
+            1,
+        )
+        .replacen("stylex.vite()", "own", 1);
+    assert!(
+        source.contains("plugins: [own,"),
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(&config, source).unwrap();
+    build(&root);
+
+    let assets = root.join("dist/client/assets");
+    let sheets: Vec<String> = std::fs::read_dir(&assets)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("styles-") && name.ends_with(".css"))
+        .collect();
+    assert_eq!(
+        sheets.len(),
+        1,
+        "one styles-<hash>.css, the re-emitted sheet, not also the one it replaced: {sheets:?}"
+    );
+    let sheet = &sheets[0];
+    let css = std::fs::read_to_string(assets.join(sheet)).unwrap();
+    assert!(
+        css.contains("@keyframes") && css.contains(".zz"),
+        "the real plugin's generateBundle did not append the rules, under the app's prefix, to {sheet}:\n{}",
+        &css[..css.len().min(400)]
+    );
+    assert!(
+        !assets.join("stylex.css").exists(),
+        "the plugin's writeBundle fallback sheet was written"
+    );
+    // Every mention of the sheet in the output (the chunk importing it
+    // `?url`, both manifests, the server's copy of the client manifest)
+    // names the re-emitted file.
+    let mentions = regex::Regex::new(r"styles-[\w-]+\.css").unwrap();
+    let mut files = Vec::new();
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    walk(&root.join("dist"), &mut files);
+    let mut seen = 0;
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for mention in mentions.find_iter(&text) {
+            seen += 1;
+            assert_eq!(
+                mention.as_str(),
+                sheet,
+                "{} names a sheet the build replaced",
+                file.display()
+            );
+        }
+    }
+    assert!(seen >= 2, "the chunk and the manifest name the sheet");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A module a plugin resolves by passing its `this.resolve` answer on keeps
 /// the package.json that answer names, as under rolldown, so its format
 /// stays what `"type": "module"` makes it: its CommonJS imports take the

@@ -3526,6 +3526,9 @@ pub(crate) struct ChunkSheets {
     assets_by_module: std::collections::HashMap<String, Vec<String>>,
     /// Every asset written, with its source file.
     asset_rows: Vec<(PathBuf, String)>,
+    /// The stylesheets written, each with its text, for the bundle the
+    /// generateBundle hooks see (see `with_sheet_assets`).
+    sheet_assets: Vec<(String, String)>,
 }
 
 impl ChunkSheets {
@@ -3537,7 +3540,28 @@ impl ChunkSheets {
             inherited: Default::default(),
             assets_by_module: Default::default(),
             asset_rows: Vec::new(),
+            sheet_assets: Vec::new(),
         }
+    }
+
+    /// The stylesheets written (file under the output directory, text):
+    /// the bundle a generateBundle hook sees holds them as Vite's does its
+    /// css-post's assets, so a plugin appending to one (StyleX re-emits the
+    /// sheet under a new hash) finds it there. rolldown's bundle never holds
+    /// them, as oj writes the files itself.
+    pub fn with_sheet_assets(mut self, sheets: Vec<(String, String)>) -> Self {
+        self.sheet_assets = sheets;
+        self
+    }
+
+    /// The files of [`ChunkSheets::with_sheet_assets`].
+    pub fn sheet_asset_files(&self) -> impl Iterator<Item = &str> {
+        self.sheet_assets.iter().map(|(file, _)| file.as_str())
+    }
+
+    /// [`ChunkSheets::with_sheet_assets`]'s sheets, file and text.
+    pub fn sheet_assets(&self) -> &[(String, String)] {
+        &self.sheet_assets
     }
 
     pub fn with_inherited(
@@ -3688,14 +3712,128 @@ fn bundle_map(
             }
         }
     }
+    // The stylesheets oj wrote, as Vite's css-post emits them: by file name,
+    // named after the sheet (a chunk's `index.css`, a `?url` import's
+    // `globals.css`), with no original file, and the hash marker still on
+    // the text (finalizeCss appends it; css-post's own generateBundle, a
+    // core plugin's, strips it after the user's "pre" hooks ran, so a hook
+    // re-emitting a sheet it appended to hashes the marker in).
+    if let Some(sheets) = sheets {
+        for (file, source) in &sheets.sheet_assets {
+            if map.contains_key(file) {
+                continue;
+            }
+            let name = sheet_asset_name(file);
+            let source = if source.trim().is_empty() {
+                source.clone()
+            } else {
+                format!("{source}{VITE_HASH_UPDATE_MARKER}")
+            };
+            map.insert(
+                file.clone(),
+                serde_json::json!({
+                    "type": "asset",
+                    "fileName": file,
+                    "name": name,
+                    "names": [name],
+                    "originalFileName": null,
+                    "originalFileNames": [],
+                    "source": source,
+                }),
+            );
+        }
+    }
     map
 }
 
+/// Vite's `viteHashUpdateMarker`: finalizeCss appends it to a sheet, so the
+/// sheet's name hashes it (see `css_asset_hash`), and css-post's
+/// generateBundle strips it from every CSS asset's text.
+pub(crate) const VITE_HASH_UPDATE_MARKER: &str = "/*$vite$:1*/";
+
+/// A CSS asset's text as css-post's generateBundle leaves it: the hash
+/// marker gone.
+pub(crate) fn strip_vite_hash_marker(file: &str, source: &str) -> String {
+    if file.ends_with(".css") {
+        source.replacen(VITE_HASH_UPDATE_MARKER, "", 1)
+    } else {
+        source.to_string()
+    }
+}
+
+/// The name a written stylesheet was emitted under: its file name with the
+/// hash taken out (`assets/globals-BX_FufQ8.css` was `globals.css`), as
+/// @stylexjs/unplugin reads it back off an asset (getAssetBaseName).
+pub(crate) fn sheet_asset_name(file: &str) -> String {
+    let base = file.rsplit('/').next().unwrap_or(file);
+    let Some(stem) = base.strip_suffix(".css") else {
+        return base.to_string();
+    };
+    match stem.rsplit_once('-') {
+        Some((name, hash))
+            if hash.len() >= 8 && hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+        {
+            format!("{name}.css")
+        }
+        _ => base.to_string(),
+    }
+}
+
+/// The assets a generateBundle hook added to the bundle (`this.emitFile`
+/// while the bundle is generated, or an entry of its own): rolldown writes
+/// them with the rest.
+fn added_bundle_assets(
+    bundle: &[rolldown_common::Output],
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<rolldown_common::Output> {
+    use rolldown_common::{Output, OutputAsset, StrOrBytes};
+    let strings = |v: Option<&serde_json::Value>| -> Vec<String> {
+        v.and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    map.iter()
+        .filter(|(key, entry)| {
+            entry.get("type").and_then(|t| t.as_str()) == Some("asset")
+                && !bundle.iter().any(|out| out.filename() == key.as_str())
+        })
+        .filter_map(|(key, entry)| {
+            let source = entry.get("source")?.as_str()?;
+            Some(Output::Asset(Arc::new(OutputAsset {
+                names: strings(entry.get("names")),
+                original_file_names: strings(entry.get("originalFileNames")),
+                filename: key.as_str().into(),
+                source: StrOrBytes::Str(strip_vite_hash_marker(key, source)),
+            })))
+        })
+        .collect()
+}
+
 pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
+    apply_bundle_mutations_except(bundle, json, |_| false);
+}
+
+/// [`apply_bundle_mutations`], leaving the entries `synthesized` names out
+/// of what the hooks added (the bundle they saw carried them for oj's own
+/// files: the stylesheets it wrote, the manifest); the bundle as the hooks
+/// returned it, for a caller reading what else they did to those.
+pub(crate) fn apply_bundle_mutations_except(
+    bundle: &mut Vec<rolldown_common::Output>,
+    json: &str,
+    synthesized: impl Fn(&str) -> bool,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     use rolldown_common::{Output, StrOrBytes};
     let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json) else {
-        return;
+        return None;
     };
+    let added: Vec<Output> = added_bundle_assets(bundle, &map)
+        .into_iter()
+        .filter(|out| out.filename() != ".vite/manifest.json" && !synthesized(out.filename()))
+        .collect();
     // A plugin can delete a bundle entry (e.g. @crxjs removes its manifest JS
     // chunk and the input stub): any output whose filename no longer appears in
     // the returned bundle was removed.
@@ -3742,6 +3880,8 @@ pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, 
             }
         }
     }
+    bundle.extend(added);
+    Some(map)
 }
 
 /// The build's plugin host engine, for the first host the build spawns, by

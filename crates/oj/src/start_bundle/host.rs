@@ -854,18 +854,76 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_generate_bundle().await {
             return Ok(());
         }
+        // The client's sheets ride along as the assets Vite's css-post
+        // emitted (oj wrote the files itself, so rolldown's bundle has none).
+        let sheets = self.chunk_sheets().map(|sheets| match &self.sheets {
+            Some(emitter) => sheets.with_sheet_assets(emitter.sheet_assets()),
+            None => sheets,
+        });
         let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
             args.bundle,
             &self.root,
-            self.chunk_sheets().as_ref(),
+            sheets.as_ref(),
         );
         let mutated = self
             .host
             .generate_bundle(&bundle_json, args.is_write)
             .await
             .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
-        if let Some(mutated) = mutated {
-            crate::build::apply_bundle_mutations(args.bundle, &mutated);
+        let Some(mutated) = mutated else {
+            return Ok(());
+        };
+        let synthesized: HashSet<String> = sheets
+            .as_ref()
+            .map(|s| s.sheet_asset_files().map(str::to_string).collect())
+            .unwrap_or_default();
+        let before: HashSet<String> = args
+            .bundle
+            .iter()
+            .map(|out| out.filename().to_string())
+            .chain(synthesized.iter().cloned())
+            .collect();
+        let Some(after) =
+            crate::build::apply_bundle_mutations_except(args.bundle, &mutated, |file| {
+                synthesized.contains(file)
+            })
+        else {
+            return Ok(());
+        };
+        // A sheet a hook replaced with an emit of its own (@stylexjs/unplugin
+        // appends its rules and re-emits the sheet under a new hash): the
+        // emitter's records follow the new name, which rolldown writes.
+        if let Some(emitter) = &self.sheets {
+            // A sheet a hook edited in place keeps its name and takes the
+            // text, the hash marker gone as css-post's generateBundle
+            // leaves it.
+            if let Some(sheets) = &sheets {
+                for (file, text) in sheets.sheet_assets() {
+                    let Some(source) = after
+                        .get(file)
+                        .and_then(|entry| entry.get("source"))
+                        .and_then(|s| s.as_str())
+                    else {
+                        continue;
+                    };
+                    let source = crate::build::strip_vite_hash_marker(file, source);
+                    if source != *text {
+                        emitter.overwrite_sheet(file, &source);
+                    }
+                }
+            }
+            for old in synthesized.iter().filter(|file| !after.contains_key(*file)) {
+                let name = crate::build::sheet_asset_name(old);
+                let replacement = after.iter().find(|(file, entry)| {
+                    !before.contains(*file)
+                        && entry.get("type").and_then(|t| t.as_str()) == Some("asset")
+                        && entry.get("name").and_then(|n| n.as_str()) == Some(name.as_str())
+                });
+                if let Some((new, entry)) = replacement {
+                    let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                    emitter.rename_sheet(old, new, source);
+                }
+            }
         }
         Ok(())
     }

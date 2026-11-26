@@ -65,6 +65,10 @@ pub(crate) struct Facts {
     /// @stylexjs/unplugin's `cssInjectionTarget`: a function handle over a
     /// stylesheet's file name, picking the sheet the StyleX rules join.
     pub stylex_css_injection_target: Option<Value>,
+    /// Whether the environment's StyleX runs through the host: the app made
+    /// a plugin of its own from oj's stand-in for @stylexjs/unplugin, hooks
+    /// and all, so oj's native StyleX stands down for the bundle.
+    pub stylex_host_driven: bool,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -114,6 +118,10 @@ impl Facts {
                 .get("stylexCssInjectionTarget")
                 .filter(|e| !e.is_null())
                 .cloned(),
+            stylex_host_driven: v
+                .get("stylexHostDriven")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

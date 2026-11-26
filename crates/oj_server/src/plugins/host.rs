@@ -796,12 +796,27 @@ pub(crate) fn ctx_rpc(
                 .collect();
             Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
         }
-        "stylexTransform" => Ok(
-            match crate::stylex::runner_transform(root, arg(0), arg(1))? {
+        // With options (a Start build's composed plugin, plugin-host.mjs
+        // `installStylexHost`): the plugin for them, and the module's rules
+        // for the store the host keeps. Without: the dev server's plugin,
+        // whose store is its own.
+        "stylexTransform" => Ok(match args.get(2).filter(|o| !o.is_null()) {
+            Some(options) => match crate::stylex::build_transform(root, arg(0), arg(1), options)? {
+                Some((code, map, rules)) => {
+                    serde_json::json!({ "code": code, "map": map, "rules": rules })
+                }
+                None => serde_json::Value::Null,
+            },
+            None => match crate::stylex::runner_transform(root, arg(0), arg(1))? {
                 Some((code, map)) => serde_json::json!({ "code": code, "map": map }),
                 None => serde_json::Value::Null,
             },
-        ),
+        }),
+        // rolldown's hash of an asset's bytes, for the name the host gives an
+        // asset a plugin emits while the bundle is generated.
+        "contentHash" => Ok(serde_json::Value::String(
+            rolldown_utils::xxhash::xxhash_with_base(arg(0).as_bytes(), 64),
+        )),
         other => Err(format!("unknown ctx method: {other}")),
     }
 }

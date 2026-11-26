@@ -9,6 +9,11 @@ const STYLEX_ADAPTERS: &[&str] = &[
     "bun", "esbuild", "farm", "rolldown", "rollup", "rspack", "unloader", "vite", "webpack",
 ];
 
+/// The package's modules served as they are: what its real Vite adapter
+/// requires when the stand-in evaluates it (see the stand-in's
+/// `realVitePlugin`).
+const STYLEX_REAL_MODULES: &[&str] = &["core", "consts", "dev-inject-middleware"];
+
 /// How the engine is loading the file.
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
@@ -22,10 +27,10 @@ pub(crate) enum Format {
 /// replaces.
 pub(crate) fn source_for(path: &str, format: Format) -> Option<String> {
     let path = path.replace('\\', "/");
-    let (_, file) = path.split_once("/node_modules/@stylexjs/unplugin/")?;
+    let (prefix, file) = path.split_once("/node_modules/@stylexjs/unplugin/")?;
     let name = file.rsplit('/').next()?;
     let (stem, ext) = name.split_once('.')?;
-    if !matches!(ext, "js" | "mjs" | "cjs") {
+    if !matches!(ext, "js" | "mjs" | "cjs") || STYLEX_REAL_MODULES.contains(&stem) {
         return None;
     }
     let default = if STYLEX_ADAPTERS.contains(&stem) {
@@ -33,21 +38,38 @@ pub(crate) fn source_for(path: &str, format: Format) -> Option<String> {
     } else {
         "stylex"
     };
+    let dir = serde_json::Value::String(format!("{prefix}/node_modules/@stylexjs/unplugin"));
     let names = "bun, esbuild, farm, rolldown, rollup, rspack, unloader, vite, webpack";
-    let exports = match format {
-        Format::Esm => format!(
-            "export {{ {names} }};\n\
-             export {{ stylexPlugin as createStylexBunPlugin, stylexPlugin as unpluginFactory, stylex as unplugin }};\n\
-             export default {default};\n"
+    let (prelude, exports) = match format {
+        Format::Esm => (
+            format!(
+                "import {{ createRequire as __ojCreateRequire }} from \"node:module\";\n\
+                 import {{ readFileSync as __ojReadFile, realpathSync as __ojRealpath }} from \"node:fs\";\n\
+                 import {{ dirname as __ojDirname }} from \"node:path\";\n\
+                 const __ojUnpluginDir = {dir};\n"
+            ),
+            format!(
+                "export {{ {names} }};\n\
+                 export {{ stylexPlugin as createStylexBunPlugin, stylexPlugin as unpluginFactory, stylex as unplugin }};\n\
+                 export default {default};\n"
+            ),
         ),
         // The package's CommonJS build: named exports beside `default`,
         // flagged `__esModule` for bundlers' interop.
-        Format::CommonJs => format!(
-            "module.exports = {{ __esModule: true, {names}, createStylexBunPlugin: stylexPlugin, \
-             unpluginFactory: stylexPlugin, unplugin: stylex, default: {default} }};\n"
+        Format::CommonJs => (
+            format!(
+                "const {{ createRequire: __ojCreateRequire }} = require(\"node:module\");\n\
+                 const {{ readFileSync: __ojReadFile, realpathSync: __ojRealpath }} = require(\"node:fs\");\n\
+                 const {{ dirname: __ojDirname }} = require(\"node:path\");\n\
+                 const __ojUnpluginDir = {dir};\n"
+            ),
+            format!(
+                "module.exports = {{ __esModule: true, {names}, createStylexBunPlugin: stylexPlugin, \
+                 unpluginFactory: stylexPlugin, unplugin: stylex, default: {default} }};\n"
+            ),
         ),
     };
-    Some(format!("{STYLEX_UNPLUGIN}\n{exports}"))
+    Some(format!("{prelude}{STYLEX_UNPLUGIN}\n{exports}"))
 }
 
 #[cfg(test)]
@@ -62,12 +84,20 @@ mod tests {
         )
         .unwrap();
         assert!(entry.ends_with("export default stylex;\n"));
+        assert!(entry.contains("const __ojUnpluginDir = \"/app/node_modules/@stylexjs/unplugin\";"));
+        assert!(
+            entry.contains("import { createRequire as __ojCreateRequire } from \"node:module\";")
+        );
         let vite = source_for(
             "/app/node_modules/.pnpm/@stylexjs+unplugin@0.19.0/node_modules/@stylexjs/unplugin/lib/vite.js",
             Format::CommonJs,
         )
         .unwrap();
         assert!(vite.contains("__esModule: true") && vite.contains("default: vite }"));
+        assert!(vite.contains(
+            "const __ojUnpluginDir = \"/app/node_modules/.pnpm/@stylexjs+unplugin@0.19.0/node_modules/@stylexjs/unplugin\";"
+        ));
+        assert!(vite.contains("= require(\"node:module\");"));
         assert!(source_for(
             "/app/node_modules/@stylexjs/unplugin/package.json",
             Format::Esm
@@ -78,5 +108,31 @@ mod tests {
             Format::Esm
         )
         .is_none());
+    }
+
+    /// The modules the package's real Vite adapter requires load as they
+    /// are, so the stand-in can evaluate the adapter from its file.
+    #[test]
+    fn the_adapters_dependencies_are_the_packages_own() {
+        for file in [
+            "lib/core.js",
+            "lib/consts.js",
+            "lib/dev-inject-middleware.js",
+            "lib/es/core.mjs",
+        ] {
+            assert!(
+                source_for(
+                    &format!("/app/node_modules/@stylexjs/unplugin/{file}"),
+                    Format::CommonJs
+                )
+                .is_none(),
+                "{file}"
+            );
+        }
+        assert!(source_for(
+            "/app/node_modules/@stylexjs/unplugin/lib/rollup.js",
+            Format::CommonJs
+        )
+        .is_some());
     }
 }

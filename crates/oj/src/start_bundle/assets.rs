@@ -521,6 +521,11 @@ pub(crate) struct Emitter {
     /// Every asset written, with its source file: the manifest's asset rows
     /// (Vite emits them through rolldown; oj writes them itself).
     asset_rows: Mutex<Vec<(PathBuf, String)>>,
+    /// The sheets a generateBundle hook replaced (see `rename_sheet`): by
+    /// the file oj wrote, the file that took its place and its text. Shared
+    /// with the server's emitter, whose `?url` import of the same sheet
+    /// names the replacement, as under Vite.
+    renamed: Arc<Mutex<HashMap<String, (String, String)>>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
     /// `worker.format` is "es": workers start as modules, not classic scripts.
     worker_module: std::sync::atomic::AtomicBool,
@@ -558,6 +563,7 @@ impl Emitter {
             emitted_css: Mutex::new(Vec::new()),
             module_assets: Mutex::new(HashMap::new()),
             asset_rows: Mutex::new(Vec::new()),
+            renamed: Arc::default(),
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
@@ -600,6 +606,20 @@ impl Emitter {
     }
 
     /// Whether a server bundle on this emitter writes its sheets.
+    /// A written stylesheet a generateBundle hook edited in place: the file
+    /// takes the hook's text under its name.
+    pub fn overwrite_sheet(&self, file: &str, text: &str) {
+        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+        let _ = std::fs::write(out_dir.join(file), text);
+    }
+
+    /// The sheets `client`'s generateBundle hooks replaced name their
+    /// replacements here too (see `rename_sheet`).
+    pub fn sharing_renames(mut self, client: &Emitter) -> Emitter {
+        self.renamed = Arc::clone(&client.renamed);
+        self
+    }
+
     pub fn is_server(&self) -> bool {
         self.server
     }
@@ -636,6 +656,84 @@ impl Emitter {
                 self.module_assets.lock().unwrap().clone(),
                 self.asset_rows.lock().unwrap().clone(),
             )
+    }
+
+    /// Every stylesheet written so far with its text (the chunks' sheets,
+    /// the `?url` ones, a plugin's own), by file under the output directory,
+    /// sorted: the assets the generateBundle hooks' bundle carries for them.
+    pub fn sheet_assets(&self) -> Vec<(String, String)> {
+        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+        let mut files = self.css_file_names();
+        files.dedup();
+        files
+            .into_iter()
+            .filter_map(|file| {
+                let text = std::fs::read_to_string(out_dir.join(&file)).ok()?;
+                Some((file, text))
+            })
+            .collect()
+    }
+
+    /// A written stylesheet a generateBundle hook replaced with an emit of
+    /// its own (@stylexjs/unplugin re-emits the sheet it appended to under a
+    /// new hash and drops the old one): every record of `old` names `new`,
+    /// and the old file goes; the new one rolldown writes from the bundle.
+    /// The hook's asset stands in the manifest (Vite lists it under
+    /// `_<file>`, the source's own row gone with the asset it named).
+    pub fn rename_sheet(&self, old: &str, new: &str, source: &str) {
+        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+        self.renamed
+            .lock()
+            .unwrap()
+            .insert(old.to_string(), (new.to_string(), source.to_string()));
+        let old_url = format!("{}{old}", self.base);
+        let new_url = format!("{}{new}", self.base);
+        let rename_url = |url: &mut String| {
+            if *url == old_url {
+                *url = new_url.clone();
+            }
+        };
+        let rename_file = |file: &mut String| {
+            if file == old {
+                *file = new.to_string();
+            }
+        };
+        for sheet in self.chunk_sheets.lock().unwrap().iter_mut() {
+            rename_file(&mut sheet.file);
+            rename_url(&mut sheet.url);
+        }
+        for files in self.inherited.lock().unwrap().values_mut() {
+            files.iter_mut().for_each(&rename_file);
+        }
+        for files in self.removed_pure.lock().unwrap().values_mut() {
+            files.iter_mut().for_each(&rename_file);
+        }
+        for files in self.module_assets.lock().unwrap().values_mut() {
+            files.iter_mut().for_each(&rename_file);
+        }
+        self.emitted_css
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .for_each(&rename_url);
+        self.standalone
+            .lock()
+            .unwrap()
+            .values_mut()
+            .for_each(&rename_url);
+        self.css_urls
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .for_each(&rename_url);
+        self.asset_rows
+            .lock()
+            .unwrap()
+            .retain(|(_, file)| file != old);
+        if let Some(name) = new.rsplit('/').next() {
+            self.written.lock().unwrap().insert(name.to_string());
+        }
+        let _ = std::fs::remove_file(out_dir.join(old));
     }
 
     fn file_of(&self, url: &str) -> String {
@@ -1006,6 +1104,24 @@ impl Emitter {
         };
         let hash = &hash[..8];
         let name = format!("{stem}-{hash}{ext}");
+        // A sheet a generateBundle hook replaced (`rename_sheet`), asked for
+        // again by the same text (the server bundle's `?url` import of it):
+        // the replacement, written here too when this emitter has its own
+        // output (a server emitting its assets), as Vite's server bundle
+        // ends with the client's name for it.
+        let renamed = self
+            .renamed
+            .lock()
+            .unwrap()
+            .get(&format!("assets/{name}"))
+            .cloned();
+        let (name, bytes) = match &renamed {
+            Some((file, source)) => (
+                file.strip_prefix("assets/").unwrap_or(file).to_string(),
+                source.as_bytes(),
+            ),
+            None => (name, bytes),
+        };
         self.asset_rows
             .lock()
             .unwrap()

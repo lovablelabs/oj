@@ -190,7 +190,10 @@ fn client_plugins(
     plugins.push(Pluginable::new_shared(super::alias::StartPluginAdapters {
         stub: start.cache.join("empty-plugin-adapters.ts"),
     }));
-    if let Some(plugin) = &start.stylex {
+    // The config's StyleX, unless the host runs it (an app's own plugin made
+    // of oj's stand-in for the package).
+    let host_stylex = host.is_some_and(|h| h.facts.stylex_host_driven);
+    if let Some(plugin) = start.stylex.as_ref().filter(|_| !host_stylex) {
         plugins.push(crate::stylex_plugin::transform(plugin));
     }
     // Start's client route tree (route-tree-client-plugin, a "pre" load).
@@ -631,7 +634,11 @@ pub(crate) async fn build(
         // the top-level `clientEntry` and css from per-route `assets`.
         // The StyleX plugin's sheet joins the client's first stylesheet, as its
         // generateBundle appends it there once every module's rules are known.
-        if let Some(plugin) = &start.stylex {
+        // With the host running StyleX, its generateBundle appended the sheet.
+        let host_stylex = client_host
+            .as_ref()
+            .is_some_and(|h| h.facts.stylex_host_driven);
+        if let Some(plugin) = start.stylex.as_ref().filter(|_| !host_stylex) {
             if let Some(sheet) = crate::stylex_plugin::stylesheet(plugin, &start.root)? {
                 let names = emitter.css_file_names();
                 // The plugin's `cssInjectionTarget`, a predicate over the
@@ -723,11 +730,10 @@ pub(crate) async fn build(
         // and any file an import names is the client's.
         let server_emits_assets = server_host.as_ref().is_some_and(|h| h.facts.emit_assets);
         let server_emitter = if server_emits_assets {
-            let e = Arc::new(Emitter::for_server(
-                &server_out_dir,
-                &start.base,
-                Arc::clone(&styles),
-            ));
+            let e = Arc::new(
+                Emitter::for_server(&server_out_dir, &start.base, Arc::clone(&styles))
+                    .sharing_renames(&emitter),
+            );
             e.set_asset_namer(super::chunks::asset_namer(
                 server_host
                     .as_ref()
@@ -759,7 +765,10 @@ pub(crate) async fn build(
             plugins.push(Pluginable::new_shared(super::alias::StartManifestSheets {
                 wrapper: manifest_sheets.clone(),
             }));
-            if let Some(plugin) = &start.stylex {
+            let host_stylex = server_host
+                .as_ref()
+                .is_some_and(|h| h.facts.stylex_host_driven);
+            if let Some(plugin) = start.stylex.as_ref().filter(|_| !host_stylex) {
                 plugins.push(crate::stylex_plugin::transform(plugin));
             }
             if let Some(facts) = server_host

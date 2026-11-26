@@ -307,6 +307,14 @@ const ojStartMode = initial.ojStartMode === true;
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
+// @stylexjs/unplugin in a Start build: the package's stand-in (oj_js
+// stand_ins) composes the package's real plugin, its hooks over the shared
+// rule store, with oj's compiler as the `transform`, through this host. An
+// app driving the plugin's hooks itself (two instances splitting one sheet
+// by file) then runs as under Vite; an instance a config lists as it is
+// goes back to oj's native path (nativeStylexStandIn).
+const stylexStandIns = new WeakSet();
+if (ojStartMode && command === "build") installStylexHost();
 // In start mode framework plugins oj reimplements natively (vite:*,
 // tanstack's compiler plugins) must not transform SSR modules or a native
 // Start bundle's — the Start pipeline does their work (server-fn rewrite,
@@ -1970,7 +1978,7 @@ try {
     const mod = await import(pathToFileURL(pluginsPath).href);
     list = mod.default ?? mod.plugins;
   }
-  allPlugins = await flattenPlugins(list);
+  allPlugins = (await flattenPlugins(list)).map(nativeStylexStandIn);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   noteStartCompilerPosition(allPlugins);
@@ -2374,9 +2382,29 @@ function pluginContext(c) {
       if (file.type && file.type !== "asset") {
         throw new Error("oj: this.emitFile supports { type: 'asset' | 'chunk' }");
       }
-      const fileName = file.fileName ?? `assets/${file.name ?? `asset-${emitCounter}`}`;
+      const source = String(file.source ?? "");
+      const live = c.liveBundle;
+      const fileName =
+        file.fileName ??
+        (live ? hashedAssetName(c, file.name, source) : `assets/${file.name ?? `asset-${emitCounter}`}`);
       const referenceId = `oj-ref-${emitCounter++}`;
-      c.emitted.push({ referenceId, fileName, source: String(file.source ?? "") });
+      // Emitted in generateBundle, the asset joins the bundle the hooks see,
+      // as rolldown's does (the StyleX plugin re-emits the sheet it appended
+      // to under a new hash and drops the old one); Rust takes it from the
+      // bundle, not from the emitted files.
+      if (live) {
+        live[fileName] = {
+          type: "asset",
+          fileName,
+          name: file.name ?? null,
+          names: file.name != null ? [file.name] : [],
+          originalFileName: file.originalFileName ?? null,
+          originalFileNames: file.originalFileName != null ? [file.originalFileName] : [],
+          source,
+          needsCodeReference: false,
+        };
+      }
+      c.emitted.push({ referenceId, fileName, source, inBundle: !!live });
       return referenceId;
     },
     getFileName(referenceId) {
@@ -2912,7 +2940,9 @@ function applyToEnvironmentOnce(p, environment) {
       (async () => {
         // A rejection nested in what it returned counts as its own throw.
         const applied = await p.applyToEnvironment(environment);
-        return applied && applied !== true ? flattenPlugins(applied) : applied;
+        return applied && applied !== true
+          ? flattenPlugins(applied).then((list) => list.map(nativeStylexStandIn))
+          : applied;
       })(),
     );
   }
@@ -3706,6 +3736,66 @@ function runnerStylex(p) {
       return await ctxRpc("stylexTransform", [id, code]);
     },
   };
+}
+// What the StyleX stand-in composes over the package's real plugin in a
+// Start build (see `stylexStandIns`): oj's compiler as the plugin's
+// `transform`, its rules written into the plugin's shared store as the real
+// transform writes them, so the plugin's own generateBundle (or an app's
+// over the store) assembles the sheet.
+function installStylexHost() {
+  const JS_LIKE_RE = /\.[cm]?[jt]sx?(\?|$)/;
+  const SVELTE_LIKE_RE = /\.svelte(\?|$)/;
+  const escapeReg = (src) => src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The plugin's containsStylexImport.
+  const importsStylex = (code, source) => {
+    const s = escapeReg(typeof source === "string" ? source : (source?.from ?? ""));
+    if (!s) return false;
+    const re = new RegExp(
+      `(?:from\\s*['"]${s}['"]|import\\s*\\(\\s*['"]${s}['"]\\s*\\)|require\\s*\\(\\s*['"]${s}['"]\\s*\\)|^\\s*import\\s*['"]${s}['"])`,
+      "m",
+    );
+    return re.test(code);
+  };
+  let failed = false;
+  globalThis.__ojStylexHost = {
+    created(plugin) {
+      stylexStandIns.add(plugin);
+    },
+    failed(e) {
+      if (failed) return;
+      failed = true;
+      process.stderr.write(
+        `${OJ} @stylexjs/unplugin could not be loaded from node_modules, so oj compiles StyleX natively: ${(e && e.stack) || e}\n`,
+      );
+    },
+    async transform(real, options, code, id) {
+      if (!JS_LIKE_RE.test(id) && !SVELTE_LIKE_RE.test(id)) return null;
+      const sources = options.importSources ?? ["stylex", "@stylexjs/stylex"];
+      if (!code || !sources.some((s) => importsStylex(code, s))) return null;
+      const out = await ctxRpc("stylexTransform", [id, code, options]);
+      if (!options.runtimeInjection) {
+        const shared = real.__stylexGetSharedStore?.();
+        if (shared) {
+          const rules = out?.rules ?? [];
+          if (rules.length > 0) {
+            shared.rulesById.set(id, rules);
+            shared.version++;
+          } else if (shared.rulesById.delete(id)) {
+            shared.version++;
+          }
+        }
+      }
+      return out ? { code: out.code, map: out.map ?? null } : null;
+    },
+  };
+}
+// A StyleX stand-in the config lists as the stand-in made it, back to the
+// hookless plugin oj's native path reads the options from; a plugin an app
+// made of one (spreading its hooks under a name of its own) keeps them, and
+// the environment's StyleX runs through this host (`stylexHostDriven`).
+function nativeStylexStandIn(p) {
+  if (!p || !stylexStandIns.has(p)) return p;
+  return { name: p.name, enforce: p.enforce, __ojStylexOptions: p.__ojStylexOptions };
 }
 // The app's Vite resolving the host's own plugins (an oj plugins file has no
 // vite.config to resolve), each hook answering what it returned in the host.
@@ -5920,7 +6010,7 @@ async function openWorkerContainer(parent, bundleChain) {
       );
     }
   }
-  const raw = await flattenPlugins(typeof create === "function" ? create() : []);
+  const raw = (await flattenPlugins(typeof create === "function" ? create() : [])).map(nativeStylexStandIn);
   const workerPlugins = hostedPlugins(raw, userViteConfig, parent);
   const c = createContainer(nextContainerId++, { name: "client", mode: environment.mode }, null);
   c.leaveOut = parent.leaveOut;
@@ -6414,6 +6504,10 @@ async function startFacts(c) {
         .find((t) => t != null) ?? null,
       fns,
     ),
+    // Whether the environment's StyleX runs through this host: a plugin the
+    // app made of the stand-in, hooks and all (see nativeStylexStandIn), so
+    // oj's native StyleX stands down for the bundle.
+    stylexHostDriven: c.rawPlugins.some((p) => p && p.__ojStylexOptions && typeof p.transform === "function"),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
       (n, { p, rank }) => {
@@ -7211,12 +7305,72 @@ async function generateBundle(c, bundleJson, isWrite) {
     c.emitted.length = 0;
     c.emitted.push(...kept);
   };
-  for (const { p, fn, rank } of pluginsWithHook(c, "generateBundle")) {
-    if (rank > 0 || (rank === 0 && p.enforce !== "pre")) viteAsset();
-    await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
+  // An asset a hook emits by name joins this bundle under rolldown's name
+  // for it (see emitFile).
+  c.liveBundle = bundle;
+  c.emitAssetFileNames ??= await assetFileNamesOf(c);
+  try {
+    for (const { p, fn, rank } of pluginsWithHook(c, "generateBundle")) {
+      if (rank > 0 || (rank === 0 && p.enforce !== "pre")) viteAsset();
+      await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
+    }
+    viteAsset();
+  } finally {
+    c.liveBundle = null;
   }
-  viteAsset();
   return JSON.stringify(bundle);
+}
+
+// The environment's `assetFileNames`, resolved as Vite's build does
+// (outputFileNames), else Vite's default under its `build.assetsDir`.
+async function assetFileNamesOf(c) {
+  const cfg = c.ojConfig ?? c.resolvedConfig ?? {};
+  const self = cfg.environments?.[c.environment.name] ?? {};
+  const top = cfg.build?.rolldownOptions ?? cfg.build?.rollupOptions ?? {};
+  const own = self.build?.rolldownOptions ?? {};
+  const firstOutput = (o) => (Array.isArray(o) ? o[0] : o) ?? {};
+  const output = { ...firstOutput(top.output), ...firstOutput(own.output) };
+  const assetsDir = self.build?.assetsDir ?? cfg.build?.assetsDir ?? "assets";
+  return (
+    (await outputFileNames(c, cfg, output)).asset ?? [assetsDir, "[name]-[hash][extname]"].filter(Boolean).join("/")
+  );
+}
+// The file name rolldown gives an asset a plugin emits by `name` while the
+// bundle is generated: `assetFileNames` over the content's hash (the first
+// 8 characters, or `[hash:N]`'s N).
+function hashedAssetName(c, name, source) {
+  const base = name ?? `asset-${emitCounter}`;
+  const dot = base.lastIndexOf(".");
+  const extname = dot > 0 ? base.slice(dot) : "";
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  let pattern = c.emitAssetFileNames ?? "assets/[name]-[hash][extname]";
+  if (typeof pattern === "function") {
+    pattern = pattern({
+      type: "asset",
+      name: base,
+      names: [base],
+      originalFileName: null,
+      originalFileNames: [],
+      source,
+    });
+  }
+  const hash = contentHash(source);
+  return String(pattern)
+    .replace(/\[hash(?::(\d+))?\]/g, (_, n) => hash.slice(0, n ? Math.min(Math.max(Number(n), 1), 21) : 8))
+    .replace(/\[name\]/g, stem)
+    .replace(/\[extname\]/g, extname)
+    .replace(/\[ext\]/g, extname.slice(1));
+}
+// rolldown's hash of an asset's bytes (xxh3-128 in url-safe base64), from
+// the engine; under plain `node` (the direct-drive tests) sha256 stands in.
+function contentHash(source) {
+  if (ojEngineRpc) {
+    try {
+      const raw = ojEngineRpc("contentHash", JSON.stringify([source]));
+      if (raw != null) return JSON.parse(raw);
+    } catch {}
+  }
+  return createHash("sha256").update(source).digest("base64url");
 }
 
 async function renderChunk(c, code, chunkJson) {
@@ -7322,7 +7476,7 @@ async function run(hook, args, c) {
   if (hook === "watchChange") return watchChange(c, args[0], args[1]);
   if (hook === "importProtectionChanged") return importProtectionChanged(c, args[0]);
   if (hook === "getEmittedFiles") {
-    return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
+    return JSON.stringify(c.emitted.filter((e) => !e.inBundle).map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(c.pluginCss);
   if (hook === "assetsInlineLimit") return assetsInlineLimit(args[0], args[1]);
