@@ -438,11 +438,12 @@ pub(crate) async fn build(
         let styles = Arc::clone(&styles);
         let weak_emitter = Arc::downgrade(for_emitter);
         let app_host = client_host.clone();
-        let mut defines = client_defines.clone();
-        if !worker_options.is_module() {
-            defines.push(("import.meta.url".into(), "self.location.href".into()));
-            defines.push(("import.meta".into(), "{ url: self.location.href }".into()));
-        }
+        // Vite's bundleWorkerEntry defines nothing for `import.meta`: a
+        // classic worker's `import.meta` is rolldown's own polyfill for an
+        // IIFE (a `{ url: self.location.href }` object per module), and a
+        // `new URL(x, import.meta.url)` of the worker's own entry is the
+        // worker plugin's `self.location.href` (MetaUrlTarget::SelfWorker).
+        let defines = client_defines.clone();
         let resolve = resolve_client.clone();
         let sourcemap_kind = out.sourcemap;
         let worker = worker_options.clone();

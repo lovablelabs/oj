@@ -113,8 +113,23 @@ impl ViteTransform {
                 })
                 .collect()
         };
+        // vite:oxc hands the plugin its own defaults where the config has
+        // none (`include = /\.(m?ts|[jt]sx)$/`, `exclude = /\.js$/`), so the
+        // refresh include is consulted for a `.js` module the exclude
+        // turned down.
+        let default = |pattern: &str| {
+            HybridRegex::new_ecma(pattern)
+                .map(|re| vec![StringOrRegex::Regex(re)])
+                .unwrap_or_default()
+        };
         self.include = patterns("include");
+        if self.include.is_empty() {
+            self.include = default(r"\.(m?ts|[jt]sx)$");
+        }
         self.exclude = patterns("exclude");
+        if self.exclude.is_empty() {
+            self.exclude = default(r"\.js$");
+        }
         self.jsx_refresh_include = patterns("jsxRefreshInclude");
         self.jsx_refresh_exclude = patterns("jsxRefreshExclude");
         self
