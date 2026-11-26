@@ -740,6 +740,11 @@ pub(crate) async fn build(
         // lookups (the environment's own resolve conditions).
         let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
+            // The resolver's provider imports, ahead of the host's chain (see
+            // the module).
+            plugins.push(Pluginable::new_shared(
+                super::server_fn_provider::ServerFnProvider,
+            ));
             plugins.push(Pluginable::new_shared(super::alias::StartPluginAdapters {
                 stub: start.cache.join("empty-plugin-adapters.ts"),
             }));

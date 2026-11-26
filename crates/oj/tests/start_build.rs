@@ -1807,6 +1807,25 @@ fn a_server_functions_handler_lives_in_its_provider_chunk_alone() {
     let Some(root) = app("server-fn-provider") else {
         return;
     };
+    // An app's `pre` resolve hook that answers a queried id with the file
+    // alone (what a framework plugin did under Lovable's config): the provider
+    // import must still reach the bundle with its query, or the provider IS
+    // the module, compiled as the caller, with no handler left to call.
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        source.contains("  plugins: [\n"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(
+        &config,
+        source.replacen(
+            "  plugins: [\n",
+            "  plugins: [\n    { name: \"fixture-clean-resolve\", enforce: \"pre\", async resolveId(id, importer) { if (!id.includes(\"?tss-serverfn-split\")) return null; const r = await this.resolve(id.split(\"?\")[0], importer, { skipSelf: true }); return r?.id ?? null; } },\n",
+            1,
+        ),
+    )
+    .unwrap();
     build(&root);
     let mut server: Vec<(PathBuf, String)> = Vec::new();
     for dir in ["dist", "dist/chunks"] {

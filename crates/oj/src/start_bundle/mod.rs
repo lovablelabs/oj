@@ -28,6 +28,7 @@ pub(crate) mod lazy;
 pub(crate) mod prod;
 pub(crate) mod refresh;
 pub(crate) mod route_tree;
+pub(crate) mod server_fn_provider;
 pub(crate) mod shims;
 
 use std::path::{Path, PathBuf};
