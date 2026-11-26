@@ -1061,7 +1061,17 @@ impl Emitter {
                     mine.push(file);
                 }
             }
-            chunk.code = empty_import.replace_all(&chunk.code, "").into_owned();
+            // Vite's css-post (getEmptyChunkReplacer) leaves a comment the
+            // length of the statement in its place, so nothing after it
+            // moves under the chunk's sourcemap.
+            chunk.code = empty_import
+                .replace_all(&chunk.code, |m: &regex::Captures| {
+                    format!(
+                        "/* empty css {}*/",
+                        " ".repeat(m[0].len().saturating_sub(15))
+                    )
+                })
+                .into_owned();
         }
         let pure_maps: Vec<String> = pure_files.iter().map(|f| format!("{f}.map")).collect();
         bundle.retain(|o| match o {

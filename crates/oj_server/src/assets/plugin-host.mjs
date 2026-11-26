@@ -5784,6 +5784,12 @@ function compilePhaseOf(p, rank) {
 }
 function inTransformPhase(p, rank, phase) {
   if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;
+  // A Start build's chain splits around vite:oxc's slot, which oj runs
+  // natively: the "pre" hooks after Start's compiler first, then the normal
+  // and post ones over the lowered module (their filters read it so).
+  if (phase === "after-compile-pre")
+    return compilePhaseOf(p, rank) === "after-compile" && cssPhaseOf(p, rank) === "pre";
+  if (phase === "normal-post") return cssPhaseOf(p, rank) !== "pre";
   return cssPhaseOf(p, rank) === phase;
 }
 
@@ -5834,7 +5840,9 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
     // it would drop an import the JSX no longer refers to, `React`'s).
     let lowered = false;
     const transformOptions = { ssr: c.environment.name === "ssr" };
-    let stripped = !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(c, id);
+    // "normal-post" follows oj's own vite:oxc slot: the module is lowered.
+    let stripped =
+      phase === "normal-post" || !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(c, id);
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
@@ -5906,7 +5914,7 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
         moduleType: lowered ? "js" : null,
         emittedChunks: chunkBucket,
       });
-    if (phase && phase !== "post" && phase !== "after-compile") return result();
+    if (phase && phase !== "post" && phase !== "after-compile" && phase !== "normal-post") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,

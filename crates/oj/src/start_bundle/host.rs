@@ -213,6 +213,9 @@ pub(crate) struct StartHostPlugin {
     /// The client build's emitter: the stylesheets it wrote, for the
     /// `viteMetadata.importedCss` of the chunks the bundle hooks see.
     sheets: Option<Arc<super::assets::Emitter>>,
+    /// A build's vite:oxc slot (see `vite_transform`): the chain splits
+    /// around it, the "pre" plugins before, the normal and post ones after.
+    lower: Option<Arc<super::vite_transform::ViteTransform>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -247,7 +250,15 @@ impl StartHostPlugin {
             map_warnings: Arc::default(),
             compile: None,
             sheets: None,
+            lower: None,
         }
+    }
+
+    /// Runs Vite's vite:oxc slot in the chain, as a build does: the module
+    /// lowered and printed between the "pre" plugins and the normal ones.
+    pub fn lowering(mut self, lower: super::vite_transform::ViteTransform) -> Self {
+        self.lower = Some(Arc::new(lower));
+        self
     }
 
     /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
@@ -682,22 +693,107 @@ impl Plugin for StartHostPlugin {
             .compile
             .clone()
             .filter(|c| !proxy && phase.is_none() && c.may_compile(id, code));
+        // A build's vite:oxc slot (`lowering`): the chain splits around it.
+        let lower = self.lower.clone().filter(|_| eligible && phase.is_none());
         async move {
             let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
-            let t = match (phase, compile) {
-                (Some(phase), _) => {
+            let t = match (phase, compile, lower) {
+                (Some(phase), _, _) => {
                     if !pass {
                         return Ok(None);
                     }
                     host.transform_phase(code, id, phase).await.map_err(fail)?
                 }
-                (None, None) => {
+                (None, None, None) => {
                     if !pass {
                         return Ok(None);
                     }
                     host.transform(code, id, "{}").await.map_err(fail)?
                 }
-                (None, Some(compile)) => {
+                // The build's chain in Vite's order: the "pre" plugins (around
+                // Start's compiler, where it sits among them), vite:oxc, then
+                // the normal and post plugins over the lowered module, which
+                // their filters read as Vite evaluates them.
+                (None, compile, Some(lower)) => {
+                    let mut t = match compile {
+                        Some(compile) => {
+                            let mut t = if pass {
+                                host.transform_phase(code, id, "before-compile")
+                                    .await
+                                    .map_err(fail)?
+                            } else {
+                                HostTransform::unchanged(code)
+                            };
+                            if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                                if out.matches('\n').count() == t.code.matches('\n').count() {
+                                    t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                                    t.map_plugins
+                                        .push("tanstack-start-core::server-fn".to_string());
+                                } else if t.map_broken.is_none() {
+                                    t.map_broken =
+                                        Some("tanstack-start-core::server-fn".to_string());
+                                }
+                                t.code = out;
+                            }
+                            if pass || host.hook_wants_transform(id, &t.code) {
+                                let prior = serde_json::json!({
+                                    "original": code,
+                                    "maps": t.maps,
+                                    "broken": t.map_broken.is_some(),
+                                })
+                                .to_string();
+                                let rest = host
+                                    .transform_phase_after(&t.code, id, "after-compile-pre", &prior)
+                                    .await
+                                    .map_err(fail)?;
+                                t.then(rest);
+                            }
+                            t
+                        }
+                        None if pass => {
+                            host.transform_phase(code, id, "pre").await.map_err(fail)?
+                        }
+                        None => HostTransform::unchanged(code),
+                    };
+                    if lower.handles(id) {
+                        // Always with a map: Vite's vite:oxc asks for one
+                        // whenever `environment.config.mode !== "build"`,
+                        // which the Vite mode (production, development)
+                        // never is, so a later plugin's getCombinedSourcemap
+                        // reaches the source through the lowering with
+                        // `build.sourcemap` off too (Start's import
+                        // protection reports where the source uses the
+                        // denied import).
+                        let lowered = lower.lower(id, &t.code, true)?;
+                        match lowered.map {
+                            Some(map) => {
+                                t.maps.push(map);
+                                t.map_plugins.push("vite:oxc".to_string());
+                            }
+                            None if t.map_broken.is_none() => {
+                                t.map_broken = Some("vite:oxc".to_string());
+                            }
+                            None => {}
+                        }
+                        t.code = lowered.code;
+                        t.module_type = Some("js".to_string());
+                    }
+                    if pass || host.hook_wants_transform(id, &t.code) {
+                        let prior = serde_json::json!({
+                            "original": code,
+                            "maps": t.maps,
+                            "broken": t.map_broken.is_some(),
+                        })
+                        .to_string();
+                        let rest = host
+                            .transform_phase_after(&t.code, id, "normal-post", &prior)
+                            .await
+                            .map_err(fail)?;
+                        t.then(rest);
+                    }
+                    t
+                }
+                (None, Some(compile), None) => {
                     let mut t = if pass {
                         host.transform_phase(code, id, "before-compile")
                             .await

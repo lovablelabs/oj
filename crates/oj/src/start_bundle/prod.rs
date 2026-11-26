@@ -249,7 +249,15 @@ fn client_plugins(
                     .with_route_tree(start.route_tree())
                     .with_alias(h.facts.alias.clone())
                     .routes_split_in_host(true),
-            ),
+            )
+            // vite:oxc at its slot: the module lowered and printed as a
+            // build's rolldown prints it, between the "pre" plugins and
+            // the normal ones (see vite_transform).
+            .lowering(super::vite_transform::ViteTransform::new(
+                start.root.clone(),
+                false,
+                start.transform_options(),
+            )),
         ));
     }
     // After the app's plugins, where vite:resolve sits, as `vite build`.
@@ -796,7 +804,12 @@ pub(crate) async fn build(
                         StartCodePlugin::new(&start.root, CodeTarget::Server)
                             .with_route_tree(start.route_tree())
                             .with_alias(h.facts.alias.clone()),
-                    ),
+                    )
+                    .lowering(super::vite_transform::ViteTransform::new(
+                        start.root.clone(),
+                        true,
+                        start.transform_options(),
+                    )),
                 ));
             }
             plugins.extend(crate::build::tsconfig_paths_plugin_with(

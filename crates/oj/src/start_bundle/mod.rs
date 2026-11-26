@@ -31,6 +31,7 @@ pub(crate) mod route_tree;
 pub(crate) mod server_fn_provider;
 pub(crate) mod shims;
 pub(crate) mod side_effects;
+pub(crate) mod vite_transform;
 
 use std::path::{Path, PathBuf};
 
