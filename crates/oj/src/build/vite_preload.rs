@@ -645,12 +645,15 @@ pub(crate) fn fill_preload_markers<'d>(
             None => Vec::new(),
         };
         if removed_pure {
+            // Vite's renderChunk writes it as is (`s.update(expStart, expEnd,
+            // "Promise.resolve({})")`, its map following); only its
+            // generateBundle fallback, for an import renderChunk did not
+            // rewrite, pads it to the import's length.
             let (start, end) = import.expr;
-            let pad = (end - start).saturating_sub("Promise.resolve({})".len());
             edits.push(Edit {
                 start,
                 end,
-                with: format!("Promise.resolve({{{}}})", " ".repeat(pad)),
+                with: "Promise.resolve({})".to_string(),
             });
         }
         let Some(marker) = *marker else { continue };
