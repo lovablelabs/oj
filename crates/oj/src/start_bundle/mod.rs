@@ -30,6 +30,7 @@ pub(crate) mod refresh;
 pub(crate) mod route_tree;
 pub(crate) mod server_fn_provider;
 pub(crate) mod shims;
+pub(crate) mod side_effects;
 
 use std::path::{Path, PathBuf};
 
@@ -417,13 +418,12 @@ pub(crate) fn write_server_fn_resolver(
         module_count += 1;
         // A build's resolver imports the provider module (`?tss-serverfn-split`,
         // the handlers alone), as Start's does; dev's imports the module.
+        // A build's resolver is served as Start's virtual module, so its
+        // imports are absolute, as Start's own resolver writes them.
         let spec = if dev {
             server_fn_module(cache, path)
         } else {
-            json(&format!(
-                "{}?tss-serverfn-split",
-                oj_compiler::glob::relative_import(cache, path)
-            ))
+            json(&format!("{}?tss-serverfn-split", path.display()))
         };
         modules.push_str(&format!(
             "let {var};\nconst {var}_load = async () => ({var} ??= await import({spec}));\n"

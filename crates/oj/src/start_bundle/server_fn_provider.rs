@@ -12,14 +12,27 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+use rolldown_common::ModuleType;
 use rolldown_plugin::{
-    HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext,
+    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput,
+    HookResolveIdReturn, Plugin, PluginContext, SharedLoadPluginContext,
 };
 
 pub(crate) const PROVIDER_QUERY: &str = "tss-serverfn-split";
 
+/// Start's import of its server-fn resolver, and the id its virtual module
+/// plugin gives it (`\0` + the specifier with `#` as `%23`): the chunk it
+/// forms takes its name from that id, `__23tanstack-start-server-fn-resolver`,
+/// as under Vite. oj's resolver is a file in the cache directory; served
+/// under the same id, it leaves no sourcemap source and names its chunk alike.
+pub(crate) const RESOLVER_SPECIFIER: &str = "#tanstack-start-server-fn-resolver";
+const RESOLVER_ID: &str = "\0%23tanstack-start-server-fn-resolver";
+
 #[derive(Debug)]
-pub(crate) struct ServerFnProvider;
+pub(crate) struct ServerFnProvider {
+    /// The resolver module oj wrote (`server-fn-resolver.build.mjs`).
+    pub resolver: PathBuf,
+}
 
 impl Plugin for ServerFnProvider {
     fn name(&self) -> Cow<'static, str> {
@@ -27,7 +40,7 @@ impl Plugin for ServerFnProvider {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::ResolveId
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::Load
     }
 
     async fn resolve_id(
@@ -35,10 +48,26 @@ impl Plugin for ServerFnProvider {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
+        if args.specifier == RESOLVER_SPECIFIER {
+            return Ok(Some(HookResolveIdOutput::from_id(RESOLVER_ID)));
+        }
         let Some(id) = provider_id(args.specifier, args.importer) else {
             return Ok(None);
         };
         Ok(Some(HookResolveIdOutput::from_id(id)))
+    }
+
+    async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
+        if args.id != RESOLVER_ID {
+            return Ok(None);
+        }
+        let code = std::fs::read_to_string(&self.resolver)
+            .map_err(|e| anyhow::anyhow!("server-fn resolver {}: {e}", self.resolver.display()))?;
+        Ok(Some(HookLoadOutput {
+            code: code.into(),
+            module_type: Some(ModuleType::Js),
+            ..Default::default()
+        }))
     }
 }
 

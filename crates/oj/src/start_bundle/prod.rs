@@ -290,6 +290,8 @@ fn client_plugins(
     plugins.push(Pluginable::new_shared(NodeBuiltinShims {
         production: true,
     }));
+    // Last: Vite's side-effects verdict on what rolldown's resolver answers.
+    plugins.push(Pluginable::new_shared(super::side_effects::ViteSideEffects));
     plugins
 }
 
@@ -743,7 +745,9 @@ pub(crate) async fn build(
             // The resolver's provider imports, ahead of the host's chain (see
             // the module).
             plugins.push(Pluginable::new_shared(
-                super::server_fn_provider::ServerFnProvider,
+                super::server_fn_provider::ServerFnProvider {
+                    resolver: start.cache.join(super::server_fn_resolver_file(false)),
+                },
             ));
             plugins.push(Pluginable::new_shared(super::alias::StartPluginAdapters {
                 stub: start.cache.join("empty-plugin-adapters.ts"),
@@ -816,6 +820,7 @@ pub(crate) async fn build(
                 )
                 .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
             ));
+            plugins.push(Pluginable::new_shared(super::side_effects::ViteSideEffects));
             plugins
         };
         let mut server_aliases = start.server_aliases();

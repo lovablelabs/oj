@@ -1870,6 +1870,16 @@ fn a_server_functions_handler_lives_in_its_provider_chunk_alone() {
         "the resolver imports the provider chunk: {}",
         resolver.0.display()
     );
+    assert!(
+        resolver
+            .0
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("__23tanstack-start-server-fn-resolver-"),
+        "the resolver chunk is named for Start's virtual module, as under Vite: {}",
+        resolver.0.display()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
