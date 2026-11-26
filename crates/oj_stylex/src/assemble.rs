@@ -7,7 +7,7 @@ use std::hash::{BuildHasher, BuildHasherDefault};
 use std::sync::{Arc, Weak};
 
 use crate::fxhash::{FxHashMap, FxHashSet};
-use crate::jsrt::{ASCII_LOCALE_KEYS, is_js_whitespace, locale_key, utf16_cmp};
+use crate::jsrt::is_js_whitespace;
 use crate::rules::StylexRule;
 use crate::shared::media_query::{WidthBound, WidthBoundKind, width_sort_bound};
 use crate::shared::priorities::get_priority;
@@ -709,225 +709,51 @@ fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedCons
     adjusted
 }
 
-// localeCompare levels of one string laid out [primary n][secondary n][tertiary n];
-// the declaration slice is its last `decl` chars, so that key is each level's suffix,
-// and the declared property name is the `name` (start, len) char range inside it.
-enum RuleKey {
-    Verified {
-        n: usize,
-        decl: usize,
-        name: Option<(usize, usize)>,
-        buf: Vec<u8>,
-    },
-    // `buf` covers the declaration slice alone.
-    DeclOnly {
-        decl: usize,
-        name: Option<(usize, usize)>,
-        buf: Vec<u8>,
-    },
-    Fallback,
-}
-
-const NO_SEGMENTS: Segments<'static> = [&[], &[], &[]];
-
-type Segments<'a> = [&'a [u8]; 3];
-
-fn cmp_segments(a: Segments<'_>, b: Segments<'_>) -> Ordering {
-    a[0].cmp(b[0])
-        .then_with(|| a[1].cmp(b[1]))
-        .then_with(|| a[2].cmp(b[2]))
+// Cache UTF-16 units of the class name (legacy) or const-substituted rule text
+// once. In the latter case, the declaration and property name are subranges of
+// the same buffer, so every string tie-break uses exactly one order.
+struct RuleKey {
+    text: Vec<u16>,
+    declaration_start: usize,
+    name: std::ops::Range<usize>,
 }
 
 impl RuleKey {
-    // `ltr` is the const-substituted rule text, the one upstream sorts on.
-    fn for_text(class_name: &str, ltr: &str, legacy: bool) -> RuleKey {
+    fn for_text(class_name: &str, ltr: &str, legacy: bool) -> Self {
         if legacy {
-            RuleKey::derive(class_name, 0, None)
-        } else {
-            RuleKey::derive(ltr, decl_slice(ltr).len(), Some(declared_name_range(ltr)))
-        }
-    }
-
-    // `name` is the declared property name's (start, len) byte range in `s`.
-    fn derive(s: &str, decl_bytes: usize, name: Option<(usize, usize)>) -> RuleKey {
-        let decl_start = s.len() - decl_bytes;
-        if s.is_ascii() {
-            let n = s.len();
-            let mut buf = vec![0u8; 3 * n];
-            for (i, &b) in s.as_bytes().iter().enumerate() {
-                match ASCII_LOCALE_KEYS[usize::from(b)] {
-                    Some((p, sec, ter)) => {
-                        buf[i] = p;
-                        buf[n + i] = sec;
-                        buf[2 * n + i] = ter;
-                    }
-                    None => return RuleKey::decl_only(s, decl_start, i),
-                }
-            }
-            return RuleKey::Verified {
-                n,
-                decl: decl_bytes,
-                name,
-                buf,
+            let text: Vec<u16> = class_name.encode_utf16().collect();
+            return Self {
+                declaration_start: text.len(),
+                text,
+                name: 0..0,
             };
         }
-        let n = s.chars().count();
-        let mut buf = vec![0u8; 3 * n];
-        for (i, (at, c)) in s.char_indices().enumerate() {
-            match locale_key(c) {
-                Ok((p, sec, ter)) => {
-                    buf[i] = p;
-                    buf[n + i] = sec;
-                    buf[2 * n + i] = ter;
-                }
-                Err(_) => return RuleKey::decl_only(s, decl_start, at),
-            }
-        }
-        RuleKey::Verified {
-            n,
-            decl: s[decl_start..].chars().count(),
-            name: name.map(|(start, len)| {
-                (
-                    s[..start].chars().count(),
-                    s[start..start + len].chars().count(),
-                )
-            }),
-            buf,
+        let (name_start, name_len) = declared_name_range(ltr);
+        let declaration_start = ltr.len() - decl_slice(ltr).len();
+        let name_start_units = ltr[..name_start].encode_utf16().count();
+        let name_len_units = ltr[name_start..name_start + name_len]
+            .encode_utf16()
+            .count();
+        Self {
+            text: ltr.encode_utf16().collect(),
+            declaration_start: ltr[..declaration_start].encode_utf16().count(),
+            name: name_start_units..name_start_units + name_len_units,
         }
     }
 
-    // An unverified char at byte `at`; only a fully verified declaration suffix
-    // after it keeps a key.
-    fn decl_only(s: &str, decl_start: usize, at: usize) -> RuleKey {
-        if at >= decl_start || decl_start == s.len() {
-            return RuleKey::Fallback;
-        }
-        // The slice holds the declared name only when it opens with the brace
-        // (a rule without one is its own name, unverified char included).
-        let slice = &s[decl_start..];
-        let name = slice.starts_with('{').then(|| declared_name_range(slice));
-        match RuleKey::derive(slice, slice.len(), name) {
-            RuleKey::Verified { n, name, buf, .. } => RuleKey::DeclOnly { decl: n, name, buf },
-            _ => RuleKey::Fallback,
-        }
-    }
-
-    fn verified(&self) -> bool {
-        matches!(self, RuleKey::Verified { .. })
-    }
-
-    fn decl_segments(&self) -> Option<Segments<'_>> {
-        match self {
-            RuleKey::Verified { n, decl, buf, .. } => Some([
-                &buf[n - decl..*n],
-                &buf[2 * n - decl..2 * n],
-                &buf[3 * n - decl..],
-            ]),
-            RuleKey::DeclOnly { decl, buf, .. } => {
-                Some([&buf[..*decl], &buf[*decl..2 * decl], &buf[2 * decl..]])
-            }
-            RuleKey::Fallback => None,
-        }
-    }
-
-    fn name_segments(&self) -> Option<Segments<'_>> {
-        let (n, (start, len), buf) = match self {
-            RuleKey::Verified {
-                n,
-                name: Some(name),
-                buf,
-                ..
-            } => (*n, *name, buf),
-            RuleKey::DeclOnly {
-                decl,
-                name: Some(name),
-                buf,
-            } => (*decl, *name, buf),
-            _ => return None,
-        };
-        Some([
-            &buf[start..start + len],
-            &buf[n + start..n + start + len],
-            &buf[2 * n + start..2 * n + start + len],
-        ])
-    }
-
-    fn full_segments(&self) -> Option<Segments<'_>> {
-        match self {
-            RuleKey::Verified { n, buf, .. } => Some([&buf[..*n], &buf[*n..2 * n], &buf[2 * n..]]),
-            _ => None,
-        }
-    }
-
-    // Equal primary sequences imply equal char counts, so the secondary and
-    // tertiary segment comparisons are always aligned. The order of the steps
-    // is upstream's: declared name, width bound, declaration, whole rule (the
-    // legacy class-name key has neither a name nor a declaration).
-    fn cmp_verified(
+    fn cmp(
         &self,
-        other: &RuleKey,
+        other: &Self,
         width: Option<&WidthSortKey>,
         other_width: Option<&WidthSortKey>,
     ) -> Ordering {
-        let (Some(decl), Some(other_decl), Some(full), Some(other_full)) = (
-            self.decl_segments(),
-            other.decl_segments(),
-            self.full_segments(),
-            other.full_segments(),
-        ) else {
-            unreachable!("cmp_verified on a fallback collation key")
-        };
-        cmp_segments(
-            self.name_segments().unwrap_or(NO_SEGMENTS),
-            other.name_segments().unwrap_or(NO_SEGMENTS),
-        )
-        .then_with(|| compare_width_sort_keys(width, other_width, default_locale_cmp))
-        .then_with(|| cmp_segments(decl, other_decl))
-        .then_with(|| cmp_segments(full, other_full))
-    }
-
-    // default_locale_cmp semantics per step: either side unverified → UTF-16 order.
-    fn cmp_with_fallback(
-        &self,
-        other: &RuleKey,
-        a: &Prepped<'_>,
-        b: &Prepped<'_>,
-        legacy: bool,
-    ) -> Ordering {
-        if legacy {
-            return match (self.full_segments(), other.full_segments()) {
-                (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-                _ => utf16_cmp(&a.rule.class_name, &b.rule.class_name),
-            };
-        }
-        // A name can be verified where its declaration is not, so a missing
-        // key defers to the comparator instead of assuming UTF-16 order.
-        let name = match (self.name_segments(), other.name_segments()) {
-            (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => default_locale_cmp(
-                declared_property_name(a.ltr()),
-                declared_property_name(b.ltr()),
-            ),
-        };
-        if name != Ordering::Equal {
-            return name;
-        }
-        let width =
-            compare_width_sort_keys(a.width.as_deref(), b.width.as_deref(), default_locale_cmp);
-        if width != Ordering::Equal {
-            return width;
-        }
-        let decl = match (self.decl_segments(), other.decl_segments()) {
-            (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(decl_slice(a.ltr()), decl_slice(b.ltr())),
-        };
-        if decl != Ordering::Equal {
-            return decl;
-        }
-        match (self.full_segments(), other.full_segments()) {
-            (Some(ka), Some(kb)) => cmp_segments(ka, kb),
-            _ => utf16_cmp(a.ltr(), b.ltr()),
-        }
+        self.text[self.name.clone()]
+            .cmp(&other.text[other.name.clone()])
+            .then_with(|| compare_width_sort_keys(width, other_width, default_locale_cmp))
+            .then_with(|| {
+                self.text[self.declaration_start..].cmp(&other.text[other.declaration_start..])
+            })
+            .then_with(|| self.text.cmp(&other.text))
     }
 }
 
@@ -940,8 +766,7 @@ fn rule_identity(r: &StylexRule) -> (&str, &str, Option<&str>, u64) {
     )
 }
 
-// Keys derived once per rule; the stable index sort and the per-pair fallback
-// keep comparator semantics identical.
+// Keys derived once per rule; the stable index sort matches the comparator path.
 fn keyed_order<'a>(
     non_const: Vec<&'a StylexRule>,
     legacy: bool,
@@ -964,18 +789,15 @@ fn keyed_order<'a>(
     drop(keys_timer);
 
     // Dropping duplicates is order-neutral only under a consistent total order
-    // (verified keys, finite priorities); otherwise sort the full input as before,
-    // mapping each rule to its already-prepared representative in `unique`.
-    let fallback = unique.len() != non_const.len()
-        && keys
-            .iter()
-            .zip(&items)
-            .any(|(key, item)| !key.verified() || !item.priority.is_finite());
+    // (finite priorities); otherwise sort the full input as before, mapping
+    // each rule to its already-prepared representative in `unique`.
+    let fallback =
+        unique.len() != non_const.len() && items.iter().any(|item| !item.priority.is_finite());
     let _sort_timer = timings::start(Stage::AssembleSort);
     let cmp_rep = |ia: u32, ib: u32| {
         let (a, b) = (&items[ia as usize], &items[ib as usize]);
         compare_priorities(a.priority, b.priority).unwrap_or_else(|| {
-            keys[ia as usize].cmp_with_fallback(&keys[ib as usize], a, b, legacy)
+            keys[ia as usize].cmp(&keys[ib as usize], a.width.as_deref(), b.width.as_deref())
         })
     };
     if fallback {
@@ -1345,8 +1167,7 @@ fn match_theme_pair(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     Some((j + 5, class_end))
 }
 
-// The one comparator shared with pseudo sorting (jsrt::default_locale_cmp);
-// re-exported so existing callers keep their import path.
+// Re-exported so callers can use the default order with a custom comparator.
 pub use crate::jsrt::default_locale_cmp;
 
 fn class_hash64(s: &str) -> u64 {
@@ -1391,17 +1212,17 @@ struct PreparedRule {
 }
 
 impl PreparedRule {
-    fn cmp_verified(&self, other: &PreparedRule) -> Ordering {
+    fn cmp_key(&self, other: &PreparedRule) -> Ordering {
         self.key
-            .cmp_verified(&other.key, self.width.as_deref(), other.width.as_deref())
+            .cmp(&other.key, self.width.as_deref(), other.width.as_deref())
     }
 }
 
 struct FilePrep {
     rules: PreparedRules,
     const_decls: Vec<(String, ConstVal)>,
-    // safe = every sort key verified and every priority finite: the exact
-    // preconditions under which sorted-by-key order equals the stable sort.
+    // Non-finite priorities retain the one-shot sort behavior rather than
+    // taking the incremental path.
     safe: bool,
     logical_float: bool,
 }
@@ -1520,7 +1341,7 @@ fn prepare_file(
             }
         }
         let prepared = &prep.rules[prep.rules.len() - 1];
-        prep.safe &= prepared.priority.is_finite() && prepared.key.verified();
+        prep.safe &= prepared.priority.is_finite();
         prep.logical_float |= text_has_logical_float(&prepared.ltr, prepared.rtl.as_deref());
     }
     prep
@@ -1532,7 +1353,7 @@ fn entry_cmp(files: &[FilePrep], a: (u32, u32), b: (u32, u32)) -> Ordering {
     let pa = &files[a.0 as usize].rules[a.1 as usize];
     let pb = &files[b.0 as usize].rules[b.1 as usize];
     compare_priorities(pa.priority, pb.priority)
-        .unwrap_or_else(|| pa.cmp_verified(pb))
+        .unwrap_or_else(|| pa.cmp_key(pb))
         .then_with(|| a.cmp(&b))
 }
 
@@ -1827,7 +1648,7 @@ fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) 
         let previous = &files[rank as usize].rules[seq as usize];
         // Conflicting class definitions retain upstream's first-slot/last-value semantics.
         if previous.priority != rule.priority
-            || previous.cmp_verified(rule) != Ordering::Equal
+            || previous.cmp_key(rule) != Ordering::Equal
             || previous.ltr != rule.ltr
             || previous.rtl != rule.rtl
         {

@@ -478,7 +478,25 @@ pub async fn start_dev(
             .await
         }
     };
-    let (bundle_res, built_res) = tokio::join!(bundle, built_task);
+    // The server listens and accepts once the dev server is built and its
+    // watcher covers the root, not once the client bundle is: Vite's
+    // `listen` awaits the plugins' `buildStart` and each environment's
+    // `listen`, which starts the dependency optimizer and does not wait for
+    // it, so its port accepts connections while the dependencies are still
+    // being bundled and the requests that need them wait
+    // (`depsOptimizer.scanProcessing`, an optimized file's `processing`).
+    // The client bundle is that work here, and on a large app it took most
+    // of a cold start: a host that waits for the port (a sandbox's readiness
+    // probe) gave up on it and answered its visitors 502. Every request
+    // waits for the router, the document's too (Vite answers that one at
+    // once; here it names the bundle's chunks).
+    let bundle = tokio::spawn(bundle);
+    let (built, watch_rx) = built_task.await??;
+    let (listener, port, interface) = built.bind_listener_unannounced().await?;
+    let (app_ready, held) = tokio::sync::watch::channel(None);
+    let serving = tokio::spawn(built.serve_owned(listener, held_until_ready(held)));
+    oj_server::boot_phase(&format!("listening (port {port})"));
+    let bundle_res = bundle.await?;
     // A build error in the app's code (client-error.json records it) keeps
     // the server up, as Vite's bundled dev does: pages render the overlay and
     // the next edit rebundles. Anything else (the bundler failing to load)
@@ -499,7 +517,6 @@ pub async fn start_dev(
     // run's leftovers go (see `start_chunks::keep_chunk_files`).
     let chunks_dir = cache.join("client-chunks");
     crate::start_chunks::keep_chunk_files(&pinned, &chunks_dir);
-    let (built, watch_rx) = built_res??;
     // The gate's hold decides when a change reaches the pages.
     let reloads = Arc::new(crate::start_reloads::Epochs::new(
         built
@@ -577,12 +594,12 @@ pub async fn start_dev(
         init_deadline: h.init_warn_at(),
         confirm: oj_server::plugins::PROBE_WINDOW,
     });
-    // Filled once the router exists (BEFORE the listener binds): the
+    // Filled once the router exists (BEFORE the server serves): the
     // runner-environment warm below drives one render by calling the service
     // directly, Vite's work-before-listen shape — its monkey-patched
     // httpServer.listen runs every environment.listen (dep-optimizer init +
     // fire-and-forget warmupFiles) before the socket binds, so warming never
-    // queues behind bind. oj's bind additionally waits on the client bundle,
+    // queues behind bind. oj's first answer additionally waits on the client bundle,
     // which is exactly the wait this overlap removes. Calling the service
     // also sidesteps the bound-interface question a TCP self-request had
     // (::1 vs 127.0.0.1 vs a specific host): there is no socket to dial.
@@ -924,8 +941,11 @@ pub async fn start_dev(
     let app = built.router.clone();
 
     let _ = app_tx.send(app.clone());
-    let (listener, port) = built.bind_listener().await?;
-    oj_server::boot_phase("listening");
+    oj_server::boot_phase("serving");
+    // The plugins' `httpServer` hears "listening" now that a request is
+    // answered: a plugin dials the server from that event (a warmup fetch, a
+    // tunnel's handshake).
+    oj_server::plugins::dev_listener_bound(port, &interface);
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);
     }
@@ -942,8 +962,36 @@ pub async fn start_dev(
         oj_server::tls::url_scheme(built.https.as_ref()),
         built.base.as_deref(),
     );
-    built.serve(listener, app).await?;
+    let _ = app_ready.send(Some(app));
+    serving.await??;
     Ok(())
+}
+
+/// A router that holds each request until `ready` has the app's router,
+/// which answers it then: Vite's server accepts as soon as it listens, and
+/// the requests that need work still under way (its dependency optimizer)
+/// wait for it. A request whose client went away is dropped with its
+/// connection, where one left in the socket's queue would have filled it
+/// (128 connections) under a prober that asks again every second.
+fn held_until_ready(ready: tokio::sync::watch::Receiver<Option<axum::Router>>) -> axum::Router {
+    use tower::util::ServiceExt;
+    axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let mut ready = ready.clone();
+        async move {
+            let app = match ready.wait_for(Option::is_some).await {
+                Ok(app) => app.clone(),
+                Err(_) => None,
+            };
+            match app {
+                Some(app) => match app.oneshot(req).await {
+                    Ok(response) => response,
+                    Err(never) => match never {},
+                },
+                // The boot ended without a router: the process is going.
+                None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
+    })
 }
 
 /// Queues the bundle left unbuilt (a Cloudflare boot) or stale (edits while
@@ -1017,7 +1065,7 @@ async fn ensure_runner_fresh(state: &StartState) {
 
 /// One real GET / through oj's own router service — the serving path a user
 /// request takes (middleware forward, worker-environment render) minus the
-/// socket, so the warm needs no bound listener and overlaps bind and the
+/// socket, so the warm needs no serving listener and overlaps the
 /// client bundle (Vite's work-before-listen ordering: its patched
 /// httpServer.listen runs environment.listen, and with it warmupFiles,
 /// before the socket binds). Executing app server code with no request in
@@ -1033,7 +1081,7 @@ async fn runner_render_warm(app: axum::Router) -> bool {
     let warm = async {
         let Ok(request) = axum::http::Request::builder()
             .uri("/")
-            // Pre-bind there is no port to put in the origin: an app
+            // The warm names no port in the origin: an app
             // middleware building absolute URLs from Host sees a portless
             // localhost during the warm (the render's output is discarded, so
             // only the module caches it fills matter).
@@ -2022,6 +2070,9 @@ async fn rebundle_worker(
         // The server graphs' changed files: the batch's, and the glob
         // importers its created and deleted files re-expand.
         let served: Vec<PathBuf> = paths.iter().chain(run.globbed.iter()).cloned().collect();
+        // What the editor hears if the pages take this in place, stamped as
+        // the run takes the files up (Vite stamps an event as it takes it up).
+        let editor_update = editor_update_frame(&root, &served);
         let regen_files = regen_output_files(&routes.tree, &cache);
         // The gate: a batch whose paths miss the last bundle's input closure
         // cannot change the client bundle (rollup watch semantics; Vite only
@@ -2339,8 +2390,8 @@ async fn rebundle_worker(
         // The pages took the change in place: the editor hears an update,
         // released with the pages' own frames.
         if (hot || restyled) && !reload {
-            if let Some(frame) = editor_update_frame(&root, &served) {
-                state.bundler.hot.tell_editor(frame);
+            if let Some(update) = editor_update {
+                state.bundler.hot.tell_editor(update);
             }
         }
         // The hold was taken at the watcher event. A flush that came while this
@@ -2405,15 +2456,13 @@ async fn rebundle_worker(
 /// client module graph, and is told what to do by that graph alone.
 const EDITOR_RELOAD_FRAME: &str = r#"{"type":"full-reload","path":"*","ojStart":true}"#;
 
-/// Vite's `update` payload for the files a run changed and the pages took in
-/// place, for the editor's socket: one entry per file, a stylesheet's a
-/// `css-update`, stamped now. The pages never read it (their patches came on
-/// Start's socket); the editor counts it, and reads the stamp as the time
-/// the server sent the update. `None` with no file to name.
-fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
+/// Vite's `update` frames for the files a run changed, for the editor's
+/// socket when the pages take them in place: one frame per file, a
+/// stylesheet's a `css-update`, each stamped now (`EditorUpdate`). The pages
+/// never read them (their patches came on Start's socket); the editor
+/// counts them, and reads the stamp as the time the server sent the update.
+/// `None` with no file to name.
+fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<crate::start_hot::EditorUpdate> {
     let mut files: Vec<&PathBuf> = changed.iter().filter(|p| watch_relevant(p)).collect();
     files.sort();
     files.dedup();
@@ -2432,13 +2481,10 @@ fn editor_update_frame(root: &Path, changed: &[PathBuf]) -> Option<String> {
                 "type": if style { "css-update" } else { "js-update" },
                 "path": path,
                 "acceptedPath": path,
-                "timestamp": timestamp,
             })
         })
         .collect();
-    (!updates.is_empty()).then(|| {
-        serde_json::json!({ "type": "update", "updates": updates, "ojStart": true }).to_string()
-    })
+    crate::start_hot::EditorUpdate::new(updates)
 }
 
 /// A gate flush taking effect: the parked reloads publish, and the parked
@@ -9689,14 +9735,26 @@ mod tests {
             ],
         )
         .expect("files to name");
-        let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
-        assert_eq!(frame["type"], "update");
-        assert_eq!(frame["ojStart"], true, "not for a page on oj's client");
-        let entries: Vec<(&str, &str)> = frame["updates"]
-            .as_array()
-            .unwrap()
+        let before = oj_server::hmr_now();
+        let frames: Vec<serde_json::Value> = frame
+            .frames()
             .iter()
-            .map(|u| (u["type"].as_str().unwrap(), u["path"].as_str().unwrap()))
+            .map(|f| serde_json::from_str(f).unwrap())
+            .collect();
+        // One frame per file, as Vite sends one per watcher event.
+        let entries: Vec<(&str, &str)> = frames
+            .iter()
+            .map(|f| {
+                assert_eq!(f["type"], "update");
+                assert_eq!(f["ojStart"], true, "not for a page on oj's client");
+                let updates = f["updates"].as_array().unwrap();
+                assert_eq!(updates.len(), 1, "{f}");
+                assert_eq!(updates[0]["acceptedPath"], updates[0]["path"]);
+                (
+                    updates[0]["type"].as_str().unwrap(),
+                    updates[0]["path"].as_str().unwrap(),
+                )
+            })
             .collect();
         assert_eq!(
             entries,
@@ -9706,13 +9764,16 @@ mod tests {
                 ("js-update", "/@fs/outside/lib.ts"),
             ]
         );
-        for update in frame["updates"].as_array().unwrap() {
-            assert_eq!(update["acceptedPath"], update["path"]);
-            assert!(update["timestamp"].as_u64().is_some_and(|t| t > 0));
-        }
-        assert_eq!(
-            editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]),
-            None,
+        // Each stamped on its own when the files were named, not when the
+        // frames were made.
+        let stamps: Vec<u64> = frames
+            .iter()
+            .map(|f| f["updates"][0]["timestamp"].as_u64().unwrap())
+            .collect();
+        assert!(stamps.windows(2).all(|w| w[0] < w[1]), "{stamps:?}");
+        assert!(stamps[0] > 0 && stamps[2] < before, "{stamps:?} {before}");
+        assert!(
+            editor_update_frame(root, &[PathBuf::from("/app/src/routeTree.gen.ts")]).is_none(),
             "nothing to name, no frame"
         );
     }

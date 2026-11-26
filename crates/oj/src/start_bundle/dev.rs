@@ -1216,17 +1216,34 @@ impl DevBundler {
                     super::import_protection::ImportProtectionPlugin(ip),
                 ));
             }
-            plugins.push(Pluginable::new_shared(
-                StartHostPlugin::new(
-                    Arc::clone(&h.host),
-                    h.ctx.clone(),
-                    &h.facts,
-                    start.command,
+            let host_plugin = StartHostPlugin::new(
+                Arc::clone(&h.host),
+                h.ctx.clone(),
+                &h.facts,
+                start.command,
+                &start.root,
+                Arc::clone(&emit),
+                start.jsx_config(),
+            );
+            let host_plugin = if start.command == super::Command::Serve {
+                let (included, excluded, _) = oj_config::optimize_deps_lists(&start.config);
+                let no_discovery = start
+                    .config
+                    .optimize_deps
+                    .as_ref()
+                    .and_then(|o| o.no_discovery)
+                    .unwrap_or(false);
+                host_plugin.leaving_deps_to_the_bundler(super::host::BundledDeps::of(
                     &start.root,
-                    Arc::clone(&emit),
-                    start.jsx_config(),
-                )
-                .compiling(
+                    &included,
+                    &excluded,
+                    no_discovery,
+                ))
+            } else {
+                host_plugin
+            };
+            plugins.push(Pluginable::new_shared(
+                host_plugin.compiling(
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
                         .with_route_tree(start.route_tree())
                         .with_alias(h.facts.alias.clone())

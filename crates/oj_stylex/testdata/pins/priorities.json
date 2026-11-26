@@ -1975,8 +1975,8 @@
     ":hover"
    ],
    "expected": [
-    ":hover",
-    ":Hover"
+    ":Hover",
+    ":hover"
    ]
   },
   {
@@ -2060,9 +2060,9 @@
     ":HOVER"
    ],
    "expected": [
-    ":hover",
+    ":HOVER",
     ":Hover",
-    ":HOVER"
+    ":hover"
    ]
   },
   {
@@ -2089,8 +2089,8 @@
     "[data-é]"
    ],
    "expected": [
-    "[data-é]",
-    "[data-z]"
+    "[data-z]",
+    "[data-é]"
    ]
   },
   {
@@ -2101,8 +2101,8 @@
    ],
    "expected": [
     ":active",
-    ":étoile",
-    ":Étoile"
+    ":Étoile",
+    ":étoile"
    ]
   },
   {
@@ -2112,8 +2112,8 @@
     "[data-àtat]"
    ],
    "expected": [
-    "[data-àtat]",
     "[data-etat]",
+    "[data-àtat]",
     "[data-état]"
    ]
   },
@@ -2128,12 +2128,12 @@
     "[Ål]"
    ],
    "expected": [
-    "[ål]",
-    "[Ål]",
     "[ano]",
     "[año]",
-    "[öl]",
     "[uber]",
+    "[Ål]",
+    "[ål]",
+    "[öl]",
     "[über]"
    ]
   },
@@ -2147,10 +2147,10 @@
     ":first-child"
    ],
    "expected": [
+    ":FOCUS-visible",
     ":active",
     ":checked",
     ":first-child",
-    ":FOCUS-visible",
     ":nth-child(2n)",
     "[data-open]"
    ]
@@ -2163,8 +2163,8 @@
    ],
    "expected": [
     "::after",
-    ":first-child",
-    ":FOCUS-visible"
+    ":FOCUS-visible",
+    ":first-child"
    ]
   },
   {
@@ -2272,9 +2272,9 @@
     ":nth-child(2n)"
    ],
    "expected": [
+    ":FOCUS-visible",
     ":active",
     ":focus",
-    ":FOCUS-visible",
     ":nth-child(2n)",
     "[aria-expanded=\"true\"]"
    ]
@@ -2308,8 +2308,8 @@
    ],
    "expected": [
     "default",
-    ":first-child",
     ":Focus",
+    ":first-child",
     "::placeholder"
    ]
   },
@@ -2324,9 +2324,9 @@
    ],
    "expected": [
     "::before",
+    ":FOCUS-visible",
     ":checked",
     ":first-child",
-    ":FOCUS-visible",
     ":nth-child(2n)",
     "[aria-expanded=\"true\"]"
    ]
@@ -2340,8 +2340,8 @@
     "::after"
    ],
    "expected": [
-    ":checked",
     ":Focus",
+    ":checked",
     ":focus-visible",
     ":nth-child(2n)",
     "::after"
@@ -2427,11 +2427,11 @@
     ":checked"
    ],
    "expected": [
+    ":FOCUS-visible",
+    ":Focus",
     ":active",
     ":checked",
     ":first-child",
-    ":Focus",
-    ":FOCUS-visible",
     ":nth-child(2n)"
    ]
   },
@@ -2490,9 +2490,9 @@
    ],
    "expected": [
     "default",
+    ":FOCUS-visible",
     ":active",
     ":focus-visible",
-    ":FOCUS-visible",
     ":where(.x-default-marker:hover *)",
     ":where(.x-default-marker:hover *)"
    ]
@@ -2525,9 +2525,9 @@
     "[aria-expanded=\"true\"]"
    ],
    "expected": [
-    ":focus",
-    ":Focus",
     ":FOCUS-visible",
+    ":Focus",
+    ":focus",
     "[aria-expanded=\"true\"]"
    ]
   },
@@ -2554,9 +2554,9 @@
    ],
    "expected": [
     "::after",
+    ":FOCUS-visible",
     ":active",
     ":checked",
-    ":FOCUS-visible",
     ":hover",
     "[data-open]"
    ]
@@ -2575,8 +2575,8 @@
     "::placeholder",
     ":active",
     "::placeholder",
-    ":checked",
-    ":FOCUS-visible"
+    ":FOCUS-visible",
+    ":checked"
    ]
   },
   {
@@ -2587,9 +2587,9 @@
     ":where(.x-default-marker:hover *)"
    ],
    "expected": [
+    ":FOCUS-visible",
     ":active",
     ":checked",
-    ":FOCUS-visible",
     ":where(.x-default-marker:hover *)"
    ]
   },
@@ -2669,9 +2669,9 @@
     "default",
     "default",
     "default",
-    ":checked",
-    ":Focus",
     ":FOCUS-visible",
+    ":Focus",
+    ":checked",
     ":where(.x-default-marker:hover *)"
    ]
   },
@@ -2684,9 +2684,9 @@
    ],
    "expected": [
     "::placeholder",
+    ":FOCUS-visible",
     ":first-child",
-    ":first-child",
-    ":FOCUS-visible"
+    ":first-child"
    ]
   },
   {

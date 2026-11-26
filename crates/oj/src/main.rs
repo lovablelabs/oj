@@ -394,15 +394,8 @@ fn detect_package_manager_agent(root_arg: Option<&PathBuf>) -> Option<String> {
                 cwd.clone()
             }
         }
-        // Mirror the CLI's default root: playground/ when it serves one.
-        None => {
-            let playground = cwd.join("playground");
-            if playground.join("index.html").is_file() {
-                playground
-            } else {
-                cwd.clone()
-            }
-        }
+        // Mirror the CLI's default root: the current directory.
+        None => cwd.clone(),
     };
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let started_below_home = home
@@ -489,14 +482,11 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
-/// `oj dev`'s root when none is named: playground/ when it serves one.
-fn default_dev_root() -> PathBuf {
-    let playground = PathBuf::from("playground");
-    if playground.join("index.html").is_file() {
-        playground
-    } else {
-        PathBuf::from(".")
-    }
+/// The root when none is named: the current directory, as in Vite
+/// (`config.root ? path.resolve(config.root) : process.cwd()`). A folder the
+/// app happens to hold, `playground/` say, is never picked in its place.
+fn default_root() -> PathBuf {
+    PathBuf::from(".")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -644,7 +634,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             lazy,
             typecheck,
         } => {
-            let root = root.unwrap_or_else(default_dev_root);
+            let root = root.unwrap_or_else(default_root);
             let runtime_env = oj_server::RuntimeEnvConfig::from_knobs(&oj_env::get().knobs)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(entry) = ssr {
@@ -750,7 +740,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             json,
         } => {
             // The root `oj dev` serves when none is named.
-            let root = root.unwrap_or_else(default_dev_root);
+            let root = root.unwrap_or_else(default_root);
             // Relative to where the command runs, as any CLI path argument.
             let changed: Vec<PathBuf> = changed
                 .iter()
@@ -809,14 +799,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             watch,
             app: _,
         } => {
-            let root = root.unwrap_or_else(|| {
-                let playground = PathBuf::from("playground");
-                if playground.join("index.html").is_file() {
-                    playground
-                } else {
-                    PathBuf::from(".")
-                }
-            });
+            let root = root.unwrap_or_else(default_root);
             let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
@@ -858,14 +841,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             base,
         } => {
             let root = root
-                .unwrap_or_else(|| {
-                    let playground = PathBuf::from("playground");
-                    if playground.join("index.html").is_file() {
-                        playground
-                    } else {
-                        PathBuf::from(".")
-                    }
-                })
+                .unwrap_or_else(default_root)
                 .canonicalize()
                 .with_context(|| "app root not found")?;
             let config = oj_config::load(&root).map_err(|e| anyhow::anyhow!("{e}"))?;

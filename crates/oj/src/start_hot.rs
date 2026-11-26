@@ -72,6 +72,59 @@ pub(crate) type Holder = Arc<dyn Fn(&[String]) + Send + Sync>;
 /// Takes a frame for the editor's socket (see [`HotUpdates::tell_editor`]).
 pub(crate) type Editor = Arc<dyn Fn(String) + Send + Sync>;
 
+/// Vite's `update` frames for the editor's socket: one per file the pages
+/// took in place, as Vite sends one for each watcher event. The editor
+/// counts them, reads each stamp as the time the server sent the update and
+/// measures its receipt against it.
+///
+/// The stamps are Vite's: its `handleHMRUpdate` takes one
+/// `monotonicDateNow()` as it takes an event up, and the frame it sends once
+/// the update is worked out carries that value (server/hmr.ts). So each file
+/// is stamped by the HMR clock (`oj_server::hmr_now`, strictly increasing as
+/// `monotonicDateNow` is) when the run takes it up ([`EditorUpdate::new`]),
+/// and the frames carry those stamps when they go out at once. Ones the
+/// gate holds are stamped again at its flush ([`EditorUpdate::taken_now`]):
+/// under Vite the editor's gate plugin buffers the watcher events and
+/// replays them at the flush, so Vite takes them up, and stamps them, then.
+/// Keeping the first stamp, a held update read as the hold: seconds of
+/// latency for an update that travelled in milliseconds.
+pub(crate) struct EditorUpdate(Vec<(serde_json::Value, u64)>);
+
+impl EditorUpdate {
+    /// `updates`: Vite's `js-update`/`css-update` entries, one per file,
+    /// unstamped. Each is stamped now, in order. `None` with none.
+    pub(crate) fn new(updates: Vec<serde_json::Value>) -> Option<EditorUpdate> {
+        (!updates.is_empty()).then(|| EditorUpdate(updates.into_iter().map(stamp_now).collect()))
+    }
+
+    /// The same files, taken up now: each stamped again, in order.
+    fn taken_now(self) -> EditorUpdate {
+        EditorUpdate(
+            self.0
+                .into_iter()
+                .map(|(update, _)| stamp_now(update))
+                .collect(),
+        )
+    }
+
+    /// One frame per file, with its stamp: Vite's `update` payload, marked
+    /// as Start's (a page on oj's own client reads this channel too).
+    pub(crate) fn frames(self) -> Vec<String> {
+        self.0
+            .into_iter()
+            .map(|(mut update, timestamp)| {
+                update["timestamp"] = serde_json::Value::from(timestamp);
+                serde_json::json!({ "type": "update", "updates": [update], "ojStart": true })
+                    .to_string()
+            })
+            .collect()
+    }
+}
+
+fn stamp_now(update: serde_json::Value) -> (serde_json::Value, u64) {
+    (update, oj_server::hmr_now())
+}
+
 pub(crate) struct HotUpdates {
     tx: broadcast::Sender<Arc<Frame>>,
     patches: Mutex<VecDeque<(String, axum::body::Bytes)>>,
@@ -109,7 +162,7 @@ pub(crate) struct HotUpdates {
     /// The editor's socket, and the frames for it the gate holds with the
     /// pages' (see [`HotUpdates::tell_editor`]).
     editor: std::sync::OnceLock<Editor>,
-    parked_editor: Mutex<Vec<String>>,
+    parked_editor: Mutex<Vec<EditorUpdate>>,
     /// Files the engine was asked to send again (see [`HotUpdates::resend`]).
     resent: Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
@@ -245,11 +298,12 @@ impl HotUpdates {
     }
 
     /// An update the pages take in place, told to the editor as Vite's
-    /// client channel tells it (`frame`: an `update` payload). It goes when
+    /// client channel tells it (`update`: its `update` payload). It goes when
     /// the pages' own frames do: at once, or held by the gate until its
     /// flush, and dropped with them when that flush reloads the pages
-    /// instead (the reload is what the editor hears then).
-    pub(crate) fn tell_editor(&self, frame: String) {
+    /// instead (the reload is what the editor hears then). One frame per
+    /// file, stamped as Vite stamps its own ([`EditorUpdate`]).
+    pub(crate) fn tell_editor(&self, update: EditorUpdate) {
         let Some(editor) = self.editor.get() else {
             return;
         };
@@ -262,9 +316,9 @@ impl HotUpdates {
             self.parked_editor
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(frame);
+                .push(update);
         } else {
-            editor(frame);
+            update.frames().into_iter().for_each(|frame| editor(frame));
         }
     }
 
@@ -280,14 +334,19 @@ impl HotUpdates {
             self.sent(&frame);
             let _ = self.tx.send(frame);
         }
-        let held: Vec<String> = self
+        let held: Vec<EditorUpdate> = self
             .parked_editor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect();
         if let Some(editor) = self.editor.get() {
-            held.into_iter().for_each(|frame| editor(frame));
+            // The flush is when Vite would take these up: all stamped now,
+            // before any goes out, as its replayed events are.
+            let held: Vec<EditorUpdate> = held.into_iter().map(EditorUpdate::taken_now).collect();
+            held.into_iter()
+                .flat_map(EditorUpdate::frames)
+                .for_each(|frame| editor(frame));
         }
     }
 
@@ -933,32 +992,65 @@ mod tests {
 
     // The editor hears of an update when the pages do: at once with no
     // hold, at the flush with one, and not at all when that flush reloads
-    // the pages instead (the reload is what it hears then).
+    // the pages instead (the reload is what it hears then). One frame per
+    // file, stamped when taken up: a held one at the flush, not at the hold.
     #[test]
     fn the_editor_hears_an_update_when_the_gate_lets_the_pages_have_it() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        fn update(path: &str) -> EditorUpdate {
+            EditorUpdate::new(vec![serde_json::json!({ "path": path })]).unwrap()
+        }
         let hot = HotUpdates::new("");
         // No editor socket: nothing to tell, nothing kept.
-        hot.tell_editor("lost".into());
-        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        hot.tell_editor(update("lost"));
+        let frames = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         hot.set_editor({
-            let heard = Arc::clone(&heard);
-            Arc::new(move |frame| heard.lock().unwrap().push(frame))
+            let frames = Arc::clone(&frames);
+            Arc::new(move |frame| {
+                frames
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(&frame).unwrap())
+            })
         });
         let held = Arc::new(AtomicBool::new(false));
         hot.set_gate({
             let held = Arc::clone(&held);
             Arc::new(move || held.load(Ordering::SeqCst))
         });
-        let heard = || heard.lock().unwrap().clone();
+        let heard = || -> Vec<String> {
+            frames
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|f| f["updates"][0]["path"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let stamp = |i: usize| {
+            frames.lock().unwrap()[i]["updates"][0]["timestamp"]
+                .as_u64()
+                .unwrap()
+        };
 
-        hot.tell_editor("first".into());
+        let taken = oj_server::hmr_now();
+        let first = update("first");
+        let sent = oj_server::hmr_now();
+        hot.tell_editor(first);
         assert_eq!(heard(), ["first"], "no hold: at once");
+        assert!(
+            taken < stamp(0) && stamp(0) < sent,
+            "stamped when taken up, not when sent: {taken} {} {sent}",
+            stamp(0)
+        );
+        assert_eq!(frames.lock().unwrap()[0]["ojStart"], true);
 
         held.store(true, Ordering::SeqCst);
-        hot.tell_editor("second".into());
-        hot.tell_editor("third".into());
+        hot.tell_editor(update("second"));
+        hot.tell_editor(update("third"));
         assert_eq!(heard(), ["first"], "held with the pages' frames");
+        // The HMR clock never repeats: a stamp above this reading was taken
+        // after it, whatever the wall clock does.
+        let parked = oj_server::hmr_now();
         held.store(false, Ordering::SeqCst);
         hot.release();
         assert_eq!(
@@ -966,11 +1058,41 @@ mod tests {
             ["first", "second", "third"],
             "in order, at the flush"
         );
+        assert!(
+            stamp(1) > parked,
+            "stamped again at the flush, not as parked: {} vs {parked}",
+            stamp(1)
+        );
+        assert!(
+            stamp(2) > stamp(1),
+            "each stamped on its own, by a clock that never repeats: {} {}",
+            stamp(1),
+            stamp(2)
+        );
+
+        // An update of two files: a frame each, each with its own stamp.
+        hot.tell_editor(
+            EditorUpdate::new(vec![
+                serde_json::json!({ "path": "a" }),
+                serde_json::json!({ "path": "b" }),
+            ])
+            .unwrap(),
+        );
+        assert_eq!(heard(), ["first", "second", "third", "a", "b"]);
+        assert!(stamp(4) > stamp(3), "{} {}", stamp(3), stamp(4));
+        assert_eq!(
+            frames.lock().unwrap()[3]["updates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        frames.lock().unwrap().truncate(3);
         hot.release();
         assert_eq!(heard().len(), 3, "once");
 
         held.store(true, Ordering::SeqCst);
-        hot.tell_editor("moot".into());
+        hot.tell_editor(update("moot"));
         held.store(false, Ordering::SeqCst);
         hot.discard();
         hot.release();
