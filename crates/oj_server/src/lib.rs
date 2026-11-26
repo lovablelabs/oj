@@ -882,6 +882,26 @@ impl BuiltApp {
     pub async fn bind_listener(&self) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
         self.watcher_ready().await;
         let (listener, port) = bind_dev_listener(self.host, self.port, self.strict_port).await?;
+        self.listener_bound(port);
+        Ok((listener, port))
+    }
+
+    /// [`BuiltDev::bind_listener`] without telling the plugin hosts, whose
+    /// `httpServer` emits "listening" when told: for a server that binds
+    /// before it can answer and tells them itself, with the port and the
+    /// interface this returns ([`plugins::dev_listener_bound`]), once it
+    /// does.
+    pub async fn bind_listener_unannounced(
+        &self,
+    ) -> anyhow::Result<(tokio::net::TcpListener, u16, String)> {
+        self.watcher_ready().await;
+        let (listener, port, interface) =
+            bind_dev_socket(self.host, self.port, self.strict_port).await?;
+        self.listener_bound(port);
+        Ok((listener, port, interface))
+    }
+
+    fn listener_bound(&self, port: u16) {
         if let Some(typecheck) = &self.typecheck {
             typecheck.warm_after_first_serve();
         }
@@ -892,7 +912,21 @@ impl BuiltApp {
             self.https.is_some(),
             self.typecheck.is_some(),
         );
-        Ok((listener, port))
+    }
+
+    /// [`BuiltDev::serve`] as a future that owns what it needs, to run
+    /// beside the rest of a boot.
+    pub fn serve_owned(
+        &self,
+        listener: tokio::net::TcpListener,
+        app: axum::Router,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send + 'static {
+        let app = match &self.typecheck {
+            Some(typecheck) => typecheck.count_requests(app),
+            None => app,
+        };
+        let https = self.https.clone();
+        async move { tls::serve_router(listener, app, https.as_ref()).await }
     }
 
     /// Serves `app` (this app's router, possibly wrapped) on the listener
@@ -925,6 +959,20 @@ pub async fn bind_dev_listener(
     preferred: u16,
     strict: bool,
 ) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+    let (listener, port, interface) = bind_dev_socket(host, preferred, strict).await?;
+    // Plugin hosts' stub httpServer emits "listening" on this (Vite parity:
+    // the socket really accepts, address() reports the real bind).
+    plugins::dev_listener_bound(port, &interface);
+    Ok((listener, port))
+}
+
+/// The dev socket: `preferred`, or the next free port after it unless
+/// `strict`. With the port and the interface it is bound to.
+async fn bind_dev_socket(
+    host: std::net::IpAddr,
+    preferred: u16,
+    strict: bool,
+) -> anyhow::Result<(tokio::net::TcpListener, u16, String)> {
     for port in preferred..=u16::MAX {
         let addr = SocketAddr::from((host, port));
         match tokio::net::TcpListener::bind(addr).await {
@@ -935,10 +983,7 @@ pub async fn bind_dev_listener(
                     .as_ref()
                     .map(|a| a.ip().to_string())
                     .unwrap_or_else(|_| host.to_string());
-                // Plugin hosts' stub httpServer emits "listening" on this (Vite parity:
-                // the socket really accepts, address() reports the real bind).
-                plugins::dev_listener_bound(bound, &interface);
-                return Ok((listener, bound));
+                return Ok((listener, bound, interface));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 if strict {
