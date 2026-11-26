@@ -36,6 +36,8 @@ pub(crate) struct ViteSideEffects {
     /// The app's root: an optional peer dependency is a package's, never the
     /// app's own import (Vite's `basedir !== root`).
     pub root: PathBuf,
+    /// A production build: the throwing module asks "Is it installed?".
+    pub is_production: bool,
 }
 
 impl Plugin for ViteSideEffects {
@@ -58,11 +60,19 @@ impl Plugin for ViteSideEffects {
         let Some((peer, parent)) = rest.rsplit_once(':') else {
             return Ok(None);
         };
-        // Vite's module for it, word for word.
+        // The module rolldown's native vite:resolve (a build's) loads for it,
+        // word for word: an ES module, so the importing chunk wraps it as
+        // Vite's does (`__esm`, a `default` export), with the question only
+        // a production build asks.
         let code = format!(
-            "module.exports = {{}};const peerDep = {peer};const parentDep = {parent};throw new Error(`Could not resolve \"${{peerDep}}\" imported by \"${{parentDep}}\". Is it installed?`)",
+            "export default {{}};\nconst peerDep = {peer};\nconst parentDep = {parent};\nthrow new Error(`Could not resolve \"${{peerDep}}\" imported by \"${{parentDep}}\".{question}`)",
             peer = serde_json::Value::String(peer.to_string()),
             parent = serde_json::Value::String(parent.to_string()),
+            question = if self.is_production {
+                " Is it installed?"
+            } else {
+                ""
+            },
         );
         Ok(Some(HookLoadOutput {
             code: code.into(),

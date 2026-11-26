@@ -305,6 +305,7 @@ fn client_plugins(
     plugins.push(Pluginable::new_shared(
         super::side_effects::ViteSideEffects {
             root: start.root.clone(),
+            is_production: start.is_production(),
         },
     ));
     plugins
@@ -849,6 +850,7 @@ pub(crate) async fn build(
             plugins.push(Pluginable::new_shared(
                 super::side_effects::ViteSideEffects {
                     root: start.root.clone(),
+                    is_production: start.is_production(),
                 },
             ));
             plugins
@@ -1191,7 +1193,10 @@ async fn bundle_worker(
             format: Some(format),
             minify: Some(options.minify),
             comments: Some(options.comments),
-            top_level_var: Some(true),
+            // Vite's bundleWorkerEntry sets no `topLevelVar` (the page bundles
+            // have it): a worker's top-level `const` reaches the host's
+            // esbuild as written, which inlines a literal constant.
+            top_level_var: None,
             experimental: Some(crate::build::vite_mode_experimental()),
             sourcemap: sourcemap(options.sourcemap),
             entry_filenames: Some(name(&worker.entry_file_names, "assets/[name]-[hash].js").into()),
