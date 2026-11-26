@@ -1157,6 +1157,7 @@ async fn bundle_worker(
         host,
         CodeTarget::Worker {
             entry: file.to_path_buf(),
+            classic: !worker.is_module(),
         },
         chain,
         styles,

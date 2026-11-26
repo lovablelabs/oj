@@ -1013,3 +1013,70 @@ fn template_glob(raw: &str) -> String {
 #[cfg(test)]
 #[path = "meta_glob_tests.rs"]
 mod tests;
+
+/// Vite's worker plugin for a classic (`iife`) worker bundle (plugins/worker.ts,
+/// its "post" transform over every module with `import.meta` in it): an
+/// `import.meta.url` reads as `self.location.href`; any other `import.meta`
+/// is `_vite_importMeta`, a `{ url: self.location.href }` object declared
+/// once at the top of the module. The declaration shares the module's first
+/// line (Vite prepends a line of its own), so the line map holds; the
+/// bundle prints the same. `None` when the module has no `import.meta`.
+pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
+    if !code.contains("import.meta") {
+        return None;
+    }
+    static META: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = META.get_or_init(|| regex::Regex::new(r"\bimport\s*\.\s*meta\b").unwrap());
+    let clean = strip_literals(code);
+    let mut out = String::with_capacity(code.len() + 64);
+    let mut last = 0;
+    let mut injected = false;
+    for m in re.find_iter(&clean) {
+        out.push_str(&code[last..m.start()]);
+        if clean[m.end()..].starts_with(".url") {
+            out.push_str("self.location.href");
+            last = m.end() + ".url".len();
+        } else {
+            out.push_str("_vite_importMeta");
+            injected = true;
+            last = m.end();
+        }
+    }
+    if last == 0 {
+        return None;
+    }
+    out.push_str(&code[last..]);
+    if injected {
+        out.insert_str(0, "const _vite_importMeta = { url: self.location.href };");
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod classic_worker_tests {
+    use super::rewrite_classic_worker_import_meta;
+
+    #[test]
+    fn import_meta_in_a_classic_worker_is_vites() {
+        let code = "const u = import.meta.url;\nif (import.meta.url === undefined) import.meta.url = \"https://localhost\";\nconst m = import.meta;\nconsole.log(\"import.meta.url stays in a string\");\n";
+        let out = rewrite_classic_worker_import_meta(code).unwrap();
+        assert!(out.starts_with("const _vite_importMeta = { url: self.location.href };const u = self.location.href;\n"), "{out}");
+        assert!(
+            out.contains(
+                "self.location.href === undefined) self.location.href = \"https://localhost\""
+            ),
+            "{out}"
+        );
+        assert!(out.contains("const m = _vite_importMeta;"), "{out}");
+        assert!(
+            out.contains("\"import.meta.url stays in a string\""),
+            "{out}"
+        );
+        assert_eq!(out.matches('\n').count(), code.matches('\n').count());
+        assert!(rewrite_classic_worker_import_meta("const x = 1;\n").is_none());
+        let reads =
+            rewrite_classic_worker_import_meta("new URL(\"/a.wasm\", '' + import.meta.url)\n")
+                .unwrap();
+        assert_eq!(reads, "new URL(\"/a.wasm\", '' + self.location.href)\n");
+    }
+}

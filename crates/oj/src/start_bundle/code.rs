@@ -40,7 +40,12 @@ pub(crate) enum CodeTarget {
     Server,
     /// A worker bundle whose entry is `entry`: URL and glob rewrites
     /// everywhere, a worker starting itself getting `self.location.href`.
-    Worker { entry: PathBuf },
+    Worker {
+        entry: PathBuf,
+        /// A classic (`iife`) worker: its `import.meta` is Vite's worker
+        /// plugin's rewrite (meta_glob::rewrite_classic_worker_import_meta).
+        classic: bool,
+    },
 }
 
 pub(crate) struct StartCodePlugin {
@@ -239,7 +244,7 @@ impl Plugin for StartCodePlugin {
                     None => MetaUrlTarget::Unresolved,
                     Some(spec) => match self.resolve_url_file(&ctx, spec, id).await? {
                         Some(abs) => match &self.target {
-                            CodeTarget::Worker { entry } if *entry == abs => {
+                            CodeTarget::Worker { entry, .. } if *entry == abs => {
                                 MetaUrlTarget::SelfWorker
                             }
                             _ => match &self.urls {
@@ -249,9 +254,7 @@ impl Plugin for StartCodePlugin {
                                 // stylesheet keeps its import (compiled
                                 // through the plugins as a `?url` sheet).
                                 Some((emitter, chain))
-                                    if !super::assets::is_style_path(
-                                        &abs.to_string_lossy(),
-                                    ) =>
+                                    if !super::assets::is_style_path(&abs.to_string_lossy()) =>
                                 {
                                     let url = match &site.kind {
                                         meta_glob::MetaUrlKind::Worker { .. } => {
@@ -295,6 +298,14 @@ impl Plugin for StartCodePlugin {
             }
             let out = meta_glob::apply_import_meta_urls(&code, &sites, &targets);
             if out != code {
+                urls_changed = true;
+                code = Cow::Owned(out);
+            }
+        }
+        // A classic worker's `import.meta`, as Vite's worker plugin rewrites
+        // it after the URL plugins ran (its "post" transform).
+        if matches!(self.target, CodeTarget::Worker { classic: true, .. }) {
+            if let Some(out) = meta_glob::rewrite_classic_worker_import_meta(&code) {
                 urls_changed = true;
                 code = Cow::Owned(out);
             }
