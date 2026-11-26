@@ -5828,6 +5828,11 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
     // Rollup's missing map: a plugin that returns code without `map` breaks
     // the chain (`map: null` does not). Only a bundle reads it.
     let mapBroken = null;
+    // Whether the vite:oxc strip lowered the module here: vite:oxc returns
+    // its output as `moduleType: "js"`, so rolldown's own TypeScript
+    // transform leaves the lowered code alone (run again on the `.tsx` id,
+    // it would drop an import the JSX no longer refers to, `React`'s).
+    let lowered = false;
     const transformOptions = { ssr: c.environment.name === "ssr" };
     let stripped = !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(c, id);
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
@@ -5852,6 +5857,7 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
             throw decoratePluginError(e, { name: "vite:oxc" }, id);
           }
           current = r.code;
+          lowered = true;
           if (r.map != null) {
             maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
             mapPlugins.push("vite:oxc");
@@ -5897,6 +5903,7 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
         maps,
         mapPlugins,
         mapBroken,
+        moduleType: lowered ? "js" : null,
         emittedChunks: chunkBucket,
       });
     if (phase && phase !== "post" && phase !== "after-compile") return result();

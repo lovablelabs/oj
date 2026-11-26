@@ -746,6 +746,7 @@ impl Plugin for StartHostPlugin {
                     crate::build::ChainHook::Transform,
                     warnings.as_deref(),
                 ),
+                module_type: crate::build::host_module_type(t.module_type.as_deref()),
                 code: Some(t.code),
                 ..Default::default()
             }))

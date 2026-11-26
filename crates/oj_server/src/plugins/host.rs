@@ -3670,6 +3670,10 @@ pub struct HostTransform {
     /// chain as in Rollup (`map: null` does not).
     pub map_broken: Option<String>,
     pub chunks: Vec<ChunkEmit>,
+    /// The module type the chain left the code as, when a plugin said
+    /// (vite:oxc's strip returns `"js"`): rolldown then runs no TypeScript
+    /// transform of its own over the lowered code.
+    pub module_type: Option<String>,
 }
 
 impl HostTransform {
@@ -3692,6 +3696,9 @@ impl HostTransform {
             self.map_broken = next.map_broken;
         }
         self.chunks.extend(next.chunks);
+        if next.module_type.is_some() {
+            self.module_type = next.module_type;
+        }
     }
 
     /// A reply that is not the host's JSON is the code itself; none leaves
@@ -3733,6 +3740,10 @@ impl HostTransform {
                 .and_then(|n| n.as_str())
                 .map(str::to_string),
             chunks: emitted_chunks(&v),
+            module_type: v
+                .get("moduleType")
+                .and_then(|n| n.as_str())
+                .map(str::to_string),
         }
     }
 }

@@ -132,7 +132,7 @@ impl Plugin for StartManifestSheets {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::ResolveId
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::Load
     }
 
     async fn resolve_id(
@@ -140,18 +140,36 @@ impl Plugin for StartManifestSheets {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
-        if args.specifier != START_MANIFEST
-            || args
-                .importer
-                .is_some_and(|from| Path::new(from) == self.wrapper)
-        {
+        if args.specifier != START_MANIFEST || args.importer == Some(WRAPPER_ID) {
             return Ok(None);
         }
-        Ok(Some(HookResolveIdOutput::from_id(
-            self.wrapper.to_string_lossy().into_owned(),
-        )))
+        Ok(Some(HookResolveIdOutput::from_id(WRAPPER_ID)))
+    }
+
+    async fn load(
+        &self,
+        _ctx: rolldown_plugin::SharedLoadPluginContext,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> rolldown_plugin::HookLoadReturn {
+        if args.id != WRAPPER_ID {
+            return Ok(None);
+        }
+        let code = std::fs::read_to_string(&self.wrapper)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", self.wrapper.display()))?;
+        Ok(Some(rolldown_plugin::HookLoadOutput {
+            code: code.into(),
+            module_type: Some(rolldown_common::ModuleType::Js),
+            ..Default::default()
+        }))
     }
 }
+
+/// The wrapper's module id: virtual, as Start's own manifest module is
+/// (`\0tanstack-start-manifest:v`), so the chunk holding both gets no
+/// sourcemap, as under `vite build` (rolldown maps no virtual module), and
+/// keeps the name Vite's chunk has (rolldown sanitizes either id to
+/// `_tanstack-start-manifest_v`).
+const WRAPPER_ID: &str = "\0tanstack-start-manifest_v";
 
 /// tsconfig `paths` as the app's Vite applies them, where vite:resolve
 /// sits, ahead of rolldown's own resolver, which applies them natively

@@ -2959,6 +2959,23 @@ pub(crate) enum ChainHook {
     RenderChunk,
 }
 
+/// The module type a plugin's transform left the code as, for rolldown:
+/// vite:oxc's strip returns its lowered code as `"js"`, so rolldown's own
+/// TypeScript transform does not run over it again (on a `.tsx` id it would
+/// drop an import the lowered JSX no longer refers to, `React`'s, which
+/// `vite build` keeps for its side effects).
+pub(crate) fn host_module_type(name: Option<&str>) -> Option<rolldown_common::ModuleType> {
+    match name? {
+        "js" => Some(rolldown_common::ModuleType::Js),
+        "jsx" => Some(rolldown_common::ModuleType::Jsx),
+        "ts" => Some(rolldown_common::ModuleType::Ts),
+        "tsx" => Some(rolldown_common::ModuleType::Tsx),
+        "json" => Some(rolldown_common::ModuleType::Json),
+        "css" => Some(rolldown_common::ModuleType::Css),
+        _ => None,
+    }
+}
+
 /// The one map rolldown takes for the host's plugin chain: the plugins' maps
 /// collapsed in order. A plugin that changed the code without a map breaks
 /// the chain as rolldown does for `hook`, and so does a map that cannot be
@@ -3294,6 +3311,7 @@ impl Plugin for OjUserPlugin {
                         Ok(Some(HookTransformOutput {
                             code: Some(t.code),
                             map,
+                            module_type: host_module_type(t.module_type.as_deref()),
                             ..Default::default()
                         }))
                     } else {
