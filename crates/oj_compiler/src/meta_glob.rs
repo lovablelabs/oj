@@ -84,6 +84,20 @@ pub fn transform_glob(
         };
         from = args_end + 1;
         let call_end = args_end + 1;
+        // Vite's objectKeysRE / objectValuesRE on the code before the call:
+        // `Object.keys(import.meta.glob(…))` gets the keys alone (`"k": 0`,
+        // nothing imported), `Object.values(…)` the values in an array.
+        let before = clean[..head].trim_end();
+        let ends_with_call = |callee: &str| {
+            before.strip_suffix(callee).is_some_and(|rest| {
+                !rest
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        };
+        let only_keys = ends_with_call("Object.keys(");
+        let only_values = !only_keys && ends_with_call("Object.values(");
 
         let patterns: Vec<String> = match args.first() {
             Some(Value::Array(items)) => items
@@ -118,8 +132,12 @@ pub fn transform_glob(
         let files: Vec<PathBuf> = call.files().into_iter().filter(|f| f != file).collect();
         scopes.push(call);
 
+        // The replacement is Vite's transformGlobImport's, text for text
+        // (rolldown sizes a module by this text when it splits chunks):
+        // `/* #__PURE__ */ Object.assign({"k": () => import("s"),…})`, a
+        // named import through `.then(m => m["name"])`, an eager entry a
+        // `__vite_glob_<call>_<file>` binding its static import declares.
         let import_name = opts.import.as_deref().filter(|i| *i != "*");
-        let want_default = import_name == Some("default");
         let mut entries: Vec<String> = Vec::with_capacity(files.len());
         for (idx, f) in files.iter().enumerate() {
             let spec = format!("{}{}", relative_import(file_dir, f), opts.query);
@@ -130,34 +148,45 @@ pub fn transform_glob(
                 opts.base.as_deref(),
                 is_relative,
             ));
-            let spec_json = json(&spec);
-            if opts.eager {
-                let id = format!("__oj_glob{calls}_{idx}");
-                prelude.push(match import_name {
-                    _ if want_default => format!("import {id} from {spec_json};"),
-                    Some(name) => format!("import {{ {name} as {id} }} from {spec_json};"),
-                    None => format!("import * as {id} from {spec_json};"),
-                });
-                entries.push(format!("{key}: {id}"));
-            } else {
-                entries.push(match import_name {
-                    _ if want_default => {
-                        format!("{key}: () => import({spec_json}).then((m) => m.default)")
-                    }
-                    Some(name) => format!(
-                        "{key}: () => import({spec_json}).then((m) => m[{}])",
-                        json(name)
-                    ),
-                    None => format!("{key}: () => import({spec_json})"),
-                });
+            if only_keys {
+                entries.push(format!("{key}: 0"));
+                continue;
             }
+            let spec_json = json(&spec);
+            let value = if opts.eager {
+                let id = format!("__vite_glob_{calls}_{idx}");
+                prelude.push(match import_name {
+                    Some(name) => format!("import {{ {name} as {id} }} from {spec_json}"),
+                    None => format!("import * as {id} from {spec_json}"),
+                });
+                id
+            } else {
+                match import_name {
+                    Some(name) => {
+                        format!("() => import({spec_json}).then(m => m[{}])", json(name))
+                    }
+                    None => format!("() => import({spec_json})"),
+                }
+            };
+            entries.push(if only_values {
+                value
+            } else {
+                format!("{key}: {value}")
+            });
         }
         let spanned = code[head..call_end].matches('\n').count();
         out.push_str(&code[last..head]);
-        out.push('{');
-        out.push_str(&entries.join(", "));
+        let (open, close) = if only_keys {
+            ("{", "}")
+        } else if only_values {
+            ("[", "]")
+        } else {
+            ("/* #__PURE__ */ Object.assign({", "})")
+        };
+        out.push_str(open);
+        out.push_str(&entries.join(","));
         out.push_str(&"\n".repeat(spanned));
-        out.push('}');
+        out.push_str(close);
         last = call_end;
         calls += 1;
     }
@@ -165,7 +194,7 @@ pub fn transform_glob(
     Ok(if prelude.is_empty() {
         out
     } else {
-        format!("{} {out}", prelude.join(" "))
+        format!("{};{out}", prelude.join(";"))
     })
 }
 
