@@ -132,9 +132,11 @@ impl JsEngine {
 
     /// Force a full garbage collection in this engine and return once it has
     /// run (false when the engine is already gone). A memory-probing
-    /// instrument, never a runtime lever: V8 schedules its own collections
-    /// better than callers can. Blocking; async callers go through
-    /// spawn_blocking.
+    /// instrument, and a build's lever at one point only: between its
+    /// environments, when the finished one's state is released on both sides
+    /// and the next one's allocations are about to begin (V8 schedules its
+    /// collections for the heap it sees, not the one about to come).
+    /// Blocking; async callers go through spawn_blocking.
     pub fn collect_garbage(&self, wait: Duration) -> bool {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         let sent = match lock(&self.running).as_ref() {

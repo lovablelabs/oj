@@ -1365,9 +1365,30 @@ impl PluginHost {
 
     pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
         self.call_unit("switchEnvironment", &[name]).await?;
+        // The host just let go of the finished environment's module infos,
+        // and the next environment's build allocates from here: a full
+        // collection now, instead of V8's own later, shrinks the heap the next
+        // build grows on, so the two builds' peaks do not add up.
+        self.collect_garbage().await;
         self.reset_hook_plan();
         self.ensure_hook_plan().await;
         Ok(())
+    }
+
+    /// A full V8 collection in the host's engine, awaited. Between a build's
+    /// environments (see [`PluginHost::switch_environment`]); otherwise V8
+    /// schedules its own collections better than callers can. False when the
+    /// engine is gone or did not answer in time.
+    pub async fn collect_garbage(&self) -> bool {
+        let engine = self.core.engine.lock().unwrap().clone();
+        let Some(engine) = engine else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || {
+            engine.collect_garbage(std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach

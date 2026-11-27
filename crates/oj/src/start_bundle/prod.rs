@@ -589,6 +589,9 @@ pub(crate) async fn build(
         on_rolldown(&start.rolldown, client.close())
             .await
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
+        // The bundler keeps its last bundle (plugin driver, module graph
+        // caches) until dropped; nothing below asks it anything.
+        drop(client);
         let output = checked(output)?;
         // The page links the entry chunk's closure of sheets (Start's
         // manifest plugin lists a route's own from the chunks); with no
@@ -702,6 +705,12 @@ pub(crate) async fn build(
             }
             std::fs::write(&dest, serde_json::to_string_pretty(&manifest)?)?;
         }
+        // The client's chunks and source maps (the whole client `dist`, in
+        // memory) are written and read; freeing them before the server builds
+        // keeps the two bundles' peaks from adding up. The emitter keeps what
+        // the server needs of the client (its sheets, renames and workers).
+        drop(output);
+        tokio::task::spawn_blocking(oj_server::rolldown_runtime::release_freed_heap);
         let css = emitter.css_urls();
         let root_route = serde_json::json!({
             "preloads": [client_url],

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `oj build` of a TanStack Start app: the client bundle is let go of before the server (or Cloudflare Worker) bundle builds. The client's bundler and its output (every chunk's code and source map, the whole `dist/client` in memory) were kept until the build ended, and the plugin host kept its heap as the client build had left it, so the server bundle grew on top of both: one large app's build held 8.3 GB when it ended. Both are dropped once the client's manifest is written, the freed heap goes back to the OS, and the plugin host runs a full collection as the build switches environments; the same build now runs its server bundle from 2.1 GB instead of 8 GB and ends at 4.4 GB. Its peak (9.9 GB, inside the client bundle's own render, as `vite build`'s is) is unchanged.
+
 ### Fixed
 
 - `oj build`: a chunk group's `tags` reach rolldown (`output.codeSplitting.groups[].tags`, `["$initial"]`: only the modules the entries reach by static imports). oj read a group's `name`, `test`, sizes and share counts and dropped its `tags`, so a group written with tags and no `test`, as an app pinning its boot path writes one (`{ name: "app-boot", tags: ["$initial"], minShareCount: 1 }`), captured every module of the bundle, the lazy ones included: on one large TanStack Start app the client's `app-boot` chunk was 61 MB where `vite build` writes 462 KB, and every route's first load fetched it. The tags are forwarded in the Start client bundle and in the plain build's `advancedChunks` alike.
