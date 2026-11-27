@@ -3682,6 +3682,20 @@ impl ChunkSheets {
         files
     }
 
+    /// The sheets of `chunk`'s own modules alone, those it took over from
+    /// pure CSS chunks left out.
+    pub fn own_of(&self, chunk: &rolldown_common::OutputChunk) -> Vec<String> {
+        let inherited = self
+            .inherited
+            .get(&chunk.preliminary_filename)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        self.of(chunk)
+            .into_iter()
+            .filter(|file| !inherited.contains(file))
+            .collect()
+    }
+
     fn rows(&self) -> Vec<(&PathBuf, &String)> {
         let mut rows: Vec<_> = self.by_module.iter().collect();
         rows.sort();
@@ -7941,6 +7955,11 @@ fn manifest_asset_rows(
 /// A chunk with no facade is keyed `_<file name>` by the caller.
 pub(crate) fn chunk_source_key(facade: Option<&str>, root: &Path) -> Option<String> {
     let facade = facade?;
+    // oj's wrapper stands in for Start's virtual manifest module and takes
+    // its key (Vite's chunk has that module as its facade).
+    if facade == crate::start_bundle::alias::WRAPPER_ID {
+        return Some(crate::start_bundle::alias::WRAPPER_VITE_KEY.to_string());
+    }
     let id = facade.replace('\0', "");
     if !Path::new(&id).is_absolute() {
         return Some(id);
@@ -7990,6 +8009,27 @@ pub(crate) fn vite_manifest(
         let css = sheets.of(chunk);
         if css.is_empty() {
             continue;
+        }
+        // css-post emits a chunk's sheet under the chunk's original file
+        // name; a chunk with no facade module has none, so the asset is
+        // keyed `_<file>` and keeps a row (no JS chunk takes that key).
+        if chunk.facade_module_id.is_none() {
+            for file in sheets.own_of(chunk) {
+                let key = format!(
+                    "_{}",
+                    Path::new(&file)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&file)
+                );
+                if !assets.iter().any(|a| a.key == key) {
+                    assets.push(ManifestAsset {
+                        key,
+                        file: file.clone(),
+                        name: None,
+                    });
+                }
+            }
         }
         if let Some(entry) = entries
             .iter_mut()

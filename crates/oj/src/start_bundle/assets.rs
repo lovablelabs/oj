@@ -1280,10 +1280,17 @@ impl Emitter {
                 }
             }
         };
+        // A sheet a hook re-emitted has no original file name (the hook
+        // emits name and source alone), so its manifest row is keyed
+        // `_<file>`, as the replacement's is on the client.
+        let row_source = match &renamed {
+            Some(_) => PathBuf::from(format!("_{name}")),
+            None => path.to_path_buf(),
+        };
         self.asset_rows
             .lock()
             .unwrap()
-            .push((path.to_path_buf(), file.clone()));
+            .push((row_source, file.clone()));
         if file == mine && self.written.lock().unwrap().insert(name.clone()) {
             std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
             std::fs::write(self.assets_dir.join(&name), bytes).map_err(|e| e.to_string())?;

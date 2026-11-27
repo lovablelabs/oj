@@ -168,8 +168,10 @@ impl Plugin for StartManifestSheets {
 /// (`\0tanstack-start-manifest:v`), so the chunk holding both gets no
 /// sourcemap, as under `vite build` (rolldown maps no virtual module), and
 /// keeps the name Vite's chunk has (rolldown sanitizes either id to
-/// `_tanstack-start-manifest_v`).
-const WRAPPER_ID: &str = "\0tanstack-start-manifest_v";
+/// `_tanstack-start-manifest_v`). The manifest keys the chunk by Vite's
+/// module, `\0` dropped: [`WRAPPER_VITE_KEY`].
+pub(crate) const WRAPPER_ID: &str = "\0tanstack-start-manifest_v";
+pub(crate) const WRAPPER_VITE_KEY: &str = "tanstack-start-manifest:v";
 
 /// tsconfig `paths` as the app's Vite applies them, where vite:resolve
 /// sits, ahead of rolldown's own resolver, which applies them natively
