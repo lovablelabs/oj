@@ -959,15 +959,39 @@ pub(crate) async fn build(
                 // chunks by source under `.vite/manifest.json`, as the client's.
                 if let Some(name) = server_host.as_ref().and_then(|h| h.facts.manifest.clone()) {
                     // Vite's worker cache is the main config's, shared by its
-                    // environments, so the Worker's manifest lists the client's
-                    // worker bundles too.
+                    // environments, and each environment's manifest lists
+                    // the worker bundles its own modules reference (the
+                    // cache's `liveFileNames`).
+                    let server_modules: Vec<&str> = output
+                        .assets
+                        .iter()
+                        .filter_map(|o| match o {
+                            rolldown_common::Output::Chunk(c) => {
+                                Some(c.module_ids.iter().map(|id| id.as_ref()))
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+                    let live: std::collections::HashSet<String> = emitter
+                        .assets_of_modules(server_modules.iter().copied())
+                        .into_iter()
+                        .collect();
+                    let worker_rows: Vec<(String, serde_json::Value)> = emitter
+                        .worker_manifest_rows()
+                        .into_iter()
+                        .filter(|(_, row)| {
+                            row.get("file")
+                                .and_then(|f| f.as_str())
+                                .is_some_and(|f| live.contains(f))
+                        })
+                        .collect();
                     let manifest = crate::build::vite_manifest(
                         &output.assets,
                         &start.root,
-                        &server_emitter.chunk_sheets().with_workers(
-                            emitter.worker_manifest_rows(),
-                            emitter.worker_asset_files(),
-                        ),
+                        &server_emitter
+                            .chunk_sheets()
+                            .with_workers(worker_rows, emitter.worker_asset_files()),
                     );
                     let dest = dir.join(&name);
                     if let Some(parent) = dest.parent() {
