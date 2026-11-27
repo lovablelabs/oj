@@ -1,0 +1,1 @@
+import{t as e}from"./shared-HASH.js";document.title=e(`home`),console.log(e(`home script`));

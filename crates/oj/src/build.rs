@@ -1544,6 +1544,54 @@ impl Plugin for ClassicWorkerImportMeta {
     }
 }
 
+/// Vite's vite:oxc for a plain build: a TypeScript or JSX module is lowered
+/// to JavaScript here, ahead of rolldown, as Vite's plugin lowers it, so
+/// rolldown's own TypeScript transform never runs on the app's modules.
+/// rolldown fixes that transform's `optimize_enums` on, which inlines an
+/// enum's members and drops the enum; Vite keeps the enum object.
+struct ViteOxcSlot {
+    lower: Arc<crate::start_bundle::vite_transform::ViteTransform>,
+    sourcemap: bool,
+}
+
+impl std::fmt::Debug for ViteOxcSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ViteOxcSlot")
+    }
+}
+
+impl Plugin for ViteOxcSlot {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:vite-oxc")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::Transform
+    }
+
+    async fn transform(
+        &self,
+        _ctx: SharedTransformPluginContext,
+        args: &HookTransformArgs<'_>,
+    ) -> HookTransformReturn {
+        if !self.lower.handles(args.id) {
+            return Ok(None);
+        }
+        let lowered = self.lower.lower(args.id, args.code, self.sourcemap)?;
+        let map = lowered
+            .map
+            .as_deref()
+            .and_then(parse_plugin_map)
+            .map_or(rolldown_plugin::HookTransformOutputMap::Omitted, Into::into);
+        Ok(Some(HookTransformOutput {
+            code: Some(lowered.code),
+            map,
+            module_type: Some(rolldown_common::ModuleType::Js),
+            ..Default::default()
+        }))
+    }
+}
+
 /// A worker bundle's rolldown minify, as Vite's bundleWorkerEntry sets it:
 /// rolldown's own under `"oxc"`, `'dce-only'` under `false`, and nothing
 /// under `"esbuild"`, which rolldown takes as `'dce-only'` too. Under esbuild
@@ -1768,6 +1816,12 @@ fn expand_import_meta(
     // final changed-check state the invariant (a Cow's borrowed arm here would
     // be unreachable and could mask a future edit that makes it reachable).
     let mut expanded = code.to_string();
+    // Vite's dynamic-import-vars runs ahead of import-glob: the glob call it
+    // writes for a variable import is expanded below.
+    if has_dynamic {
+        expanded = oj_compiler::glob::expand_dynamic_import_vars_vite_source(&expanded, path);
+    }
+    let has_glob = has_glob || expanded.contains("import.meta.glob");
     if has_glob {
         let alias = |spec: &str| oj_compiler::glob::string_alias(alias, spec);
         // Vite's transformGlobImport text (`/* #__PURE__ */ Object.assign({...})`,
@@ -1785,9 +1839,6 @@ fn expand_import_meta(
             Ok(out) => out,
             Err(_) => oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias),
         };
-    }
-    if has_dynamic {
-        expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
     }
     if has_new_url {
         expanded = oj_compiler::glob::expand_new_url_asset_source(&expanded, path);
@@ -1905,6 +1956,8 @@ impl Plugin for OjCssPlugin {
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
         let is_polyfill = args.specifier == MODULEPRELOAD_POLYFILL_SPEC;
+        let is_dynamic_import_helper =
+            args.specifier == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID;
         let is_routes = args.specifier == "virtual:oj-routes";
         let routes_id = self
             .root
@@ -1937,6 +1990,11 @@ impl Plugin for OjCssPlugin {
         let ctx = ctx.clone();
         let written = args.specifier.to_string();
         async move {
+            if is_dynamic_import_helper {
+                return Ok(Some(HookResolveIdOutput::from_id(
+                    oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID,
+                )));
+            }
             if is_polyfill {
                 return Ok(Some(HookResolveIdOutput::from_id(
                     MODULEPRELOAD_POLYFILL_ID,
@@ -2061,6 +2119,9 @@ impl Plugin for OjCssPlugin {
             };
             if let Some(proxy) = page {
                 return js(proxy);
+            }
+            if id == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID {
+                return js(oj_compiler::glob::DYNAMIC_IMPORT_HELPER_JS.to_string());
             }
             if id == MODULEPRELOAD_POLYFILL_ID {
                 // Vite's polyfill module comes with an empty map: a chunk's
@@ -4943,6 +5004,19 @@ pub async fn build(
         // env defines into the object it replaces `import.meta.env` with.
         oj_env::fold_env_keys_into_object(pairs)
     };
+    // Vite's vite:oxc slot (see [`ViteOxcSlot`]). Vite runs it between the
+    // "pre" plugins and the normal ones; the plain build hosts the app's
+    // plugins as one, so it runs after them all, where rolldown's own
+    // TypeScript transform ran until now (the Start build places it as Vite
+    // does).
+    oj_plugins.push(Pluginable::new_shared(ViteOxcSlot {
+        lower: Arc::new(crate::start_bundle::vite_transform::ViteTransform::new(
+            root.to_path_buf(),
+            false,
+            transform_options(&config, is_production).unwrap_or_default(),
+        )),
+        sourcemap: sourcemap_type(sourcemap).is_some(),
+    }));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -9045,15 +9119,25 @@ mod tests {
             true,
         )
         .expect("matching variable dynamic import expands");
+        // Vite's form: the helper over the glob's object, the template kept
+        // as the runtime path, and the glob expanded in the same pass.
         assert!(
-            out.contains(r#"case "./locales/en.json": return import("./locales/en.json")"#),
+            out.contains("import __variableDynamicImportRuntimeHelper from \"\\0rolldown_dynamic_import_helper.js\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("__variableDynamicImportRuntimeHelper("),
             "{out}"
         );
         assert!(
             out.contains("${l}"),
             "original template kept as runtime arg: {out}"
         );
-        assert!(out.contains("Unknown variable dynamic import"), "{out}");
+        assert!(
+            out.contains("\"./locales/en.json\""),
+            "glob expanded: {out}"
+        );
+        assert!(!out.contains("import.meta.glob"), "glob expanded: {out}");
         fs::remove_dir_all(&dir).unwrap();
 
         // `new URL(..., import.meta.url)` really changes.

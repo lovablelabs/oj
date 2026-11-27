@@ -1,0 +1,1 @@
+var e=`olá`;export{e as hello};

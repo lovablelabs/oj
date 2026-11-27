@@ -1,0 +1,1 @@
+var e=`hello`;export{e as hello};

@@ -36,6 +36,15 @@ const CASES: &[&str] = &[
     "sourcemap",
     "sourcemap-destructured",
     "minify-esbuild",
+    "html-multi",
+    "json",
+    "dynamic-vars",
+    "base-relative",
+    "base-path",
+    "define",
+    "typescript",
+    "modulepreload-off",
+    "lib-umd",
 ];
 
 fn golden_dir() -> PathBuf {
@@ -308,6 +317,15 @@ golden! {
     library_es_and_cjs => "lib",
     source_maps_of_chunks_sheets_and_assets => "sourcemap",
     minified_by_esbuild => "minify-esbuild",
+    two_html_entries_sharing_a_module_and_a_sheet => "html-multi",
+    json_default_named_and_raw_imports => "json",
+    dynamic_import_with_a_variable => "dynamic-vars",
+    relative_base => "base-relative",
+    base_path_with_assets_never_inlined => "base-path",
+    define_and_env_replacements => "define",
+    typescript_enums_and_a_jsx_pragma => "typescript",
+    module_preload_off => "modulepreload-off",
+    library_umd_and_iife => "lib-umd",
 }
 
 /// `new URL("./file", import.meta.url)`: Vite's asset-import-meta-url plugin

@@ -103,6 +103,48 @@ pub fn expand_dynamic_import_vars_source(source: &str, path: &Path) -> String {
     })
 }
 
+/// Vite's dynamic-import-vars as `vite build` writes it: a variable import
+/// becomes `__variableDynamicImportRuntimeHelper((import.meta.glob(..)), \`..\`, n)`
+/// and the helper's import ([`DYNAMIC_IMPORT_HELPER_ID`]) is prepended; the
+/// glob call is left for the import-glob expansion that runs after, and a
+/// template that matches no file is rewritten all the same (the helper
+/// rejects at run time). The dev server keeps
+/// [`expand_dynamic_import_vars_source`]: it expands globs first and has no
+/// helper module to serve.
+pub fn expand_dynamic_import_vars_vite_source(source: &str, path: &Path) -> String {
+    if !source.contains("import(") {
+        return source.to_string();
+    }
+    rewrite_source(source, path, |allocator, _dir, program| {
+        let mut v = DynImportVars {
+            allocator,
+            dir: None,
+            source,
+            changed: false,
+        };
+        v.visit_program(program);
+        v.changed
+    })
+}
+
+/// The id of rolldown's dynamic import helper module, which Vite's
+/// dynamic-import-vars (native in a build) imports as
+/// `__variableDynamicImportRuntimeHelper`; see [`DYNAMIC_IMPORT_HELPER_JS`].
+pub const DYNAMIC_IMPORT_HELPER_ID: &str = "\0rolldown_dynamic_import_helper.js";
+
+/// rolldown's dynamic import helper, text for text: given the glob's object,
+/// the path the variables resolved to and the pattern's segment count, the
+/// matching module's import, or a rejection naming the path.
+pub const DYNAMIC_IMPORT_HELPER_JS: &str = r#"export default (glob, path, segments) => {
+	const query = path.lastIndexOf("?");
+	const v = glob[query === -1 || query < path.lastIndexOf("/") ? path : path.slice(0, query)];
+	if (v) return typeof v === "function" ? v() : Promise.resolve(v);
+	return new Promise((_, reject) => {
+		(typeof queueMicrotask === "function" ? queueMicrotask : setTimeout)(reject.bind(null, /* @__PURE__ */ new Error("Unknown variable dynamic import: " + path + (path.split("/").length !== segments ? ". Note that variables only represent file names one level deep." : ""))));
+	});
+};
+"#;
+
 /// Parses `source` as the file at `path`, applies `rewrite` with the file's
 /// directory, and prints the program when `rewrite` reports a change.
 /// Unparsable or unchanged input comes back as is.
@@ -860,7 +902,7 @@ pub fn expand_dynamic_import_vars<'a>(
 ) -> bool {
     let mut v = DynImportVars {
         allocator,
-        dir,
+        dir: Some(dir),
         source: source_text,
         changed: false,
     };
@@ -1128,9 +1170,11 @@ impl<'a> VisitMut<'a> for NewUrlAsset<'a, '_, '_> {
     }
 }
 
+/// The dev server's form (`dir` set) switches over the files the template
+/// matches, resolved here; the build's form (`dir` unset) is Vite's.
 struct DynImportVars<'a, 'd, 's> {
     allocator: &'a Allocator,
-    dir: &'d Path,
+    dir: Option<&'d Path>,
     source: &'s str,
     changed: bool,
 }
@@ -1141,11 +1185,22 @@ impl<'a> DynImportVars<'a, '_, '_> {
             return None;
         };
         let pattern = template_glob(tpl)?;
-        let matches = template_matches(self.dir, &pattern);
+        let arg = span_text(self.source, tpl.span)?;
+        let Some(dir) = self.dir else {
+            // Vite's dynamic-import-vars transform, text for text:
+            // `__variableDynamicImportRuntimeHelper((import.meta.glob("./x/*.js")), \`./x/${n}.js\`, 3)`,
+            // the glob call left for the import-glob expansion that follows,
+            // the template as written, and the pattern's segment count.
+            let segments = arg.matches('/').count() + 1;
+            return Some(format!(
+                "__variableDynamicImportRuntimeHelper((import.meta.glob({})), {arg}, {segments})",
+                serde_json::Value::String(pattern)
+            ));
+        };
+        let matches = template_matches(dir, &pattern);
         if matches.is_empty() {
             return None;
         }
-        let arg = span_text(self.source, tpl.span)?;
         let cases: String = matches
             .iter()
             .map(|key| format!("case {key:?}: return import({key:?});"))
@@ -1166,6 +1221,21 @@ impl<'a> VisitMut<'a> for DynImportVars<'a, '_, '_> {
             }
         }
         walk_mut::walk_expression(self, expr);
+    }
+
+    fn visit_program(&mut self, program: &mut Program<'a>) {
+        walk_mut::walk_program(self, program);
+        if self.changed && self.dir.is_none() {
+            // The helper's import, as Vite prepends it.
+            prepend_hoisted(
+                self.allocator,
+                program,
+                &[format!(
+                    "import __variableDynamicImportRuntimeHelper from {};",
+                    serde_json::Value::String(DYNAMIC_IMPORT_HELPER_ID.to_string())
+                )],
+            );
+        }
     }
 }
 

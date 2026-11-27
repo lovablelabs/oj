@@ -1,0 +1,1 @@
+(function(e,t){typeof exports==`object`&&typeof module<`u`?t(exports):typeof define==`function`&&define.amd?define([`exports`],t):(e=typeof globalThis<`u`?globalThis:e||self,t(e.GoldenLib={}))})(this,function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Module`});var t=e=>e+1;function n(e){return t(e)*2}e.helper=t,e.lib=n});

@@ -1,0 +1,1 @@
+import{t as e}from"./shared-HASH.js";console.log(e(`about`));

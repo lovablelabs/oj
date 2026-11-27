@@ -1,0 +1,6 @@
+{
+  "name": "golden",
+  "version": 3,
+  "tags": ["a", "b"],
+  "nested": { "ok": true }
+}
