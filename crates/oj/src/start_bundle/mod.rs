@@ -282,12 +282,20 @@ impl StartConfig {
         crate::build::bundle_graph::jsx_config(&self.config)
     }
 
-    /// rolldown's JSX transform: automatic by default, the config's runtime,
-    /// import source and pragmas, `development` following NODE_ENV.
+    /// rolldown's transform options as Vite's buildEnvironment passes them:
+    /// `target` is `build.target` (the baseline browsers by default), which
+    /// the lowering and rolldown's own passes read (a `new RegExp` of a
+    /// lookbehind folds to a literal only where the target supports it, so
+    /// `marked`'s `!!new RegExp("(?<=1)(?<!1)")` is `true` under Vite); the
+    /// JSX transform is automatic by default, the config's runtime, import
+    /// source and pragmas, `development` following NODE_ENV.
     pub fn transform_options(&self) -> rolldown_common::BundlerTransformOptions {
         let jsx = oj_config::jsx_settings(&self.config);
         let classic = jsx.runtime.as_deref() == Some("classic");
         rolldown_common::BundlerTransformOptions {
+            target: Some(rolldown_common::Either::Right(oj_config::build_targets(
+                &self.config,
+            ))),
             jsx: Some(rolldown_common::Either::Right(
                 rolldown_common::JsxOptions {
                     runtime: Some(if classic { "classic" } else { "automatic" }.to_string()),

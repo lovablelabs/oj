@@ -2540,3 +2540,73 @@ fn the_manifest_is_sorted_and_lists_the_worker_bundles_as_vite_does() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// rolldown's `transform.target` is the environment's `build.target`, as
+/// Vite's buildEnvironment passes it: the lowering and rolldown's own passes
+/// then read the same target as under Vite, where a `new RegExp` of a
+/// lookbehind folds to a literal (and `!!` of it to `true`) because the
+/// baseline browsers support it. oj passed no target, so `marked`'s
+/// `!!new RegExp("(?<=1)(?<!1)")` feature test stayed a call in Lovable's
+/// vendor-document-editor chunk while Vite's read `true`.
+#[test]
+fn the_transform_target_is_the_builds_as_under_vite() {
+    let Some(root) = app("transform-target") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap().replacen(
+        "export default defineConfig({",
+        "export default defineConfig({\n  build: { minify: \"esbuild\" },",
+        1,
+    );
+    assert!(
+        source.contains("minify: \"esbuild\""),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    std::fs::write(
+        root.join("src/feat.ts"),
+        "export const lookbehind = (() => {\n  try {\n    return !!new RegExp(\"(?<=1)(?<!1)\");\n  } catch {\n    return false;\n  }\n})();\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport { lookbehind } from \"../feat\";",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-lookbehind\", content: String(lookbehind) }],",
+            1,
+        );
+    assert!(
+        source.contains("String(lookbehind)"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let chunks: Vec<(PathBuf, String)> = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| {
+            let code = std::fs::read_to_string(&p).unwrap();
+            (p, code)
+        })
+        .collect();
+    let (chunk, code) = chunks
+        .iter()
+        .find(|(_, code)| code.contains("x-lookbehind"))
+        .expect("the chunk holding the root route");
+    assert!(
+        !code.contains("new RegExp(\"(?<=1)(?<!1)\")"),
+        "{}: the lookbehind feature test is not folded:\n{code}",
+        chunk.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
