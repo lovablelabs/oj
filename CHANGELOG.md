@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- StyleX: assembling the stylesheet no longer scales with rules × `defineConsts` constants, and a module that is added or removed is spliced into the dev sheet instead of rebuilding it. The sheet is byte for byte the same. On a 20,000-rule project with 300 constants, adding or removing a module goes from 41 ms to 1.0 ms, an edit from 1.6 ms to 1.0 ms, a full assembly from 29 ms to 12 ms, and an edit in an app whose sheet cannot be assembled incrementally from 67 ms to 14 ms.
+
 ## [0.4.25] - 2026-11-26
 
 ### Changed

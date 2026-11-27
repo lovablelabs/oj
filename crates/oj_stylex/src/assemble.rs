@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, BuildHasherDefault};
+use std::ops::ControlFlow;
 use std::sync::{Arc, Weak};
 
 use crate::fxhash::{FxHashMap, FxHashSet};
@@ -157,11 +158,25 @@ fn js_truthy(v: &serde_json::Value) -> bool {
 
 // JS string|number const value; `Other` covers metadata that upstream would
 // stringify via String().
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 enum ConstVal {
     Str(String),
     Num(f64),
     Other(serde_json::Value),
+}
+
+// Equality asks whether a constant was redeclared with the value it had, so
+// numbers compare by bits: a NaN constant equals itself instead of reading
+// as changed on every edit.
+impl PartialEq for ConstVal {
+    fn eq(&self, other: &ConstVal) -> bool {
+        match (self, other) {
+            (ConstVal::Str(a), ConstVal::Str(b)) => a == b,
+            (ConstVal::Num(a), ConstVal::Num(b)) => a.to_bits() == b.to_bits(),
+            (ConstVal::Other(a), ConstVal::Other(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl ConstVal {
@@ -209,7 +224,7 @@ fn js_string_of_value(v: &serde_json::Value) -> String {
 }
 
 pub fn assemble(rules: &[StylexRule], cfg: &AssembleConfig) -> Result<String, AssembleError> {
-    assemble_impl(rules, cfg, None)
+    assemble_impl(rules.iter(), rules.len(), cfg, None)
 }
 
 pub fn assemble_with_comparator(
@@ -217,36 +232,50 @@ pub fn assemble_with_comparator(
     cfg: &AssembleConfig,
     cmp: Comparator,
 ) -> Result<String, AssembleError> {
-    assemble_impl(rules, cfg, Some(cmp))
+    assemble_impl(rules.iter(), rules.len(), cfg, Some(cmp))
 }
 
 fn is_const_rule(r: &StylexRule) -> bool {
     r.const_key.is_some() && matches!(&r.const_val, Some(v) if !v.is_null())
 }
 
-fn const_decl(r: &StylexRule) -> (String, ConstVal) {
+// One constant as declared: its name (the rule key, referenced as
+// `var(--name)`) and its value.
+type ConstDecl = (Arc<str>, ConstVal);
+
+fn const_decl(r: &StylexRule) -> ConstDecl {
     (
-        format!("var(--{})", r.class_name),
+        r.class_name.clone(),
         ConstVal::from_json(r.const_val.as_ref().unwrap()),
     )
 }
 
-// Insertion-ordered "var(--keyhash)" → value map; duplicate keys keep their
-// slot, value last-wins (JS Map.set). Each value is then resolved in place.
+fn const_decls(rules: &[StylexRule]) -> impl Iterator<Item = ConstDecl> + '_ {
+    rules.iter().filter(|r| is_const_rule(r)).map(const_decl)
+}
+
+type ConstSlots = FxHashMap<Arc<str>, u32>;
+
+// Insertion-ordered name → value map; a repeated name keeps its slot, value
+// last-wins (JS Map.set). Each value is then resolved in place, in order.
 fn collect_resolved_consts(
-    decls: impl Iterator<Item = (String, ConstVal)>,
-) -> Result<Vec<(String, ConstVal)>, AssembleError> {
-    let mut consts: Vec<(String, ConstVal)> = Vec::new();
-    for (key, val) in decls {
-        match consts.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = val,
-            None => consts.push((key, val)),
+    decls: impl Iterator<Item = ConstDecl>,
+) -> Result<Vec<ConstDecl>, AssembleError> {
+    let mut consts: Vec<ConstDecl> = Vec::new();
+    let mut slots = ConstSlots::default();
+    for (name, val) in decls {
+        match slots.entry(name) {
+            Entry::Occupied(slot) => consts[*slot.get() as usize].1 = val,
+            Entry::Vacant(slot) => {
+                consts.push((slot.key().clone(), val));
+                slot.insert(consts.len() as u32 - 1);
+            }
         }
     }
     for i in 0..consts.len() {
-        let value = consts[i].1.clone();
-        let resolved = resolve_constant(&value, &consts, &mut Vec::new())?;
-        consts[i].1 = resolved;
+        if let Some(resolved) = resolve_constant(&consts[i].1, &consts, &slots, &mut Vec::new())? {
+            consts[i].1 = ConstVal::Str(resolved);
+        }
     }
     Ok(consts)
 }
@@ -303,48 +332,73 @@ fn layers_header(cfg: &AssembleConfig, group_count: usize) -> String {
 }
 
 // One deduped class's output: the ltr line, or the ltr/rtl pair joined by the
-// same '\n' the group join would use.
-fn rule_chunk(ltr: &str, rtl: Option<&str>, index: usize, cfg: &AssembleConfig) -> String {
+// same '\n' the group join would use. The common shape (no rtl, no theme
+// pair) is pushed as slices; `", ."` is a literal every theme-pair match
+// contains.
+fn push_chunk(out: &mut String, ltr: &str, rtl: Option<&str>, index: usize, cfg: &AssembleConfig) {
     let use_layers_on = matches!(cfg.use_layers, LayersConfig::On { .. });
-    let mut ltr = ltr.to_string();
-    let mut rtl = rtl.map(str::to_string);
-    if !use_layers_on && !cfg.legacy_disable_layers {
-        ltr = add_specificity_level(&ltr, index);
-        rtl = rtl.map(|r| add_specificity_level(&r, index));
-    }
-    ltr = double_theme_classes(&ltr);
-    rtl = rtl.map(|r| double_theme_classes(&r));
+    let levels = if use_layers_on || cfg.legacy_disable_layers {
+        0
+    } else {
+        index
+    };
     match rtl {
+        None => push_rule_text(out, ltr, levels),
         Some(rtl) if cfg.enable_ltr_rtl_comments => {
-            format!("/* @ltr begin */{ltr}/* @ltr end */\n/* @rtl begin */{rtl}/* @rtl end */")
+            out.push_str("/* @ltr begin */");
+            push_rule_text(out, ltr, levels);
+            out.push_str("/* @ltr end */\n/* @rtl begin */");
+            push_rule_text(out, rtl, levels);
+            out.push_str("/* @rtl end */");
         }
-        Some(rtl) => format!(
-            "{}\n{}",
-            add_ancestor_selector(&ltr, "html:not([dir='rtl'])"),
-            add_ancestor_selector(&rtl, "html[dir='rtl']")
-        ),
-        None => ltr,
+        Some(rtl) => {
+            push_with_ancestor(out, ltr, levels, "html:not([dir='rtl']) ");
+            out.push('\n');
+            push_with_ancestor(out, rtl, levels, "html[dir='rtl'] ");
+        }
     }
 }
 
-// The common shape (no rtl, no theme pair) is pushed as slices; the rest takes
-// rule_chunk. `", ."` is a literal every theme-pair match contains.
-fn push_chunk(out: &mut String, ltr: &str, rtl: Option<&str>, index: usize, cfg: &AssembleConfig) {
-    if rtl.is_some() || ltr.contains(", .") {
-        out.push_str(&rule_chunk(ltr, rtl, index, cfg));
+// One direction's text as upstream prints it: the specificity bump, then the
+// theme-class doubling over the bumped text.
+fn push_rule_text(out: &mut String, text: &str, levels: usize) {
+    let start = out.len();
+    if levels == 0 {
+        out.push_str(text);
+    } else {
+        push_specificity_level(out, text, levels);
+    }
+    if has_theme_pair_hint(&out[start..]) {
+        let doubled = double_theme_classes(&out[start..]);
+        out.truncate(start);
+        out.push_str(&doubled);
+    }
+}
+
+// parity: addAncestorSelector over the printed text. A plain selector takes
+// the ancestor in front; an at-rule takes it after the `{` that follows its
+// last `@` (an indexOf miss there puts it in front, as slice(0, 0) does).
+// `ancestor` carries its trailing space.
+fn push_with_ancestor(out: &mut String, text: &str, levels: usize, ancestor: &str) {
+    let start = out.len();
+    push_rule_text(out, text, levels);
+    let printed = &out[start..];
+    if is_selector_exempt(printed) {
         return;
     }
-    let use_layers_on = matches!(cfg.use_layers, LayersConfig::On { .. });
-    if use_layers_on || cfg.legacy_disable_layers || index == 0 {
-        out.push_str(ltr);
+    let at = if printed.starts_with('@') {
+        let last_at_rule = printed.rfind('@').unwrap_or(0);
+        printed[last_at_rule..]
+            .find('{')
+            .map_or(0, |brace| last_at_rule + brace + 1)
     } else {
-        push_specificity_level(out, ltr, index);
-    }
+        0
+    };
+    out.insert_str(start + at, ancestor);
 }
 
 // One non-constant rule as upstream sorts and prints it: constants substituted
 // and the priority of a constant at-rule wrapper re-priced, both before the sort.
-#[derive(Clone)]
 struct Prepped<'a> {
     rule: &'a StylexRule,
     ltr: Option<String>,
@@ -354,12 +408,12 @@ struct Prepped<'a> {
 }
 
 impl<'a> Prepped<'a> {
-    fn new(rule: &'a StylexRule, legacy: bool, consts: &PreparedConsts) -> Self {
-        let ltr = substitute_consts(&rule.ltr, &consts.list);
+    fn new(rule: &'a StylexRule, legacy: bool, consts: &ConstTable) -> Self {
+        let ltr = substitute_consts(&rule.ltr, consts);
         let rtl = rule
             .rtl
             .as_deref()
-            .and_then(|text| substitute_consts(text, &consts.list));
+            .and_then(|text| substitute_consts(text, consts));
         // The legacy class-name sort never reads the width key.
         let width = if legacy {
             None
@@ -417,45 +471,72 @@ fn compare_rules(
     .then_with(|| cmp(rule_a, rule_b))
 }
 
-fn assemble_impl(
-    rules: &[StylexRule],
+// `rule_count` is how many rules the iterator yields; a flattened iterator's
+// own size hint is no use for sizing the list up front.
+fn assemble_impl<'a>(
+    rules: impl Iterator<Item = &'a StylexRule>,
+    rule_count: usize,
     cfg: &AssembleConfig,
     custom_cmp: Option<Comparator>,
 ) -> Result<String, AssembleError> {
-    if rules.is_empty() {
+    let consts_timer = timings::start(Stage::AssembleConsts);
+    let mut decls: Vec<ConstDecl> = Vec::new();
+    let mut non_const: Vec<&StylexRule> = Vec::with_capacity(rule_count);
+    let mut any_rule = false;
+    for rule in rules {
+        any_rule = true;
+        if is_const_rule(rule) {
+            decls.push(const_decl(rule));
+        } else {
+            non_const.push(rule);
+        }
+    }
+    if !any_rule {
         return Ok(String::new());
     }
-
-    let consts_timer = timings::start(Stage::AssembleConsts);
-    let consts =
-        collect_resolved_consts(rules.iter().filter(|r| is_const_rule(r)).map(const_decl))?;
-    let prepared_consts = prepare_consts(&consts);
-    let non_const: Vec<&StylexRule> = rules.iter().filter(|r| !is_const_rule(r)).collect();
+    let consts = prepare_consts(&collect_resolved_consts(decls.into_iter())?);
     drop(consts_timer);
 
     let legacy = cfg.use_legacy_classnames_sort;
-    let sorted: Vec<Prepped<'_>> = match custom_cmp {
+    // `order` lists `items` positions in print order; a position repeats when
+    // one prepared rule stands in for its duplicates.
+    let (items, order): (Vec<Prepped<'_>>, Vec<u32>) = match custom_cmp {
         Some(cmp) => {
             let subst_timer = timings::start(Stage::AssembleSubst);
             let mut items: Vec<Prepped<'_>> = non_const
                 .iter()
-                .map(|rule| Prepped::new(rule, legacy, &prepared_consts))
+                .map(|rule| Prepped::new(rule, legacy, &consts))
                 .collect();
             drop(subst_timer);
             let _t = timings::start(Stage::AssembleSort);
             items.sort_by(|a, b| compare_rules(a, b, cfg, cmp));
-            items
+            let order = (0..items.len() as u32).collect();
+            (items, order)
         }
-        None => keyed_order(non_const, legacy, &prepared_consts),
+        None => keyed_order(&non_const, legacy, &consts),
     };
+    let _render_timer = timings::start(Stage::AssembleRender);
+    // The print order as one flat run: the passes below read it in sequence
+    // instead of chasing each rule through its prepared copy.
+    let sorted: Vec<Printed<'_>> = order
+        .iter()
+        .map(|&i| {
+            let item = &items[i as usize];
+            Printed {
+                priority: item.priority,
+                class_name: &item.rule.class_name,
+                ltr: item.ltr(),
+                rtl: item.rtl(),
+            }
+        })
+        .collect();
 
     let logical_float_vars = logical_float_block(
         sorted
             .iter()
-            .any(|item| text_has_logical_float(item.ltr(), item.rtl())),
+            .any(|item| text_has_logical_float(item.ltr, item.rtl)),
     );
 
-    let _render_timer = timings::start(Stage::AssembleRender);
     // Consecutive runs of floor(priority/1000); input is priority-sorted so runs
     // are the priority bands.
     let mut bands: Vec<(usize, usize)> = Vec::new();
@@ -480,7 +561,7 @@ fn assemble_impl(
 
     let text_bytes: usize = sorted
         .iter()
-        .map(|item| item.ltr().len() + item.rtl().map_or(0, |t| t.len() + 40) + 1)
+        .map(|item| item.ltr.len() + item.rtl.map_or(0, |t| t.len() + 40) + 1)
         .sum();
     let mut out = String::with_capacity(
         logical_float_vars.len() + header.len() + text_bytes + 32 * bands.len(),
@@ -511,7 +592,7 @@ fn assemble_impl(
                     continue;
                 }
                 let i = start + offset;
-                match slot_of.entry(&item.rule.class_name) {
+                match slot_of.entry(item.class_name) {
                     Entry::Vacant(vacant) => {
                         vacant.insert(slots.len());
                         slots.push(i);
@@ -537,8 +618,8 @@ fn assemble_impl(
                 }
                 let item = &sorted[i];
                 // Empty rtl is falsy upstream and behaves exactly like absent.
-                let rtl = item.rtl().filter(|s| !s.is_empty());
-                push_chunk(&mut out, item.ltr(), rtl, index, cfg);
+                let rtl = item.rtl.filter(|s| !s.is_empty());
+                push_chunk(&mut out, item.ltr, rtl, index, cfg);
             }
             if part == BandPart::Layered {
                 out.push_str("\n}");
@@ -546,6 +627,14 @@ fn assemble_impl(
         }
     }
     Ok(out)
+}
+
+// What printing reads of one rule, in print order.
+struct Printed<'a> {
+    priority: f64,
+    class_name: &'a str,
+    ltr: &'a str,
+    rtl: Option<&'a str>,
 }
 
 // How one priority band is cut for printing. Upstream filters `pri === 0` and
@@ -607,19 +696,22 @@ const WIDTH_KEY_MEMO_CAP: usize = 1 << 14;
 fn width_sort_key(rule: &str) -> Option<Arc<WidthSortKey>> {
     let bytes = rule.as_bytes();
     let mut prefix_len = 0;
+    let mut has_media = false;
     while bytes.get(prefix_len) == Some(&b'@') {
-        match rule[prefix_len..].find('{') {
-            Some(brace) => prefix_len += brace + 1,
+        match memchr::memchr(b'{', &bytes[prefix_len..]) {
+            Some(brace) => {
+                has_media |= bytes[prefix_len..].starts_with(b"@media ");
+                prefix_len += brace + 1;
+            }
             None => break,
         }
     }
-    if prefix_len == 0 {
+    // A chain has a key only through a `@media ` prelude; every other rule
+    // (no wrapper, @keyframes, @supports, …) is answered without the memo.
+    if !has_media {
         return None;
     }
     let prefix = &rule[..prefix_len];
-    if !prefix.contains("@media ") {
-        return None;
-    }
     if let Some(hit) = WIDTH_KEY_MEMO.with(|memo| memo.borrow().get(prefix).cloned()) {
         return hit;
     }
@@ -688,8 +780,8 @@ fn compare_width_sort_keys(
 // parity: adjustConstAtRulePriority. A rule wrapped in a constant placeholder
 // (`var(--hash){…}`) was priced as an unknown key; once the constant is known
 // to be an at-rule, that share is swapped for the at-rule's own.
-fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedConsts) -> f64 {
-    if consts.at_rule_shares.is_empty() {
+fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &ConstTable) -> f64 {
+    if !consts.has_at_rules {
         return priority;
     }
     let mut adjusted = priority;
@@ -699,8 +791,13 @@ fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedCons
         if ltr.as_bytes().get(end) != Some(&b'{') {
             continue;
         }
-        let placeholder = &ltr[start..end];
-        if let Some(&(placeholder_share, at_rule_share)) = consts.at_rule_shares.get(placeholder)
+        // The placeholder is a scanner match, so only a `by_name` constant can
+        // be the one it names.
+        let shares = consts
+            .by_name
+            .get(&ltr[start + 6..end - 1])
+            .and_then(|&i| consts.consts[i as usize].at_rule_shares);
+        if let Some((placeholder_share, at_rule_share)) = shares
             && adjusted >= placeholder_share
         {
             adjusted += at_rule_share - placeholder_share;
@@ -709,72 +806,172 @@ fn adjust_const_at_rule_priority(ltr: &str, priority: f64, consts: &PreparedCons
     adjusted
 }
 
-// Cache UTF-16 units of the class name (legacy) or const-substituted rule text
-// once. In the latter case, the declaration and property name are subranges of
-// the same buffer, so every string tie-break uses exactly one order.
+// The UTF-16 code units of the class name (legacy) or of the const-substituted
+// rule text, derived once. The declaration and the declared property name are
+// subranges of the same units, so every string tie-break uses the one order.
+// Offsets are u32 to keep the key, and the prepared rule around it, small.
 struct RuleKey {
-    text: Vec<u16>,
-    declaration_start: usize,
-    name: std::ops::Range<usize>,
+    units: Box<[u16]>,
+    declaration_start: u32,
+    name: (u32, u32),
+}
+
+fn key_offset(units: usize) -> u32 {
+    u32::try_from(units).expect("a rule's text stays under 4 GiB")
+}
+
+// An ASCII text is its own code units, at the same offsets.
+fn utf16_units(text: &str) -> Box<[u16]> {
+    if text.is_ascii() {
+        text.bytes().map(u16::from).collect()
+    } else {
+        text.encode_utf16().collect()
+    }
 }
 
 impl RuleKey {
+    // `ltr` is the const-substituted rule text, the one upstream sorts on.
     fn for_text(class_name: &str, ltr: &str, legacy: bool) -> Self {
         if legacy {
-            let text: Vec<u16> = class_name.encode_utf16().collect();
+            let units = utf16_units(class_name);
             return Self {
-                declaration_start: text.len(),
-                text,
-                name: 0..0,
+                declaration_start: key_offset(units.len()),
+                units,
+                name: (0, 0),
             };
         }
+        let units = utf16_units(ltr);
+        let ascii = units.len() == ltr.len();
+        let at = |bytes: usize| {
+            let units = if ascii {
+                bytes
+            } else {
+                ltr[..bytes].encode_utf16().count()
+            };
+            key_offset(units)
+        };
         let (name_start, name_len) = declared_name_range(ltr);
-        let declaration_start = ltr.len() - decl_slice(ltr).len();
-        let name_start_units = ltr[..name_start].encode_utf16().count();
-        let name_len_units = ltr[name_start..name_start + name_len]
-            .encode_utf16()
-            .count();
         Self {
-            text: ltr.encode_utf16().collect(),
-            declaration_start: ltr[..declaration_start].encode_utf16().count(),
-            name: name_start_units..name_start_units + name_len_units,
+            declaration_start: at(ltr.len() - decl_slice(ltr).len()),
+            name: (at(name_start), at(name_start + name_len)),
+            units,
         }
     }
 
+    fn name(&self) -> &[u16] {
+        &self.units[self.name.0 as usize..self.name.1 as usize]
+    }
+
+    fn declaration(&self) -> &[u16] {
+        &self.units[self.declaration_start as usize..]
+    }
+
+    // The order of the steps is upstream's: declared name, width bound,
+    // declaration, whole rule (the legacy class-name key has neither a name
+    // nor a declaration).
     fn cmp(
         &self,
         other: &Self,
         width: Option<&WidthSortKey>,
         other_width: Option<&WidthSortKey>,
     ) -> Ordering {
-        self.text[self.name.clone()]
-            .cmp(&other.text[other.name.clone()])
-            .then_with(|| compare_width_sort_keys(width, other_width, default_locale_cmp))
-            .then_with(|| {
-                self.text[self.declaration_start..].cmp(&other.text[other.declaration_start..])
-            })
-            .then_with(|| self.text.cmp(&other.text))
+        self.name()
+            .cmp(other.name())
+            .then_with(|| self.cmp_after_name(other, width, other_width))
+    }
+
+    // The steps of `cmp` that follow an equal declared name.
+    fn cmp_after_name(
+        &self,
+        other: &Self,
+        width: Option<&WidthSortKey>,
+        other_width: Option<&WidthSortKey>,
+    ) -> Ordering {
+        compare_width_sort_keys(width, other_width, default_locale_cmp)
+            .then_with(|| self.declaration().cmp(other.declaration()))
+            .then_with(|| self.units.cmp(&other.units))
     }
 }
 
-fn rule_identity(r: &StylexRule) -> (&str, &str, Option<&str>, u64) {
-    (
-        &r.class_name,
-        &r.ltr,
-        r.rtl.as_deref(),
-        r.priority.to_bits(),
-    )
+// A finite priority as bits that order like the number does; -0 and +0 are
+// one priority, as their difference is 0 upstream.
+fn priority_bits(priority: f64) -> u64 {
+    let bits = (priority + 0.0).to_bits();
+    if bits >> 63 == 0 {
+        bits | (1 << 63)
+    } else {
+        !bits
+    }
 }
 
-// Keys derived once per rule; the stable index sort matches the comparator path.
+// One rule in `sort_finite`: its priority and the rank of its declared
+// property name as integers, so most comparisons never read the key units.
+struct SortSlot<T> {
+    priority: u64,
+    name: u32,
+    id: T,
+}
+
+// The print order of rules whose priorities are all finite. That comparator
+// is a total preorder, so the stable sort's answer is the one order sorted by
+// (comparator, input position): `ids` arrive in any order and `T` orders
+// them by input position.
+fn sort_finite<'k, T: Copy + Ord>(
+    ids: impl Iterator<Item = T>,
+    rule: impl Fn(T) -> (f64, &'k RuleKey, Option<&'k WidthSortKey>),
+) -> Vec<T> {
+    let mut name_ids: FxHashMap<&'k [u16], u32> = FxHashMap::default();
+    let mut names: Vec<&'k [u16]> = Vec::new();
+    let mut slots: Vec<SortSlot<T>> = ids
+        .map(|id| {
+            let (priority, key, _) = rule(id);
+            let name = key.name();
+            let name = *name_ids.entry(name).or_insert_with(|| {
+                names.push(name);
+                names.len() as u32 - 1
+            });
+            SortSlot {
+                priority: priority_bits(priority),
+                name,
+                id,
+            }
+        })
+        .collect();
+    // Code-unit slices compare as utf16_cmp compares the names they spell.
+    let mut by_rank: Vec<u32> = (0..names.len() as u32).collect();
+    by_rank.sort_unstable_by(|&a, &b| names[a as usize].cmp(names[b as usize]));
+    let mut rank = vec![0u32; names.len()];
+    for (position, &name) in by_rank.iter().enumerate() {
+        rank[name as usize] = position as u32;
+    }
+    for slot in &mut slots {
+        slot.name = rank[slot.name as usize];
+    }
+    slots.sort_unstable_by(|a, b| {
+        (a.priority, a.name)
+            .cmp(&(b.priority, b.name))
+            .then_with(|| {
+                let (_, key, width) = rule(a.id);
+                let (_, other_key, other_width) = rule(b.id);
+                key.cmp_after_name(other_key, width, other_width)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    slots.into_iter().map(|slot| slot.id).collect()
+}
+
+// Keys derived once per distinct rule. Returns the prepared rules and their
+// print order as positions into them.
 fn keyed_order<'a>(
-    non_const: Vec<&'a StylexRule>,
+    non_const: &[&'a StylexRule],
     legacy: bool,
-    consts: &PreparedConsts,
-) -> Vec<Prepped<'a>> {
+    consts: &ConstTable,
+) -> (Vec<Prepped<'a>>, Vec<u32>) {
     let dedupe_timer = timings::start(Stage::AssembleDedupe);
-    let unique = dedupe_keep_first(&non_const);
+    let deduped = dedupe_keep_first(non_const);
     drop(dedupe_timer);
+    let unique: &[&'a StylexRule] = deduped.as_ref().map_or(non_const, |d| &d.unique);
+
     let subst_timer = timings::start(Stage::AssembleSubst);
     let items: Vec<Prepped<'a>> = unique
         .iter()
@@ -788,65 +985,80 @@ fn keyed_order<'a>(
         .collect();
     drop(keys_timer);
 
-    // Dropping duplicates is order-neutral only under a consistent total order
-    // (finite priorities); otherwise sort the full input as before, mapping
-    // each rule to its already-prepared representative in `unique`.
-    let fallback =
-        unique.len() != non_const.len() && items.iter().any(|item| !item.priority.is_finite());
     let _sort_timer = timings::start(Stage::AssembleSort);
-    let cmp_rep = |ia: u32, ib: u32| {
+    if items.iter().all(|item| item.priority.is_finite()) {
+        // Copies sort Equal and adjacent, so the dropped ones change nothing.
+        let order = sort_finite(0..items.len() as u32, |i| {
+            let item = &items[i as usize];
+            (item.priority, &keys[i as usize], item.width.as_deref())
+        });
+        return (items, order);
+    }
+    // Without a consistent total order (a non-finite priority) dropping
+    // duplicates is not order-neutral: the full input is sorted, every rule
+    // through the copy prepared for it.
+    let mut order: Vec<u32> = match deduped {
+        Some(deduped) => deduped.stand_in,
+        None => (0..items.len() as u32).collect(),
+    };
+    order.sort_by(|&ia, &ib| {
         let (a, b) = (&items[ia as usize], &items[ib as usize]);
         compare_priorities(a.priority, b.priority).unwrap_or_else(|| {
             keys[ia as usize].cmp(&keys[ib as usize], a.width.as_deref(), b.width.as_deref())
         })
-    };
-    if fallback {
-        let mut rep_of: FxHashMap<(&str, &str, Option<&str>, u64), u32> =
-            FxHashMap::with_capacity_and_hasher(unique.len(), Default::default());
-        for (i, r) in unique.iter().enumerate() {
-            rep_of.entry(rule_identity(r)).or_insert(i as u32);
-        }
-        let mut order: Vec<u32> = non_const
-            .iter()
-            .map(|r| rep_of[&rule_identity(r)])
-            .collect();
-        order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
-        return order
-            .into_iter()
-            .map(|i| items[i as usize].clone())
-            .collect();
-    }
-    let mut order: Vec<u32> = (0..items.len() as u32).collect();
-    order.sort_by(|&ia, &ib| cmp_rep(ia, ib));
-    let mut items: Vec<Option<Prepped<'a>>> = items.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .map(|i| items[i as usize].take().expect("each index sorts once"))
-        .collect()
+    });
+    (items, order)
+}
+
+struct Deduped<'a> {
+    unique: Vec<&'a StylexRule>,
+    // Per input rule, the position in `unique` of the copy that stands for it.
+    stand_in: Vec<u32>,
 }
 
 // Keep-first is output-neutral (copies sort Equal, adjacent); a class with two
 // distinct texts keeps every copy, since a copy between them decides last-wins.
-fn dedupe_keep_first<'a>(rules: &[&'a StylexRule]) -> Vec<&'a StylexRule> {
-    let mut seen: FxHashSet<(&str, &str, Option<&str>, u64)> = FxHashSet::default();
-    let first: Vec<bool> = rules
+// None = the input holds no copies.
+fn dedupe_keep_first<'a>(rules: &[&'a StylexRule]) -> Option<Deduped<'a>> {
+    let mut seen: FxHashMap<(&str, &str, Option<&str>, u64), u32> =
+        FxHashMap::with_capacity_and_hasher(rules.len(), Default::default());
+    // Per input rule, the input position of its first copy.
+    let first: Vec<u32> = rules
         .iter()
-        .map(|r| seen.insert(rule_identity(r)))
+        .enumerate()
+        .map(|(i, r)| {
+            *seen
+                .entry((
+                    &r.class_name,
+                    &r.ltr,
+                    r.rtl.as_deref(),
+                    r.priority.to_bits(),
+                ))
+                .or_insert(i as u32)
+        })
         .collect();
     if seen.len() == rules.len() {
-        return rules.to_vec();
+        return None;
     }
+    let is_first = |i: usize| first[i] as usize == i;
     let mut texts: FxHashMap<&str, u32> = FxHashMap::default();
-    for (r, _) in rules.iter().zip(&first).filter(|(_, fresh)| **fresh) {
-        *texts.entry(&r.class_name).or_default() += 1;
+    for (i, r) in rules.iter().enumerate() {
+        if is_first(i) {
+            *texts.entry(&r.class_name).or_default() += 1;
+        }
     }
     let single_text_classes = texts.len() == seen.len();
-    rules
-        .iter()
-        .zip(first)
-        .filter(|(r, fresh)| *fresh || (!single_text_classes && texts[&*r.class_name] > 1))
-        .map(|(r, _)| *r)
-        .collect()
+    let mut unique = Vec::with_capacity(seen.len());
+    let mut stand_in: Vec<u32> = Vec::with_capacity(rules.len());
+    for (i, r) in rules.iter().enumerate() {
+        if is_first(i) || (!single_text_classes && texts[&*r.class_name] > 1) {
+            stand_in.push(unique.len() as u32);
+            unique.push(*r);
+        } else {
+            stand_in.push(stand_in[first[i] as usize]);
+        }
+    }
+    Some(Deduped { unique, stand_in })
 }
 
 // rule.slice(rule.lastIndexOf('{')): lastIndexOf misses → -1 → JS slice(-1) is
@@ -862,59 +1074,104 @@ fn decl_slice(rule: &str) -> &str {
     }
 }
 
+// parity: resolveConstant. `None` = the value references no constant and
+// stays as it is; `visiting` holds the slots of the references being expanded.
 fn resolve_constant(
     value: &ConstVal,
-    consts: &[(String, ConstVal)],
-    visited: &mut Vec<String>,
-) -> Result<ConstVal, AssembleError> {
-    let ConstVal::Str(s) = value else {
-        return Ok(value.clone());
+    consts: &[ConstDecl],
+    slots: &ConstSlots,
+    visiting: &mut Vec<u32>,
+) -> Result<Option<String>, AssembleError> {
+    let ConstVal::Str(text) = value else {
+        return Ok(None);
     };
-    let mut result = s.clone();
+    let mut result: Option<String> = None;
     let mut scan_from = 0usize;
-    while let Some((start, end)) = find_var_ref(&result, scan_from) {
-        let ref_name = result[start + 4..end - 1].to_string();
-        if visited.contains(&ref_name) {
-            return Err(AssembleError::CircularConst(ref_name));
-        }
-        let ref_key = format!("var({ref_name})");
-        let Some((_, ref_val)) = consts.iter().find(|(k, _)| *k == ref_key) else {
+    loop {
+        let cur = result.as_deref().unwrap_or(text);
+        let Some((start, end)) = find_var_ref(cur, scan_from) else {
+            break;
+        };
+        // Only a constant can be under expansion, so the cycle check upstream
+        // runs before its lookup reads the same after it.
+        let Some(&slot) = slots.get(&cur[start + 6..end - 1]) else {
             scan_from = end;
             continue;
         };
-        visited.push(ref_name.clone());
-        let replacement = resolve_constant(&ref_val.clone(), consts, visited)?;
+        if visiting.contains(&slot) {
+            return Err(AssembleError::CircularConst(
+                cur[start + 4..end - 1].to_string(),
+            ));
+        }
+        visiting.push(slot);
+        let ref_val = &consts[slot as usize].1;
+        let replacement = match resolve_constant(ref_val, consts, slots, visiting)? {
+            Some(resolved) => resolved,
+            None => ref_val.to_js_string(),
+        };
+        visiting.pop();
         // The replacement is inserted verbatim (a function replacer upstream):
-        // `$&` and friends in a constant's value are plain text.
-        let needle = result[start..end].to_string();
-        result = result.replacen(&needle, &replacement.to_js_string(), 1);
-        visited.retain(|v| *v != ref_name);
+        // `$&` and friends in a constant's value are plain text. Upstream
+        // replaces the first occurrence of the matched text, which is this
+        // match: an earlier one would have been matched, and replaced, first.
+        let mut next = String::with_capacity(cur.len() - (end - start) + replacement.len());
+        next.push_str(&cur[..start]);
+        next.push_str(&replacement);
+        next.push_str(&cur[end..]);
+        result = Some(next);
         scan_from = 0;
     }
-    Ok(ConstVal::Str(result))
+    Ok(result)
 }
 
 // Scanner for /var\((--[A-Za-z0-9_-]+)\)/ from a byte offset; returns the byte
-// span of the whole match.
+// span of the whole match. `(` is the rarest byte of `var(--`, so it anchors.
 fn find_var_ref(s: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = s.as_bytes();
     let mut pos = from;
     loop {
-        let off = s.get(pos..)?.find("var(--")?;
-        let start = pos + off;
-        let mut j = start + 6;
+        let paren = pos + memchr::memchr(b'(', bytes.get(pos..)?)?;
+        pos = paren + 1;
+        if paren < from + 3
+            || &bytes[paren - 3..paren] != b"var"
+            || bytes.get(paren + 1..paren + 3) != Some(b"--")
+        {
+            continue;
+        }
+        let mut j = paren + 3;
         while j < bytes.len() && is_var_ident_byte(bytes[j]) {
             j += 1;
         }
-        if j > start + 6 && j < bytes.len() && bytes[j] == b')' {
-            return Some((start, j + 1));
+        if j > paren + 3 && j < bytes.len() && bytes[j] == b')' {
+            return Some((paren - 3, j + 1));
         }
-        pos = start + 1;
     }
 }
 
 fn is_var_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+// Every `--name:` in `text` whose name is one or more identifier bytes, i.e.
+// every place a regular constant's key-rewrite needle can match. The visitor
+// ends the walk by breaking.
+fn for_each_custom_property_key<'a>(
+    text: &'a str,
+    mut visit: impl FnMut(&'a str) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let bytes = text.as_bytes();
+    for colon in memchr::memchr_iter(b':', bytes) {
+        let mut run = colon;
+        while run > 0 && is_var_ident_byte(bytes[run - 1]) {
+            run -= 1;
+        }
+        for at in run..colon.saturating_sub(2) {
+            if bytes[at] == b'-' && bytes[at + 1] == b'-' {
+                visit(&text[at + 2..colon])?;
+            }
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 // The per-const strings substitution needs, derived once per assemble instead
@@ -923,19 +1180,73 @@ struct PreparedConst {
     var_ref: String,
     replacement: String,
     key_rewrite: Option<(String, String)>,
+    // For a string constant that is an at-rule: the priority share its
+    // placeholder was given as a key, and the share the at-rule itself earns.
+    at_rule_shares: Option<(f64, f64)>,
 }
 
-struct PreparedConsts {
-    list: Vec<PreparedConst>,
-    // For string constants that are at-rules: placeholder -> (placeholder share,
-    // at-rule share) for O(1) priority re-pricing.
-    at_rule_shares: FxHashMap<Box<str>, (f64, f64)>,
+#[cfg(test)]
+thread_local! {
+    // Substitution work on this thread: names looked up in the constant
+    // index, and texts searched for one constant's reference or key. Tests
+    // weigh the indexed steps against the sequence by them, not by a clock.
+    static NAME_LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CONST_SEARCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-fn prepare_consts(consts: &[(String, ConstVal)]) -> PreparedConsts {
-    let mut list = Vec::with_capacity(consts.len());
-    let mut at_rule_shares: FxHashMap<Box<str>, (f64, f64)> = FxHashMap::default();
-    for (var_ref, const_val) in consts {
+fn search(text: &str, needle: &str) -> bool {
+    #[cfg(test)]
+    CONST_SEARCHES.with(|count| count.set(count.get() + 1));
+    text.contains(needle)
+}
+
+impl PreparedConst {
+    // Whether this constant's substitution step would rewrite `text`.
+    fn touches(&self, text: &str) -> bool {
+        search(text, &self.var_ref)
+            || self
+                .key_rewrite
+                .as_ref()
+                .is_some_and(|(needle, _)| search(text, needle))
+    }
+
+    // parity: one iteration of the per-rule constsMap loop, over the running
+    // text (`out`, or `text` while nothing has matched yet).
+    fn substitute(&self, text: &str, out: &mut Option<String>) {
+        let cur = out.as_deref().unwrap_or(text);
+        if search(cur, &self.var_ref) {
+            // Verbatim, like the function replacer upstream passes; only the
+            // key rewrite below still reads `$` patterns in its replacement.
+            *out = Some(cur.replace(self.var_ref.as_str(), &self.replacement));
+        }
+        let cur = out.as_deref().unwrap_or(text);
+        if let Some((needle, target)) = &self.key_rewrite
+            && search(cur, needle)
+        {
+            *out = Some(js_replace_all(cur, needle, target));
+        }
+    }
+}
+
+// The resolved constants in upstream's iteration order, indexed so a rule is
+// scanned once for the constants it mentions instead of once per constant.
+#[derive(Default)]
+struct ConstTable {
+    consts: Vec<PreparedConst>,
+    // Constants whose `var(--name)` the reference scanner reads (an
+    // identifier name): name → position in `consts`.
+    by_name: FxHashMap<Arc<str>, u32>,
+    // The rest, ascending; each is probed by substring search like upstream.
+    irregular: Vec<u32>,
+    // Any `by_name` constant rewrites declaration keys / is an at-rule.
+    rewrites_keys: bool,
+    has_at_rules: bool,
+}
+
+fn prepare_consts(consts: &[ConstDecl]) -> ConstTable {
+    let mut table = ConstTable::default();
+    for (i, (name, const_val)) in consts.iter().enumerate() {
+        let var_ref = format!("var(--{name})");
         let replacement = const_val.to_js_string();
         // A const resolving to var(...) also rewrites `--constName:` declaration
         // keys so the target variable stays overridable. Trims are ES TrimString.
@@ -946,56 +1257,172 @@ fn prepare_consts(consts: &[(String, ConstVal)]) -> PreparedConsts {
                     Some(ci) => crate::jsrt::js_trim(&inside[..ci]),
                     None => inside,
                 };
-                let const_name = &var_ref[4..var_ref.len() - 1];
-                (format!("{const_name}:"), format!("{target_name}:"))
+                (format!("--{name}:"), format!("{target_name}:"))
             });
-        if let ConstVal::Str(value) = const_val
-            && value.starts_with('@')
-        {
-            at_rule_shares.insert(
-                var_ref.as_str().into(),
-                (get_priority(var_ref), get_priority(value)),
-            );
+        let at_rule_shares = match const_val {
+            ConstVal::Str(value) if value.starts_with('@') => {
+                Some((get_priority(&var_ref), get_priority(value)))
+            }
+            _ => None,
+        };
+        if !name.is_empty() && name.bytes().all(is_var_ident_byte) {
+            table.by_name.insert(name.clone(), i as u32);
+            table.rewrites_keys |= key_rewrite.is_some();
+            table.has_at_rules |= at_rule_shares.is_some();
+        } else {
+            table.irregular.push(i as u32);
         }
-        list.push(PreparedConst {
-            var_ref: var_ref.clone(),
+        table.consts.push(PreparedConst {
+            var_ref,
             replacement,
             key_rewrite,
+            at_rule_shares,
         });
     }
-    PreparedConsts {
-        list,
-        at_rule_shares,
+    table
+}
+
+impl ConstTable {
+    fn is_empty(&self) -> bool {
+        self.consts.is_empty()
+    }
+
+    // The position of the `by_name` constant a reference or a key names.
+    fn lookup(&self, name: &str) -> Option<u32> {
+        #[cfg(test)]
+        NAME_LOOKUPS.with(|count| count.set(count.get() + 1));
+        self.by_name.get(name).copied()
+    }
+
+    // The first constant at or after `from` whose substitution step would
+    // rewrite `text`: the steps before it are identity copies upstream.
+    fn next_active(&self, text: &str, from: u32) -> Option<u32> {
+        let mut best = u32::MAX;
+        let mut scan_from = 0;
+        while let Some((start, end)) = find_var_ref(text, scan_from) {
+            if let Some(i) = self.lookup(&text[start + 6..end - 1])
+                && i >= from
+            {
+                if i == from {
+                    return Some(i);
+                }
+                best = best.min(i);
+            }
+            scan_from = end;
+        }
+        if self.rewrites_keys {
+            let found_from = for_each_custom_property_key(text, |name| {
+                if let Some(i) = self.lookup(name)
+                    && i >= from
+                    && i < best
+                    && self.consts[i as usize].key_rewrite.is_some()
+                {
+                    best = i;
+                    if i == from {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            });
+            if found_from.is_break() {
+                return Some(from);
+            }
+        }
+        for &i in &self.irregular {
+            if i >= best {
+                break;
+            }
+            if i >= from && self.consts[i as usize].touches(text) {
+                best = i;
+                break;
+            }
+        }
+        (best != u32::MAX).then_some(best)
+    }
+
+    // How many constants at or after `from` the indexed loop may still have
+    // to step through for `text`: the ones its references and rewritable
+    // keys name, each once however often it is named, and every irregular
+    // one, which costs that loop the same search the plain loop makes.
+    fn live_count(&self, text: &str, from: u32) -> usize {
+        let mut named: Vec<u32> = Vec::new();
+        let mut scan_from = 0;
+        while let Some((start, end)) = find_var_ref(text, scan_from) {
+            if let Some(i) = self.lookup(&text[start + 6..end - 1])
+                && i >= from
+            {
+                named.push(i);
+            }
+            scan_from = end;
+        }
+        if self.rewrites_keys {
+            let _ = for_each_custom_property_key(text, |name| {
+                if let Some(i) = self.lookup(name)
+                    && i >= from
+                    && self.consts[i as usize].key_rewrite.is_some()
+                {
+                    named.push(i);
+                }
+                ControlFlow::Continue(())
+            });
+        }
+        named.sort_unstable();
+        named.dedup();
+        named.len() + self.irregular.len() - self.irregular.partition_point(|&i| i < from)
     }
 }
 
-// The contains gates only skip replacements that would be identity copies; a
-// hit re-probes for var(-- because replacements can add/remove refs.
+// Finding a rule's next active constant rescans its text, a name lookup per
+// reference and key in it, so a rule that thousands of constants rewrite
+// would pay steps x references in lookups. Upstream's plain loop pays a
+// substring search per constant instead, whether the rule names it or not:
+// cheaper for that rule, and far dearer for one that names a hundred
+// constants of twenty thousand. After this many indexed steps, and at every
+// doubling of them, the constants still ahead are weighed against the ones
+// the rule still names, and the rest run as the plain loop only where it is
+// the cheaper of the two.
+const MAX_INDEXED_STEPS: u32 = 32;
+
+// parity: the per-rule constsMap loop. Upstream runs every constant's step in
+// order over the running text; a step that matches nothing copies the text, so
+// only the steps `next_active` finds are run, each exactly as upstream does.
 /// `None` when no const reference matched: callers keep sharing the rule's
 /// Arc'd text instead of materializing an identical String.
-fn substitute_consts(text: &str, consts: &[PreparedConst]) -> Option<String> {
+fn substitute_consts(text: &str, consts: &ConstTable) -> Option<String> {
+    substitute_consts_capped(text, consts, MAX_INDEXED_STEPS)
+}
+
+// `substitute_consts` with the number of indexed steps it takes before it
+// first weighs running the remaining constants in sequence; the result is the
+// same for any cap.
+fn substitute_consts_capped(text: &str, consts: &ConstTable, max_indexed: u32) -> Option<String> {
     if consts.is_empty() {
         return None;
     }
     let mut out: Option<String> = None;
-    let mut has_ref = text.contains("var(--");
-    for c in consts {
-        let cur = out.as_deref().unwrap_or(text);
-        if has_ref && cur.contains(c.var_ref.as_str()) {
-            // Verbatim, like the function replacer upstream passes; only the
-            // key rewrite below still reads `$` patterns in its replacement.
-            let next = cur.replace(c.var_ref.as_str(), &c.replacement);
-            has_ref = next.contains("var(--");
-            out = Some(next);
+    let mut from = 0;
+    let mut indexed = 0;
+    let mut check_at = max_indexed;
+    while let Some(i) = consts.next_active(out.as_deref().unwrap_or(text), from) {
+        if indexed == check_at {
+            let live = consts.live_count(out.as_deref().unwrap_or(text), i);
+            // The sequence searches for every constant ahead, an indexed step
+            // rescans the text for each one still named; the rescan also
+            // walks the declaration keys when constants rewrite them.
+            let factor = if consts.rewrites_keys { 16 } else { 8 };
+            if consts.consts.len() - i as usize <= factor * live.max(1) {
+                // The steps before `i` match nothing, so the sequence starts
+                // there.
+                for c in &consts.consts[i as usize..] {
+                    c.substitute(text, &mut out);
+                }
+                break;
+            }
+            check_at = check_at.saturating_mul(2).max(1);
         }
-        let cur = out.as_deref().unwrap_or(text);
-        if let Some((needle, target)) = &c.key_rewrite
-            && cur.contains(needle.as_str())
-        {
-            let next = js_replace_all(cur, needle, target);
-            has_ref = next.contains("var(--");
-            out = Some(next);
-        }
+        consts.consts[i as usize].substitute(text, &mut out);
+        from = i + 1;
+        indexed += 1;
     }
     out
 }
@@ -1050,19 +1477,13 @@ fn js_replace_all(s: &str, needle: &str, replacement: &str) -> String {
     String::from_utf8(out).expect("byte-splices preserve UTF-8")
 }
 
-// :not(#\#) polyfill; inserted before the first '::' when present, else before
-// the last '{'; @keyframes and @position-try are exempt (@property etc. are not).
-fn add_specificity_level(selector: &str, index: usize) -> String {
-    let mut out = String::with_capacity(selector.len() + 9 * index);
-    push_specificity_level(&mut out, selector, index);
-    out
-}
-
 // Rules that take neither the specificity bump nor a direction ancestor.
 fn is_selector_exempt(rule: &str) -> bool {
     rule.starts_with("@keyframes") || rule.starts_with("@position-try")
 }
 
+// :not(#\#) polyfill; inserted before the first '::' when present, else before
+// the last '{'; @keyframes and @position-try are exempt (@property etc. are not).
 fn push_specificity_level(out: &mut String, selector: &str, index: usize) {
     if is_selector_exempt(selector) {
         out.push_str(selector);
@@ -1093,34 +1514,17 @@ fn push_split(out: &mut String, selector: &str, split_at: usize, index: usize) {
 
 // Split point of a rule that renders as plain slices (no rtl, no theme pair,
 // not exempt from the bump); None routes the rule through push_chunk.
-fn plain_split(ltr: &str, rtl: Option<&str>) -> Option<usize> {
-    if rtl.is_some_and(|t| !t.is_empty()) || ltr.contains(", .") || is_selector_exempt(ltr) {
+fn plain_split(ltr: &str, rtl: Option<&str>) -> Option<u32> {
+    if rtl.is_some_and(|t| !t.is_empty()) || has_theme_pair_hint(ltr) || is_selector_exempt(ltr) {
         return None;
     }
-    Some(specificity_split(ltr))
+    u32::try_from(specificity_split(ltr)).ok()
 }
 
-fn add_ancestor_selector(selector: &str, ancestor_selector: &str) -> String {
-    if is_selector_exempt(selector) {
-        return selector.to_string();
-    }
-    if !selector.starts_with('@') {
-        return format!("{ancestor_selector} {selector}");
-    }
-    let last_at_rule = selector.rfind('@').unwrap_or(0);
-    match selector[last_at_rule..].find('{') {
-        Some(off) => {
-            let bracket = last_at_rule + off;
-            format!(
-                "{}{} {}",
-                &selector[..bracket + 1],
-                ancestor_selector,
-                &selector[bracket + 1..]
-            )
-        }
-        // indexOf miss → -1 → slice(0,0) prefix and the whole string as rest.
-        None => format!("{ancestor_selector} {selector}"),
-    }
+// `", ."` is a literal every theme-pair match contains.
+fn has_theme_pair_hint(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    memchr::memchr_iter(b',', bytes).any(|comma| bytes[comma + 1..].starts_with(b" ."))
 }
 
 // /\.([a-zA-Z0-9]+), \.([a-zA-Z0-9]+):root/g → '.$1.$1, .$1.$1:root' — the
@@ -1208,7 +1612,7 @@ struct PreparedRule {
     // ltr/rtl carry the const substitutions; unchanged text shares the rule's Arc.
     ltr: Arc<str>,
     rtl: Option<Arc<str>>,
-    plain_split: Option<usize>,
+    plain_split: Option<u32>,
 }
 
 impl PreparedRule {
@@ -1220,11 +1624,30 @@ impl PreparedRule {
 
 struct FilePrep {
     rules: PreparedRules,
-    const_decls: Vec<(String, ConstVal)>,
-    // Non-finite priorities retain the one-shot sort behavior rather than
-    // taking the incremental path.
+    const_decls: Vec<ConstDecl>,
+    // safe = every priority finite: the precondition under which sorted-by-key
+    // order equals the stable sort. Non-finite priorities keep the one-shot
+    // sort.
     safe: bool,
     logical_float: bool,
+}
+
+impl FilePrep {
+    // Sized for exactly `rules` prepared rules and `consts` declarations: a
+    // file's preparation lives as long as the file does, so the slack a
+    // growing Vec leaves behind would be held for good.
+    fn empty(shared: bool, rules: usize, consts: usize) -> FilePrep {
+        FilePrep {
+            rules: if shared {
+                PreparedRules::Shared(Vec::with_capacity(rules))
+            } else {
+                PreparedRules::Inline(Vec::with_capacity(rules))
+            },
+            const_decls: Vec::with_capacity(consts),
+            safe: true,
+            logical_float: false,
+        }
+    }
 }
 
 struct SharedPreparedRule {
@@ -1244,6 +1667,10 @@ impl PreparedRules {
             Self::Shared(rules) => rules.len(),
         }
     }
+
+    fn iter(&self) -> impl Iterator<Item = &PreparedRule> {
+        (0..self.len()).map(|i| &self[i])
+    }
 }
 
 impl std::ops::Index<usize> for PreparedRules {
@@ -1257,7 +1684,62 @@ impl std::ops::Index<usize> for PreparedRules {
     }
 }
 
-type PreparedPool = HashMap<u64, Vec<Weak<SharedPreparedRule>>, BuildHasherDefault<IdentityHasher>>;
+// The preparations files share, by class hash, and how many are alive: one
+// per distinct rule, however many files repeat it.
+#[derive(Default)]
+struct PreparedPool {
+    buckets: HashMap<u64, Vec<Weak<SharedPreparedRule>>, BuildHasherDefault<IdentityHasher>>,
+    live: usize,
+}
+
+impl PreparedPool {
+    fn share(
+        &mut self,
+        r: &StylexRule,
+        legacy: bool,
+        consts: &ConstTable,
+    ) -> Arc<SharedPreparedRule> {
+        let bucket = self.buckets.entry(class_hash64(&r.class_name)).or_default();
+        let known = bucket
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|p| p.source == *r);
+        known.unwrap_or_else(|| {
+            let shared = Arc::new(SharedPreparedRule {
+                source: r.clone(),
+                prepared: prepare_rule(r, legacy, consts),
+            });
+            bucket.push(Arc::downgrade(&shared));
+            self.live += 1;
+            shared
+        })
+    }
+
+    // Drops one file's preparations and forgets those no other file holds, so
+    // an edit costs its own rules instead of a sweep of the pool.
+    fn release(&mut self, rules: Vec<Arc<SharedPreparedRule>>) {
+        for rule in rules {
+            if Arc::strong_count(&rule) > 1 {
+                continue;
+            }
+            if let Entry::Occupied(mut bucket) = self.buckets.entry(rule.prepared.class_hash) {
+                bucket
+                    .get_mut()
+                    .retain(|shared| !std::ptr::eq(shared.as_ptr(), Arc::as_ptr(&rule)));
+                if bucket.get().is_empty() {
+                    bucket.remove();
+                }
+            }
+            self.live -= 1;
+        }
+    }
+}
+
+fn retire(pool: &mut Option<PreparedPool>, prep: FilePrep) {
+    if let (Some(pool), PreparedRules::Shared(rules)) = (pool, prep.rules) {
+        pool.release(rules);
+    }
+}
 
 fn prefer_shared_preparation(files: &BTreeMap<String, Vec<StylexRule>>) -> bool {
     let mut seen = FxHashSet::default();
@@ -1275,12 +1757,20 @@ fn prefer_shared_preparation(files: &BTreeMap<String, Vec<StylexRule>>) -> bool 
     total >= 256 && seen.len() * 2 <= total
 }
 
-fn prepare_rule(r: &StylexRule, legacy: bool, consts: &PreparedConsts) -> PreparedRule {
-    let ltr = substitute_consts(&r.ltr, &consts.list)
+#[cfg(test)]
+thread_local! {
+    // Rules prepared on this thread: tests weigh the splice paths by it.
+    static PREPARED_RULES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn prepare_rule(r: &StylexRule, legacy: bool, consts: &ConstTable) -> PreparedRule {
+    #[cfg(test)]
+    PREPARED_RULES.with(|count| count.set(count.get() + 1));
+    let ltr = substitute_consts(&r.ltr, consts)
         .map(Arc::from)
         .unwrap_or_else(|| r.ltr.clone());
     let rtl = r.rtl.as_ref().map(|t| {
-        substitute_consts(t, &consts.list)
+        substitute_consts(t, consts)
             .map(Arc::from)
             .unwrap_or_else(|| t.clone())
     });
@@ -1299,19 +1789,11 @@ fn prepare_rule(r: &StylexRule, legacy: bool, consts: &PreparedConsts) -> Prepar
 fn prepare_file(
     rules: &[StylexRule],
     legacy: bool,
-    consts: &PreparedConsts,
+    consts: &ConstTable,
     pool: &mut Option<PreparedPool>,
 ) -> FilePrep {
-    let mut prep = FilePrep {
-        rules: if pool.is_some() {
-            PreparedRules::Shared(Vec::with_capacity(rules.len()))
-        } else {
-            PreparedRules::Inline(Vec::with_capacity(rules.len()))
-        },
-        const_decls: Vec::new(),
-        safe: true,
-        logical_float: false,
-    };
+    let const_count = rules.iter().filter(|r| is_const_rule(r)).count();
+    let mut prep = FilePrep::empty(pool.is_some(), rules.len() - const_count, const_count);
     for r in rules {
         if is_const_rule(r) {
             prep.const_decls.push(const_decl(r));
@@ -1319,29 +1801,18 @@ fn prepare_file(
         }
         match &mut prep.rules {
             PreparedRules::Inline(rules) => rules.push(prepare_rule(r, legacy, consts)),
-            PreparedRules::Shared(rules) => {
-                let bucket = pool
-                    .as_mut()
+            PreparedRules::Shared(rules) => rules.push(
+                pool.as_mut()
                     .expect("shared preparation pool")
-                    .entry(class_hash64(&r.class_name))
-                    .or_default();
-                let shared = bucket
-                    .iter()
-                    .filter_map(Weak::upgrade)
-                    .find(|p| p.source == *r)
-                    .unwrap_or_else(|| {
-                        let shared = Arc::new(SharedPreparedRule {
-                            source: r.clone(),
-                            prepared: prepare_rule(r, legacy, consts),
-                        });
-                        bucket.push(Arc::downgrade(&shared));
-                        shared
-                    });
-                rules.push(shared);
-            }
+                    .share(r, legacy, consts),
+            ),
         }
         let prepared = &prep.rules[prep.rules.len() - 1];
         prep.safe &= prepared.priority.is_finite();
+        if !prep.safe {
+            // No caller keeps an unsafe preparation, or reads more of it.
+            return prep;
+        }
         prep.logical_float |= text_has_logical_float(&prepared.ltr, prepared.rtl.as_deref());
     }
     prep
@@ -1361,18 +1832,56 @@ type RuleOwners = FxHashMap<Arc<str>, Vec<(u32, u32)>>;
 
 struct IncrState {
     cfg: AssembleConfig,
+    // Files set or removed since this state was last brought up to date.
     dirty: BTreeSet<String>,
-    structural: bool,
-    consts: Vec<(String, ConstVal)>,
-    prepared_consts: PreparedConsts,
+    consts: Vec<ConstDecl>,
+    table: Arc<ConstTable>,
     paths: Vec<String>,
     files: Vec<FilePrep>,
     pool: Option<PreparedPool>,
+    // Print order as (file rank, rule seq). With `owners`, one entry per
+    // class: the first of its owners.
     sorted: Vec<(u32, u32)>,
     owners: Option<RuleOwners>,
+    // The rule count when inline storage was last weighed against sharing.
+    weighed_at: usize,
+    // Size of the last render: the capacity of the next.
+    rendered_len: usize,
+    scratch: RenderScratch,
+}
+
+// A config the splice path cannot serve. Rebuilding its state is pointless
+// until the input that ruled it out changes, so it is remembered instead of
+// being retried on every emit. A state whose splice met the blocker is kept
+// meanwhile, and splices its dirty files once the blocker is gone.
+struct Blocked {
+    cfg: AssembleConfig,
+    on: Blocker,
+}
+
+enum Blocker {
+    // This file holds a rule outside the safe preconditions, as prepared
+    // against these constants: enough to tell, when the file changes, whether
+    // it still does.
+    File {
+        path: String,
+        consts: Arc<ConstTable>,
+    },
+    // The constants do not resolve.
+    Consts,
 }
 
 const MAX_INCR_STATES: usize = 4;
+
+// A state no emit has asked for collects the path of every file touched in
+// the meantime. Once that backlog outgrows the registry and the files the
+// state holds (and this floor, which keeps a small registry from dropping
+// states as it drains), bringing the state up to date costs no less than
+// building it, and it is dropped. The state's own files count because a
+// batch that removes most of the registry shrinks it under its own backlog,
+// and the state the next emit asks for still splices those removals for less
+// than a rebuild.
+const MAX_IDLE_DIRTY: usize = 16;
 
 // Incremental assembly for the HMR path (design-core.md §7): file-keyed rule
 // sets, canonical emission order = BTreeMap file order, memoized full assemble.
@@ -1382,6 +1891,7 @@ pub struct RuleRegistry {
     generation: u64,
     cache: Option<(u64, AssembleConfig, Result<String, AssembleError>)>,
     incr: Vec<IncrState>,
+    blocked: Vec<Blocked>,
 }
 
 impl RuleRegistry {
@@ -1390,29 +1900,36 @@ impl RuleRegistry {
     }
 
     pub fn set_file_rules(&mut self, file: &str, rules: Vec<StylexRule>) {
-        if self.files.get(file).is_some_and(|old| *old == rules) {
+        let old = self.files.get(file);
+        if old.is_some_and(|old| *old == rules) {
             return;
         }
-        let existed = self.files.insert(file.to_string(), rules).is_some();
-        for state in &mut self.incr {
-            if existed {
-                state.dirty.insert(file.to_string());
-            } else {
-                state.structural = true;
-            }
-        }
-        self.generation += 1;
+        unblock(
+            &mut self.blocked,
+            file,
+            old.map_or(&[], Vec::as_slice),
+            &rules,
+        );
+        self.files.insert(file.to_string(), rules);
+        self.touch(file);
     }
 
     pub fn remove_file(&mut self, file: &str) -> bool {
-        let removed = self.files.remove(file).is_some();
-        if removed {
-            for state in &mut self.incr {
-                state.structural = true;
-            }
-            self.generation += 1;
-        }
-        removed
+        let Some(old) = self.files.remove(file) else {
+            return false;
+        };
+        unblock(&mut self.blocked, file, &old, &[]);
+        self.touch(file);
+        true
+    }
+
+    fn touch(&mut self, file: &str) {
+        let floor = self.files.len().max(MAX_IDLE_DIRTY);
+        self.incr.retain_mut(|state| {
+            state.dirty.insert(file.to_string());
+            state.dirty.len() <= floor.max(state.paths.len())
+        });
+        self.generation += 1;
     }
 
     pub fn generation(&self) -> u64 {
@@ -1442,11 +1959,23 @@ impl RuleRegistry {
         {
             return result.clone();
         }
-        let prepared = self.try_incremental(cfg).or_else(|| {
-            self.rebuild_incr_state(cfg);
-            self.try_incremental(cfg)
-        });
-        let result = match prepared {
+        let spliced = if self.blocked.iter().any(|blocked| blocked.cfg == *cfg) {
+            None
+        } else {
+            match self.try_incremental(cfg) {
+                Ok(css) => Some(css),
+                // The splice met the blocker a rebuild would stop at.
+                Err(Some(on)) => {
+                    self.block(cfg, on);
+                    None
+                }
+                Err(None) => {
+                    self.rebuild_incr_state(cfg);
+                    self.try_incremental(cfg).ok()
+                }
+            }
+        };
+        let result = match spliced {
             Some(css) => {
                 // Debug cross-check: the incremental path must match one-shot output.
                 #[cfg(debug_assertions)]
@@ -1460,187 +1989,415 @@ impl RuleRegistry {
                 }
                 Ok(css)
             }
-            None => assemble(&self.all_rules(), cfg),
+            None => {
+                let rule_count = self.files.values().map(Vec::len).sum();
+                assemble_impl(self.files.values().flatten(), rule_count, cfg, None)
+            }
         };
         self.cache = Some((self.generation, cfg.clone(), result.clone()));
         result
     }
 
-    // The fast path: re-prepare only the swapped files and splice them into the
-    // cached sort order. None = fall back to the one-shot path.
-    fn try_incremental(&mut self, cfg: &AssembleConfig) -> Option<String> {
+    // The fast path: bring the per-config state up to date with the files set,
+    // added and removed since it last ran, then print its sort order. Err =
+    // fall back to the one-shot path: with the blocker when the splice found
+    // what rules the config out, else with nothing a rebuild would not have
+    // to find for itself.
+    fn try_incremental(&mut self, cfg: &AssembleConfig) -> Result<String, Option<Blocker>> {
         let Self { files, incr, .. } = self;
-        let state = incr.iter_mut().find(|s| s.cfg == *cfg)?;
-        if state.structural {
-            return None;
+        let at = incr.iter().position(|s| s.cfg == *cfg).ok_or(None)?;
+        if !incr[at].dirty.is_empty()
+            && let Err(blocker) = incr[at].splice(files)
+        {
+            // A splice that gave up half-way leaves nothing to print from;
+            // one stopped by a blocker left the state as it was, still dirty,
+            // and it is not printed until a splice brings it up to date.
+            if blocker.is_none() {
+                incr.remove(at);
+            }
+            return Err(blocker);
         }
-
-        let mut raw_consts: Vec<(String, ConstVal)> = Vec::new();
-        for (rank, path) in state.paths.iter().enumerate() {
-            if state.dirty.contains(path) {
-                let rules = files.get(path)?;
-                raw_consts.extend(rules.iter().filter(|r| is_const_rule(r)).map(const_decl));
-            } else {
-                raw_consts.extend(state.files[rank].const_decls.iter().cloned());
-            }
-        }
-        let resolved = collect_resolved_consts(raw_consts.into_iter()).ok()?;
-        if resolved != state.consts {
-            return None;
-        }
-
-        let dirty = std::mem::take(&mut state.dirty);
-        let mut changed = vec![false; state.files.len()];
-        let mut prepared = Vec::with_capacity(dirty.len());
-        let mut classes = FxHashSet::default();
-        for path in &dirty {
-            let rank = state.paths.binary_search(path).ok()? as u32;
-            let prep = prepare_file(
-                files.get(path)?,
-                state.cfg.use_legacy_classnames_sort,
-                &state.prepared_consts,
-                &mut state.pool,
-            );
-            if !prep.safe {
-                return None;
-            }
-            changed[rank as usize] = true;
-            if state.owners.is_some() {
-                for file in [&state.files[rank as usize], &prep] {
-                    for seq in 0..file.rules.len() {
-                        classes.insert(file.rules[seq].class_name.clone());
-                    }
-                }
-            }
-            prepared.push((rank, prep));
-        }
-        if !prepared.is_empty() {
-            state.sorted.retain(|&(rank, seq)| {
-                if state.owners.is_some() {
-                    !classes.contains(&state.files[rank as usize].rules[seq as usize].class_name)
-                } else {
-                    !changed[rank as usize]
-                }
-            });
-            if let Some(owners) = &mut state.owners {
-                for class in &classes {
-                    if let Some(entries) = owners.get_mut(class) {
-                        entries.retain(|&(rank, _)| !changed[rank as usize]);
-                    }
-                }
-            }
-            for (rank, prep) in prepared {
-                state.files[rank as usize] = prep;
-            }
-            let mut fresh = Vec::new();
-            for (rank, &is_changed) in changed.iter().enumerate() {
-                if !is_changed {
-                    continue;
-                }
-                for seq in 0..state.files[rank].rules.len() {
-                    let entry = (rank as u32, seq as u32);
-                    if let Some(owners) = &mut state.owners {
-                        insert_owner(owners, &state.files, entry)?;
-                    } else {
-                        fresh.push(entry);
-                    }
-                }
-            }
-            if let Some(owners) = &mut state.owners {
-                for class in classes {
-                    let entries = owners.get_mut(&class)?;
-                    if entries.is_empty() {
-                        owners.remove(&class);
-                    } else {
-                        entries.sort_unstable();
-                        fresh.push(entries[0]);
-                    }
-                }
-            }
-            fresh.sort_unstable_by(|&a, &b| entry_cmp(&state.files, a, b));
-            state.sorted = merge_sorted(&state.files, &state.sorted, fresh);
-        }
-        if let Some(pool) = &mut state.pool {
-            let mut unique = 0;
-            pool.retain(|_, bucket| {
-                bucket.retain(|rule| rule.strong_count() != 0);
-                unique += bucket.len();
-                !bucket.is_empty()
-            });
-            let occurrences: usize = state.files.iter().map(|file| file.rules.len()).sum();
-            if unique * 2 > occurrences {
-                return None;
-            }
-        }
-
         if files.values().all(|rules| rules.is_empty()) {
-            return Some(String::new());
+            return Ok(String::new());
         }
-        Some(render(state))
+        Ok(render(&mut incr[at]))
     }
 
-    // Full rebuild of the per-config state; drops it instead when the rule set
-    // is outside the safe preconditions (or consts fail to resolve).
+    // Full rebuild of the per-config state; when the rule set is outside the
+    // safe preconditions (or consts fail to resolve) the config is blocked
+    // instead, until `unblock` sees the reason change.
     fn rebuild_incr_state(&mut self, cfg: &AssembleConfig) {
         self.incr.retain(|s| s.cfg != *cfg);
-        let raw = self
-            .files
-            .values()
-            .flat_map(|rules| rules.iter().filter(|r| is_const_rule(r)).map(const_decl));
-        let Ok(consts) = collect_resolved_consts(raw) else {
-            return;
-        };
-        let prepared_consts = prepare_consts(&consts);
-        let mut paths = Vec::with_capacity(self.files.len());
-        let mut fps = Vec::with_capacity(self.files.len());
-        let mut pool = prefer_shared_preparation(&self.files).then(PreparedPool::default);
-        for (path, rules) in &self.files {
-            let prep = prepare_file(
-                rules,
-                cfg.use_legacy_classnames_sort,
-                &prepared_consts,
-                &mut pool,
-            );
-            if !prep.safe {
-                return;
+        match IncrState::build(&self.files, cfg) {
+            Ok(state) => {
+                if self.incr.len() >= MAX_INCR_STATES {
+                    self.incr.remove(0);
+                }
+                self.incr.push(state);
             }
-            paths.push(path.clone());
-            fps.push(prep);
+            Err(on) => self.block(cfg, on),
         }
-        let mut sorted: Vec<(u32, u32)> = fps
-            .iter()
-            .enumerate()
-            .flat_map(|(rank, f)| (0..f.rules.len()).map(move |seq| (rank as u32, seq as u32)))
-            .collect();
-        let owners = pool.as_ref().and_then(|_| {
-            let mut owners = FxHashMap::default();
-            for &entry in &sorted {
-                insert_owner(&mut owners, &fps, entry)?;
-            }
-            Some(owners)
-        });
-        if let Some(owners) = &owners {
-            sorted = owners.values().map(|entries| entries[0]).collect();
+    }
+
+    fn block(&mut self, cfg: &AssembleConfig, on: Blocker) {
+        if self.blocked.len() >= MAX_INCR_STATES {
+            self.blocked.remove(0);
         }
-        sorted.sort_unstable_by(|&a, &b| entry_cmp(&fps, a, b));
-        if self.incr.len() >= MAX_INCR_STATES {
-            self.incr.remove(0);
-        }
-        self.incr.push(IncrState {
+        self.blocked.push(Blocked {
             cfg: cfg.clone(),
-            dirty: BTreeSet::new(),
-            structural: false,
-            consts,
-            prepared_consts,
-            paths,
-            files: fps,
-            pool,
-            sorted,
-            owners,
+            on,
         });
     }
 }
 
+// Whether `rules` declare exactly the constants `decls`, in that order.
+fn declares(rules: &[StylexRule], decls: &[ConstDecl]) -> bool {
+    let mut decls = decls.iter();
+    const_decls(rules).all(|decl| decls.next() == Some(&decl)) && decls.next().is_none()
+}
+
+// `file` went from `old` to `new`: a config it was blocking gets another try
+// once the file is safe. A constant reaches the text and priority of every
+// file's rules, so a change to the constants retries every config.
+fn unblock(blocked: &mut Vec<Blocked>, file: &str, old: &[StylexRule], new: &[StylexRule]) {
+    if blocked.is_empty() {
+        return;
+    }
+    let consts_changed = !const_decls(old).eq(const_decls(new));
+    blocked.retain(|blocked| match &blocked.on {
+        Blocker::Consts => !consts_changed,
+        Blocker::File { .. } if consts_changed => false,
+        Blocker::File { path, .. } if path != file => true,
+        // The blocker changed around the constants it was prepared against
+        // (a change to them drops the entry above): preparing it alone
+        // answers what a retry would prepare every file before it to learn.
+        Blocker::File { consts, .. } => {
+            let legacy = blocked.cfg.use_legacy_classnames_sort;
+            !prepare_file(new, legacy, consts, &mut None).safe
+        }
+    });
+}
+
+// One file of the layout a splice leaves behind, in path order.
+enum Slot {
+    // An old slot that stays as it is.
+    Kept(usize),
+    // An old slot taking the incoming preparation of that index.
+    Edited(usize, usize),
+    // A new slot for the incoming preparation of that index.
+    Added(usize),
+}
+
+fn splice_layout(paths: &[String], changed: &[bool], incoming: &[&String]) -> Vec<Slot> {
+    let mut slots = Vec::with_capacity(paths.len() + incoming.len());
+    let mut next = 0;
+    for (rank, path) in paths.iter().enumerate() {
+        while next < incoming.len() && incoming[next] < path {
+            slots.push(Slot::Added(next));
+            next += 1;
+        }
+        if !changed[rank] {
+            slots.push(Slot::Kept(rank));
+        } else if next < incoming.len() && incoming[next] == path {
+            slots.push(Slot::Edited(rank, next));
+            next += 1;
+        }
+    }
+    slots.extend((next..incoming.len()).map(Slot::Added));
+    slots
+}
+
+impl IncrState {
+    // Err = the rule set cannot be spliced, and what has to change first.
+    fn build(
+        files: &BTreeMap<String, Vec<StylexRule>>,
+        cfg: &AssembleConfig,
+    ) -> Result<IncrState, Blocker> {
+        let raw = files.values().flat_map(|rules| const_decls(rules));
+        let consts = collect_resolved_consts(raw).map_err(|_| Blocker::Consts)?;
+        let table = Arc::new(prepare_consts(&consts));
+        let prepare_all = |pool: &mut Option<PreparedPool>| -> Result<Vec<FilePrep>, Blocker> {
+            let mut preps = Vec::with_capacity(files.len());
+            for (path, rules) in files {
+                let prep = prepare_file(rules, cfg.use_legacy_classnames_sort, &table, pool);
+                if !prep.safe {
+                    return Err(Blocker::File {
+                        path: path.clone(),
+                        consts: Arc::clone(&table),
+                    });
+                }
+                preps.push(prep);
+            }
+            Ok(preps)
+        };
+        let mut pool = prefer_shared_preparation(files).then(PreparedPool::default);
+        let mut preps = prepare_all(&mut pool)?;
+        let rule_count: usize = preps.iter().map(|file| file.rules.len()).sum();
+        if pool.as_ref().is_some_and(|pool| pool.live * 2 > rule_count) {
+            // The pool tells rules apart that the estimate did not: a splice
+            // would refuse this state at once, so it is built inline instead.
+            pool = None;
+            preps = prepare_all(&mut pool)?;
+        }
+
+        let entries = preps.iter().enumerate().flat_map(|(rank, file)| {
+            (0..file.rules.len()).map(move |seq| (rank as u32, seq as u32))
+        });
+        let owners = pool.as_ref().and_then(|_| {
+            let mut owners = RuleOwners::default();
+            for entry in entries.clone() {
+                insert_owner(&mut owners, &preps, entry)?;
+            }
+            Some(owners)
+        });
+        let rule = |(rank, seq): (u32, u32)| {
+            let prepared = &preps[rank as usize].rules[seq as usize];
+            (prepared.priority, &prepared.key, prepared.width.as_deref())
+        };
+        let sorted = match &owners {
+            Some(owners) => sort_finite(owners.values().map(|entries| entries[0]), rule),
+            None => sort_finite(entries, rule),
+        };
+        Ok(IncrState {
+            cfg: cfg.clone(),
+            dirty: BTreeSet::new(),
+            consts,
+            table,
+            paths: files.keys().cloned().collect(),
+            files: preps,
+            pool,
+            sorted,
+            owners,
+            weighed_at: rule_count,
+            rendered_len: 0,
+            scratch: RenderScratch::default(),
+        })
+    }
+
+    // Brings the state up to date with the registry: re-prepares the files set
+    // since the last emit, drops the removed ones, slots in the added ones and
+    // splices their rules into the sort order. Err = the state cannot stand
+    // in for a full assembly now: with the blocker when a dirty file is what
+    // rules the splice path out, met before anything changed, so the state
+    // keeps its dirty files for the splice after the blocker; else the state
+    // is spent and the caller rebuilds it.
+    fn splice(&mut self, files: &BTreeMap<String, Vec<StylexRule>>) -> Result<(), Option<Blocker>> {
+        let legacy = self.cfg.use_legacy_classnames_sort;
+        let dirty = std::mem::take(&mut self.dirty);
+
+        // The old slots that are edited or removed, and the files coming in
+        // (edited and added), in path order.
+        let mut changed = vec![false; self.files.len()];
+        let mut incoming: Vec<&String> = Vec::with_capacity(dirty.len());
+        let mut layout_changed = false;
+        let mut consts_touched = false;
+        for path in &dirty {
+            let old = self.paths.binary_search(path).ok();
+            let old_decls: &[ConstDecl] = old.map_or(&[], |rank| &self.files[rank].const_decls);
+            match files.get(path) {
+                Some(rules) => {
+                    consts_touched |= !declares(rules, old_decls);
+                    layout_changed |= old.is_none();
+                    incoming.push(path);
+                }
+                None => {
+                    if old.is_none() {
+                        continue;
+                    }
+                    consts_touched |= !old_decls.is_empty();
+                    layout_changed = true;
+                }
+            }
+            if let Some(rank) = old {
+                changed[rank] = true;
+            }
+        }
+        let layout = if layout_changed || consts_touched {
+            splice_layout(&self.paths, &changed, &incoming)
+        } else {
+            Vec::new()
+        };
+
+        // The incoming rules are prepared against the state's constants: the
+        // splice stands only if the dirty files leave the resolved constants
+        // as they were, which is settled before any of them is prepared.
+        // Files that declare the constants they declared before (most edits:
+        // none) cannot change them, and skip the resolution.
+        if consts_touched {
+            let raw = layout.iter().flat_map(|slot| {
+                let (kept, rules): (&[ConstDecl], &[StylexRule]) = match *slot {
+                    Slot::Kept(rank) => (&self.files[rank].const_decls, &[]),
+                    Slot::Edited(_, at) | Slot::Added(at) => (&[], &files[incoming[at]]),
+                };
+                kept.iter().cloned().chain(const_decls(rules))
+            });
+            if collect_resolved_consts(raw).map_err(|_| None)? != self.consts {
+                return Err(None);
+            }
+        }
+
+        let mut prepared: Vec<(&String, FilePrep)> = Vec::with_capacity(incoming.len());
+        for path in incoming {
+            let prep = prepare_file(&files[path], legacy, &self.table, &mut self.pool);
+            if !prep.safe {
+                // With the constants as the state has them, this is the file
+                // a rebuild would stop at, prepared against an equal table:
+                // every file before it is safe. That holds only if no dirty
+                // file declares other constants than it did.
+                if consts_touched {
+                    return Err(None);
+                }
+                // Nothing is installed yet: the state stays as it was, its
+                // files dirty, to splice them once the blocker is gone.
+                let path = path.clone();
+                retire(&mut self.pool, prep);
+                for (_, prep) in prepared {
+                    retire(&mut self.pool, prep);
+                }
+                self.dirty = dirty;
+                return Err(Some(Blocker::File {
+                    path,
+                    consts: Arc::clone(&self.table),
+                }));
+            }
+            prepared.push((path, prep));
+        }
+
+        // Drop the sort entries of the edited and removed slots. With owners
+        // an entry stands for a class, so every class those slots or the
+        // incoming files name gives up its entry and re-elects one below.
+        let mut classes: FxHashSet<Arc<str>> = FxHashSet::default();
+        match &mut self.owners {
+            Some(owners) => {
+                let outgoing = changed
+                    .iter()
+                    .zip(&self.files)
+                    .filter_map(|(changed, file)| changed.then_some(file));
+                for file in outgoing.chain(prepared.iter().map(|(_, prep)| prep)) {
+                    classes.extend(file.rules.iter().map(|rule| rule.class_name.clone()));
+                }
+                let mut doomed = Vec::with_capacity(classes.len());
+                for class in &classes {
+                    if let Some(entries) = owners.get(class) {
+                        let at = self
+                            .sorted
+                            .binary_search_by(|&entry| entry_cmp(&self.files, entry, entries[0]));
+                        doomed.push(at.map_err(|_| None)?);
+                    }
+                }
+                doomed.sort_unstable();
+                remove_positions(&mut self.sorted, &doomed);
+                let outgoing = self.files.iter().enumerate();
+                for (rank, file) in outgoing.filter(|&(rank, _)| changed[rank]) {
+                    for rule in file.rules.iter() {
+                        if let Some(entries) = owners.get_mut(&rule.class_name) {
+                            remove_owner_rank(entries, rank as u32);
+                        }
+                    }
+                }
+            }
+            None => self.sorted.retain(|&(rank, _)| !changed[rank as usize]),
+        }
+
+        // Added and removed files move the ranks behind them. The move keeps
+        // rank order, so the surviving entries stay sorted as they are.
+        if layout_changed {
+            let mut old_paths =
+                std::mem::replace(&mut self.paths, Vec::with_capacity(layout.len()));
+            let mut old_files: Vec<Option<FilePrep>> =
+                std::mem::replace(&mut self.files, Vec::with_capacity(layout.len()))
+                    .into_iter()
+                    .map(Some)
+                    .collect();
+            let mut new_rank = vec![u32::MAX; old_paths.len()];
+            for slot in &layout {
+                match *slot {
+                    Slot::Kept(rank) | Slot::Edited(rank, _) => {
+                        new_rank[rank] = self.paths.len() as u32;
+                        self.paths.push(std::mem::take(&mut old_paths[rank]));
+                        self.files.push(old_files[rank].take().ok_or(None)?);
+                    }
+                    Slot::Added(at) => {
+                        self.paths.push(prepared[at].0.clone());
+                        self.files.push(FilePrep::empty(self.pool.is_some(), 0, 0));
+                    }
+                }
+            }
+            for removed in old_files.into_iter().flatten() {
+                retire(&mut self.pool, removed);
+            }
+            let owned = self
+                .owners
+                .iter_mut()
+                .flat_map(|owners| owners.values_mut());
+            for entry in self.sorted.iter_mut().chain(owned.flatten()) {
+                entry.0 = new_rank[entry.0 as usize];
+            }
+        }
+
+        // Install the incoming preparations and splice their entries in.
+        let mut fresh: Vec<(u32, u32)> = Vec::new();
+        for (path, prep) in prepared {
+            let rank = self.paths.binary_search(path).map_err(|_| None)?;
+            let old = std::mem::replace(&mut self.files[rank], prep);
+            retire(&mut self.pool, old);
+            for seq in 0..self.files[rank].rules.len() {
+                let entry = (rank as u32, seq as u32);
+                match &mut self.owners {
+                    Some(owners) => insert_owner(owners, &self.files, entry).ok_or(None)?,
+                    None => fresh.push(entry),
+                }
+            }
+        }
+        if let Some(owners) = &mut self.owners {
+            for class in classes {
+                let Entry::Occupied(entries) = owners.entry(class) else {
+                    return Err(None);
+                };
+                if entries.get().is_empty() {
+                    entries.remove();
+                } else {
+                    fresh.push(entries.get()[0]);
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            fresh.sort_unstable_by(|&a, &b| entry_cmp(&self.files, a, b));
+            merge_sorted(&self.files, &mut self.sorted, &fresh);
+        }
+
+        let rule_count: usize = self.files.iter().map(|file| file.rules.len()).sum();
+        match &self.pool {
+            // Too little repetition left to pay for the sharing.
+            Some(pool) if pool.live * 2 > rule_count => return Err(None),
+            Some(_) => {}
+            // Files added since the state was built can bring the repetition
+            // sharing wants; weighing it again at each doubling keeps the
+            // check amortized.
+            None if rule_count >= 2 * self.weighed_at.max(128) => {
+                if prefer_shared_preparation(files) {
+                    return Err(None);
+                }
+                self.weighed_at = rule_count;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+}
+
+fn remove_positions<T>(items: &mut Vec<T>, ascending: &[usize]) {
+    let mut doomed = ascending.iter().copied().peekable();
+    let mut at = 0;
+    items.retain(|_| {
+        let remove = doomed.next_if_eq(&at).is_some();
+        at += 1;
+        !remove
+    });
+}
+
+// A class's owners are kept sorted by input position, the first owner first:
+// a file's entries in the list are one run, and a new one has one place.
 fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) -> Option<()> {
     let rule = &files[entry.0 as usize].rules[entry.1 as usize];
     let entries = owners.entry(rule.class_name.clone()).or_default();
@@ -1655,114 +2412,212 @@ fn insert_owner(owners: &mut RuleOwners, files: &[FilePrep], entry: (u32, u32)) 
             return None;
         }
     }
-    entries.push(entry);
+    // A build, and a file added behind every owner, append.
+    match entries.last() {
+        Some(&last) if last > entry => {
+            let at = entries.partition_point(|&owner| owner < entry);
+            entries.insert(at, entry);
+        }
+        _ => entries.push(entry),
+    }
     Some(())
 }
 
-fn merge_sorted(
-    files: &[FilePrep],
-    kept: &[(u32, u32)],
-    fresh: Vec<(u32, u32)>,
-) -> Vec<(u32, u32)> {
-    let mut merged = Vec::with_capacity(kept.len() + fresh.len());
-    let mut prev = 0usize;
-    for &candidate in &fresh {
-        let at = prev
-            + kept[prev..].partition_point(|&e| entry_cmp(files, e, candidate) == Ordering::Less);
-        merged.extend_from_slice(&kept[prev..at]);
-        merged.push(candidate);
-        prev = at;
+fn remove_owner_rank(entries: &mut Vec<(u32, u32)>, rank: u32) {
+    let start = entries.partition_point(|&(owner, _)| owner < rank);
+    let len = entries[start..].partition_point(|&(owner, _)| owner == rank);
+    entries.drain(start..start + len);
+}
+
+// Merges the sorted `fresh` entries into the sorted `kept`, in place and from
+// the back: each fresh entry is placed by bisection, the runs between them
+// move once.
+fn merge_sorted(files: &[FilePrep], kept: &mut Vec<(u32, u32)>, fresh: &[(u32, u32)]) {
+    let mut read_end = kept.len();
+    let mut write_end = kept.len() + fresh.len();
+    kept.resize(write_end, (0, 0));
+    for &candidate in fresh.iter().rev() {
+        let at =
+            kept[..read_end].partition_point(|&e| entry_cmp(files, e, candidate) == Ordering::Less);
+        let run = read_end - at;
+        kept.copy_within(at..read_end, write_end - run);
+        write_end -= run + 1;
+        kept[write_end] = candidate;
+        read_end = at;
     }
-    merged.extend_from_slice(&kept[prev..]);
-    merged
 }
 
 // First slot inline: an empty Vec never allocates, so only a real 64-bit hash
 // collision costs a heap allocation.
 type SlotMap = HashMap<u64, (u32, Vec<u32>), BuildHasherDefault<IdentityHasher>>;
 
-fn render(state: &IncrState) -> String {
-    let IncrState {
-        cfg, files, sorted, ..
-    } = state;
-    let (use_layers_on, _, _, layer_prefix) = layer_parts(cfg);
+// One priority band of the print order as positions into the printed
+// entries: `start..bare_end` prints bare, `bare_end..end` inside the band's
+// @layer. With layers off the whole band is bare.
+struct Band {
+    start: usize,
+    bare_end: usize,
+    end: usize,
+}
 
-    // One band's rules: with layers on, `bare` is its priority-0 part and
-    // `layered` the rest; with layers off the whole band is `bare`.
-    #[derive(Default)]
-    struct GroupMeta {
-        bare: Vec<(u32, u32)>,
-        layered: Vec<(u32, u32)>,
-    }
-    let mut groups: Vec<GroupMeta> = Vec::new();
-    let mut slot_map: SlotMap = SlotMap::default();
-    let mut last_band = 0.0f64;
-    let mut in_layered = false;
-    for &(rank, seq) in sorted.iter() {
-        let p = &files[rank as usize].rules[seq as usize];
-        let band = (p.priority / 1000.0).floor();
-        if groups.is_empty() || band != last_band {
-            groups.push(GroupMeta::default());
-            slot_map.clear();
-            last_band = band;
-            in_layered = false;
+// Buffers a render fills and the next one reuses.
+#[derive(Default)]
+struct RenderScratch {
+    printed: Vec<(u32, u32)>,
+    bands: Vec<Band>,
+    slot_map: SlotMap,
+}
+
+fn render(state: &mut IncrState) -> String {
+    let IncrState {
+        cfg,
+        files,
+        sorted,
+        owners,
+        rendered_len,
+        scratch,
+        ..
+    } = state;
+    let RenderScratch {
+        printed,
+        bands,
+        slot_map,
+    } = scratch;
+    let (use_layers_on, _, _, layer_prefix) = layer_parts(cfg);
+    let rule = |(rank, seq): (u32, u32)| &files[rank as usize].rules[seq as usize];
+    let band_of = |entry: (u32, u32)| (rule(entry).priority / 1000.0).floor();
+
+    bands.clear();
+    let printed: &[(u32, u32)] = if owners.is_some() {
+        // One entry per class: nothing to dedupe, and the priorities are
+        // finite and ascending, so bands and their parts are runs of the sort
+        // order that bisection finds without visiting every rule.
+        let mut start = 0;
+        while start < sorted.len() {
+            let band = band_of(sorted[start]);
+            let entries = &sorted[start..];
+            let end = start + entries.partition_point(|&entry| band_of(entry) == band);
+            let entries = &sorted[start..end];
+            bands.push(if use_layers_on {
+                // Upstream prints `pri === 0` bare and `pri > 0` layered; a
+                // negative priority is in neither part.
+                let bare = entries.partition_point(|&entry| rule(entry).priority < 0.0);
+                let layered = entries.partition_point(|&entry| rule(entry).priority <= 0.0);
+                Band {
+                    start: start + bare,
+                    bare_end: start + layered,
+                    end,
+                }
+            } else {
+                Band {
+                    start,
+                    bare_end: end,
+                    end,
+                }
+            });
+            start = end;
         }
-        let group = groups.last_mut().expect("a band is open");
-        // Priorities are finite and ascending here, so a band's priority-0
-        // rules all precede its layered ones: one dedupe scope per part.
-        let slots = match BandPart::of(use_layers_on, p.priority) {
-            Some(BandPart::Layered) => {
-                if !in_layered {
+        sorted
+    } else {
+        printed.clear();
+        let mut last_band = 0.0f64;
+        let mut in_layered = false;
+        for &entry in sorted.iter() {
+            let p = rule(entry);
+            let band = (p.priority / 1000.0).floor();
+            if bands.is_empty() || band != last_band {
+                bands.push(Band {
+                    start: printed.len(),
+                    bare_end: printed.len(),
+                    end: printed.len(),
+                });
+                slot_map.clear();
+                last_band = band;
+                in_layered = false;
+            }
+            // Priorities are finite and ascending here, so a band's priority-0
+            // rules all precede its layered ones: one dedupe scope per part.
+            match BandPart::of(use_layers_on, p.priority) {
+                Some(BandPart::Layered) if !in_layered => {
                     slot_map.clear();
                     in_layered = true;
                 }
-                &mut group.layered
+                Some(_) => {}
+                None => continue,
             }
-            Some(_) => &mut group.bare,
-            None => continue,
-        };
-        // JS Map semantics: a repeated class keeps its first slot, latest value wins.
-        match slot_map.entry(p.class_hash) {
-            std::collections::hash_map::Entry::Vacant(vacant) => {
-                vacant.insert((slots.len() as u32, Vec::new()));
-                slots.push((rank, seq));
-            }
-            std::collections::hash_map::Entry::Occupied(mut occupied) => {
-                let same_class = |&si: &u32| {
-                    let (er, es) = slots[si as usize];
-                    files[er as usize].rules[es as usize].class_name == p.class_name
-                };
-                let (first, rest) = occupied.get_mut();
-                let existing = std::iter::once(*first).find(|si| same_class(si));
-                let existing = existing.or_else(|| rest.iter().copied().find(|si| same_class(si)));
-                match existing {
-                    Some(si) => slots[si as usize] = (rank, seq),
-                    None => {
-                        rest.push(slots.len() as u32);
-                        slots.push((rank, seq));
+            // JS Map semantics: a repeated class keeps its first slot, latest value wins.
+            let slot = match slot_map.entry(p.class_hash) {
+                Entry::Vacant(vacant) => {
+                    vacant.insert((printed.len() as u32, Vec::new()));
+                    None
+                }
+                Entry::Occupied(mut occupied) => {
+                    let same_class =
+                        |&slot: &u32| rule(printed[slot as usize]).class_name == p.class_name;
+                    let (first, rest) = occupied.get_mut();
+                    let slot = std::iter::once(&*first)
+                        .chain(rest.iter())
+                        .copied()
+                        .find(same_class);
+                    if slot.is_none() {
+                        rest.push(printed.len() as u32);
+                    }
+                    slot
+                }
+            };
+            match slot {
+                Some(slot) => printed[slot as usize] = entry,
+                None => {
+                    printed.push(entry);
+                    let band = bands.last_mut().expect("a band is open");
+                    band.end += 1;
+                    if !in_layered {
+                        band.bare_end += 1;
                     }
                 }
             }
         }
-    }
+        printed
+    };
 
     let header = if use_layers_on {
-        layers_header(cfg, groups.len())
+        layers_header(cfg, bands.len())
     } else {
         String::new()
     };
     let logical = logical_float_block(files.iter().any(|f| f.logical_float));
+    let bumps = !use_layers_on && !cfg.legacy_disable_layers;
 
-    let mut out = String::with_capacity(logical.len() + header.len() + 64 * sorted.len().min(8192));
+    // The last render's size is the best estimate of this one's; the first
+    // render adds the texts up.
+    let body_len = if *rendered_len > 0 {
+        *rendered_len + *rendered_len / 16 + 256
+    } else {
+        let mut bytes = 0;
+        for (index, band) in bands.iter().enumerate() {
+            let bump = if bumps { 9 * index } else { 0 };
+            for &entry in &printed[band.start..band.end] {
+                let p = rule(entry);
+                bytes += p.ltr.len() + bump + 1;
+                bytes += p.rtl.as_ref().map_or(0, |rtl| rtl.len() + bump + 48);
+            }
+            bytes += 32;
+        }
+        bytes
+    };
+    let mut out = String::with_capacity(logical.len() + header.len() + body_len);
     out.push_str(&logical);
     out.push_str(&header);
-    for (index, group) in groups.iter().enumerate() {
+    for (index, band) in bands.iter().enumerate() {
         if index > 0 {
             out.push('\n');
         }
         let mut printed_part = false;
-        for (emit, wrap) in [(&group.bare, false), (&group.layered, true)] {
-            if emit.is_empty() {
+        for (part, wrap) in [
+            (band.start..band.bare_end, false),
+            (band.bare_end..band.end, true),
+        ] {
+            if part.is_empty() {
                 continue;
             }
             if printed_part {
@@ -1774,16 +2629,14 @@ fn render(state: &IncrState) -> String {
                 out.push_str(&layer_name(layer_prefix, index));
                 out.push_str("{\n");
             }
-            for (j, &(rank, seq)) in emit.iter().enumerate() {
+            for (j, &entry) in printed[part].iter().enumerate() {
                 if j > 0 {
                     out.push('\n');
                 }
-                let p = &files[rank as usize].rules[seq as usize];
+                let p = rule(entry);
                 match p.plain_split {
-                    Some(_) if use_layers_on || cfg.legacy_disable_layers || index == 0 => {
-                        out.push_str(&p.ltr);
-                    }
-                    Some(split) => push_split(&mut out, &p.ltr, split, index),
+                    Some(_) if !bumps || index == 0 => out.push_str(&p.ltr),
+                    Some(split) => push_split(&mut out, &p.ltr, split as usize, index),
                     None => {
                         let rtl = p.rtl.as_deref().filter(|s| !s.is_empty());
                         push_chunk(&mut out, &p.ltr, rtl, index, cfg);
@@ -1795,6 +2648,7 @@ fn render(state: &IncrState) -> String {
             }
         }
     }
+    *rendered_len = out.len();
     out
 }
 
@@ -1896,7 +2750,9 @@ mod preparation_tests {
             "\n@layer priority1, priority2;\n:root, .xvars{--xa:red;}\n@keyframes xkf-B{from{opacity:0;}}\n@layer priority1{\n@media (prefers-color-scheme: dark){:root, .xvars{--xa:white;}}\n}\n@layer priority2{\n@media (min-width: 640px){.xe.xe{color:red}}\n@media (min-width: 768px){.xd.xd{color:blue}}\n@media (min-width: 768px){.xa.xa{color:red}}\n@media (min-width: 1024px){.xb.xb{color:red}}\n@media (max-width: 639px){.xf.xf{color:red}}\n}",
         ];
         for (cfg, want) in configs.iter().zip(want) {
-            let spliced = registry.try_incremental(cfg).expect("the splice path");
+            let Ok(spliced) = registry.try_incremental(cfg) else {
+                panic!("left the splice path");
+            };
             assert_eq!(spliced, want);
             assert_eq!(Ok(spliced), assemble(&registry.all_rules(), cfg));
         }
@@ -1959,6 +2815,1460 @@ mod preparation_tests {
                 assemble_with_comparator(&rules, &cfg, default_locale_cmp),
                 "legacy={legacy}"
             );
+        }
+    }
+}
+
+// The optimized paths against the plain forms they replace: the per-constant
+// substitution loop, the linear constant lookup, the allocating printer.
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) % n as u64) as usize
+        }
+
+        fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+            items[self.below(items.len())]
+        }
+    }
+
+    // Upstream's loop as written: every constant's step over the running text.
+    fn substitute_sequential(text: &str, consts: &ConstTable) -> String {
+        let mut cur = text.to_string();
+        for c in &consts.consts {
+            cur = cur.replace(c.var_ref.as_str(), &c.replacement);
+            if let Some((needle, target)) = &c.key_rewrite {
+                cur = js_replace_all(&cur, needle, target);
+            }
+        }
+        cur
+    }
+
+    const NAMES: &[&str] = &[
+        "a", "b", "ab", "a-b", "x1", "x_2", "-a", "--a", "t", "", "a.b", "a b", "é", "a)", "$&",
+    ];
+
+    #[test]
+    fn indexed_substitution_matches_the_sequential_loop() {
+        // Unresolved on purpose: values that name later (and earlier)
+        // constants exercise the order the steps run in.
+        const VALUES: &[&str] = &[
+            "red",
+            "1px",
+            "",
+            "var(--a)",
+            "var(--b)",
+            "var(--t)",
+            "var(--x1) var(--b)",
+            "var(--a.b)",
+            "var(--real, 1px)",
+            "var( --t )",
+            "var(--$`)",
+            "var(--$')",
+            "var(--$&)",
+            "var(--$$)",
+            "var(--t) var(--b)",
+            "var(--",
+            "b)",
+            "--a:1",
+            "var(--a b)",
+            "@media (min-width: 1px)",
+        ];
+        const PIECES: &[&str] = &[
+            "var(--a)",
+            "var(--b)",
+            "var(--ab)",
+            "var(--a-b)",
+            "var(--x1)",
+            "var(--x_2)",
+            "var(---a)",
+            "var(----a)",
+            "var(--t)",
+            "var(--)",
+            "var(--a.b)",
+            "var(--a b)",
+            "var(--é)",
+            "var(--a))",
+            "var(--$&)",
+            "var(--unknown)",
+            "var(--",
+            "--a:",
+            "--b:1px;",
+            "---a:",
+            "x--ab:",
+            "--x_2:",
+            "--a b:",
+            "--a.b:",
+            "--é:",
+            "--:",
+            "--t:",
+            ")",
+            ":",
+            "{",
+            "}",
+            ".x",
+            " ",
+            "color:",
+            "-",
+            "(",
+        ];
+        let mut rng = Lcg(0x5eed_0001);
+        let mut rewritten = 0;
+        for _ in 0..20_000 {
+            let mut decls: Vec<ConstDecl> = Vec::new();
+            for _ in 0..rng.below(6) {
+                let name = rng.pick(NAMES);
+                if decls.iter().all(|(known, _)| &**known != name) {
+                    decls.push((name.into(), ConstVal::Str(rng.pick(VALUES).to_string())));
+                }
+            }
+            let table = prepare_consts(&decls);
+            let text: String = (0..rng.below(8)).map(|_| rng.pick(PIECES)).collect();
+            let got = substitute_consts(&text, &table);
+            let want = substitute_sequential(&text, &table);
+            rewritten += usize::from(want != text);
+            assert_eq!(
+                got.as_deref().unwrap_or(&text),
+                want,
+                "text {text:?} consts {decls:?}"
+            );
+            // The hand-over to the sequential loop, at every step it can
+            // happen on.
+            for cap in 0..3 {
+                let got = substitute_consts_capped(&text, &table, cap);
+                assert_eq!(
+                    got.as_deref().unwrap_or(&text),
+                    want,
+                    "cap {cap} text {text:?} consts {decls:?}"
+                );
+            }
+        }
+        assert!(rewritten > 2_000, "too few rewriting cases: {rewritten}");
+    }
+
+    // `count` constants with `var()` values, the kind whose step rewrites
+    // both its references and its declaration keys. Unresolved on purpose:
+    // every third names a later constant, whose step rewrites it again.
+    fn var_valued_consts(count: usize) -> ConstTable {
+        let decls: Vec<ConstDecl> = (0..count)
+            .map(|i| {
+                let value = match i % 3 {
+                    0 => format!("var(--t{i})"),
+                    1 => format!("var( --t{i} , {i}px)"),
+                    _ => format!("var(--c{})", (i + 7) % count),
+                };
+                (format!("c{i}").into(), ConstVal::Str(value))
+            })
+            .collect();
+        let table = prepare_consts(&decls);
+        assert!(table.rewrites_keys && table.by_name.len() == count);
+        table
+    }
+
+    // One rule that all `count` constants rewrite, the last constant first so
+    // the search for a step's constant reads past all the later ones.
+    // `declaration(i)` is what the rule says about constant `i`.
+    fn const_heavy_rule(count: usize, declaration: impl Fn(usize) -> String) -> String {
+        let declarations: String = (0..count).rev().map(declaration).collect();
+        format!(".x{{{declarations}}}")
+    }
+
+    #[test]
+    fn a_const_heavy_rule_matches_the_sequential_loop_at_any_cap() {
+        for count in [1, 31, 32, 33, 34, 250] {
+            let table = var_valued_consts(count);
+            // Each constant by key and by reference; then only by reference,
+            // under keys no constant owns.
+            let texts = [
+                const_heavy_rule(count, |i| format!("--c{i}:var(--c{i});")),
+                const_heavy_rule(count, |i| format!("--v{i}:var(--c{i}) var(--v{i});")),
+            ];
+            for text in &texts {
+                let want = substitute_sequential(text, &table);
+                assert_ne!(want, *text);
+                assert_eq!(
+                    substitute_consts(text, &table).as_deref(),
+                    Some(want.as_str()),
+                    "{count} constants"
+                );
+                for cap in [0, 1, 2, 31, 32, 33, 100, u32::MAX] {
+                    assert_eq!(
+                        substitute_consts_capped(text, &table, cap).as_deref(),
+                        Some(want.as_str()),
+                        "{count} constants, cap {cap}"
+                    );
+                }
+            }
+        }
+    }
+
+    // What one substitution costs: the names it looks up in the constant
+    // index, and the texts it searches for one constant.
+    #[derive(Debug)]
+    struct Work {
+        lookups: u64,
+        searches: u64,
+    }
+
+    fn substitution_work(text: &str, table: &ConstTable, cap: u32) -> (Option<String>, Work) {
+        let count = || {
+            (
+                NAME_LOOKUPS.with(std::cell::Cell::get),
+                CONST_SEARCHES.with(std::cell::Cell::get),
+            )
+        };
+        let (lookups, searches) = count();
+        let got = substitute_consts_capped(text, table, cap);
+        let (lookups_after, searches_after) = count();
+        let work = Work {
+            lookups: lookups_after - lookups,
+            searches: searches_after - searches,
+        };
+        (got, work)
+    }
+
+    // The rule every constant rewrites a key of, between values that read
+    // plain variables: without the cap each of its steps looks up every name
+    // in the text again, with it the rule costs what upstream's loop does.
+    // The work is counted, not timed, so the comparison holds on a slow or
+    // busy machine.
+    #[test]
+    fn a_const_heavy_rule_is_not_rescanned_for_every_step() {
+        let table = var_valued_consts(600);
+        let text = const_heavy_rule(600, |i| format!("--c{i}:var(--a) var(--b);"));
+        let want = substitute_sequential(&text, &table);
+        let (got, capped) = substitution_work(&text, &table, MAX_INDEXED_STEPS);
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        let (got, indexed) = substitution_work(&text, &table, u32::MAX);
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        // Upstream's loop searches the text for every constant's reference
+        // and key; the capped run searches no more than that.
+        assert!(capped.searches <= 2 * 600, "capped {capped:?}");
+        // Each of the 600 indexed steps looks up the 1800 names in the text
+        // again; the capped run, after its first steps and one weighing, none.
+        assert!(
+            capped.lookups * 8 < indexed.lookups,
+            "capped {capped:?} vs indexed throughout {indexed:?}"
+        );
+    }
+
+    // The opposite rule: a hundred constants named out of twenty thousand.
+    // Its steps are few and the constants between them many, so handing the
+    // rest to the sequence after the first steps would search the text for
+    // thousands of constants it does not name.
+    #[test]
+    fn a_rule_naming_few_of_many_constants_stays_indexed() {
+        const COUNT: usize = 20_000;
+        let table = var_valued_consts(COUNT);
+        let spread: String = (0..100)
+            .map(|n| format!("--v{n}:var(--c{}) var(--v{n});", n * 200 + 1))
+            .collect();
+        // Sparse, then dense: forty spread constants, then each of the last
+        // two hundred. The first weighing keeps the index, a later one meets
+        // the dense tail.
+        let tail: String = (0..40)
+            .map(|n| n * 475)
+            .chain(COUNT - 200..COUNT)
+            .map(|i| format!("--c{i}:var(--c{i});"))
+            .collect();
+        let texts = [format!(".x{{{spread}}}"), format!(".x{{{tail}}}")];
+        for text in &texts {
+            let want = substitute_sequential(text, &table);
+            assert_ne!(want, *text);
+            for cap in [0, 1, 2, 3, 31, 32, 33, 64, 100, u32::MAX] {
+                assert_eq!(
+                    substitute_consts_capped(text, &table, cap).as_deref(),
+                    Some(want.as_str()),
+                    "cap {cap}"
+                );
+            }
+        }
+
+        // Neither kind of work may double over the indexed run: handing over
+        // would search for thousands of constants, the weighings cost a
+        // rescan each.
+        let text = &texts[0];
+        let (capped_got, capped) = substitution_work(text, &table, MAX_INDEXED_STEPS);
+        let (indexed_got, indexed) = substitution_work(text, &table, u32::MAX);
+        assert!(capped_got.is_some() && capped_got == indexed_got);
+        assert!(
+            capped.searches <= indexed.searches * 2 && capped.lookups <= indexed.lookups * 2,
+            "capped {capped:?} vs indexed throughout {indexed:?}"
+        );
+    }
+
+    #[test]
+    fn live_constants_are_counted_once_from_the_step_on() {
+        let decls: Vec<ConstDecl> = [
+            ("a", "1px"),
+            ("b", "var(--t)"),
+            ("a.b", "2px"),
+            ("c", "var(--u)"),
+            ("d", "3px"),
+            ("e f", "4px"),
+        ]
+        .map(|(name, value)| (name.into(), ConstVal::Str(value.to_string())))
+        .into();
+        let table = prepare_consts(&decls);
+        assert_eq!(table.irregular, [2, 5]);
+        // `a` and `c` twice by reference, `b` and `c` by key; `d` owns a key
+        // but rewrites none, and `--z` is no constant.
+        let text = ".x{--b:var(--a) var(--a);--c:var(--c) var(--c);--d:var(--z)}";
+        // From each position on: the named constants at or after it, plus
+        // the irregular ones, which are counted unprobed.
+        for (from, named) in [(0, 3), (1, 2), (2, 1), (3, 1), (4, 0), (5, 0), (6, 0)] {
+            let irregular = table.irregular.iter().filter(|&&i| i >= from).count();
+            assert_eq!(
+                table.live_count(text, from),
+                named + irregular,
+                "from {from}"
+            );
+        }
+        assert_eq!(table.live_count(".x{color:red}", 0), 2);
+    }
+
+    #[test]
+    fn nan_constants_compare_equal_to_themselves() {
+        let nan = || ConstVal::from_json(&serde_json::json!({"__jsnum": "NaN"}));
+        assert!(matches!(nan(), ConstVal::Num(n) if n.is_nan()));
+        assert_eq!(nan(), nan());
+        assert_eq!(ConstVal::Num(1.5), ConstVal::Num(1.5));
+        assert_ne!(ConstVal::Num(1.5), ConstVal::Num(2.5));
+        assert_ne!(ConstVal::Num(1.0), ConstVal::Str("1".to_string()));
+        assert_ne!(nan(), ConstVal::Num(f64::INFINITY));
+    }
+
+    #[test]
+    fn a_file_preparation_holds_no_spare_capacity() {
+        let mut rules: Vec<StylexRule> = (0..5)
+            .map(|i| StylexRule {
+                class_name: format!("x{i}").into(),
+                ltr: format!(".x{i}{{order:{i}}}").into(),
+                rtl: None,
+                const_key: None,
+                const_val: None,
+                priority: 3000.0,
+            })
+            .collect();
+        for i in 0..3 {
+            rules.insert(
+                i * 2,
+                StylexRule {
+                    class_name: format!("k{i}").into(),
+                    ltr: "".into(),
+                    rtl: None,
+                    const_key: Some(format!("k{i}").into()),
+                    const_val: Some(Box::new(serde_json::json!("1px"))),
+                    priority: 0.0,
+                },
+            );
+        }
+        for mut pool in [None, Some(PreparedPool::default())] {
+            let prep = prepare_file(&rules, false, &ConstTable::default(), &mut pool);
+            let (len, capacity) = match &prep.rules {
+                PreparedRules::Inline(rules) => (rules.len(), rules.capacity()),
+                PreparedRules::Shared(rules) => (rules.len(), rules.capacity()),
+            };
+            assert_eq!((len, capacity), (5, 5));
+            assert_eq!(prep.const_decls.len(), 3);
+            assert_eq!(prep.const_decls.capacity(), 3);
+        }
+    }
+
+    // The resolver before the name index: every lookup a scan of the list.
+    fn resolve_linear(
+        value: &ConstVal,
+        consts: &[(String, ConstVal)],
+        visited: &mut Vec<String>,
+    ) -> Result<ConstVal, AssembleError> {
+        let ConstVal::Str(s) = value else {
+            return Ok(value.clone());
+        };
+        let mut result = s.clone();
+        let mut scan_from = 0usize;
+        while let Some((start, end)) = find_var_ref(&result, scan_from) {
+            let ref_name = result[start + 4..end - 1].to_string();
+            if visited.contains(&ref_name) {
+                return Err(AssembleError::CircularConst(ref_name));
+            }
+            let ref_key = format!("var({ref_name})");
+            let Some((_, ref_val)) = consts.iter().find(|(k, _)| *k == ref_key) else {
+                scan_from = end;
+                continue;
+            };
+            visited.push(ref_name.clone());
+            let replacement = resolve_linear(&ref_val.clone(), consts, visited)?;
+            let needle = result[start..end].to_string();
+            result = result.replacen(&needle, &replacement.to_js_string(), 1);
+            visited.retain(|v| *v != ref_name);
+            scan_from = 0;
+        }
+        Ok(ConstVal::Str(result))
+    }
+
+    fn collect_linear(decls: &[ConstDecl]) -> Result<Vec<ConstDecl>, AssembleError> {
+        let mut consts: Vec<(String, ConstVal)> = Vec::new();
+        for (name, val) in decls {
+            let key = format!("var(--{name})");
+            match consts.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = val.clone(),
+                None => consts.push((key, val.clone())),
+            }
+        }
+        for i in 0..consts.len() {
+            let value = consts[i].1.clone();
+            consts[i].1 = resolve_linear(&value, &consts, &mut Vec::new())?;
+        }
+        Ok(consts
+            .into_iter()
+            .map(|(key, val)| (key[6..key.len() - 1].into(), val))
+            .collect())
+    }
+
+    #[test]
+    fn indexed_resolution_matches_the_linear_lookup() {
+        const VALUES: &[&str] = &[
+            "red",
+            "",
+            "var(--a)",
+            "var(--b)",
+            "var(--ab) var(--b)",
+            "calc(var(--x1) * var(--x1))",
+            "var(--t)var(--t)",
+            "var(--unknown) var(--a-b)",
+            "var(--a.b)",
+            "var(--)",
+            "var(--x_2",
+            "var(---a)",
+            "$& var(--b) $$",
+        ];
+        let mut rng = Lcg(0x5eed_0002);
+        let (mut resolved, mut cycles) = (0, 0);
+        for _ in 0..20_000 {
+            let decls: Vec<ConstDecl> = (0..rng.below(7))
+                .map(|_| {
+                    let value = match rng.below(10) {
+                        0 => ConstVal::Num(rng.below(9) as f64 / 2.0),
+                        1 => ConstVal::Other(serde_json::json!([1, null, "x"])),
+                        _ => ConstVal::Str(rng.pick(VALUES).to_string()),
+                    };
+                    (rng.pick(NAMES).into(), value)
+                })
+                .collect();
+            let got = collect_resolved_consts(decls.iter().cloned());
+            let want = collect_linear(&decls);
+            match &want {
+                Ok(_) => resolved += 1,
+                Err(_) => cycles += 1,
+            }
+            assert_eq!(got, want, "consts {decls:?}");
+        }
+        assert!(resolved > 2_000 && cycles > 2_000, "{resolved} / {cycles}");
+    }
+
+    // The printer before it wrote in place: one String per step.
+    fn rule_chunk_allocating(
+        ltr: &str,
+        rtl: Option<&str>,
+        index: usize,
+        cfg: &AssembleConfig,
+    ) -> String {
+        fn add_specificity_level(selector: &str, index: usize) -> String {
+            let mut out = String::new();
+            push_specificity_level(&mut out, selector, index);
+            out
+        }
+        fn add_ancestor_selector(selector: &str, ancestor_selector: &str) -> String {
+            if is_selector_exempt(selector) {
+                return selector.to_string();
+            }
+            if !selector.starts_with('@') {
+                return format!("{ancestor_selector} {selector}");
+            }
+            let last_at_rule = selector.rfind('@').unwrap_or(0);
+            match selector[last_at_rule..].find('{') {
+                Some(off) => {
+                    let bracket = last_at_rule + off;
+                    format!(
+                        "{}{} {}",
+                        &selector[..bracket + 1],
+                        ancestor_selector,
+                        &selector[bracket + 1..]
+                    )
+                }
+                None => format!("{ancestor_selector} {selector}"),
+            }
+        }
+        let use_layers_on = matches!(cfg.use_layers, LayersConfig::On { .. });
+        let mut ltr = ltr.to_string();
+        let mut rtl = rtl.map(str::to_string);
+        if !use_layers_on && !cfg.legacy_disable_layers {
+            ltr = add_specificity_level(&ltr, index);
+            rtl = rtl.map(|r| add_specificity_level(&r, index));
+        }
+        ltr = double_theme_classes(&ltr);
+        rtl = rtl.map(|r| double_theme_classes(&r));
+        match rtl {
+            Some(rtl) if cfg.enable_ltr_rtl_comments => {
+                format!("/* @ltr begin */{ltr}/* @ltr end */\n/* @rtl begin */{rtl}/* @rtl end */")
+            }
+            Some(rtl) => format!(
+                "{}\n{}",
+                add_ancestor_selector(&ltr, "html:not([dir='rtl'])"),
+                add_ancestor_selector(&rtl, "html[dir='rtl']")
+            ),
+            None => ltr,
+        }
+    }
+
+    #[test]
+    fn in_place_printer_matches_the_allocating_one() {
+        const TEXTS: &[&str] = &[
+            ".a{color:red}",
+            ".a::before{color:red}",
+            ".a:hover::after{color:red}",
+            "@media (min-width: 1px){.a.a{color:red}}",
+            "@media (min-width: 1px){@supports (x: y){.a.a.a::after{color:red}}}",
+            "@keyframes k-B{from{opacity:0;}to{opacity:1;}}",
+            "@position-try --p{top:0;left:0;}",
+            ".a, .b:root{--x:1;}",
+            ":root, .a{--x:1;}",
+            ".thm1, .thm2:root::before{--x:1;}",
+            "@media (prefers-color-scheme: dark){.a, .a:root{--x:1;}}",
+            "@media (x){:root, .a{--x:1;}}",
+            ".a, .b:root, .c, .d:root{}",
+            ".a, .b:root",
+            "@media x",
+            "@a{@b",
+            "@a @b{.x{y:z}}",
+            "@nobrace",
+            ".é, .b:root{content:\"é\"}",
+            "é",
+            "x",
+            "",
+        ];
+        let configs = [
+            serde_json::json!({}),
+            serde_json::json!({"useLayers": true}),
+            serde_json::json!({"legacyDisableLayers": true}),
+            serde_json::json!({"enableLTRRTLComments": true}),
+            serde_json::json!({"useLayers": true, "enableLTRRTLComments": true}),
+        ]
+        .map(|raw| AssembleConfig::from_json(&raw).unwrap());
+        for cfg in &configs {
+            for index in 0..4 {
+                for ltr in TEXTS {
+                    let rtls = TEXTS
+                        .iter()
+                        .filter(|rtl| !rtl.is_empty())
+                        .map(|rtl| Some(*rtl));
+                    for rtl in std::iter::once(None).chain(rtls) {
+                        let mut got = String::from("before\n");
+                        push_chunk(&mut got, ltr, rtl, index, cfg);
+                        let want = rule_chunk_allocating(ltr, rtl, index, cfg);
+                        assert_eq!(got, format!("before\n{want}"), "{ltr:?} {rtl:?} {index}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn priority_bits_order_like_the_priority_comparison() {
+        let priorities = [
+            -1e308, -3000.5, -1.0, -5e-324, -0.0, 0.0, 5e-324, 0.1, 1.0, 2999.0, 3000.0, 1e308,
+        ];
+        for a in priorities {
+            for b in priorities {
+                assert_eq!(
+                    priority_bits(a).cmp(&priority_bits(b)),
+                    compare_priorities(a, b).unwrap_or(Ordering::Equal),
+                    "{a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_rule_stays_compact() {
+        assert!(std::mem::size_of::<RuleKey>() <= 40);
+        assert!(std::mem::size_of::<PreparedRule>() <= 120);
+    }
+}
+
+#[cfg(test)]
+mod splice_tests {
+    use super::*;
+
+    fn rule(class_name: &str, ltr: &str, priority: f64) -> StylexRule {
+        StylexRule {
+            class_name: class_name.into(),
+            ltr: ltr.into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority,
+        }
+    }
+
+    fn constant(name: &str, value: serde_json::Value) -> StylexRule {
+        StylexRule {
+            const_key: Some(name.into()),
+            const_val: Some(Box::new(value)),
+            ..rule(name, "", 0.0)
+        }
+    }
+
+    fn configs() -> [AssembleConfig; 3] {
+        [
+            serde_json::json!({}),
+            serde_json::json!({"useLayers": true}),
+            serde_json::json!({"useLegacyClassnamesSort": true}),
+        ]
+        .map(|raw| AssembleConfig::from_json(&raw).unwrap())
+    }
+
+    // The splice path must answer, and with the one-shot answer.
+    fn assert_spliced(registry: &mut RuleRegistry, what: &str) {
+        for cfg in &configs() {
+            let spliced = registry.try_incremental(cfg);
+            assert!(spliced.is_ok(), "{what}: left the splice path");
+            assert_eq!(
+                spliced.map_err(|_| ()),
+                assemble(&registry.all_rules(), cfg).map_err(|_| ())
+            );
+        }
+    }
+
+    // A small project: per-file rules of its own, some shared atoms, a media
+    // rule, a priority-0 rule, and an rtl pair.
+    fn file_rules(i: usize) -> Vec<StylexRule> {
+        vec![
+            rule(
+                &format!("xown{i}"),
+                &format!(".xown{i}{{width:{i}px}}"),
+                4000.0,
+            ),
+            rule("xflex", ".xflex{display:flex}", 3000.0),
+            rule(
+                &format!("xmq{}", i % 3),
+                &format!(
+                    "@media (min-width: {}px){{.xmq{0}.xmq{0}{{color:red}}}}",
+                    i % 3
+                ),
+                3200.0,
+            ),
+            rule(
+                &format!("xvars{i}"),
+                &format!(":root, .xvars{i}{{--v{i}:red;}}"),
+                0.0,
+            ),
+            StylexRule {
+                rtl: Some(format!(".xdir{}{{margin-right:0}}", i % 2).into()),
+                ..rule(
+                    &format!("xdir{}", i % 2),
+                    &format!(".xdir{}{{margin-left:0}}", i % 2),
+                    3000.0,
+                )
+            },
+            rule(
+                &format!("xpad{}", i % 4),
+                &format!(".xpad{}{{padding:0}}", i % 4),
+                1000.0,
+            ),
+        ]
+    }
+
+    #[test]
+    fn added_and_removed_files_are_spliced_in_place() {
+        let mut registry = RuleRegistry::new();
+        for i in [10, 30, 50] {
+            registry.set_file_rules(&format!("f{i}.ts"), file_rules(i));
+        }
+        for cfg in &configs() {
+            registry.emit(cfg).unwrap();
+        }
+        // In the middle, at the end, at the front.
+        for i in [20, 60, 0] {
+            registry.set_file_rules(&format!("f{i:02}.ts"), file_rules(i));
+            assert_spliced(&mut registry, "add");
+        }
+        registry.remove_file("f30.ts");
+        assert_spliced(&mut registry, "remove");
+        // One emit sees an add, an edit and two removals; a file added and
+        // removed in between is never seen at all.
+        registry.set_file_rules("f40.ts", file_rules(40));
+        registry.set_file_rules("f10.ts", file_rules(11));
+        registry.remove_file("f00.ts");
+        registry.remove_file("f60.ts");
+        registry.set_file_rules("f99.ts", file_rules(99));
+        registry.remove_file("f99.ts");
+        assert_spliced(&mut registry, "mixed");
+        // A removed file comes back.
+        registry.set_file_rules("f30.ts", file_rules(31));
+        assert_spliced(&mut registry, "re-add");
+        for path in ["f10.ts", "f20.ts", "f30.ts", "f40.ts", "f50.ts"] {
+            registry.remove_file(path);
+            assert_spliced(&mut registry, "drain");
+        }
+        assert_eq!(registry.emit(&configs()[0]), Ok(String::new()));
+        registry.set_file_rules("f70.ts", file_rules(70));
+        assert_spliced(&mut registry, "refill");
+        assert!(registry.incr.iter().all(|state| state.paths == ["f70.ts"]));
+    }
+
+    #[test]
+    fn added_and_removed_files_are_spliced_among_shared_owners() {
+        let mut registry = RuleRegistry::new();
+        // Heavy repetition: every file repeats the same few atoms.
+        let atoms = |i: usize| -> Vec<StylexRule> {
+            (0..8)
+                .map(|j| {
+                    let n = (i + j) % 12;
+                    rule(
+                        &format!("xatom{n}"),
+                        &format!(".xatom{n}{{order:{n}}}"),
+                        3000.0,
+                    )
+                })
+                .collect()
+        };
+        for i in 0..64 {
+            registry.set_file_rules(&format!("f{:03}.ts", i * 2), atoms(i));
+        }
+        for cfg in &configs() {
+            registry.emit(cfg).unwrap();
+        }
+        assert!(registry.incr.iter().all(|state| state.owners.is_some()));
+        for i in 0..40 {
+            let odd = format!("f{:03}.ts", i * 2 + 1);
+            let mut rules = atoms(i + 3);
+            // A class only this file owns: it leaves with the file.
+            rules.push(rule(
+                &format!("xonly{i}"),
+                &format!(".xonly{i}{{top:0}}"),
+                4000.0,
+            ));
+            registry.set_file_rules(&odd, rules);
+            assert_spliced(&mut registry, "add");
+            registry.remove_file(&format!("f{:03}.ts", i * 2));
+            assert_spliced(&mut registry, "remove");
+            if i % 3 == 0 {
+                registry.remove_file(&odd);
+                assert_spliced(&mut registry, "remove the added");
+            }
+        }
+        assert!(registry.incr.iter().all(|state| state.owners.is_some()));
+        // Every sort entry is still the first owner of its class.
+        for state in &registry.incr {
+            let owners = state.owners.as_ref().unwrap();
+            assert_eq!(state.sorted.len(), owners.len());
+            let pool = state.pool.as_ref().unwrap();
+            assert_eq!(
+                pool.live,
+                pool.buckets.values().map(Vec::len).sum::<usize>()
+            );
+            assert_eq!(pool.live, owners.len());
+        }
+    }
+
+    #[test]
+    fn untouched_constants_keep_the_splice_and_changed_ones_rebuild() {
+        let tokens = |px: u32| {
+            vec![
+                constant("xbp", serde_json::json!("@media (min-width: 768px)")),
+                constant("xgap", serde_json::json!(format!("{px}px"))),
+                rule("xvars", ":root, .xvars{--xa:red;}", 0.0),
+            ]
+        };
+        let uses = vec![
+            rule("xa", "var(--xbp){.xa.xa{color:red}}", 6000.0),
+            rule("xb", ".xb{gap:var(--xgap)}", 2000.0),
+        ];
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("tokens.ts", tokens(4));
+        registry.set_file_rules("uses.ts", uses.clone());
+        for cfg in &configs() {
+            registry.emit(cfg).unwrap();
+        }
+        // The token file changes around its constants.
+        let mut edited = tokens(4);
+        edited.push(rule("xvars2", ":root, .xvars2{--xb:blue;}", 0.0));
+        registry.set_file_rules("tokens.ts", edited);
+        assert_spliced(&mut registry, "token file edit");
+        // A value changes: the prepared texts are stale.
+        registry.set_file_rules("tokens.ts", tokens(8));
+        for cfg in &configs() {
+            assert!(registry.try_incremental(cfg).is_err());
+            let css = registry.emit(cfg).unwrap();
+            assert!(css.contains("gap:8px"), "{css}");
+            assert_eq!(Ok(css), assemble(&registry.all_rules(), cfg));
+        }
+        // An added file redefines a constant (last wins), then leaves again.
+        registry.set_file_rules(
+            "z-override.ts",
+            vec![constant("xgap", serde_json::json!("1em"))],
+        );
+        for cfg in &configs() {
+            assert!(registry.try_incremental(cfg).is_err());
+            assert!(registry.emit(cfg).unwrap().contains("gap:1em"));
+        }
+        registry.remove_file("z-override.ts");
+        for cfg in &configs() {
+            assert!(registry.try_incremental(cfg).is_err());
+            assert!(registry.emit(cfg).unwrap().contains("gap:8px"));
+        }
+        // A file that declares no constants comes and goes on the splice path.
+        registry.set_file_rules("more.ts", uses);
+        assert_spliced(&mut registry, "add beside constants");
+        registry.remove_file("more.ts");
+        assert_spliced(&mut registry, "remove beside constants");
+    }
+
+    // Dirty files prepared against constants they change would be thrown
+    // away: the splice settles the constants from the raw rules first, so
+    // the rebuild is the only preparation the change costs.
+    #[test]
+    fn a_constant_change_is_settled_before_any_file_is_prepared() {
+        let cfg = AssembleConfig::default();
+        let tokens = |px: u32| {
+            let mut rules = file_rules(0);
+            rules.push(constant("xgap", serde_json::json!(format!("{px}px"))));
+            rules
+        };
+        let prepared = || PREPARED_RULES.with(std::cell::Cell::get);
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("tokens.ts", tokens(4));
+        for i in 1..4 {
+            registry.set_file_rules(&format!("f{i}.ts"), file_rules(i));
+        }
+        registry.emit(&cfg).unwrap();
+
+        registry.set_file_rules("f1.ts", file_rules(5));
+        registry.set_file_rules("tokens.ts", tokens(8));
+        let before = prepared();
+        assert!(matches!(registry.try_incremental(&cfg), Err(None)));
+        assert_eq!(prepared(), before);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let rule_count = registry
+            .files()
+            .flat_map(|(_, rules)| rules)
+            .filter(|rule| !is_const_rule(rule))
+            .count();
+        assert_eq!(prepared() - before, rule_count as u64);
+    }
+
+    #[test]
+    fn a_blocked_config_is_retried_only_when_its_blocker_changes() {
+        let cfg = AssembleConfig::default();
+        let unsafe_rule = rule("xu", ".xu{color:red}", f64::NAN);
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("a.ts", file_rules(1));
+        registry.set_file_rules("b.ts", vec![unsafe_rule.clone()]);
+        registry.set_file_rules("c.ts", vec![unsafe_rule]);
+        let blocked_on = |registry: &RuleRegistry| -> Vec<String> {
+            registry
+                .blocked
+                .iter()
+                .map(|blocked| match &blocked.on {
+                    Blocker::File { path, .. } => path.clone(),
+                    Blocker::Consts => "<consts>".to_string(),
+                })
+                .collect()
+        };
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(blocked_on(&registry), ["b.ts"]);
+        assert!(registry.incr.is_empty());
+
+        // Other files change: the config stays blocked, nothing is rebuilt.
+        registry.set_file_rules("a.ts", file_rules(2));
+        registry.set_file_rules("d.ts", file_rules(3));
+        registry.remove_file("d.ts");
+        assert_eq!(blocked_on(&registry), ["b.ts"]);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(registry.incr.is_empty());
+
+        // The blocker is fixed: the retry finds the next one.
+        registry.set_file_rules("b.ts", file_rules(4));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(blocked_on(&registry), ["c.ts"]);
+
+        // A constant changes: it reaches every file's rules, so retry.
+        registry.set_file_rules("e.ts", vec![constant("xk", serde_json::json!("1px"))]);
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(blocked_on(&registry), ["c.ts"]);
+
+        // The last blocker leaves: the splice path takes over.
+        registry.remove_file("c.ts");
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.incr.len(), 1);
+        registry.set_file_rules("a.ts", file_rules(5));
+        assert!(registry.try_incremental(&cfg).is_ok());
+    }
+
+    // The blocker, a rule of non-finite priority, reads a constant: an edit
+    // to it is judged against the constants it was blocked on.
+    #[test]
+    fn an_edited_blocker_is_judged_alone_and_unblocks_once_safe() {
+        let cfg = AssembleConfig::default();
+        let glyph_user = |n: usize| {
+            rule(
+                &format!("xu{n}"),
+                &format!(".xu{n}{{content:var(--xglyph)}}"),
+                f64::INFINITY,
+            )
+        };
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("a.ts", file_rules(1));
+        registry.set_file_rules("b.ts", vec![glyph_user(0)]);
+        registry.set_file_rules("c.ts", file_rules(2));
+        registry.set_file_rules(
+            "tokens.ts",
+            vec![constant("xglyph", serde_json::json!("\"\u{436}\""))],
+        );
+        // The constants the one blocked entry was prepared against.
+        let blocked_consts = |registry: &RuleRegistry| -> Arc<ConstTable> {
+            match &registry.blocked[..] {
+                [
+                    Blocked {
+                        on: Blocker::File { path, consts },
+                        ..
+                    },
+                ] => {
+                    assert_eq!(path, "b.ts");
+                    Arc::clone(consts)
+                }
+                _ => panic!("expected one config blocked on a file"),
+            }
+        };
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let consts = blocked_consts(&registry);
+        assert!(registry.incr.is_empty());
+
+        // Edited but still unsafe: the entry survives the edit and the emit
+        // after it. A retry would have built its constants anew.
+        for n in 1..4 {
+            let mut rules = file_rules(n + 2);
+            rules.push(glyph_user(n));
+            registry.set_file_rules("b.ts", rules);
+            assert!(Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+            let css = registry.emit(&cfg);
+            assert!(css.as_ref().unwrap().contains("content:\"\u{436}\""));
+            assert_eq!(css, assemble(&registry.all_rules(), &cfg));
+            assert!(Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+            assert!(registry.incr.is_empty());
+        }
+
+        // Edited to be safe: unblocked at once, and the next emit builds the
+        // state that later edits are spliced into.
+        registry.set_file_rules("b.ts", file_rules(6));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.incr.len(), 1);
+        registry.set_file_rules("b.ts", file_rules(7));
+        assert!(registry.try_incremental(&cfg).is_ok());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+
+        // Unsafe again, then removed: a blocker that is gone blocks nothing.
+        registry.set_file_rules("b.ts", vec![glyph_user(8)]);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert!(!Arc::ptr_eq(&consts, &blocked_consts(&registry)));
+        registry.remove_file("b.ts");
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(registry.incr.len(), 1);
+    }
+
+    #[test]
+    fn a_nan_constant_keeps_its_file_on_the_splice_path() {
+        let tokens = |extra: usize| {
+            let mut rules = vec![
+                constant("xnan", serde_json::json!({"__jsnum": "NaN"})),
+                constant("xgap", serde_json::json!(4)),
+                rule("xn", ".xn{order:var(--xnan)}", 3000.0),
+            ];
+            rules.extend((0..extra).map(|i| {
+                rule(
+                    &format!("xextra{i}"),
+                    &format!(".xextra{i}{{top:{i}px}}"),
+                    3000.0,
+                )
+            }));
+            rules
+        };
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("tokens.ts", tokens(0));
+        registry.set_file_rules("a.ts", file_rules(1));
+        for cfg in &configs() {
+            assert!(registry.emit(cfg).unwrap().contains("order:NaN"));
+        }
+        for extra in 1..4 {
+            registry.set_file_rules("tokens.ts", tokens(extra));
+            assert_spliced(&mut registry, "edit beside a NaN constant");
+        }
+    }
+
+    #[test]
+    fn a_state_no_emit_asks_for_is_dropped_once_its_backlog_outgrows_the_registry() {
+        let [active, idle, _] = configs();
+        let mut registry = RuleRegistry::new();
+        for i in 0..4 {
+            registry.set_file_rules(&format!("f{i}.ts"), file_rules(i));
+        }
+        registry.emit(&active).unwrap();
+        registry.emit(&idle).unwrap();
+        assert_eq!(registry.incr.len(), 2);
+
+        // Files come and go; only one config is ever emitted.
+        let mut dropped_at = None;
+        for step in 0..4 * MAX_IDLE_DIRTY {
+            let path = format!("tmp{step}.ts");
+            registry.set_file_rules(&path, file_rules(step));
+            assert!(registry.try_incremental(&active).is_ok());
+            registry.remove_file(&path);
+            assert!(registry.try_incremental(&active).is_ok());
+            let backlog = registry.file_count().max(MAX_IDLE_DIRTY);
+            assert!(registry.incr.iter().all(|s| s.dirty.len() <= backlog));
+            if registry.incr.len() == 1 {
+                dropped_at.get_or_insert(step);
+            }
+        }
+        assert_eq!(dropped_at, Some(MAX_IDLE_DIRTY));
+        assert!(registry.incr.iter().all(|state| state.cfg == active));
+
+        // The dropped config is rebuilt when it is asked for again.
+        assert_eq!(registry.emit(&idle), assemble(&registry.all_rules(), &idle));
+        assert_eq!(registry.incr.len(), 2);
+        registry.set_file_rules("f0.ts", file_rules(9));
+        for cfg in [&active, &idle] {
+            let Ok(spliced) = registry.try_incremental(cfg) else {
+                panic!("left the splice path");
+            };
+            assert_eq!(Ok(spliced), assemble(&registry.all_rules(), cfg));
+        }
+    }
+
+    // Most of the registry leaves between two emits. The backlog outgrows
+    // what is left of the registry, but not the states that held the files:
+    // they splice the removals, and are dropped only by a backlog larger than
+    // themselves.
+    #[test]
+    fn a_batch_removing_most_files_is_spliced_by_the_states_that_held_them() {
+        let shrunk = || {
+            let mut registry = RuleRegistry::new();
+            for i in 0..40 {
+                registry.set_file_rules(&format!("f{i:02}.ts"), file_rules(i));
+            }
+            for cfg in &configs() {
+                registry.emit(cfg).unwrap();
+            }
+            for i in (0..40).filter(|i| i % 4 != 0) {
+                registry.remove_file(&format!("f{i:02}.ts"));
+            }
+            assert_eq!(registry.file_count(), 10);
+            assert!(registry.file_count().max(MAX_IDLE_DIRTY) < 30);
+            assert_eq!(registry.incr.len(), configs().len());
+            for state in &registry.incr {
+                assert_eq!((state.dirty.len(), state.paths.len()), (30, 40));
+            }
+            registry
+        };
+
+        let mut registry = shrunk();
+        assert_spliced(&mut registry, "remove most files");
+        for state in &registry.incr {
+            assert_eq!((state.dirty.len(), state.paths.len()), (0, 10));
+        }
+
+        // No emit comes: the states go once more files were touched than
+        // they hold.
+        let mut registry = shrunk();
+        for step in 0..10 {
+            registry.set_file_rules(&format!("tmp{step}.ts"), file_rules(step));
+            assert_eq!(registry.incr.len(), configs().len(), "step {step}");
+        }
+        registry.set_file_rules("tmp10.ts", file_rules(10));
+        assert!(registry.incr.is_empty());
+        for cfg in &configs() {
+            assert_eq!(registry.emit(cfg), assemble(&registry.all_rules(), cfg));
+        }
+    }
+
+    // A file edited from safe to unsafe is met by the splice that prepares
+    // it. The config is blocked on it there, against the constants of the
+    // state being spliced: a rebuild would prepare every file against a table
+    // of its own to stop at the same one. The state is kept, its files
+    // dirty, for the splice after the blocker.
+    #[test]
+    fn a_splice_that_meets_an_unsafe_file_blocks_on_it_without_a_rebuild() {
+        let cfg = AssembleConfig::default();
+        let unsafe_rule = rule("xu", ".xu{color:red}", f64::INFINITY);
+        let glyph_user = rule("xg", ".xg{content:var(--xglyph)}", f64::INFINITY);
+        let glyph = |value: &str| constant("xglyph", serde_json::json!(value));
+        let with = |i: usize, extra: &StylexRule| {
+            let mut rules = file_rules(i);
+            rules.push(extra.clone());
+            rules
+        };
+        let seeded = || {
+            let mut registry = RuleRegistry::new();
+            for (i, path) in ["a.ts", "b.ts", "c.ts"].into_iter().enumerate() {
+                registry.set_file_rules(path, file_rules(i));
+            }
+            registry.set_file_rules("tokens.ts", vec![glyph("\"\u{436}\"")]);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            assert!(registry.blocked.is_empty());
+            let table = Arc::clone(&registry.incr[0].table);
+            (registry, table)
+        };
+        // What the one config is blocked on.
+        let blocker = |registry: &RuleRegistry| -> (String, Arc<ConstTable>) {
+            match &registry.blocked[..] {
+                [
+                    Blocked {
+                        on: Blocker::File { path, consts },
+                        ..
+                    },
+                ] => (path.clone(), Arc::clone(consts)),
+                _ => panic!("expected one config blocked on a file"),
+            }
+        };
+        // The seeded state is the one registered, with these files dirty.
+        let kept = |registry: &RuleRegistry, table: &Arc<ConstTable>, dirty: &[&str]| {
+            let [state] = &registry.incr[..] else {
+                panic!("expected the one state to be kept");
+            };
+            assert!(Arc::ptr_eq(&state.table, table));
+            assert!(state.dirty.iter().eq(dirty));
+        };
+
+        // Edited, added and removed files in one batch, two of them unsafe:
+        // the first in path order is the blocker, and the table is the
+        // state's own, so no state was built to find it.
+        let (mut registry, table) = seeded();
+        registry.set_file_rules("a.ts", file_rules(4));
+        registry.set_file_rules("b.ts", with(1, &glyph_user));
+        registry.set_file_rules("c.ts", vec![unsafe_rule.clone()]);
+        registry.set_file_rules("d.ts", file_rules(5));
+        registry.remove_file("d.ts");
+        let css = registry.emit(&cfg);
+        assert!(css.as_ref().unwrap().contains("content:\"\u{436}\""));
+        assert_eq!(css, assemble(&registry.all_rules(), &cfg));
+        let (path, consts) = blocker(&registry);
+        assert_eq!(path, "b.ts");
+        assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["a.ts", "b.ts", "c.ts", "d.ts"]);
+        // The entry is one `unblock` reads like any other: an edit that
+        // leaves the file unsafe keeps it, a safe one drops it, and the
+        // retry, a splice of the kept state, stops at the next unsafe file.
+        registry.set_file_rules("b.ts", with(2, &glyph_user));
+        assert!(Arc::ptr_eq(&blocker(&registry).1, &table));
+        registry.set_file_rules("b.ts", file_rules(1));
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let (path, consts) = blocker(&registry);
+        assert_eq!(path, "c.ts");
+        assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["a.ts", "b.ts", "c.ts", "d.ts"]);
+        // The last blocker is fixed: the kept state splices the whole batch.
+        registry.set_file_rules("c.ts", file_rules(2));
+        assert!(registry.blocked.is_empty());
+        let Ok(spliced) = registry.try_incremental(&cfg) else {
+            panic!("left the splice path");
+        };
+        assert_eq!(Ok(spliced), assemble(&registry.all_rules(), &cfg));
+        kept(&registry, &table, &[]);
+
+        // An added file is judged the same way.
+        let (mut registry, table) = seeded();
+        registry.set_file_rules("b2.ts", vec![unsafe_rule.clone()]);
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        let (path, consts) = blocker(&registry);
+        assert_eq!(path, "b2.ts");
+        assert!(Arc::ptr_eq(&consts, &table));
+        kept(&registry, &table, &["b2.ts"]);
+        registry.remove_file("b2.ts");
+        assert!(registry.blocked.is_empty());
+        assert!(registry.try_incremental(&cfg).is_ok());
+        kept(&registry, &table, &[]);
+
+        // The same batch changes the constant the unsafe file reads, in a
+        // file the splice has not looked at yet: the state's table is stale,
+        // and the file blocks against the table the rebuild prepared.
+        let (mut registry, table) = seeded();
+        registry.set_file_rules("b.ts", with(1, &glyph_user));
+        registry.set_file_rules("tokens.ts", vec![glyph("none")]);
+        let css = registry.emit(&cfg);
+        assert!(css.as_ref().unwrap().contains("content:none"));
+        assert_eq!(css, assemble(&registry.all_rules(), &cfg));
+        assert!(registry.incr.is_empty());
+        let (path, consts) = blocker(&registry);
+        assert_eq!(path, "b.ts");
+        assert!(!Arc::ptr_eq(&consts, &table));
+
+        // Constants added around the unsafe file: it blocks, against the
+        // table the rebuild prepared. In a file before the unsafe one, after
+        // it, and in the unsafe file itself.
+        for tokens in ["a-tokens.ts", "z-tokens.ts", "b.ts"] {
+            let (mut registry, table) = seeded();
+            let mut rules = with(1, &unsafe_rule);
+            if tokens == "b.ts" {
+                rules.push(constant("xgap", serde_json::json!("4px")));
+            } else {
+                registry.set_file_rules(tokens, vec![constant("xgap", serde_json::json!("4px"))]);
+            }
+            registry.set_file_rules("b.ts", rules);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            assert!(registry.incr.is_empty(), "constants in {tokens}");
+            let (path, consts) = blocker(&registry);
+            assert_eq!(path, "b.ts", "constants in {tokens}");
+            assert!(!Arc::ptr_eq(&consts, &table), "constants in {tokens}");
+            assert_eq!(consts.consts.len(), 2);
+        }
+    }
+
+    // A rule of non-finite priority added to a file and taken out again.
+    // The state outlives the block, in inline and in shared storage, and
+    // splices the file back without a rebuild.
+    #[test]
+    fn a_brief_unsafe_edit_is_spliced_back_without_a_rebuild() {
+        let cfg = AssembleConfig::default();
+        let atoms = |i: usize| -> Vec<StylexRule> {
+            (0..8)
+                .map(|j| {
+                    let n = (i + j) % 12;
+                    rule(
+                        &format!("xatom{n}"),
+                        &format!(".xatom{n}{{order:{n}}}"),
+                        3000.0,
+                    )
+                })
+                .collect()
+        };
+        for shared in [false, true] {
+            let contents = |i: usize| if shared { atoms(i) } else { file_rules(i) };
+            let file_count = if shared { 64 } else { 16 };
+            let mut registry = RuleRegistry::new();
+            for i in 0..file_count {
+                registry.set_file_rules(&format!("f{i:02}.ts"), contents(i));
+            }
+            registry.emit(&cfg).unwrap();
+            assert_eq!(registry.incr[0].pool.is_some(), shared);
+            let table = Arc::clone(&registry.incr[0].table);
+
+            let mut typed = contents(100);
+            typed.push(rule("xu", ".xu{color:red}", f64::INFINITY));
+            registry.set_file_rules("f07.ts", typed);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            assert_eq!(registry.blocked.len(), 1);
+            assert_consistent(&registry);
+
+            registry.set_file_rules("f07.ts", contents(101));
+            assert!(registry.blocked.is_empty());
+            let before = PREPARED_RULES.with(std::cell::Cell::get);
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+            let prepared = PREPARED_RULES.with(std::cell::Cell::get) - before;
+            assert!(prepared <= contents(101).len() as u64, "shared {shared}");
+            assert!(
+                Arc::ptr_eq(&registry.incr[0].table, &table),
+                "shared {shared}"
+            );
+            assert!(registry.incr[0].dirty.is_empty());
+            assert_consistent(&registry);
+        }
+    }
+
+    // What every registered state holds between emits, a state a blocker
+    // kept waiting included: one sort entry per class with owners, each
+    // owner list sorted, and a pool that counts exactly the shared
+    // preparations alive.
+    fn assert_consistent(registry: &RuleRegistry) {
+        for state in &registry.incr {
+            if let Some(owners) = &state.owners {
+                assert_eq!(state.sorted.len(), owners.len());
+                assert!(
+                    owners
+                        .values()
+                        .all(|entries| !entries.is_empty() && entries.is_sorted())
+                );
+            }
+            if let Some(pool) = &state.pool {
+                let held = pool.buckets.values().flatten();
+                assert_eq!(pool.live, held.clone().count());
+                assert!(held.clone().all(|shared| shared.strong_count() > 0));
+            }
+        }
+    }
+
+    #[test]
+    fn a_constant_cycle_blocks_until_the_constants_change() {
+        let cfg = AssembleConfig::default();
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules(
+            "tokens.ts",
+            vec![
+                constant("xa", serde_json::json!("var(--xb)")),
+                constant("xb", serde_json::json!("var(--xa)")),
+            ],
+        );
+        registry.set_file_rules("a.ts", file_rules(1));
+        let cycle = assemble(&registry.all_rules(), &cfg);
+        assert!(matches!(cycle, Err(AssembleError::CircularConst(_))));
+        assert_eq!(registry.emit(&cfg), cycle);
+        assert!(matches!(registry.blocked[0].on, Blocker::Consts));
+        registry.set_file_rules("a.ts", file_rules(2));
+        assert_eq!(registry.blocked.len(), 1);
+        assert_eq!(registry.emit(&cfg), cycle);
+        registry.set_file_rules("tokens.ts", vec![constant("xa", serde_json::json!("1px"))]);
+        assert!(registry.blocked.is_empty());
+        assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        assert_eq!(registry.incr.len(), 1);
+    }
+
+    #[test]
+    fn files_added_with_repetition_move_inline_storage_to_shared() {
+        let cfg = AssembleConfig::default();
+        let mut registry = RuleRegistry::new();
+        registry.set_file_rules("a.ts", file_rules(1));
+        registry.emit(&cfg).unwrap();
+        assert!(registry.incr[0].pool.is_none());
+        let atoms: Vec<StylexRule> = (0..8)
+            .map(|n| {
+                rule(
+                    &format!("xatom{n}"),
+                    &format!(".xatom{n}{{order:{n}}}"),
+                    3000.0,
+                )
+            })
+            .collect();
+        for i in 0..64 {
+            registry.set_file_rules(&format!("f{i:03}.ts"), atoms.clone());
+            assert_eq!(registry.emit(&cfg), assemble(&registry.all_rules(), &cfg));
+        }
+        assert!(registry.incr[0].pool.is_some());
+        assert!(registry.incr[0].owners.is_some());
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) % n as u64) as usize
+        }
+    }
+
+    // Random adds, edits and removals over rule pools with little and with
+    // heavy repetition (inline and shared storage), with constants, class
+    // conflicts, negative priorities and rtl pairs in the mix; in some runs
+    // also a rule of non-finite priority, which blocks a config while a file
+    // holds it.
+    #[test]
+    fn random_file_churn_matches_one_shot() {
+        let universe = |classes: usize| -> Vec<StylexRule> {
+            let mut rules = Vec::new();
+            for n in 0..classes {
+                let class = format!("x{n}");
+                rules.push(match n % 9 {
+                    0 => rule(
+                        &class,
+                        &format!("@media (min-width: {n}px){{.{class}.{class}{{color:red}}}}"),
+                        3200.0,
+                    ),
+                    1 => rule(&class, &format!(":root, .{class}{{--{class}:red;}}"), 0.0),
+                    2 => StylexRule {
+                        rtl: Some(format!(".{class}{{right:0}}").into()),
+                        ..rule(&class, &format!(".{class}{{left:0}}"), 4000.0)
+                    },
+                    3 => rule(
+                        &class,
+                        &format!("var(--xbp){{.{class}.{class}{{top:0}}}}"),
+                        6000.0,
+                    ),
+                    4 => rule(&class, &format!(".{class}{{gap:var(--xgap)}}"), 2000.0),
+                    5 => rule(&class, &format!(".{class}{{order:{n}}}"), -1.0),
+                    6 => rule(&class, &format!(".{class}, .{class}:root{{--t:1;}}"), 0.5),
+                    _ => rule(&class, &format!(".{class}{{width:{n}px}}"), 3000.0),
+                });
+            }
+            // Two texts for one class: the first-slot / last-value case.
+            rules.push(rule("x7", ".x7{width:auto}", 3000.0));
+            rules.push(constant(
+                "xbp",
+                serde_json::json!("@media (min-width: 768px)"),
+            ));
+            rules.push(constant("xgap", serde_json::json!("4px")));
+            rules.push(constant("xgap", serde_json::json!("8px")));
+            rules
+        };
+        let unsafe_rule = rule("xu", ".xu{color:red}", f64::INFINITY);
+        // The last field: 1 in how many rare draws is the unsafe rule (0:
+        // none is), tuned so that a registry holds it a quarter to half of
+        // the time. A few paths keep a blocked state's backlog under the
+        // floor, so it lives to splice again.
+        for (seed, classes, files, per_file, unsafe_odds) in [
+            (1, 40, 48, 12, 0),
+            (2, 2000, 24, 16, 0),
+            (3, 12, 64, 8, 0),
+            (4, 300, 40, 20, 0),
+            (5, 40, 48, 12, 6),
+            (6, 12, 64, 8, 6),
+            (8, 12, 14, 64, 8),
+            (9, 40, 8, 12, 1),
+            (10, 300, 10, 8, 1),
+        ] {
+            let universe = universe(classes);
+            // The tail of the universe (conflict, constants) is drawn rarely.
+            let plain = universe.len() - 4;
+            let mut rng = Lcg(seed);
+            let draw = |rng: &mut Lcg| -> Vec<StylexRule> {
+                (0..rng.below(per_file + 1))
+                    .map(|_| match rng.below(60) {
+                        0 => universe[plain + rng.below(4)].clone(),
+                        1 if unsafe_odds > 0 && rng.below(unsafe_odds) == 0 => unsafe_rule.clone(),
+                        _ => universe[rng.below(plain)].clone(),
+                    })
+                    .collect()
+            };
+            let mut registry = RuleRegistry::new();
+            for i in 0..files / 2 {
+                registry.set_file_rules(&format!("src/f{:03}.ts", i * 2), draw(&mut rng));
+            }
+            let configs = configs();
+            for step in 0..400 {
+                for _ in 0..1 + rng.below(3) {
+                    let path = format!("src/f{:03}.ts", rng.below(files));
+                    if rng.below(3) == 0 {
+                        registry.remove_file(&path);
+                    } else {
+                        registry.set_file_rules(&path, draw(&mut rng));
+                    }
+                }
+                let cfg = &configs[step % configs.len()];
+                assert_eq!(
+                    registry.emit(cfg),
+                    assemble(&registry.all_rules(), cfg),
+                    "seed {seed} step {step}"
+                );
+                assert_consistent(&registry);
+            }
         }
     }
 }
