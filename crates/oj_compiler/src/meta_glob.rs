@@ -1043,14 +1043,15 @@ fn template_glob(raw: &str) -> String {
 #[path = "meta_glob_tests.rs"]
 mod tests;
 
-/// Vite's worker plugin for a classic (`iife`) worker bundle (plugins/worker.ts,
-/// its "post" transform over every module with `import.meta` in it): a read
-/// of `import.meta.url` is `self.location.href`; any other `import.meta`,
-/// an assignment to `import.meta.url` included (Vite's build leaves
-/// `_vite_importMeta.url = …`, as the mozjpeg codec's
-/// `import.meta.url = "https://localhost"` shows), is `_vite_importMeta`, a
-/// `{ url: self.location.href }` object declared on a line of its own at
-/// the top of the module. `None` when the module has no `import.meta`.
+/// Vite's worker-post plugin for a classic (`iife`) worker bundle, which a
+/// build runs natively (rolldown's `builtin:vite-web-worker-post`, a "post"
+/// transformAst over every module): an `import.meta.url` read as a member
+/// expression is `self.location.href`; the `import.meta` of anything else,
+/// an assignment to `import.meta.url` included (the mozjpeg codec's
+/// `import.meta.url = "https://localhost"` leaves `_vite_importMeta.url =
+/// …`, the target's object visited on its own), is `_vite_importMeta`, a
+/// `var _vite_importMeta = { url: self.location.href }` the plugin puts
+/// first in the module. `None` when the module has no `import.meta`.
 pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
     if !code.contains("import.meta") {
         return None;
@@ -1088,7 +1089,7 @@ pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
     }
     out.push_str(&code[last..]);
     if injected {
-        out.insert_str(0, "const _vite_importMeta = { url: self.location.href };\n");
+        out.insert_str(0, "var _vite_importMeta = { url: self.location.href };\n");
     }
     Some(out)
 }
@@ -1101,7 +1102,7 @@ mod classic_worker_tests {
     fn import_meta_in_a_classic_worker_is_vites() {
         let code = "const u = import.meta.url;\nif (import.meta.url === undefined) import.meta.url = \"https://localhost\";\nconst m = import.meta;\nconsole.log(\"import.meta.url stays in a string\");\n";
         let out = rewrite_classic_worker_import_meta(code).unwrap();
-        assert!(out.starts_with("const _vite_importMeta = { url: self.location.href };\nconst u = self.location.href;\n"), "{out}");
+        assert!(out.starts_with("var _vite_importMeta = { url: self.location.href };\nconst u = self.location.href;\n"), "{out}");
         // An assignment to `import.meta.url` goes through the object, as
         // Vite's build leaves it.
         assert!(
