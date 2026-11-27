@@ -517,6 +517,10 @@ pub(crate) struct Emitter {
     /// preload helper answers for it as Vite's does (its sheets alone, the
     /// import itself replaced).
     removed_pure: Mutex<HashMap<String, Vec<String>>>,
+    /// The sheets of the dropped pure CSS chunks that had no facade module:
+    /// manifest rows keyed `_<file>`, as css-post's asset has no original
+    /// file name for them.
+    pure_unfacaded_sheets: Mutex<Vec<String>>,
     /// A plugin's CSS for a module no chunk holds (`plugin_css`), by module.
     standalone: Mutex<HashMap<PathBuf, String>>,
     /// `output.assetFileNames` for the sheets written here.
@@ -584,6 +588,7 @@ impl Emitter {
             chunk_sheets: Mutex::new(Vec::new()),
             inherited: Mutex::new(HashMap::new()),
             removed_pure: Mutex::new(HashMap::new()),
+            pure_unfacaded_sheets: Mutex::new(Vec::new()),
             standalone: Mutex::new(HashMap::new()),
             asset_namer: Mutex::new(None),
             minify,
@@ -687,6 +692,7 @@ impl Emitter {
                 self.asset_rows.lock().unwrap().clone(),
             )
             .with_workers(self.worker_manifest_rows(), self.worker_asset_files())
+            .with_pure_sheets(self.pure_unfacaded_sheets.lock().unwrap().clone())
     }
 
     /// The manifest rows of the worker bundles, as Vite's worker cache adds
@@ -1111,6 +1117,14 @@ impl Emitter {
                 prelim_of.insert(c.filename.to_string(), c.preliminary_filename.clone());
                 if pure_prelims.contains(&c.preliminary_filename) {
                     pure_files.push(c.filename.to_string());
+                    // A pure chunk shared by its importers (no facade) has
+                    // its sheet keyed `_<file>` in the manifest, as css-post
+                    // names an asset with no original file name.
+                    if c.facade_module_id.is_none() {
+                        if let Some(sheet) = self.chunk_sheet_name(&c.preliminary_filename) {
+                            self.pure_unfacaded_sheets.lock().unwrap().push(sheet);
+                        }
+                    }
                 }
             }
         }

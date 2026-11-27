@@ -3552,6 +3552,9 @@ pub(crate) struct ChunkSheets {
     /// those bundles emitted, which get no row of their own.
     worker_rows: Vec<(String, serde_json::Value)>,
     worker_assets: std::collections::HashSet<String>,
+    /// The sheets of dropped pure CSS chunks with no facade module: rows
+    /// keyed `_<file>` (css-post's asset carries no original file name).
+    pure_sheets: Vec<String>,
 }
 
 impl ChunkSheets {
@@ -3566,6 +3569,7 @@ impl ChunkSheets {
             sheet_assets: Vec::new(),
             worker_rows: Vec::new(),
             worker_assets: Default::default(),
+            pure_sheets: Vec::new(),
         }
     }
 
@@ -3620,6 +3624,12 @@ impl ChunkSheets {
     ) -> Self {
         self.worker_rows = rows;
         self.worker_assets = assets;
+        self
+    }
+
+    /// The sheets of dropped pure CSS chunks that had no facade (see the field).
+    pub fn with_pure_sheets(mut self, sheets: Vec<String>) -> Self {
+        self.pure_sheets = sheets;
         self
     }
 
@@ -8015,6 +8025,11 @@ pub(crate) fn vite_manifest(
         // keyed `_<file>` and keeps a row (no JS chunk takes that key).
         if chunk.facade_module_id.is_none() {
             for file in sheets.own_of(chunk) {
+                // A sheet a `?url` import emitted too is that asset, keyed
+                // by its original file name (see the asset rows below).
+                if sheets.asset_rows().iter().any(|(_, f)| **f == file) {
+                    continue;
+                }
                 let key = format!(
                     "_{}",
                     Path::new(&file)
@@ -8055,6 +8070,27 @@ pub(crate) fn vite_manifest(
     // file name (getChunkOriginalFileName), and the manifest keeps an asset
     // row only when no JS chunk holds that key: a sheet a chunk lists under
     // `css` has no row of its own.
+    // A dropped pure CSS chunk with no facade module: its sheet's row is
+    // keyed `_<file>` too (unless a `?url` import emitted the same sheet).
+    for file in &sheets.pure_sheets {
+        if sheets.asset_rows().iter().any(|(_, f)| *f == file) {
+            continue;
+        }
+        let key = format!(
+            "_{}",
+            Path::new(file)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(file)
+        );
+        if !assets.iter().any(|a| a.key == key) {
+            assets.push(ManifestAsset {
+                key,
+                file: file.clone(),
+                name: None,
+            });
+        }
+    }
     for (source, file) in sheets.rows() {
         let Some(key) = chunk_source_key(source.to_str(), root) else {
             continue;

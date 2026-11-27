@@ -958,10 +958,16 @@ pub(crate) async fn build(
                 // (@cloudflare/vite-plugin turns it on for the entry Worker): its
                 // chunks by source under `.vite/manifest.json`, as the client's.
                 if let Some(name) = server_host.as_ref().and_then(|h| h.facts.manifest.clone()) {
+                    // Vite's worker cache is the main config's, shared by its
+                    // environments, so the Worker's manifest lists the client's
+                    // worker bundles too.
                     let manifest = crate::build::vite_manifest(
                         &output.assets,
                         &start.root,
-                        &server_emitter.chunk_sheets(),
+                        &server_emitter.chunk_sheets().with_workers(
+                            emitter.worker_manifest_rows(),
+                            emitter.worker_asset_files(),
+                        ),
                     );
                     let dest = dir.join(&name);
                     if let Some(parent) = dest.parent() {
