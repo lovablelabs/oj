@@ -2140,9 +2140,11 @@ impl StartAssetsPlugin {
             // A bare `.svg` (or `?react` one) no plugin componentized: its
             // URL, or its data URL when small (Vite's dev inlines an svg the
             // build would).
+            // Without a trailing semicolon, as Vite's asset plugin writes an
+            // asset module (a chunk's map shows the text in sourcesContent).
             if path.extension().is_some_and(|e| e == "svg") {
                 return Ok(Some(format!(
-                    "export default {};",
+                    "export default {}",
                     json(&self.asset_url_for(path, id).await?)
                 )));
             }
@@ -2157,7 +2159,7 @@ impl StartAssetsPlugin {
             AssetTag::Raw => {
                 let text = std::fs::read_to_string(path)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
-                format!("export default {};", json(&text))
+                format!("export default {}", json(&text))
             }
             // Vite's vite:css takes a built `?url` sheet as `?transform-only`:
             // compiled through the plugins under that id and emitted like a
@@ -2179,10 +2181,10 @@ impl StartAssetsPlugin {
                     source
                 };
                 let url = emitter.css_asset(path, css, slots).await?;
-                format!("import {};\nexport default {};", json(&only), json(&url))
+                format!("import {};\nexport default {}", json(&only), json(&url))
             }
             AssetTag::Url => format!(
-                "export default {};",
+                "export default {}",
                 json(&self.asset_url_for(path, id).await?)
             ),
             AssetTag::Inline if is_style_path(&path_str) => match &self.mode {
@@ -2206,11 +2208,11 @@ impl StartAssetsPlugin {
                         let css = emitter
                             .inline_css(path, compiled.css, *server, slots)
                             .await?;
-                        format!("export default {};", json(&css))
+                        format!("export default {}", json(&css))
                     }
                 }
             },
-            AssetTag::Inline => format!("export default {};", json(&data_uri(path)?)),
+            AssetTag::Inline => format!("export default {}", json(&data_uri(path)?)),
             AssetTag::Worker { shared, form } => {
                 let ctor = if shared { "SharedWorker" } else { "Worker" };
                 let module = match &self.mode {
@@ -2461,6 +2463,18 @@ impl Plugin for StartAssetsPlugin {
         // A plain sheet stays in its chunk as well, as vite:css-post keeps
         // one: the chunk's modules then place its link.
         let plain = !id.contains('?') && is_style_path(id) && !is_css_module(id);
+        // A sheet's module and a worker's come with Vite's empty map (its css
+        // and worker plugins return one), so they name no source in the
+        // chunk's sourcemap; an asset's (`?url`, `?raw`, `?inline`, a bare
+        // svg) comes with none, as vite:asset returns none, so the chunk's
+        // map lists the asset's source.
+        let path_str = path.to_string_lossy();
+        let dev = matches!(self.mode, AssetMode::Dev { .. });
+        let empty_map = is_style_path(&path_str)
+            || matches!(
+                asset_tag(&self.root, id.trim_start_matches('\0'), dev),
+                Some(AssetTag::Worker { .. })
+            );
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),
@@ -2469,9 +2483,11 @@ impl Plugin for StartAssetsPlugin {
             // chunk's modules.
             side_effects: (served || plain)
                 .then_some(rolldown_common::side_effects::HookSideEffects::NoTreeshake),
-            // An asset-like module, as Vite's plugins load one: its map is
-            // empty, so it names no source in its chunk's sourcemap.
-            map: crate::build::vite_asset_map(),
+            map: if empty_map {
+                crate::build::vite_asset_map()
+            } else {
+                None
+            },
             ..Default::default()
         }))
     }

@@ -1252,8 +1252,10 @@ fn a_worker_under_esbuild_minify_keeps_rolldowns_lines() {
 /// The preload helper module (`\0vite/preload-helper.js`) is the one the
 /// app's own Vite composes, read off its vite:build-import-analysis plugin,
 /// so a chunk carries the helper of the Vite the app runs (a patched Vite's
-/// included); oj wrote its own copy, taken from a later Vite than the
-/// fixture's.
+/// included); oj wrote its own copy, taken from another Vite than the
+/// fixture's. The fixture's Vite is 8.4, whose helper tries a stylesheet
+/// again after a failed preload (`failedCssLinks`); the test holds the
+/// helper to that version's text.
 #[test]
 fn the_preload_helper_is_the_apps_vites() {
     let Some(root) = app("preload-helper") else {
@@ -1271,8 +1273,6 @@ fn the_preload_helper_is_the_apps_vites() {
     );
     std::fs::write(&config, vite).unwrap();
     build(&root);
-    // The fixture's Vite (8.2.1) scans the document's links itself; oj's copy
-    // of the helper (a later Vite's) keeps a set of preloaded hrefs instead.
     let entry = std::fs::read_dir(root.join("dist/client/assets"))
         .unwrap()
         .flatten()
@@ -1285,7 +1285,7 @@ fn the_preload_helper_is_the_apps_vites() {
         .expect("a client chunk holds the preload helper");
     let at = entry.find("__vitePreload = ").unwrap_or(0);
     assert!(
-        entry.contains("getElementsByTagName(\"link\")") && !entry.contains("preloadedHrefs"),
+        entry.contains("failedCssLinks") && entry.contains("getElementsByTagName(\"link\")"),
         "the helper is not the fixture Vite's own:\n{}",
         &entry[at..(at + 600).min(entry.len())]
     );
@@ -1574,7 +1574,7 @@ fn a_plugin_resolved_module_keeps_its_packages_format() {
 /// map, so every sheet and asset text travelled in `sources` and
 /// `sourcesContent`.
 #[test]
-fn a_chunks_sourcemap_names_no_stylesheet_or_asset_module() {
+fn a_chunks_sourcemap_names_no_stylesheet_but_its_asset_modules() {
     let Some(root) = app("sourcemap-sources") else {
         return;
     };
@@ -1640,19 +1640,29 @@ fn a_chunks_sourcemap_names_no_stylesheet_or_asset_module() {
         .map(|(p, m)| (p, sources(m)))
         .find(|(_, s)| s.iter().any(|s| s.ends_with("src/routes/__root.tsx")))
         .expect("a chunk's map names the root route as a source");
+    // A stylesheet's module comes with Vite's empty map (its css plugin
+    // returns one), so no map names a sheet; an asset's module (`?raw`,
+    // `?url`) comes with none, as vite:asset returns none, so the chunk's
+    // map lists the asset's source, as Vite's does.
     let stray: Vec<&String> = root_sources
         .iter()
-        .filter(|s| s.ends_with(".css") || s.contains("?raw") || s.contains("?url"))
+        .filter(|s| s.ends_with(".css"))
         .collect();
     assert!(
         stray.is_empty(),
-        "{} lists asset-like modules as sources, which Vite's maps never do: {stray:?}",
+        "{} lists stylesheets as sources, which Vite's maps never do: {stray:?}",
+        root_map.display()
+    );
+    assert!(
+        root_sources.iter().any(|s| s.contains("?raw"))
+            && root_sources.iter().any(|s| s.contains("?url")),
+        "{} names the root route's asset modules, as Vite's does: {root_sources:?}",
         root_map.display()
     );
     for (p, map) in &maps {
         let stray: Vec<String> = sources(map)
             .into_iter()
-            .filter(|s| s.ends_with(".css") || s.contains("?raw") || s.contains("?url"))
+            .filter(|s| s.ends_with(".css"))
             .collect();
         assert!(stray.is_empty(), "{} lists {stray:?}", p.display());
     }

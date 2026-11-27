@@ -2404,7 +2404,7 @@ function pluginContext(c) {
           needsCodeReference: false,
         };
       }
-      c.emitted.push({ referenceId, fileName, source, inBundle: !!live });
+      c.emitted.push({ referenceId, fileName, source, inBundle: !!live, name: file.name ?? null });
       return referenceId;
     },
     getFileName(referenceId) {
@@ -7344,6 +7344,24 @@ function normalizedOutputOptions(c) {
 
 async function generateBundle(c, bundleJson, isWrite) {
   const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
+  // An asset a hook emitted before this one (in buildStart, a transform) is
+  // in rolldown's bundle under Vite; oj wrote it itself, so it joins the
+  // bundle the hooks see here, and rolldown's through the reply, which then
+  // writes it (see emittedFiles).
+  for (const e of c.emitted) {
+    if (e.inBundle || bundle[e.fileName]) continue;
+    bundle[e.fileName] = {
+      type: "asset",
+      fileName: e.fileName,
+      name: e.name ?? null,
+      names: e.name != null ? [e.name] : [],
+      originalFileName: null,
+      originalFileNames: [],
+      source: e.source,
+      needsCodeReference: false,
+    };
+    e.inBundle = true;
+  }
   const outputOptions = normalizedOutputOptions(c);
   // Without `build.emitAssets` (the default off the client) vite:asset's
   // generateBundle deletes the bundle's assets, an ssr-manifest.json and JS

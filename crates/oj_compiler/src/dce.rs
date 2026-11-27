@@ -806,8 +806,15 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
     for statement in &parsed.program.body {
         match statement {
             Statement::ImportDeclaration(i) => {
+                // A type import leaves nothing, as a removed import does
+                // (see `Removals::remove_import`).
+                let gone = |span: Span| Edit {
+                    start: span.start as usize,
+                    end: span.end as usize,
+                    with: "",
+                };
                 if i.import_kind.is_type() {
-                    edits.push(whole(i.span));
+                    edits.push(gone(i.span));
                     continue;
                 }
                 let Some(specifiers) = &i.specifiers else {
@@ -821,7 +828,7 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
                     continue;
                 }
                 if removed.iter().all(|r| *r) {
-                    edits.push(whole(i.span));
+                    edits.push(gone(i.span));
                     continue;
                 }
                 for (start, end) in import_deletions(code, i, &removed) {
@@ -1080,7 +1087,21 @@ impl Removals<'_, '_, '_> {
     /// goes with its body; an `if` consequent or a loop body becomes `{}`; a
     /// `for` head's declaration leaves nothing; anything else leaves `;`, so
     /// the statements around it stay apart (`foo()` and `;[1].forEach()`).
+    /// An import declaration leaves nothing either (`import` starts no
+    /// continuation of the statement before it): Babel's printer drops the
+    /// node, and oxc's transformer adds the imports it needs (the JSX
+    /// runtime's) after the last import of the leading run, so a `;` among
+    /// them would put the new import before the rest, and the chunk's
+    /// modules in another order than under Vite.
     fn remove_statement(&mut self, span: Span) {
+        self.remove_statement_with(span, ";");
+    }
+
+    fn remove_import(&mut self, span: Span) {
+        self.remove_statement_with(span, "");
+    }
+
+    fn remove_statement_with(&mut self, span: Span, plain: &'static str) {
         let mut span = span;
         while let Some(&label) = self.labels.get(&span.start) {
             span = label;
@@ -1090,7 +1111,7 @@ impl Removals<'_, '_, '_> {
         } else if self.block_slots.contains(&span.start) {
             "{}"
         } else {
-            ";"
+            plain
         };
         self.edits.push(Edit {
             start: span.start as usize,
@@ -1116,7 +1137,7 @@ impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
             return;
         }
         if removed.iter().all(|r| *r) {
-            return self.remove_statement(import.span);
+            return self.remove_import(import.span);
         }
         for (start, end) in import_deletions(self.a.code, import, &removed) {
             self.edits.push(Edit {

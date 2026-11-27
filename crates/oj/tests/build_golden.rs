@@ -10,21 +10,24 @@
 //! order, an inlined asset's data URL.
 //!
 //! `OJ_UPDATE_GOLDEN=1 cargo test --test build_golden` re-records every
-//! case from Vite: the one in the node_modules directory `OJ_GOLDEN_VITE`
-//! names, else the fixture's (e2e/fixtures/start-app's install). Every
-//! other package (React, the Start plugin, Tailwind, the app's plugins)
-//! comes from the fixture's install on both sides, so a case can lean on
-//! them without the two builds seeing two versions. The recorded output
-//! names its Vite in `expected/VITE_VERSION`; record from the Vite whose
-//! rolldown is the one oj embeds (Cargo.lock), since an older rolldown
-//! prints other helpers and comments. The fixture's install is needed
+//! case from the fixture's Vite (e2e/fixtures/start-app's install, whose
+//! Vite and rolldown are pinned to the rolldown oj embeds: an older
+//! rolldown prints other helpers and comments), or from the one in the
+//! node_modules directory `OJ_GOLDEN_VITE` names. Every other package
+//! (React, the Start plugin, Tailwind, the app's plugins) comes from the
+//! fixture's install on both sides either way, so a case can lean on them
+//! without the two builds seeing two versions. The recorded output names
+//! its Vite in `expected/VITE_VERSION`. The fixture's install is needed
 //! either way (oj builds against it); without it the tests skip, unless
 //! `OJ_REQUIRE_FIXTURES`. Commit the re-recorded files with the Vite
 //! version bump they come from.
 //!
 //! The staged root's path is written as `/ROOT` in the compared text, so a
 //! bundle naming the root (a Start server's module keys) compares across
-//! the two temporary directories.
+//! the two temporary directories; a path into the fixture's install (a
+//! source map's `sources` reach a package through the node_modules link,
+//! resolved to where it is) is written from `/node_modules/` on, so the
+//! recording holds on another machine.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -156,12 +159,39 @@ fn tree(dir: &Path, root: &Path) -> BTreeMap<String, Vec<u8>> {
                 .into_owned();
             let bytes = std::fs::read(&path).unwrap();
             let bytes = match std::str::from_utf8(&bytes) {
-                Ok(text) => normalize_hashes(&text.replace(&root_text, "/ROOT")).into_bytes(),
+                Ok(text) => {
+                    normalize_hashes(&normalize_module_paths(&text.replace(&root_text, "/ROOT")))
+                        .into_bytes()
+                }
                 Err(_) => bytes,
             };
             out.insert(normalize_hashes(&rel), bytes);
         }
     }
+    out
+}
+
+/// A path into the fixture's install, however it was reached (an absolute
+/// path, or `../../..` from the output directory to the install's real
+/// location), from `/node_modules/` on.
+fn normalize_module_paths(text: &str) -> String {
+    const MARKER: &str = "e2e/fixtures/start-app/node_modules/";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARKER) {
+        let head = &rest[..at];
+        // The path's start: back over the characters a path is made of.
+        let cut = head
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+            .last()
+            .map_or(head.len(), |(i, _)| i);
+        out.push_str(&head[..cut]);
+        out.push_str("/node_modules/");
+        rest = &rest[at + MARKER.len()..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -380,6 +410,8 @@ golden! {
     import_meta_glob_and_env => "glob-env",
     library_es_and_cjs => "lib",
     source_maps_of_chunks_sheets_and_assets => "sourcemap",
+    source_maps_of_a_destructured_lazy_import => "sourcemap-destructured",
+    source_maps_of_esbuild_minified_chunks => "sourcemap-esbuild",
     minified_by_esbuild => "minify-esbuild",
     two_html_entries_sharing_a_module_and_a_sheet => "html-multi",
     json_default_named_and_raw_imports => "json",
@@ -398,39 +430,29 @@ golden! {
     an_apps_own_plugins_hooks => "plugins",
 }
 
-/// A TanStack Start app's client bundle. The HTML, the manifest and the
-/// chunks' files match; what differs: oj's Start build reads the preload
-/// helper off the app's own Vite, as it should, and the fixture's is 8.2.1
-/// where the recording's is 8.4, which moves the entry chunk's minified
-/// names; a `?url` asset module sits after its importer's statements and
-/// names no source in the map; a lowered module's map is composed with
-/// other segments. Recorded for the day the fixture's Vite is the
-/// recording's, when the last two can be closed.
+/// A TanStack Start app's client bundle. The HTML, the manifest and every
+/// chunk's code match; the maps differ in a few segments: the column a
+/// server function's `createClientRpc` call maps to (oj's line map of the
+/// rewrite against Start's compiler's), a JSX attribute's value a column
+/// apart, two tokens of a `.js` module the lowering re-prints, of some
+/// 78,000. A known gap.
 #[test]
-#[ignore = "the fixture's Vite (8.2.1) composes an older preload helper than the recording's; a ?url module's place and the lowered modules' maps differ"]
+#[ignore = "a few segments of the client maps differ: a server function call's column, a JSX attribute's, two tokens of a lowered .js module"]
 fn tanstack_start_client() {
     check("start-app");
 }
 
-/// The bundle a plugin's generateBundle and writeBundle see. oj's plain
-/// build writes the chunks' stylesheets and the page after rolldown's bundle
-/// hooks ran, so a hook's bundle lists no sheet, no page and no asset
-/// emitted in buildStart, and a chunk's `viteMetadata.importedCss` is
-/// empty; the TanStack Start build has them. A known gap.
+/// The bundle a plugin's generateBundle and writeBundle see: the chunks'
+/// stylesheets as assets, named as Vite's css-post names them, a chunk's
+/// `viteMetadata.importedCss`, an asset emitted in buildStart, and the
+/// page. All but the page match: oj's plain build renders its pages after
+/// rolldown wrote the bundle, where Vite emits a page in a post plugin's
+/// generateBundle, so writeBundle's bundle has no `index.html`. A known
+/// gap.
 #[test]
-#[ignore = "a plain build writes its stylesheets and page after the bundle hooks, so a hook's bundle lists neither"]
+#[ignore = "a plain build renders its pages after the bundle hooks, so writeBundle's bundle lists no index.html"]
 fn a_hooks_bundle_lists_sheets_pages_and_early_assets() {
     check("plugins-bundle-assets");
-}
-
-/// Hidden source maps of chunks esbuild minified. The code matches; the
-/// composed map's `names` differ (rolldown's JS side prunes and orders
-/// them by use, oj's composition keeps every name) and so do a few
-/// segments. A known gap.
-#[test]
-#[ignore = "the map of a chunk esbuild minified is composed with other names and segments than Vite's"]
-fn source_maps_of_esbuild_minified_chunks() {
-    check("sourcemap-esbuild");
 }
 
 /// `new URL("./file", import.meta.url)`: Vite's asset-import-meta-url plugin
@@ -443,17 +465,6 @@ fn source_maps_of_esbuild_minified_chunks() {
 #[ignore = "new URL(file, import.meta.url) is an imported asset module in oj, not Vite's in-place rewrite"]
 fn asset_url_and_worker_url_from_import_meta_url() {
     check("asset-url");
-}
-
-/// `const { lazy } = await import("./lazy.js")` with `build.sourcemap`: the
-/// code matches, and so does the map but for the segments inside the preload
-/// wrapper's repeated pattern, which Vite's text rewrite places one column
-/// apart from oj's AST rewrite. A known difference, recorded here until the
-/// wrapper's spans are shaped to match.
-#[test]
-#[ignore = "the destructured import's inner pattern maps a column apart from Vite's rewrite"]
-fn source_maps_of_a_destructured_lazy_import() {
-    check("sourcemap-destructured");
 }
 
 #[test]

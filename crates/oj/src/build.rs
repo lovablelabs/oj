@@ -282,6 +282,9 @@ struct OjCssPlugin {
     url_sheets: Option<(PathBuf, String)>,
     /// The emitted-chunk registry the user plugins' hooks share.
     emit: Option<Arc<EmitState>>,
+    /// Where the chunks' sheets are recorded for the bundle hooks (see
+    /// [`PlainChunkSheet`]); None where no hook could read them.
+    sheets_record: Option<SheetRecord>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -1985,6 +1988,51 @@ impl Plugin for OjCssPlugin {
         _ctx: &PluginContext,
         args: &HookRenderChunkArgs<'_>,
     ) -> impl std::future::Future<Output = HookRenderChunkReturn> + Send {
+        // vite:css-post's renderChunk emits the chunk's sheet: the bundle a
+        // generateBundle hook sees lists it. oj writes the sheets after the
+        // bundle, so the sheet is computed here for the hooks' bundle.
+        if let (Some((out_dir, asset_names)), Some(record)) =
+            (&self.chunk_css_hashing, &self.sheets_record)
+        {
+            let css_map: std::collections::HashMap<String, String> =
+                self.collected.lock().unwrap().iter().cloned().collect();
+            let module_ids: Vec<String> = args
+                .chunk
+                .modules
+                .keys
+                .iter()
+                .map(|m| m.to_string())
+                .collect();
+            let opts = CssAssetOpts {
+                inline_limit: self.inline_limit,
+                asset_names: Some(asset_names.as_str()),
+                resolve: self.resolve.as_ref(),
+            };
+            if let Ok(Some(sheet)) = chunk_stylesheet(
+                &args.chunk.name,
+                &module_ids,
+                &css_map,
+                &self.root,
+                out_dir,
+                &self.base,
+                opts,
+                &mut Vec::new(),
+                &mut std::collections::HashMap::new(),
+            ) {
+                let mut record = record.lock().unwrap();
+                if !record.iter().any(|s| s.file == sheet.name) {
+                    record.push(PlainChunkSheet {
+                        modules: sheet
+                            .sources
+                            .iter()
+                            .map(|id| PathBuf::from(id.split(['?', '#']).next().unwrap_or(id)))
+                            .collect(),
+                        file: sheet.name.clone(),
+                        css: sheet.css.clone(),
+                    });
+                }
+            }
+        }
         let out = render_public_asset_urls(
             &args.code,
             &args.chunk.filename,
@@ -2489,6 +2537,7 @@ impl Plugin for OjCssPlugin {
                     chunk_css_hashing: None,
                     url_sheets: None,
                     emit: None,
+                    sheets_record: None,
                 };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
@@ -3061,9 +3110,29 @@ impl EmitState {
     }
 }
 
+/// A chunk's stylesheet as the plain build's css plugin wrote it in
+/// renderChunk (Vite's css-post emits a chunk's sheet there), for the bundle
+/// the hooks see: the modules whose CSS it holds, its file under the output
+/// directory and its text.
+#[derive(Debug, Clone)]
+pub(crate) struct PlainChunkSheet {
+    modules: Vec<PathBuf>,
+    file: String,
+    css: String,
+}
+
+type SheetRecord = Arc<Mutex<Vec<PlainChunkSheet>>>;
+
 #[derive(Debug)]
 struct OjUserPlugin {
     host: Arc<PluginHost>,
+    /// The chunks' stylesheets the css plugin wrote (see [`PlainChunkSheet`]),
+    /// for the bundle a generateBundle or writeBundle hook sees; None for a
+    /// bundle whose CSS is not split.
+    sheets_record: Option<SheetRecord>,
+    /// Whether `build.manifest` is on: the bundle the hooks see then carries
+    /// the manifest as an asset, as Vite's does.
+    manifest: bool,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
     map_warnings: Arc<MapWarnings>,
@@ -3118,7 +3187,64 @@ impl OjUserPlugin {
             skipped_transform: Default::default(),
             build_end: false,
             graph: std::sync::Mutex::new(None),
+            sheets_record: None,
+            manifest: true,
         }
+    }
+
+    /// The bundle the hooks see: the css plugin's sheets (`record`) and the
+    /// manifest when `build.manifest` is on.
+    fn with_bundle_view(mut self, record: SheetRecord, manifest: bool) -> Self {
+        self.sheets_record = Some(record);
+        self.manifest = manifest;
+        self
+    }
+
+    /// The sheets the css plugin wrote, as the bundle hooks see them: the
+    /// chunks' `viteMetadata.importedCss`, and an asset per sheet named
+    /// after it, with the original file name Vite's css-post gives a chunk's
+    /// sheet (getChunkOriginalFileName: the chunk's facade module, relative
+    /// to the root; an HTML page's is the page).
+    fn hook_sheets(&self, bundle: &[rolldown_common::Output]) -> Option<ChunkSheets> {
+        let record = self.sheets_record.as_ref()?.lock().unwrap().clone();
+        if record.is_empty() {
+            return None;
+        }
+        let root = &self.emit.root;
+        let mut by_module: Vec<(PathBuf, String)> = Vec::new();
+        let mut assets: Vec<(String, String)> = Vec::new();
+        let mut origins: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for sheet in &record {
+            for module in &sheet.modules {
+                by_module.push((module.clone(), sheet.file.clone()));
+            }
+            assets.push((sheet.file.clone(), sheet.css.clone()));
+            let owner = bundle.iter().find_map(|out| match out {
+                rolldown_common::Output::Chunk(c)
+                    if c.module_ids.iter().any(|id| {
+                        let id: &str = id.as_ref();
+                        let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
+                        sheet.modules.iter().any(|m| m == path)
+                    }) =>
+                {
+                    c.facade_module_id.as_ref()
+                }
+                _ => None,
+            });
+            if let Some(facade) = owner {
+                let facade: &str = facade.as_ref();
+                let rel = Path::new(facade)
+                    .strip_prefix(root)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| facade.to_string());
+                origins.insert(sheet.file.clone(), vec![rel]);
+            }
+        }
+        Some(
+            ChunkSheets::new(by_module)
+                .with_sheet_assets(assets)
+                .with_sheet_origins(origins),
+        )
     }
 }
 
@@ -3574,18 +3700,33 @@ impl Plugin for OjUserPlugin {
             return Ok(());
         }
         let graph = self.graph.lock().unwrap().clone();
+        let sheets = self.hook_sheets(args.bundle);
+        let manifest_root = self.manifest.then_some(self.emit.root.as_path());
         let mutated = match &graph {
             // The hooks read a text through the bundle's graph when they ask
             // for one; the call carries the bundle's metadata.
             Some(graph) => {
                 let (bundle_json, texts) =
-                    serialize_bundle_for_hooks(args.bundle, Some(&self.emit.root), None);
+                    serialize_bundle_for_hooks(args.bundle, manifest_root, sheets.as_ref());
                 let _texts = graph.with_output_texts(texts);
                 self.host.generate_bundle(&bundle_json, args.is_write).await
             }
+            None if self.manifest => {
+                let bundle_json = serialize_bundle_with_vite_manifest(
+                    args.bundle,
+                    &self.emit.root,
+                    sheets.as_ref(),
+                );
+                self.host.generate_bundle(&bundle_json, args.is_write).await
+            }
             None => {
-                let bundle_json =
-                    serialize_bundle_with_vite_manifest(args.bundle, &self.emit.root, None);
+                let bundle_json = BundleJson {
+                    bundle: args.bundle,
+                    sheets: sheets.as_ref(),
+                    manifest: None,
+                    texts: true,
+                }
+                .to_string();
                 self.host.generate_bundle(&bundle_json, args.is_write).await
             }
         }
@@ -3640,16 +3781,23 @@ impl Plugin for OjUserPlugin {
             return Ok(());
         }
         let graph = self.graph.lock().unwrap().clone();
+        let sheets = self.hook_sheets(args.bundle);
         match &graph {
             Some(graph) => {
-                let (bundle_json, texts) = serialize_bundle_for_hooks(args.bundle, None, None);
+                let (bundle_json, texts) =
+                    serialize_bundle_for_hooks(args.bundle, None, sheets.as_ref());
                 let _texts = graph.with_output_texts(texts);
                 self.host.write_bundle(&bundle_json, true).await
             }
             None => {
-                self.host
-                    .write_bundle(&serialize_bundle(args.bundle), true)
-                    .await
+                let bundle_json = BundleJson {
+                    bundle: args.bundle,
+                    sheets: sheets.as_ref(),
+                    manifest: None,
+                    texts: true,
+                }
+                .to_string();
+                self.host.write_bundle(&bundle_json, true).await
             }
         }
         .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
@@ -3861,6 +4009,10 @@ pub(crate) struct ChunkSheets {
     /// The sheets of dropped pure CSS chunks with no facade module: rows
     /// keyed `_<file>` (css-post's asset carries no original file name).
     pure_sheets: Vec<String>,
+    /// A sheet asset's `originalFileNames` (Vite's css-post emits a chunk's
+    /// sheet under the chunk's original file name), by sheet file; a sheet
+    /// listed here with none has an empty list, as a pure chunk's does.
+    sheet_origins: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl ChunkSheets {
@@ -3876,7 +4028,17 @@ impl ChunkSheets {
             worker_rows: Vec::new(),
             worker_assets: Default::default(),
             pure_sheets: Vec::new(),
+            sheet_origins: Default::default(),
         }
+    }
+
+    /// The sheets' original file names (see the field).
+    pub fn with_sheet_origins(
+        mut self,
+        origins: std::collections::HashMap<String, Vec<String>>,
+    ) -> Self {
+        self.sheet_origins = origins;
+        self
     }
 
     /// The stylesheets written (file under the output directory, text):
@@ -4136,13 +4298,17 @@ impl serde::Serialize for BundleJson<'_> {
                 }
                 BundleEntry::Sheet { file, source } => {
                     let name = sheet_asset_name(file);
+                    let origins = self
+                        .sheets
+                        .and_then(|sheets| sheets.sheet_origins.get(*file))
+                        .map_or(&[][..], Vec::as_slice);
                     map.serialize_entry(
                         key,
                         &AssetJson {
                             file_name: file,
                             name: Some(&name),
                             names: vec![&name],
-                            original_file_names: &[],
+                            original_file_names: origins,
                             source: texts.then_some(Some(source)),
                         },
                     )?;
@@ -5016,6 +5182,7 @@ pub async fn build(
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let css_split = css_code_split_of(&config);
+    let sheets_record: SheetRecord = Arc::new(Mutex::new(Vec::new()));
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
@@ -5046,12 +5213,18 @@ pub async fn build(
         ));
     }
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
-            Arc::clone(host),
-            Arc::clone(&emit),
-            host.build_hook_plan().await,
-            bundle_graph::jsx_config(&config),
-        )));
+        oj_plugins.push(Pluginable::new_shared(
+            OjUserPlugin::new(
+                Arc::clone(host),
+                Arc::clone(&emit),
+                host.build_hook_plan().await,
+                bundle_graph::jsx_config(&config),
+            )
+            .with_bundle_view(
+                Arc::clone(&sheets_record),
+                oj_config::build_manifest_name(&config).is_some(),
+            ),
+        ));
     }
     oj_plugins.extend(tsconfig_paths_plugin(
         root.as_ref(),
@@ -5128,6 +5301,7 @@ pub async fn build(
         chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
         url_sheets: Some((out_dir.clone(), asset_names_pattern.clone())),
         emit: Some(Arc::clone(&emit)),
+        sheets_record: Some(Arc::clone(&sheets_record)),
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -6581,6 +6755,7 @@ pub(crate) async fn build_ssr(
         chunk_css_hashing: None,
         url_sheets: None,
         emit: Some(Arc::clone(&emit)),
+        sheets_record: None,
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -6776,6 +6951,7 @@ async fn build_server_fns(
             chunk_css_hashing: None,
             url_sheets: None,
             emit: None,
+            sheets_record: None,
         }));
         let mut bundler = BundlerBuilder::default()
             .with_plugins(plugins)
@@ -7202,6 +7378,7 @@ async fn build_client_entry(
         chunk_css_hashing: None,
         url_sheets: None,
         emit: Some(Arc::clone(&emit)),
+        sheets_record: None,
     }));
 
     let mut bundler = BundlerBuilder::default()
@@ -7522,6 +7699,7 @@ async fn build_library(
                 chunk_css_hashing: None,
                 url_sheets: None,
                 emit: None,
+                sheets_record: None,
             }));
             let mut bundler = BundlerBuilder::default()
                 .with_plugins(plugins)

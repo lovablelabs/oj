@@ -9,7 +9,8 @@ use super::{build_app, scratch, write_files};
 /// `.vite/manifest.json` asset (Vite's manifest plugin emits it from its own
 /// generateBundle, so later plugins see it), so plugins that read it there,
 /// e.g. @crxjs's web-accessible-resources, can. Here a plugin reads it and
-/// re-emits it. Note the plugin finds it without `build.manifest` set.
+/// re-emits it, with `build.manifest` on, as under Vite (off, the bundle
+/// carries no manifest, as Vite's does not).
 #[tokio::test]
 async fn generate_bundle_sees_the_vite_manifest_asset() {
     let root = scratch("vbm-in-bundle");
@@ -17,6 +18,7 @@ async fn generate_bundle_sees_the_vite_manifest_asset() {
         &root,
         &[
             ("package.json", r#"{"name":"vm-app","version":"1.0.0"}"#),
+            ("oj.config.json", r#"{"build":{"manifest":true}}"#),
             ("src/entry.js", "export const v = 1;\nconsole.log(v);\n"),
             (
                 "index.html",

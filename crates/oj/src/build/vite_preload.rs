@@ -138,8 +138,15 @@ impl Plugin for BuildImportAnalysisPlugin {
         Ok(ast)
     }
 
-    /// The modern flag, padded to its own length so the chunk's mappings hold
-    /// (`map: null`), before the minifier folds it away.
+    /// The modern flag set, as Vite's build import analysis sets it in its
+    /// renderChunk: `true` under es output, and with source maps on a
+    /// magic-string map of the edit (hires "boundary"), which rolldown
+    /// composes with the chunk's map and then the minifier's. The
+    /// composition through that map shapes Vite's final map (a segment per
+    /// word start and per other character), so oj makes the same one; it
+    /// used to pad the flag to its own length and return no map, which kept
+    /// the chunk's positions but composed the minifier's map directly, with
+    /// other segments than Vite's in every chunk holding the helper.
     async fn render_chunk(
         &self,
         _ctx: &PluginContext,
@@ -153,13 +160,29 @@ impl Plugin for BuildImportAnalysisPlugin {
         } else {
             "false"
         };
-        let padded = format!(
-            "{modern}{}",
-            " ".repeat(IS_MODERN_FLAG.len() - modern.len())
-        );
+        if !args.options.is_sourcemap_enabled() {
+            return Ok(Some(HookRenderChunkOutput {
+                code: args.code.replace(IS_MODERN_FLAG, modern),
+                map: HookTransformOutputMap::Null,
+            }));
+        }
+        let mut s = string_wizard::MagicString::new(args.code.as_str());
+        let mut at = 0;
+        while let Some(found) = args.code[at..].find(IS_MODERN_FLAG) {
+            let start = at + found;
+            let end = start + IS_MODERN_FLAG.len();
+            s.update(start as u32, end as u32, modern)
+                .map_err(|e| anyhow::anyhow!("import analysis: {e}"))?;
+            at = end;
+        }
+        let map = s.source_map(string_wizard::SourceMapOptions {
+            include_content: false,
+            source: "".into(),
+            hires: string_wizard::Hires::Boundary,
+        });
         Ok(Some(HookRenderChunkOutput {
-            code: args.code.replace(IS_MODERN_FLAG, &padded),
-            map: HookTransformOutputMap::Null,
+            code: s.to_string(),
+            map: map.into(),
         }))
     }
 }
@@ -863,12 +886,19 @@ pub(crate) fn shift_sourcemap(
 /// before the first mapped position unmarked: rolldown marks a module
 /// boundary with a segment without a source, and remapping keeps those
 /// (and adds one where a preload marker was replaced) but emits nothing
-/// ahead of the first position it traces.
+/// ahead of the first position it traces. Remapping also adds a segment
+/// only when it says something new (gen-mapping's `maybeAddSegment`): a
+/// segment naming the same source position and name as the one before it
+/// on the line goes, and so does a sourceless segment at a line's start or
+/// after another sourceless one. Under esbuild's minify the composed map
+/// carries such repeats (one at the end of a template literal, one at a
+/// `for` head), and Vite's map has none.
 fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
     let json = map.to_json();
-    // The names the mappings use, numbered by first use: a chunk's map
-    // from rolldown lists every name its codegen met, the remapped one
-    // only what its segments name.
+    // The names the mappings use, numbered by first use and each text once
+    // (gen-mapping keeps names in a set): a chunk's map from rolldown lists
+    // every name its codegen met, a text twice when two modules' maps
+    // brought it, the remapped one only what its segments name.
     let mut parts = map.into_parts();
     let mut used: Vec<String> = Vec::new();
     let mut renumbered: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
@@ -876,21 +906,51 @@ fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
         .tokens
         .iter()
         .position(|t| t.get_source_id().is_some());
+    // The segment kept last on the current line, for gen-mapping's rules.
+    let mut last: Option<&oxc_sourcemap::Token> = None;
+    let mut line = u32::MAX;
     let tokens: Vec<oxc_sourcemap::Token> = parts
         .tokens
         .iter()
         .enumerate()
         .filter(|(i, t)| t.get_source_id().is_some() || first_sourced.is_some_and(|f| *i > f))
+        .filter(|(_, t)| {
+            if t.get_dst_line() != line {
+                line = t.get_dst_line();
+                last = None;
+            }
+            let keep = match (t.get_source_id(), last) {
+                // A sourceless segment says nothing at a line's start or
+                // after a sourceless one.
+                (None, None) => false,
+                (None, Some(prev)) => prev.get_source_id().is_some(),
+                (Some(_), None) => true,
+                (Some(_), Some(prev)) => {
+                    prev.get_source_id() != t.get_source_id()
+                        || prev.get_src_line() != t.get_src_line()
+                        || prev.get_src_col() != t.get_src_col()
+                        || prev.get_name_id() != t.get_name_id()
+                }
+            };
+            if keep {
+                last = Some(t);
+            }
+            keep
+        })
         .map(|(_, t)| {
             let name_id = t.get_name_id().map(|id| {
                 *renumbered.entry(id).or_insert_with(|| {
-                    used.push(
-                        parts
-                            .names
-                            .get(id as usize)
-                            .map_or_else(String::new, |n| n.to_string()),
-                    );
-                    (used.len() - 1) as u32
+                    let name = parts
+                        .names
+                        .get(id as usize)
+                        .map_or_else(String::new, |n| n.to_string());
+                    match used.iter().position(|n| *n == name) {
+                        Some(at) => at as u32,
+                        None => {
+                            used.push(name);
+                            (used.len() - 1) as u32
+                        }
+                    }
                 })
             });
             oxc_sourcemap::Token::new(
