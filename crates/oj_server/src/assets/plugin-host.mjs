@@ -7338,6 +7338,7 @@ async function generateBundle(c, bundleJson, isWrite) {
     c.emitted.length = 0;
     c.emitted.push(...kept);
   };
+  const lazy = installLazyOutputText(c, bundle);
   // An asset a hook emits by name joins this bundle under rolldown's name
   // for it (see emitFile).
   c.liveBundle = bundle;
@@ -7351,7 +7352,59 @@ async function generateBundle(c, bundleJson, isWrite) {
   } finally {
     c.liveBundle = null;
   }
-  return JSON.stringify(bundle);
+  // What goes back is the bundle as the hooks left it, with an entry's text
+  // only where a hook assigned one: oj reads a missing `code` or `source` as
+  // unchanged. An entry a hook added, or replaced, goes back whole.
+  const changed = {};
+  for (const [file, out] of Object.entries(bundle)) {
+    const state = lazy.get(file);
+    if (!out || typeof out !== "object" || !state || state.obj !== out) {
+      changed[file] = out;
+      continue;
+    }
+    const copy = {};
+    for (const key of Object.keys(out)) {
+      if (key !== state.key) copy[key] = out[key];
+    }
+    if (state.assigned) copy[state.key] = state.value;
+    changed[file] = copy;
+  }
+  return JSON.stringify(changed);
+}
+
+// The bundle a generateBundle or writeBundle hook gets names its files and
+// carries their metadata; a chunk's `code` and an asset's `source` stay in oj
+// (the whole bundle's text is hundreds of MB on a large app, and a hook reads
+// a few files of it) and are read through `bundleOutputText` when a hook
+// first asks, as a module's `code` is (bundleModuleInfo). An entry that came
+// with its text (an older oj, a direct-drive test) keeps it. Returns each
+// lazy entry's state, by file: its object, the text key, and what a hook
+// assigned.
+function installLazyOutputText(c, bundle) {
+  const lazy = new Map();
+  for (const [file, out] of Object.entries(bundle)) {
+    if (!out || typeof out !== "object") continue;
+    const key = out.type === "chunk" ? "code" : "source";
+    if (Object.prototype.hasOwnProperty.call(out, key)) continue;
+    const state = { obj: out, key, value: undefined, fetched: false, assigned: false };
+    Object.defineProperty(out, key, {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        if (!state.fetched && !state.assigned) {
+          state.value = bundleRpc("bundleOutputText", [c.id, file]);
+          state.fetched = true;
+        }
+        return state.value;
+      },
+      set: (v) => {
+        state.value = v;
+        state.assigned = true;
+      },
+    });
+    lazy.set(file, state);
+  }
+  return lazy;
 }
 
 // The environment's `assetFileNames`, resolved as Vite's build does
@@ -7437,6 +7490,7 @@ async function renderChunk(c, code, chunkJson) {
 
 async function writeBundle(c, bundleJson, isWrite) {
   const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
+  installLazyOutputText(c, bundle);
   const outputOptions = c.environment.config?.build ?? {};
   for (const { p, fn } of pluginsWithHook(c, "writeBundle")) {
     await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);

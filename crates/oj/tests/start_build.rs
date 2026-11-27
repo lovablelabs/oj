@@ -2610,3 +2610,72 @@ fn the_transform_target_is_the_builds_as_under_vite() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A plugin reading and changing the client bundle in `generateBundle` (the
+/// plain build's counterpart is `build_bundle_hooks.rs`). oj hands the hooks
+/// the bundle's metadata and reads a chunk's code or an asset's source when
+/// a hook asks for it, so: the entry's `code` reads whole, a stylesheet's
+/// `source` too (oj wrote the sheet itself), the `code` the hook assigns is
+/// what is written, and the asset it emits is.
+const BUNDLE_PROBE: &str = r#"
+import { writeFileSync as writeBundleProbe } from "node:fs";
+function bundleProbe(): Plugin {
+  let root = "";
+  return {
+    name: "bundle-probe",
+    apply: "build",
+    configResolved(c) {
+      root = c.root;
+    },
+    generateBundle(_options, bundle) {
+      if (this.environment.name !== "client") return;
+      const entry = Object.values(bundle).find((o) => o.type === "chunk" && o.isEntry);
+      const read = typeof entry.code === "string" && entry.code.length > 0;
+      entry.code = `globalThis.__bundleProbe = "rewritten";\n${entry.code}`;
+      const sheet = Object.values(bundle).find((o) => o.type === "asset" && o.fileName.endsWith(".css"));
+      const sheetRead = typeof sheet?.source === "string" && sheet.source.includes("{");
+      this.emitFile({ type: "asset", fileName: "probe-generate.txt", source: "emitted in generateBundle" });
+      writeBundleProbe(`${root}/bundle-probe.json`, JSON.stringify({ read, sheetRead, entry: entry.fileName }));
+    },
+  };
+}
+"#;
+
+#[test]
+fn a_plugins_generate_bundle_reads_and_changes_the_client_bundle() {
+    let Some(app) = app("bundle-probe") else {
+        return;
+    };
+    let config = app.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen("  plugins: [\n", "  plugins: [\n    bundleProbe(),\n", 1);
+    std::fs::write(&config, format!("{source}{BUNDLE_PROBE}")).unwrap();
+    build(&app);
+    let probe: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(app.join("bundle-probe.json"))
+            .expect("the client's generateBundle ran"),
+    )
+    .unwrap();
+    assert_eq!(probe["read"], true, "the entry's code read whole: {probe}");
+    assert_eq!(
+        probe["sheetRead"], true,
+        "a stylesheet's source read whole: {probe}"
+    );
+    let entry = app
+        .join("dist/client")
+        .join(probe["entry"].as_str().expect("the entry's file name"));
+    let code = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        code.starts_with("globalThis.__bundleProbe = \"rewritten\";"),
+        "the entry was not written as generateBundle left it:\n{}",
+        &code[..code.len().min(200)]
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("dist/client/probe-generate.txt"))
+            .ok()
+            .as_deref(),
+        Some("emitted in generateBundle"),
+        "the asset emitted in generateBundle"
+    );
+    let _ = std::fs::remove_dir_all(&app);
+}

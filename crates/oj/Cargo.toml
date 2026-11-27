@@ -70,6 +70,7 @@ oxc_transformer.workspace = true
 oxc_resolver.workspace = true
 oxc_diagnostics.workspace = true
 arcstr = "1.2.0"
+serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 flate2 = "1"

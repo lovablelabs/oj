@@ -902,15 +902,27 @@ pub trait BundleGraph: Send + Sync {
     /// The module's code as plugins read it, once loaded.
     fn module_code(&self, id: &str) -> Option<String>;
     fn module_ids(&self) -> Vec<String>;
+    /// The text of one of the bundle's outputs (a chunk's code, an asset's
+    /// source) while a `generateBundle` or `writeBundle` hook runs. The
+    /// bundle those hooks get names its files and carries their metadata;
+    /// the text stays here and is read when a hook asks for one
+    /// (`bundleOutputText`), so the hook call carries kilobytes of metadata
+    /// instead of the whole output, hundreds of MB on a large app and copied
+    /// several times on its way into the isolate. None outside those hooks,
+    /// and for a binary asset.
+    fn output_text(&self, _file: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Each container's bundle, by container id.
 pub(crate) type BundleGraphs =
     Arc<std::sync::Mutex<std::collections::HashMap<u32, Arc<dyn BundleGraph>>>>;
 
-/// `bundleModuleInfo`, `bundleModuleCode` and `bundleModuleIds` (the asking
-/// container first), answered SYNCHRONOUSLY on the isolate thread from that
-/// container's bundle; null while it has none. None for any other method.
+/// `bundleModuleInfo`, `bundleModuleCode`, `bundleModuleIds` and
+/// `bundleOutputText` (the asking container first), answered SYNCHRONOUSLY
+/// on the isolate thread from that container's bundle; null while it has
+/// none. None for any other method.
 fn bundle_rpc(
     method: &str,
     args: &[serde_json::Value],
@@ -918,7 +930,7 @@ fn bundle_rpc(
 ) -> Option<Result<serde_json::Value, String>> {
     if !matches!(
         method,
-        "bundleModuleInfo" | "bundleModuleCode" | "bundleModuleIds"
+        "bundleModuleInfo" | "bundleModuleCode" | "bundleModuleIds" | "bundleOutputText"
     ) {
         return None;
     }
@@ -932,6 +944,9 @@ fn bundle_rpc(
         "bundleModuleInfo" => graph.module_info(id).unwrap_or_default(),
         "bundleModuleCode" => graph
             .module_code(id)
+            .map_or(serde_json::Value::Null, serde_json::Value::String),
+        "bundleOutputText" => graph
+            .output_text(id)
             .map_or(serde_json::Value::Null, serde_json::Value::String),
         _ => serde_json::json!(graph.module_ids()),
     }))

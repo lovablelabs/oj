@@ -219,6 +219,9 @@ pub(crate) struct StartHostPlugin {
     /// The dev client bundle leaves its dependencies to the bundler (see
     /// [`StartHostPlugin::leaving_deps_to_the_bundler`]): which of them.
     bundled_deps: Option<BundledDeps>,
+    /// The bundle's graph as the host reads it, from buildStart: the outputs'
+    /// text goes on it while a hook that sees the whole bundle runs.
+    graph: Mutex<Option<Arc<RolldownGraph>>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -255,6 +258,7 @@ impl StartHostPlugin {
             sheets: None,
             lower: None,
             bundled_deps: None,
+            graph: Mutex::new(None),
         }
     }
 
@@ -596,8 +600,9 @@ impl Plugin for StartHostPlugin {
         _args: &rolldown_plugin::HookBuildStartArgs<'_>,
     ) -> rolldown_plugin::HookNoopReturn {
         self.bundler_ctx.set(ctx);
-        self.host
-            .set_bundle_graph(RolldownGraph::new(ctx, self.jsx.clone()));
+        let graph = RolldownGraph::new(ctx, self.jsx.clone());
+        *self.graph.lock().unwrap() = Some(Arc::clone(&graph));
+        self.host.set_bundle_graph(graph);
         // Before any module loads: a plugin compiling on startup (i18n
         // catalogs) has its state ready for the loads it serves. The host runs
         // buildStart once per session, as Vite's container does.
@@ -1106,16 +1111,31 @@ impl Plugin for StartHostPlugin {
             Some(emitter) => sheets.with_sheet_assets(emitter.sheet_assets()),
             None => sheets,
         });
-        let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
-            args.bundle,
-            &self.root,
-            sheets.as_ref(),
-        );
-        let mutated = self
-            .host
-            .generate_bundle(&bundle_json, args.is_write)
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
+        let graph = self.graph.lock().unwrap().clone();
+        let mutated = match &graph {
+            // The hooks read a text through the bundle's graph when they ask
+            // for one; the call carries the bundle's metadata.
+            Some(graph) => {
+                let (bundle_json, texts) = crate::build::serialize_bundle_for_hooks(
+                    args.bundle,
+                    Some(&self.root),
+                    sheets.as_ref(),
+                );
+                graph.set_output_texts(Some(texts));
+                let mutated = self.host.generate_bundle(&bundle_json, args.is_write).await;
+                graph.set_output_texts(None);
+                mutated
+            }
+            None => {
+                let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
+                    args.bundle,
+                    &self.root,
+                    sheets.as_ref(),
+                );
+                self.host.generate_bundle(&bundle_json, args.is_write).await
+            }
+        }
+        .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
         let Some(mutated) = mutated else {
             return Ok(());
         };
@@ -1186,14 +1206,26 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_write_bundle().await {
             return Ok(());
         }
-        let bundle_json = match self.chunk_sheets() {
-            Some(sheets) => crate::build::serialize_bundle_with_sheets(args.bundle, &sheets),
-            None => crate::build::serialize_bundle(args.bundle),
-        };
-        self.host
-            .write_bundle(&bundle_json, true)
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
+        let sheets = self.chunk_sheets();
+        let graph = self.graph.lock().unwrap().clone();
+        match &graph {
+            Some(graph) => {
+                let (bundle_json, texts) =
+                    crate::build::serialize_bundle_for_hooks(args.bundle, None, sheets.as_ref());
+                graph.set_output_texts(Some(texts));
+                let result = self.host.write_bundle(&bundle_json, true).await;
+                graph.set_output_texts(None);
+                result
+            }
+            None => {
+                let bundle_json = match &sheets {
+                    Some(sheets) => crate::build::serialize_bundle_with_sheets(args.bundle, sheets),
+                    None => crate::build::serialize_bundle(args.bundle),
+                };
+                self.host.write_bundle(&bundle_json, true).await
+            }
+        }
+        .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
     }
 }
 

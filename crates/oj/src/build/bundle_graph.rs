@@ -14,11 +14,23 @@ use rolldown_common::{ModuleId, ModuleInfo};
 use rolldown_plugin::PluginContext;
 use rolldown_utils::indexmap::FxIndexSet;
 
+/// The text of a bundle's outputs by file name, for the hooks that see the
+/// whole bundle (see [`RolldownGraph::set_output_texts`]).
+pub(crate) type OutputTexts = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// One bundle's modules. Code reads as JS, as after Vite's vite:oxc, lowered
 /// with the app's JSX settings.
 pub(crate) struct RolldownGraph {
     ctx: PluginContext,
     jsx: oj_compiler::JsxConfig,
+    /// See [`RolldownGraph::set_output_texts`].
+    texts: std::sync::Mutex<Option<OutputTexts>>,
+}
+
+impl std::fmt::Debug for RolldownGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RolldownGraph")
+    }
 }
 
 impl RolldownGraph {
@@ -26,11 +38,28 @@ impl RolldownGraph {
         Arc::new(Self {
             ctx: ctx.clone(),
             jsx,
+            texts: std::sync::Mutex::new(None),
         })
+    }
+
+    /// The texts of the bundle a `generateBundle` or `writeBundle` hook is
+    /// about to see (`crate::build::serialize_bundle_for_hooks` gives the
+    /// bundle's JSON and this lookup together), and `None` once the hook
+    /// returned: the host reads a chunk's code or an asset's source here
+    /// when a hook asks for it, instead of taking every text in the call.
+    pub fn set_output_texts(&self, texts: Option<OutputTexts>) {
+        *self.texts.lock().unwrap() = texts;
     }
 }
 
 impl oj_server::plugins::BundleGraph for RolldownGraph {
+    fn output_text(&self, file: &str) -> Option<String> {
+        // The lookup runs outside the lock: the isolate thread asks, and a
+        // hook on it may ask again before this answers.
+        let texts = self.texts.lock().unwrap().clone();
+        texts.and_then(|texts| texts(file))
+    }
+
     fn module_info(&self, id: &str) -> Option<serde_json::Value> {
         self.ctx.get_module_info(id).map(|info| graph_fields(&info))
     }
