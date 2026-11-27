@@ -19,6 +19,10 @@ use rolldown_plugin::{
 #[derive(Debug)]
 struct StylexTransform {
     plugin: Arc<StylexPlugin>,
+    /// A build: every module importing StyleX leaves as babel prints it
+    /// (see `oj_server::stylex::babel_shaped`), compiled or not, as under
+    /// Vite. A dev bundle keeps the compiler's splice.
+    babel_shaped: bool,
 }
 
 impl Plugin for StylexTransform {
@@ -86,15 +90,30 @@ impl Plugin for StylexTransform {
             .plugin
             .transform_source(Path::new(file), args.code)
             .map_err(|e| anyhow::anyhow!("{e}\n  in {file}"))?;
-        let Some(out) = out else {
-            self.plugin.set_module_rules(id, Vec::new());
-            return Ok(None);
+        let (code, map) = match out {
+            Some(out) => {
+                self.plugin.set_module_rules(id, out.rules);
+                (out.code, out.map)
+            }
+            None => {
+                self.plugin.set_module_rules(id, Vec::new());
+                if !self.babel_shaped {
+                    return Ok(None);
+                }
+                (args.code.to_string(), None)
+            }
         };
-        self.plugin.set_module_rules(id, out.rules);
+        let (code, map) = if self.babel_shaped {
+            let (code, map) =
+                oj_server::stylex::babel_shaped(Path::new(file), &code, map.as_deref())
+                    .map_err(|e| anyhow::anyhow!("{e}\n  in {file}"))?;
+            (code, Some(map))
+        } else {
+            (code, map)
+        };
         // A map the compiler wrote and nothing can read would break the
         // module's map chain without a word: fail the module instead.
-        let map = out
-            .map
+        let map = map
             .map(|m| {
                 oxc_sourcemap::SourceMap::from_json_string(&m)
                     .map(|s| s.into_owned())
@@ -104,7 +123,7 @@ impl Plugin for StylexTransform {
             })
             .transpose()?;
         Ok(Some(HookTransformOutput {
-            code: Some(out.code),
+            code: Some(code),
             map: match map {
                 Some(map) => HookTransformOutputMap::Sourcemap(Box::new(map)),
                 None => HookTransformOutputMap::Omitted,
@@ -115,9 +134,20 @@ impl Plugin for StylexTransform {
 }
 
 /// The transform as a bundle plugin.
+/// The transform as a dev bundle's plugin.
 pub(crate) fn transform(plugin: &Arc<StylexPlugin>) -> SharedPluginable {
     Pluginable::new_shared(StylexTransform {
         plugin: Arc::clone(plugin),
+        babel_shaped: false,
+    })
+}
+
+/// The transform as a build's plugin: its modules leave as babel prints
+/// them, as under `vite build`.
+pub(crate) fn transform_for_build(plugin: &Arc<StylexPlugin>) -> SharedPluginable {
+    Pluginable::new_shared(StylexTransform {
+        plugin: Arc::clone(plugin),
+        babel_shaped: true,
     })
 }
 

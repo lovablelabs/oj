@@ -336,6 +336,18 @@ mod tests {
         assert!(!transform().handles("/app/src/f.js") && !transform().handles("\0virtual"));
     }
 
+    /// A parenthesized arrow in a conditional branch keeps its parentheses
+    /// through the lowering, as through rolldown's transform: the parser
+    /// marks a parenthesized function (`pife`) with `preserve_parens: false`
+    /// too, and the codegen prints the mark. (Under Vite, StyleX's babel
+    /// print drops them before this step; see oj_stylex's reprint.)
+    #[test]
+    fn a_parenthesized_arrow_keeps_its_parentheses_as_rolldowns_transform_does() {
+        let src = "export const r = (c: unknown) =>\n  typeof c === \"function\" ? ((...a: unknown[]) => <>{a}</>) : <>{c}</>;\n";
+        let out = transform().lower("/app/src/p.tsx", src, false).unwrap();
+        assert!(out.code.contains("((...a) =>"), "{}", out.code);
+    }
+
     /// With plugin-react's refresh include (`/\.[tj]sx?$/`), a `.js` module
     /// is transformed too, as rolldown's plugin takes a module the refresh
     /// include names; `oxc: false` turns the plugin off.

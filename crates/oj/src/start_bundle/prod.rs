@@ -194,7 +194,7 @@ fn client_plugins(
     // of oj's stand-in for the package).
     let host_stylex = host.is_some_and(|h| h.facts.stylex_host_driven);
     if let Some(plugin) = start.stylex.as_ref().filter(|_| !host_stylex) {
-        plugins.push(crate::stylex_plugin::transform(plugin));
+        plugins.push(crate::stylex_plugin::transform_for_build(plugin));
     }
     // Start's client route tree (route-tree-client-plugin, a "pre" load).
     if matches!(target, CodeTarget::Client) {
@@ -784,7 +784,7 @@ pub(crate) async fn build(
                 .as_ref()
                 .is_some_and(|h| h.facts.stylex_host_driven);
             if let Some(plugin) = start.stylex.as_ref().filter(|_| !host_stylex) {
-                plugins.push(crate::stylex_plugin::transform(plugin));
+                plugins.push(crate::stylex_plugin::transform_for_build(plugin));
             }
             if let Some(facts) = server_host
                 .as_ref()

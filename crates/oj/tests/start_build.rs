@@ -2313,3 +2313,68 @@ fn the_manifest_lists_a_chunks_url_assets_and_gives_each_asset_a_row() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A module importing StyleX leaves the plugin as babel prints it, as under
+/// `vite build`: @stylexjs/unplugin runs `babel.transformAsync` over every
+/// such module and hands on its print, and @babel/generator writes an
+/// expression's parentheses only where the grammar needs them, so a
+/// source's `cond ? ((...a) => x) : y` reaches Vite's own transform without
+/// the arrow's. oj's compiler spliced the source and kept them, oxc's parser
+/// marks a parenthesized function, and every print after it kept them, down
+/// through esbuild's minify into the chunk (Lovable's drawer, under
+/// `build.minify: "esbuild"`).
+#[test]
+fn a_stylex_module_leaves_the_plugin_as_babel_prints_it() {
+    let Some(root) = stylex_app("babel-print") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap().replacen(
+        "export default defineConfig({\n  plugins:",
+        "export default defineConfig({\n  build: { minify: \"esbuild\" },\n  plugins:",
+        1,
+    );
+    assert!(
+        source.contains("minify: \"esbuild\""),
+        "the fixture's vite.config.ts changed shape"
+    );
+    std::fs::write(&config, source).unwrap();
+    let card = root.join("src/Card.tsx");
+    let source = std::fs::read_to_string(&card).unwrap().replacen(
+        "  return (\n    <section id=\"card\" {...stylex.props(styles.card)}>\n",
+        "  const label =\n    typeof onToggle === \"function\" ? ((...a: unknown[]) => <>{a.length}</>) : <>{String(onToggle)}</>;\n  return (\n    <section id=\"card\" {...stylex.props(styles.card)}>\n      {typeof label === \"function\" ? label() : label}\n",
+        1,
+    );
+    assert!(
+        source.contains("const label ="),
+        "the fixture's Card.tsx changed shape"
+    );
+    std::fs::write(&card, source).unwrap();
+    build(&root);
+
+    let chunks: Vec<(PathBuf, String)> = std::fs::read_dir(root.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "js"))
+        .map(|p| {
+            let code = std::fs::read_to_string(&p).unwrap();
+            (p, code)
+        })
+        .collect();
+    let (chunk, code) = chunks
+        .iter()
+        .find(|(_, code)| code.contains("\"function\"?"))
+        .expect("the Card chunk, minified by esbuild");
+    assert!(
+        !code.contains("?((..."),
+        "{}: the arrow keeps the source's parentheses:\n{code}",
+        chunk.display()
+    );
+    assert!(
+        code.contains("\"function\"?(..."),
+        "{}: the arrow is there without them:\n{code}",
+        chunk.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

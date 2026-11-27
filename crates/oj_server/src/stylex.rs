@@ -91,11 +91,39 @@ pub(crate) fn build_transform(
 ) -> Result<Option<(String, Option<String>, Vec<serde_json::Value>)>, String> {
     let plugin = shared_plugin("build", root, options)?;
     let file = Path::new(id.split('?').next().unwrap_or(id));
-    let Some(out) = plugin.transform_source(file, code)? else {
-        return Ok(None);
+    // The plugin runs babel over every module importing StyleX and hands
+    // on its print, compiled or not.
+    let (code, map, rules) = match plugin.transform_source(file, code)? {
+        Some(out) => (
+            out.code,
+            out.map,
+            out.rules.iter().map(|r| r.to_metadata_tuple()).collect(),
+        ),
+        None => (code.to_string(), None, Vec::new()),
     };
-    let rules = out.rules.iter().map(|r| r.to_metadata_tuple()).collect();
-    Ok(Some((out.code, out.map, rules)))
+    let (code, map) = babel_shaped(file, &code, map.as_deref())?;
+    Ok(Some((code, Some(map), rules)))
+}
+
+/// [`oj_stylex::api::reprint_as_babel`] over the compiler's output for
+/// `file`: the code, and its map back to the source (the compiler's map,
+/// when it changed the module, composed with the reprint's).
+pub fn babel_shaped(
+    file: &Path,
+    code: &str,
+    map: Option<&str>,
+) -> Result<(String, String), String> {
+    let filename = file.to_string_lossy().replace('\\', "/");
+    let (code, reprint_map) =
+        oj_stylex::api::reprint_as_babel(code, &filename).map_err(|e| e.to_string())?;
+    let Some(map) = map else {
+        return Ok((code, reprint_map));
+    };
+    let first = oxc_sourcemap::SourceMap::from_json_string(map).map_err(|e| e.to_string())?;
+    let second =
+        oxc_sourcemap::SourceMap::from_json_string(&reprint_map).map_err(|e| e.to_string())?;
+    let composed = rolldown_sourcemap::collapse_sourcemaps(&[&first, &second]);
+    Ok((code, composed.to_json_string()))
 }
 
 /// The live dev plugin for `root`, as [`plugin_for`] made it for `serve`.

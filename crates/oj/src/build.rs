@@ -4505,7 +4505,7 @@ pub async fn build(
     let stylex =
         oj_server::stylex::plugin_for(&root, &config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
-        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+        oj_plugins.push(crate::stylex_plugin::transform_for_build(plugin));
     }
     if let Some(host) = &plugin_host {
         oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
@@ -5989,7 +5989,7 @@ pub(crate) async fn build_ssr(
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
-        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+        oj_plugins.push(crate::stylex_plugin::transform_for_build(plugin));
     }
     if let Some(host) = &plugin_host {
         oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
@@ -6610,7 +6610,7 @@ async fn build_client_entry(
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
-        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+        oj_plugins.push(crate::stylex_plugin::transform_for_build(plugin));
     }
     if let Some(host) = &plugin_host {
         oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
@@ -6923,7 +6923,7 @@ async fn build_library(
 
             let mut plugins: Vec<SharedPluginable> = resolve_plugins(root, config);
             if let Some(plugin) = &stylex {
-                plugins.push(crate::stylex_plugin::transform(plugin));
+                plugins.push(crate::stylex_plugin::transform_for_build(plugin));
             }
             if let Some(host) = &plugin_host {
                 let user = OjUserPlugin::new(
