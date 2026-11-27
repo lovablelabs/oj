@@ -1167,7 +1167,11 @@ impl Plugin for StartHostPlugin {
                 });
                 if let Some((new, entry)) = replacement {
                     let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("");
-                    emitter.rename_sheet(old, new, source);
+                    // The hook appended to a source carrying the hash marker;
+                    // css-post strips it from what is written, so the copy a
+                    // server bundle's `?url` import writes carries none either.
+                    let source = crate::build::strip_vite_hash_marker(new, source);
+                    emitter.rename_sheet(old, new, &source);
                 }
             }
         }
