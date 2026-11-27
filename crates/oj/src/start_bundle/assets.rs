@@ -192,9 +192,14 @@ struct DevSheet {
 }
 
 fn text_hash(text: &str) -> u64 {
+    source_hash(text.as_bytes())
+}
+
+/// The key an emitted file dedupes by (see `Emitter::by_source`).
+fn source_hash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
+    bytes.hash(&mut h);
     h.finish()
 }
 
@@ -526,6 +531,15 @@ pub(crate) struct Emitter {
     /// with the server's emitter, whose `?url` import of the same sheet
     /// names the replacement, as under Vite.
     renamed: Arc<Mutex<HashMap<String, (String, String)>>>,
+    /// Every asset written, by the hash of its bytes: rolldown's file
+    /// emitter keeps one asset per source for the files emitted without a
+    /// `fileName` (a `?url` sheet, a chunk's sheet, a CSS `url()` file), so
+    /// a second emit of the same bytes names the first one's file. While it
+    /// builds, the shortest name wins; once output starts (renderChunk), the
+    /// first does. oj writes a URL into its module as it emits, so it keeps
+    /// the first name, and writes a second file only when a later emit has
+    /// a shorter name (which rolldown would have renamed the first to).
+    by_source: Mutex<HashMap<u64, String>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
     /// `worker.format` is "es": workers start as modules, not classic scripts.
     worker_module: std::sync::atomic::AtomicBool,
@@ -564,6 +578,7 @@ impl Emitter {
             module_assets: Mutex::new(HashMap::new()),
             asset_rows: Mutex::new(Vec::new()),
             renamed: Arc::default(),
+            by_source: Mutex::new(HashMap::new()),
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
@@ -733,6 +748,11 @@ impl Emitter {
         if let Some(name) = new.rsplit('/').next() {
             self.written.lock().unwrap().insert(name.to_string());
         }
+        self.by_source
+            .lock()
+            .unwrap()
+            .values_mut()
+            .for_each(&rename_file);
         let _ = std::fs::remove_file(out_dir.join(old));
     }
 
@@ -916,22 +936,46 @@ impl Emitter {
             .as_ref()
             .is_some_and(|f| is_style_path(f.as_str().split('?').next().unwrap_or("")));
         let stem = chunk_sheet_stem(chunk.name.as_str(), chunk.is_entry, facade_is_css);
-        let pattern = self.asset_pattern(&format!("{stem}.css"), &css).await?;
-        let file = crate::build::render_asset_name(
-            Some(&pattern),
-            &sanitize_file_name(&stem),
-            &crate::build::css_asset_hash(&css),
-            "css",
-        );
-        let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
-        let dest = out_dir.join(&file);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        if !dest.is_file() {
-            std::fs::write(&dest, css.as_bytes())
-                .map_err(|e| format!("{}: {e}", dest.display()))?;
-        }
+        // The same bytes written already (a `?url` import of a sheet the
+        // chunk also holds plainly, another chunk's identical sheet): the
+        // emitter dedupes by source, and in renderChunk the first name
+        // stays (Lovable's Partners chunk sheet is `Partners-<hash>.css`,
+        // the `?url` asset's name, not `PartnersProgramSteps-<hash>.css`).
+        let key = source_hash(css.as_bytes());
+        let existing = self.by_source.lock().unwrap().get(&key).cloned();
+        let file = match existing {
+            Some(file) => file,
+            None => {
+                let pattern = self.asset_pattern(&format!("{stem}.css"), &css).await?;
+                let file = crate::build::render_asset_name(
+                    Some(&pattern),
+                    &sanitize_file_name(&stem),
+                    &crate::build::css_asset_hash(&css),
+                    "css",
+                );
+                let out_dir = self.assets_dir.parent().unwrap_or(&self.assets_dir);
+                let dest = out_dir.join(&file);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                if !dest.is_file() {
+                    std::fs::write(&dest, css.as_bytes())
+                        .map_err(|e| format!("{}: {e}", dest.display()))?;
+                }
+                let kept = self
+                    .by_source
+                    .lock()
+                    .unwrap()
+                    .entry(key)
+                    .or_insert_with(|| file.clone())
+                    .clone();
+                // Another chunk's identical sheet got there first meanwhile.
+                if kept != file {
+                    let _ = std::fs::remove_file(&dest);
+                }
+                kept
+            }
+        };
         let mut sheets = self.chunk_sheets.lock().unwrap();
         if let Some(sheet) = sheets.iter().find(|s| s.chunk == chunk.filename.as_str()) {
             return Ok(Some(sheet.file.clone()));
@@ -1132,15 +1176,35 @@ impl Emitter {
             ),
             None => (name, bytes),
         };
+        // The same bytes written already under another name: that file
+        // (see `by_source`), unless this name is the shorter, which the
+        // emitter would have renamed the first to; it gets a file of its own.
+        let mine = format!("assets/{name}");
+        let file = {
+            fn base(file: &str) -> &str {
+                file.rsplit('/').next().unwrap_or(file)
+            }
+            let mut by_source = self.by_source.lock().unwrap();
+            let key = source_hash(bytes);
+            match by_source.get(&key) {
+                Some(first) if (base(first).len(), base(first)) <= (name.len(), name.as_str()) => {
+                    first.clone()
+                }
+                _ => {
+                    by_source.insert(key, mine.clone());
+                    mine.clone()
+                }
+            }
+        };
         self.asset_rows
             .lock()
             .unwrap()
-            .push((path.to_path_buf(), format!("assets/{name}")));
-        if self.written.lock().unwrap().insert(name.clone()) {
+            .push((path.to_path_buf(), file.clone()));
+        if file == mine && self.written.lock().unwrap().insert(name.clone()) {
             std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
             std::fs::write(self.assets_dir.join(&name), bytes).map_err(|e| e.to_string())?;
         }
-        Ok(format!("{}assets/{name}", self.base))
+        Ok(format!("{}{file}", self.base))
     }
 
     /// CSS a worker bundle's plugins routed through its `vite:css-post`:

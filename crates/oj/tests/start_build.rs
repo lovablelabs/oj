@@ -1796,6 +1796,126 @@ fn a_sheet_imported_plainly_and_by_url_joins_its_chunks_sheet_once() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A chunk's sheet with the bytes of an asset emitted already takes that
+/// asset's name, as under `vite build`: rolldown's file emitter keeps one
+/// asset per source for the files emitted without a `fileName`, and once
+/// output starts (css-post emits a chunk's sheet in renderChunk) the first
+/// name stays. oj wrote the chunk's sheet under the chunk's name beside the
+/// `?url` asset of the same text (Lovable shipped `Partners-<hash>.css` and
+/// `PartnersProgramSteps-<hash>.css`, one file twice, and its chunks hashed
+/// the second name).
+#[test]
+fn a_chunk_sheet_with_an_emitted_assets_bytes_takes_the_assets_name() {
+    let Some((app, probe)) = chunk_css_app(
+        "sheet-dedupe",
+        "  build: { manifest: true },\n",
+        |app| {
+            let sheet = ".steps-marker { color: teal; }\n";
+            std::fs::write(app.join("styles/partners.css"), sheet).unwrap();
+            std::fs::write(app.join("src/steps.css"), sheet).unwrap();
+            std::fs::write(
+                app.join("src/steps-widget.tsx"),
+                "import \"./steps.css\";\nexport default function StepsWidget() {\n  return <p className=\"steps-marker\">steps-widget</p>;\n}\n",
+            )
+            .unwrap();
+            let route = app.join("src/routes/__root.tsx");
+            let source = std::fs::read_to_string(&route).unwrap();
+            let source = source
+                .replacen(
+                    "import \"../../styles/app.css\";",
+                    "import \"../../styles/app.css\";\nimport partnersUrl from \"../../styles/partners.css?url\";",
+                    1,
+                )
+                .replacen(
+                    "    meta: [{ title: \"oj start fixture\" }],",
+                    "    meta: [{ title: \"oj start fixture\" }, { name: \"x-partners\", content: partnersUrl }],",
+                    1,
+                );
+            assert!(
+                source.contains("content: partnersUrl }"),
+                "the fixture's __root.tsx changed shape; update this test"
+            );
+            std::fs::write(&route, source).unwrap();
+            let route = app.join("src/routes/about.tsx");
+            let source = std::fs::read_to_string(&route).unwrap();
+            let source = source
+                .replacen(
+                    "import { createRoute } from \"@tanstack/react-router\";\n",
+                    "import { createRoute } from \"@tanstack/react-router\";\nimport { lazy, Suspense } from \"react\";\nconst Widget = lazy(() => import(\"../steps-widget\"));\n",
+                    1,
+                )
+                .replacen(
+                    "<h1 className=\"fixture-heading\">about-page-marker</h1>",
+                    "<h1 className=\"fixture-heading\">about-page-marker</h1>\n      <Suspense fallback={null}><Widget /></Suspense>",
+                    1,
+                );
+            assert!(
+                source.contains("<Widget />"),
+                "the fixture's about.tsx changed shape; update this test"
+            );
+            std::fs::write(&route, source).unwrap();
+        },
+    ) else {
+        return;
+    };
+    let names: Vec<String> = std::fs::read_dir(app.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let with_marker: Vec<&String> = names
+        .iter()
+        .filter(|n| {
+            n.ends_with(".css")
+                && std::fs::read_to_string(app.join("dist/client/assets").join(n))
+                    .is_ok_and(|css| css.contains(".steps-marker"))
+        })
+        .collect();
+    assert_eq!(
+        with_marker.len(),
+        1,
+        "the sheet is one file, the ?url asset's: {with_marker:?}"
+    );
+    let partners = with_marker[0];
+    assert!(
+        partners.starts_with("partners-"),
+        "the file keeps the first emit's name, partners-<hash>.css: {partners}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.starts_with("steps-widget-") && n.ends_with(".css")),
+        "no steps-widget-<hash>.css beside it: {names:?}"
+    );
+    // The widget chunk's sheet is that file, in its viteMetadata and the manifest.
+    let widget = names
+        .iter()
+        .find(|n| n.starts_with("steps-widget-") && n.ends_with(".js"))
+        .expect("the widget's chunk");
+    assert_eq!(
+        probe["css"][format!("assets/{widget}")],
+        serde_json::json!([format!("assets/{partners}")]),
+        "the chunk's importedCss:\n{probe}"
+    );
+    let raw = std::fs::read_to_string(app.join("dist/client/.vite/manifest.json")).unwrap();
+    let manifest: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    let row = manifest
+        .values()
+        .find(|row| row["file"] == format!("assets/{widget}"))
+        .unwrap_or_else(|| panic!("a manifest row for {widget}:\n{raw}"));
+    assert_eq!(
+        row["css"],
+        serde_json::json!([format!("assets/{partners}")]),
+        "the chunk's manifest row names the sheet:\n{raw}"
+    );
+    assert_eq!(
+        manifest["styles/partners.css"]["file"],
+        serde_json::json!(format!("assets/{partners}")),
+        "the ?url import's row:\n{raw}"
+    );
+    let _ = std::fs::remove_dir_all(&app);
+}
+
 /// A plain sheet imported with `import()` leaves no JS chunk behind, as
 /// under `vite build`: its module is empty, the chunk holding it alone is a
 /// pure CSS chunk that generateBundle drops, and the import becomes
