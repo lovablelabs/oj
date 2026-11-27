@@ -127,6 +127,8 @@ impl Plugin for BuildImportAnalysisPlugin {
                 need_prepend_helper: false,
                 is_relative_base: self.is_relative_base,
                 is_modern,
+                marker_module_id: args.stable_id.to_string(),
+                marker_index: 0,
             };
             visitor.visit_program(fields.program);
         });
@@ -166,6 +168,13 @@ struct ImportAnalysisVisitor<'a> {
     need_prepend_helper: bool,
     is_relative_base: bool,
     is_modern: bool,
+    /// The module's stable id and a counter: each preload call's marker is
+    /// `__VITE_PRELOAD__` plus the xxhash of `<stable id>_<index:08x>` (32
+    /// hex digits), as rolldown's vite-build-import-analysis writes it, so
+    /// the markers stay distinct through esbuild's minify, whose name
+    /// alphabet reads the chunk's character frequencies (the digits included).
+    marker_module_id: String,
+    marker_index: usize,
 }
 
 impl<'a> GetAstBuilder<'a> for ImportAnalysisVisitor<'a> {
@@ -282,7 +291,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
     }
 
     /// `(await import('foo')).foo`
-    fn rewrite_member_expr(&self, member_expr: &mut StaticMemberExpression<'a>) -> bool {
+    fn rewrite_member_expr(&mut self, member_expr: &mut StaticMemberExpression<'a>) -> bool {
         let mut await_expr = &mut member_expr.object;
         while let Expression::ParenthesizedExpression(paren) = await_expr {
             await_expr = &mut paren.expression;
@@ -364,7 +373,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
     }
 
     /// `import('foo')`
-    fn rewrite_import_expr(&self, expr: &mut Expression<'a>) -> bool {
+    fn rewrite_import_expr(&mut self, expr: &mut Expression<'a>) -> bool {
         if !is_static_import(expr) {
             return false;
         }
@@ -376,7 +385,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
     }
 
     fn preload_destructured(
-        &self,
+        &mut self,
         object_pat: oxc_allocator::Box<'a, ObjectPattern<'a>>,
         await_expr: Expression<'a>,
     ) -> Expression<'a> {
@@ -422,11 +431,18 @@ impl<'a> ImportAnalysisVisitor<'a> {
 
     /// `__vitePreload(factory, __VITE_PRELOAD__[, import.meta.url])`: the
     /// importer's url rides along under a relative base.
-    fn preload_call(&self, argument: Argument<'a>) -> Expression<'a> {
+    fn preload_call(&mut self, argument: Argument<'a>) -> Expression<'a> {
         let mut items = oxc_allocator::Vec::with_capacity_in(3, self);
         items.push(argument);
         items.push(Argument::from(if self.is_modern {
-            Expression::new_identifier(SPAN, PRELOAD_MARKER, self)
+            let seed = format!("{}_{:08x}", self.marker_module_id, self.marker_index);
+            self.marker_index += 1;
+            let marker = format!(
+                "{PRELOAD_MARKER}{:0>32}",
+                rolldown_utils::xxhash::xxhash_with_base(seed.as_bytes(), 16)
+            );
+            let marker = self.ast_builder.allocator().alloc_str(&marker);
+            Expression::new_identifier(SPAN, &*marker, self)
         } else {
             Expression::new_void_0(SPAN, self)
         }));
@@ -532,6 +548,18 @@ fn dynamic_imports(code: &str) -> Option<Vec<DynamicImport>> {
     Some(collect.0)
 }
 
+/// The length of the marker at `at`: `__VITE_PRELOAD__` and the hash the
+/// transform gave it (see `preload_call`), 32 hex digits at most.
+fn marker_len(code: &str, at: usize) -> usize {
+    let tail = &code[at + PRELOAD_MARKER.len()..];
+    let hash = tail
+        .bytes()
+        .take(32)
+        .take_while(|b| b.is_ascii_hexdigit())
+        .count();
+    PRELOAD_MARKER.len() + hash
+}
+
 fn find_marker(code: &str, from: usize) -> Option<usize> {
     code.get(from..)?.find(PRELOAD_MARKER).map(|i| from + i)
 }
@@ -554,7 +582,7 @@ fn match_markers(code: &str, imports: &[DynamicImport]) -> Vec<Option<usize>> {
         if let Some(i) = open.pop() {
             out[i] = Some(marker);
         }
-        pos = find_marker(code, marker + PRELOAD_MARKER.len());
+        pos = find_marker(code, marker + marker_len(code, marker));
     }
     if imports.len() == 1 && out[0].is_none() {
         out[0] = find_marker(code, 0);
@@ -686,7 +714,7 @@ pub(crate) fn fill_preload_markers<'d>(
             .collect();
         edits.push(Edit {
             start: marker,
-            end: marker + PRELOAD_MARKER.len(),
+            end: marker + marker_len(code, marker),
             with: if rendered.is_empty() {
                 "[]".to_string()
             } else {
@@ -700,11 +728,11 @@ pub(crate) fn fill_preload_markers<'d>(
         if !rewrote.contains(&marker) {
             edits.push(Edit {
                 start: marker,
-                end: marker + PRELOAD_MARKER.len(),
+                end: marker + marker_len(code, marker),
                 with: "void 0".to_string(),
             });
         }
-        pos = find_marker(code, marker + PRELOAD_MARKER.len());
+        pos = find_marker(code, marker + marker_len(code, marker));
     }
     edits.sort_by_key(|e| e.start);
     let mut out = String::with_capacity(code.len() + 64);
