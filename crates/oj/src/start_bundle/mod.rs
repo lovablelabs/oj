@@ -393,7 +393,9 @@ pub(crate) fn write_server_fn_resolver(
                 stack.push(path);
             } else if matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("ts" | "tsx")
+                // Start's compiler takes `.[cm]?[tj]sx?`: a server function
+                // in a .js or .jsx module has an entry too.
+                Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs")
             ) {
                 files.push(path);
             }
@@ -641,12 +643,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("src/plain.tsx"), "export const x = 1;\n").unwrap();
+        // Start's compiler takes `.[cm]?[tj]sx?`: a .jsx server function has
+        // an entry; a file of another kind never does.
         std::fs::write(
-            root.join("src/server/skip.js"),
-            "export const c = createServerFn().handler(() => 3);\n",
+            root.join("src/server/legacy.jsx"),
+            "export const getC = createServerFn().handler(() => 3);\n",
         )
         .unwrap();
-        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 2);
+        std::fs::write(
+            root.join("src/server/notes.md"),
+            "createServerFn().handler(() => 4)\n",
+        )
+        .unwrap();
+        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 3);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         // Loaded on the first call, never imported statically: a static import
         // runs the module inside the framework's import of the resolver.
@@ -660,7 +669,11 @@ mod tests {
             "{out}"
         );
         // Both functions of the file share its one importer.
-        assert_eq!(out.matches("import(").count(), 1, "{out}");
+        assert_eq!(out.matches("import(").count(), 2, "{out}");
+        assert!(
+            out.contains("src/server/legacy.jsx") && out.contains("getC_createServerFn_handler"),
+            "{out}"
+        );
         // Under oj's id and Start's Vite dev id alike.
         for id in [
             oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB"),
@@ -687,11 +700,11 @@ mod tests {
         ] {
             assert!(out.contains(error), "{error}\n{out}");
         }
-        assert!(!out.contains("skip.js") && !out.contains("plain"), "{out}");
+        assert!(!out.contains("notes.md") && !out.contains("plain"), "{out}");
         assert!(out.contains("export async function getServerFnById(id)"));
         // A build maps oj's ids only: a Vite build knows no dev id.
         // Into its own file: the dev resolver stays as it was.
-        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 2);
+        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 3);
         let dev_out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         assert_eq!(dev_out, out);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.build.mjs")).unwrap();

@@ -1,0 +1,1 @@
+Object.defineProperty(exports,Symbol.toStringTag,{value:`Module`});var e=e=>e+1;function t(t){return e(t)*2}exports.helper=e,exports.lib=t;

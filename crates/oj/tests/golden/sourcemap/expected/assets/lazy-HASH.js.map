@@ -1,0 +1,1 @@
+{"version":3,"file":"lazy-HASH.js","names":["greet","lazy"],"sources":["../../src/lazy.js"],"sourcesContent":["import { greet } from \"./greet.js\";\n\nexport function lazy() {\n  console.log(greet(\"lazy\"));\n}\n"],"mappings":"A,wCAEA,SAAgBC,GAAO,CACrB,QAAQ,IAAID,EAAM,MAAM,CAAC,CAC3B,C"}

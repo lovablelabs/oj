@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";var t=()=>console.log(`page`,e);export{t as page};

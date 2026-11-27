@@ -70,7 +70,7 @@ pub(crate) fn preload_code(base: &str, polyfill: bool, relative_base: bool) -> S
         )
     };
     format!(
-        "const scriptRel = {script_rel};const assetsURL = {assets_url};const seen = {{}};const isCssPreloadUrl = {IS_CSS_PRELOAD_URL};const preloadOnce = {PRELOAD_ONCE};export const {PRELOAD_METHOD} = {PRELOAD}"
+        "const scriptRel = {script_rel};const assetsURL = {assets_url};const seen = {{}};const failedCssLinks = {{}};const isCssPreloadUrl = {IS_CSS_PRELOAD_URL};const preloadOnce = {PRELOAD_ONCE};export const {PRELOAD_METHOD} = {PRELOAD}"
     )
 }
 
@@ -105,9 +105,12 @@ impl Plugin for BuildImportAnalysisPlugin {
     }
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
+        // With an empty map, as Vite's helper comes: a chunk's map names the
+        // app's code, not the helper's.
         Ok((args.id == PRELOAD_HELPER_ID).then(|| HookLoadOutput {
             code: self.preload_code.clone(),
             side_effects: Some(HookSideEffects::False),
+            map: crate::build::vite_asset_map(),
             ..Default::default()
         }))
     }
@@ -274,6 +277,17 @@ impl<'a> VisitJsMut<'a> for ImportAnalysisVisitor<'a> {
     }
 }
 
+/// The wrapped `import()` maps to nothing, as Vite's rewrite leaves it: a
+/// chunk map's segments for the statement end at the `__vitePreload` call.
+fn unmap_import(expr: &mut Expression<'_>) {
+    if let Expression::ImportExpression(import) = expr {
+        import.span = SPAN;
+        if let Expression::StringLiteral(source) = &mut import.source {
+            source.span = SPAN;
+        }
+    }
+}
+
 /// Only static urls are preloaded: `import('foo')` or `` import(`foo`) ``.
 fn is_static_import(expr: &Expression<'_>) -> bool {
     matches!(
@@ -356,6 +370,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
             let Expression::StaticMemberExpression(callee) = &mut call_expr.callee else {
                 unreachable!();
             };
+            unmap_import(&mut callee.object);
             callee.object = self.preload_destructured(
                 object_pat,
                 Expression::new_await_expression(SPAN, callee.object.take_in(self), self),
@@ -364,6 +379,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
             return true;
         }
         walk_js_mut::walk_arguments(self, &mut call_expr.arguments);
+        unmap_import(expr);
         let import_then = expr.take_in(self);
         *expr = self.preload_call(Argument::from(Expression::new_arrow_returning(
             import_then,
@@ -377,6 +393,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
         if !is_static_import(expr) {
             return false;
         }
+        unmap_import(expr);
         *expr = self.preload_call(Argument::from(Expression::new_arrow_returning(
             expr.take_in(self),
             self,
@@ -772,23 +789,50 @@ pub(crate) fn shift_sourcemap(
     inserted: Option<u32>,
 ) -> Option<String> {
     let map = oxc_sourcemap::SourceMap::from_json_string(map_json).ok()?;
-    // (line, utf16 column of the span's end, column delta) per edit.
-    let mut shifts: Vec<(u32, u32, i64)> = Vec::with_capacity(spans.len());
+    // (line, utf16 column of the span's start and end, column delta) per edit.
+    let mut shifts: Vec<(u32, u32, u32, i64)> = Vec::with_capacity(spans.len());
     for &(start, end, new_len) in spans {
         let line_start = code[..start].rfind('\n').map_or(0, |i| i + 1);
         let line = code[..start].matches('\n').count() as u32;
+        let start_col = code[line_start..start].encode_utf16().count() as u32;
         let end_col = code[line_start..end].encode_utf16().count() as u32;
         let old = code[start..end].encode_utf16().count() as i64;
-        shifts.push((line, end_col, new_len as i64 - old));
+        shifts.push((line, start_col, end_col, new_len as i64 - old));
     }
     let mut parts = map.into_parts();
-    let tokens: Vec<oxc_sourcemap::Token> = parts
-        .tokens
-        .iter()
+    // A marker's own segments go, and with them the segment the codegen
+    // placed on the `)` closing the call after it when it only repeats the
+    // position before: Vite's text rewrite leaves the replaced marker and
+    // the call's close unmapped.
+    let mut kept: Vec<&oxc_sourcemap::Token> = Vec::with_capacity(parts.tokens.len());
+    for t in parts.tokens.iter() {
+        let inside = shifts.iter().any(|&(l, start_col, end_col, _)| {
+            l == t.get_dst_line() && (start_col..end_col).contains(&t.get_dst_col())
+        });
+        if inside {
+            continue;
+        }
+        let closes = shifts
+            .iter()
+            .any(|&(l, _, end_col, _)| l == t.get_dst_line() && t.get_dst_col() == end_col);
+        if closes
+            && t.get_name_id().is_none()
+            && kept.last().is_some_and(|k| {
+                k.get_source_id() == t.get_source_id()
+                    && k.get_src_line() == t.get_src_line()
+                    && k.get_src_col() == t.get_src_col()
+            })
+        {
+            continue;
+        }
+        kept.push(t);
+    }
+    let tokens: Vec<oxc_sourcemap::Token> = kept
+        .into_iter()
         .map(|t| {
             let line = t.get_dst_line();
             let mut col = t.get_dst_col() as i64;
-            for &(l, end_col, delta) in &shifts {
+            for &(l, _, end_col, delta) in &shifts {
                 if l == line && t.get_dst_col() >= end_col {
                     col += delta;
                 }
@@ -805,7 +849,81 @@ pub(crate) fn shift_sourcemap(
         .collect();
     parts.tokens = tokens.into_boxed_slice();
     parts.token_chunks = None;
-    Some(oxc_sourcemap::SourceMap::from_parts(parts).to_json_string())
+    Some(vite_rewritten_map_json(
+        oxc_sourcemap::SourceMap::from_parts(parts),
+    ))
+}
+
+/// The map of a chunk Vite's import analysis rewrote in generateBundle, as
+/// Vite writes it: not rolldown's encoding of the chunk's map (which the
+/// chunks it left alone keep) but `JSON.stringify` of the map the JS side
+/// remapped, with `version`, `mappings`, `names`, `ignoreList`, `sources`,
+/// `sourcesContent` and `file` in that order, `names` holding the names
+/// the mappings reference in order of first reference, and the stretch
+/// before the first mapped position unmarked: rolldown marks a module
+/// boundary with a segment without a source, and remapping keeps those
+/// (and adds one where a preload marker was replaced) but emits nothing
+/// ahead of the first position it traces.
+fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
+    let json = map.to_json();
+    // The names the mappings use, numbered by first use: a chunk's map
+    // from rolldown lists every name its codegen met, the remapped one
+    // only what its segments name.
+    let mut parts = map.into_parts();
+    let mut used: Vec<String> = Vec::new();
+    let mut renumbered: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let first_sourced = parts
+        .tokens
+        .iter()
+        .position(|t| t.get_source_id().is_some());
+    let tokens: Vec<oxc_sourcemap::Token> = parts
+        .tokens
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| t.get_source_id().is_some() || first_sourced.is_some_and(|f| *i > f))
+        .map(|(_, t)| {
+            let name_id = t.get_name_id().map(|id| {
+                *renumbered.entry(id).or_insert_with(|| {
+                    used.push(
+                        parts
+                            .names
+                            .get(id as usize)
+                            .map_or_else(String::new, |n| n.to_string()),
+                    );
+                    (used.len() - 1) as u32
+                })
+            });
+            oxc_sourcemap::Token::new(
+                t.get_dst_line(),
+                t.get_dst_col(),
+                t.get_src_line(),
+                t.get_src_col(),
+                t.get_source_id(),
+                name_id,
+            )
+        })
+        .collect();
+    parts.tokens = tokens.into_boxed_slice();
+    parts.token_chunks = None;
+    parts.names = used.iter().map(|n| Cow::Owned(n.clone())).collect();
+    let mappings = oxc_sourcemap::SourceMap::from_parts(parts)
+        .to_json()
+        .mappings;
+    let mut out = serde_json::Map::new();
+    out.insert("version".into(), serde_json::json!(3));
+    out.insert("mappings".into(), serde_json::json!(mappings));
+    out.insert("names".into(), serde_json::json!(used));
+    out.insert(
+        "ignoreList".into(),
+        serde_json::json!(json.ignore_list.unwrap_or_default()),
+    );
+    out.insert("sources".into(), serde_json::json!(json.sources));
+    out.insert(
+        "sourcesContent".into(),
+        serde_json::json!(json.sources_content.unwrap_or_default()),
+    );
+    out.insert("file".into(), serde_json::json!(json.file));
+    serde_json::Value::Object(out).to_string()
 }
 
 #[cfg(test)]
@@ -869,7 +987,7 @@ mod tests {
     fn the_helper_is_vites_getpreloadcode() {
         let code = preload_code("/", true, false);
         assert!(code.starts_with(
-            "const scriptRel = 'modulepreload';const assetsURL = function(dep) { return \"/\"+dep };const seen = {};const isCssPreloadUrl = function isCssPreloadUrl(url) {"
+            "const scriptRel = 'modulepreload';const assetsURL = function(dep) { return \"/\"+dep };const seen = {};const failedCssLinks = {};const isCssPreloadUrl = function isCssPreloadUrl(url) {"
         ));
         assert!(code.contains(
             ";export const __vitePreload = function preload(baseModule, deps, importerUrl) {"

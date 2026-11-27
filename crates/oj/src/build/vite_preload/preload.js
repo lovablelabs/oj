@@ -38,17 +38,29 @@ function preload(baseModule, deps, importerUrl) {
 						if (link.rel === "stylesheet") preloadedHrefs.styles.add(link.href);
 					}
 				}
-				if ((isCss ? preloadedHrefs.styles : preloadedHrefs.all).has(dep.href)) return;
+				const preloadedHrefSet = isCss ? preloadedHrefs.styles : preloadedHrefs.all;
+				const failedCssLink = isCss ? failedCssLinks[dep.href] : void 0;
+				if (!failedCssLink && preloadedHrefSet.has(dep.href)) return;
 				const link = document.createElement("link");
 				link.rel = isCss ? "stylesheet" : scriptRel;
 				if (!isCss) link.as = "script";
 				link.crossOrigin = "";
 				link.href = dep.href;
 				if (cspNonce) link.setAttribute("nonce", cspNonce);
-				document.head.appendChild(link);
+				if (failedCssLink) delete failedCssLinks[dep.href];
+				if (failedCssLink?.isConnected) failedCssLink.replaceWith(link);
+				else document.head.appendChild(link);
 				if (isCss) return new Promise((res, rej) => {
-					link.addEventListener("load", res);
-					link.addEventListener("error", () => rej(/* @__PURE__ */ new Error(`Unable to preload CSS for ${dep}`)));
+					const handleSettle = (e) => {
+						link.removeEventListener("load", handleSettle);
+						link.removeEventListener("error", handleSettle);
+						if (e.type === "error") {
+							failedCssLinks[dep.href] = link;
+							rej(/* @__PURE__ */ new Error(`Unable to preload CSS for ${dep}`));
+						} else res(e);
+					};
+					link.addEventListener("load", handleSettle);
+					link.addEventListener("error", handleSettle);
 				});
 			});
 		}).filter((p) => p !== void 0));

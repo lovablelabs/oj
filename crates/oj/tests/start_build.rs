@@ -1085,7 +1085,6 @@ fn a_lazy_routes_stylesheet_is_named_after_its_chunk_and_preloaded() {
         serde_json::json!([format!("/assets/{index_css}")]),
         "{served}"
     );
-
     // Vite's preload helper: the chunk that imports the about route lazily
     // carries a `__vite__mapDeps` table naming the about chunk and its sheets.
     let importer = std::fs::read_dir(&assets)
@@ -1909,7 +1908,10 @@ fn a_chunk_sheet_with_an_emitted_assets_bytes_takes_the_assets_name() {
         "the chunk's manifest row names the sheet:\n{raw}"
     );
     // css-post keys a `?url` sheet's row by its absolute path (cleanUrl(id)).
-    let sheet_key = app.join("styles/partners.css").to_string_lossy().into_owned();
+    let sheet_key = app
+        .join("styles/partners.css")
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         manifest[&sheet_key]["file"],
         serde_json::json!(format!("assets/{partners}")),

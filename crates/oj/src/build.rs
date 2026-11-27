@@ -1123,7 +1123,7 @@ fn partial_encode_uri_path(uri: &str) -> String {
 
 fn export_default_url(url: &str) -> String {
     format!(
-        "export default {};",
+        "export default {}",
         serde_json::Value::String(url.to_string())
     )
 }
@@ -1477,7 +1477,15 @@ fn worker_bundler_options(
             import: file.to_string(),
         }]),
         cwd: Some(root.to_path_buf()),
-        format: Some(OutputFormat::Esm),
+        // `worker.format`: Vite's default "iife" wraps the worker in a
+        // function (one chunk, no splitting), "es" makes it a module.
+        format: Some(if worker_is_module(opts) {
+            OutputFormat::Esm
+        } else {
+            OutputFormat::Iife
+        }),
+        code_splitting: (!worker_is_module(opts))
+            .then_some(rolldown_common::CodeSplittingMode::Bool(false)),
         platform: Some(rolldown::Platform::Browser),
         resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
         transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
@@ -1486,6 +1494,53 @@ fn worker_bundler_options(
             opts.map_or(oj_config::Minifier::Oxc, |o| o.minifier),
         )),
         ..Default::default()
+    }
+}
+
+/// Whether the build's worker bundles are modules (`worker.format: "es"`);
+/// with no config (no vite.config), Vite's default: classic.
+fn worker_is_module(opts: Option<&Arc<WorkerBundleOpts>>) -> bool {
+    opts.is_some_and(|o| oj_config::worker_is_module(&o.config))
+}
+
+/// Vite's worker-post transform for a classic (`iife`) worker bundle: the
+/// worker's `import.meta`, which a classic script has not, becomes
+/// `_vite_importMeta` (its `url` `self.location.href`). Last among the
+/// bundle's plugins, as Vite's `order: "post"` transform runs.
+#[derive(Debug)]
+struct ClassicWorkerImportMeta;
+
+impl Plugin for ClassicWorkerImportMeta {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:classic-worker-import-meta")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::Transform
+    }
+
+    async fn transform(
+        &self,
+        _ctx: SharedTransformPluginContext,
+        args: &HookTransformArgs<'_>,
+    ) -> HookTransformReturn {
+        if !matches!(
+            args.module_type,
+            rolldown_common::ModuleType::Js
+                | rolldown_common::ModuleType::Jsx
+                | rolldown_common::ModuleType::Ts
+                | rolldown_common::ModuleType::Tsx
+        ) {
+            return Ok(None);
+        }
+        Ok(
+            oj_compiler::meta_glob::rewrite_classic_worker_import_meta(args.code).map(|code| {
+                HookTransformOutput {
+                    code: Some(code),
+                    ..Default::default()
+                }
+            }),
+        )
     }
 }
 
@@ -1571,7 +1626,6 @@ async fn bundle_worker_inline_with(
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
-            code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
             ..worker_bundler_options(root, file, opts)
         })
         .build()
@@ -1628,6 +1682,9 @@ async fn bundle_worker_entry_with(
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
     plugins.extend(opts.and_then(|o| dedupe_plugin(root, oj_config::resolve_dedupe(&o.config))));
+    if !worker_is_module(opts) {
+        plugins.push(Pluginable::new_shared(ClassicWorkerImportMeta));
+    }
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1713,7 +1770,21 @@ fn expand_import_meta(
     let mut expanded = code.to_string();
     if has_glob {
         let alias = |spec: &str| oj_compiler::glob::string_alias(alias, spec);
-        expanded = oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias);
+        // Vite's transformGlobImport text (`/* #__PURE__ */ Object.assign({...})`,
+        // the eager bindings), as the Start build writes it; a call the
+        // text-for-text expander cannot take (an argument that is no static
+        // value) falls back to the AST expander, which leaves it as written.
+        let mut scopes = Vec::new();
+        expanded = match oj_compiler::meta_glob::transform_glob(
+            &expanded,
+            path,
+            root,
+            &alias,
+            &mut scopes,
+        ) {
+            Ok(out) => out,
+            Err(_) => oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias),
+        };
     }
     if has_dynamic {
         expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
@@ -1992,7 +2063,14 @@ impl Plugin for OjCssPlugin {
                 return js(proxy);
             }
             if id == MODULEPRELOAD_POLYFILL_ID {
-                return js(vite_preload::MODULEPRELOAD_POLYFILL_JS.to_string());
+                // Vite's polyfill module comes with an empty map: a chunk's
+                // map names the app's code, not the polyfill's.
+                return Ok(Some(rolldown_plugin::HookLoadOutput {
+                    code: arcstr::ArcStr::from(vite_preload::MODULEPRELOAD_POLYFILL_JS),
+                    module_type: Some(rolldown_common::ModuleType::Js),
+                    map: vite_asset_map(),
+                    ..Default::default()
+                }));
             }
             if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
                 return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
@@ -2000,7 +2078,7 @@ impl Plugin for OjCssPlugin {
                         Some(rolldown_plugin::HookLoadOutput {
                             code: arcstr::ArcStr::from(code),
                             module_type: Some(rolldown_common::ModuleType::Js),
-                            map: vite_asset_map(),
+                            map: None,
                             ..Default::default()
                         })
                     },
@@ -2081,7 +2159,7 @@ impl Plugin for OjCssPlugin {
                             serde_json::Value::String(transform_only)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
-                        map: vite_asset_map(),
+                        map: None,
                         ..Default::default()
                     }));
                 }
@@ -2091,7 +2169,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
-                    map: vite_asset_map(),
+                    map: None,
                     ..Default::default()
                 }));
             }
@@ -2116,7 +2194,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
-                    map: vite_asset_map(),
+                    map: None,
                     ..Default::default()
                 }));
             }
@@ -2149,7 +2227,7 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
-                    map: vite_asset_map(),
+                    map: None,
                     ..Default::default()
                 }));
             }
@@ -2185,7 +2263,7 @@ impl Plugin for OjCssPlugin {
                     .map_err(|e| anyhow::anyhow!("cannot read {file}: {e}"))?;
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(format!(
-                        "export default {};",
+                        "export default {}",
                         serde_json::Value::String(text)
                     )),
                     module_type: Some(rolldown_common::ModuleType::Js),
@@ -2211,7 +2289,7 @@ impl Plugin for OjCssPlugin {
                     .await?;
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
-                            "export default {};",
+                            "export default {}",
                             serde_json::Value::String(out.css)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
@@ -2227,12 +2305,12 @@ impl Plugin for OjCssPlugin {
                     .unwrap_or("");
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(format!(
-                        "export default \"data:{};base64,{}\";",
+                        "export default \"data:{};base64,{}\"",
                         asset_mime(ext),
                         b64(&bytes)
                     )),
                     module_type: Some(rolldown_common::ModuleType::Js),
-                    map: vite_asset_map(),
+                    map: None,
                     ..Default::default()
                 }));
             }
@@ -2317,11 +2395,15 @@ impl Plugin for OjCssPlugin {
                         })
                         .await?
                         .clone();
-                    let literal = serde_json::Value::String(code).to_string();
+                    let module = worker_is_module(worker.as_ref());
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
-                        code: arcstr::ArcStr::from(format!(
-                            "const __oj_worker_code = {literal};\nexport default function (options) {{ const opts = Object.assign({{ type: \"module\" }}, options); const blob = typeof Blob !== \"undefined\" && new Blob([__oj_worker_code], {{ type: \"text/javascript;charset=utf-8\" }}); const url = blob ? URL.createObjectURL(blob) : \"data:text/javascript;charset=utf-8,\" + encodeURIComponent(__oj_worker_code); try {{ return new {ctor}(url, opts); }} finally {{ if (blob) setTimeout(() => URL.revokeObjectURL(url), 0); }} }};"
-                        )),
+                        code: arcstr::ArcStr::from(
+                            crate::start_bundle::assets::inline_worker_module(
+                                ctor == "SharedWorker",
+                                &code,
+                                module,
+                            ),
+                        ),
                         module_type: Some(rolldown_common::ModuleType::Js),
                         map: vite_asset_map(),
                         ..Default::default()
@@ -2348,7 +2430,10 @@ impl Plugin for OjCssPlugin {
                     format!("export default import.meta.ROLLUP_FILE_URL_{reference};")
                 } else {
                     format!(
-                        "export default function (options) {{ return new {ctor}(import.meta.ROLLUP_FILE_URL_{reference}, Object.assign({{ type: \"module\" }}, options)); }};"
+                        "export default function WorkerWrapper(options) {{ return new {ctor}(import.meta.ROLLUP_FILE_URL_{reference}, {}); }}",
+                        crate::start_bundle::assets::worker_type_option(worker_is_module(
+                            worker.as_ref()
+                        ))
                     )
                 };
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -4796,6 +4881,26 @@ pub async fn build(
     if let Some(plugin) = &stylex {
         oj_plugins.push(crate::stylex_plugin::transform_for_build(plugin));
     }
+    let out_ov = ro_output_overrides(ro_opts);
+    // Vite's build import analysis (preload wrapping, polyfill) only applies to
+    // es output; umd/iife/cjs bundles cannot use `import.meta.url`. Ahead of
+    // the host's plugins, whose renderChunk (esbuild's minify under
+    // `build.minify: "esbuild"`) then sees the modern flag set, as Vite's
+    // import analysis runs before its post plugins.
+    let es_output = out_ov.format.is_none();
+    if es_output {
+        let relative = is_relative_base(&base);
+        oj_plugins.push(Pluginable::new_shared(
+            vite_preload::BuildImportAnalysisPlugin {
+                preload_code: arcstr::ArcStr::from(vite_preload::preload_code(
+                    &base,
+                    oj_config::module_preload_polyfill(&config),
+                    relative,
+                )),
+                is_relative_base: relative,
+            },
+        ));
+    }
     if let Some(host) = &plugin_host {
         oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
@@ -4867,23 +4972,6 @@ pub async fn build(
         url_sheets: Some((out_dir.clone(), asset_names_pattern.clone())),
         emit: Some(Arc::clone(&emit)),
     }));
-    let out_ov = ro_output_overrides(ro_opts);
-    // Vite's build import analysis (preload wrapping, polyfill) only applies to
-    // es output; umd/iife/cjs bundles cannot use `import.meta.url`.
-    let es_output = out_ov.format.is_none();
-    if es_output {
-        let relative = is_relative_base(&base);
-        oj_plugins.push(Pluginable::new_shared(
-            vite_preload::BuildImportAnalysisPlugin {
-                preload_code: arcstr::ArcStr::from(vite_preload::preload_code(
-                    &base,
-                    oj_config::module_preload_polyfill(&config),
-                    relative,
-                )),
-                is_relative_base: relative,
-            },
-        ));
-    }
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
         .with_options(BundlerOptions {
@@ -4930,7 +5018,13 @@ pub async fn build(
                 let ext = ro_external(ro_opts);
                 (!ext.is_empty()).then(|| rolldown::IsExternal::from(ext))
             },
-            minify: Some(rolldown_minify(client_minify)),
+            // Under `build.minify: "esbuild"` Vite hands rolldown `minify:
+            // false` and the host's vite:esbuild-transpile minifies each chunk
+            // in renderChunk; rolldown's own minifier on top would minify twice.
+            minify: Some(match client_minifier {
+                oj_config::Minifier::Esbuild => rolldown_common::RawMinifyOptions::Bool(false),
+                _ => rolldown_minify(client_minify),
+            }),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             define: Some(client_define.into_iter().collect()),
             comments: Some(vite_output_comments(client_minify, false)),
@@ -7272,6 +7366,8 @@ async fn build_library(
                     resolve: rolldown_resolve(root, config, "client"),
                     tsconfig: build_tsconfig(config),
                     format: Some(format),
+                    // Vite's `topLevelVar: true`, on every build's output.
+                    top_level_var: Some(true),
                     name: lib.name.clone(),
                     preserve_entry_signatures: Some(
                         rolldown_common::PreserveEntrySignatures::Strict,
@@ -9998,6 +10094,13 @@ mod tests {
         fs::write(
             root.join("index.html"),
             r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        // A module worker: Vite's default, "iife", inlines a worker's dynamic
+        // imports (one chunk, no splitting).
+        fs::write(
+            root.join("vite.config.js"),
+            "export default { worker: { format: \"es\" } };\n",
         )
         .unwrap();
         build(

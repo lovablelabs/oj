@@ -1,0 +1,7 @@
+@import "./reset.css";
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: url("./dot.svg");
+}

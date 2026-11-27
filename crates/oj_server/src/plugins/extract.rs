@@ -38,6 +38,8 @@ pub struct ViteValues {
     pub optimize_deps: Option<serde_json::Value>,
     /// The `build` block as the extractor normalized it; see `extractBuild` in vite-extract.mjs.
     pub build: Option<serde_json::Value>,
+    /// `worker.format`: "iife" (Vite's default) or "es".
+    pub worker_format: Option<String>,
     /// `oxc.jsx` as normalized by the extractor (`{ jsx: { runtime, importSource,
     /// pragma, pragmaFrag } }`), and the `esbuild.jsx*` fields for older configs.
     pub oxc: Option<serde_json::Value>,
@@ -1272,6 +1274,10 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         ssr_dedupe: json.get("ssrDedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
         build: non_null(json, "build"),
+        worker_format: json
+            .get("workerFormat")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         oxc: non_null(json, "oxc"),
         esbuild: non_null(json, "esbuild"),
         ssr: non_null(json, "ssr"),
@@ -1549,6 +1555,12 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if let Some(vb) = v.build.as_ref().and_then(|b| b.as_object()) {
         merge_build_block(config.build.get_or_insert_with(Default::default), vb);
+    }
+    if let Some(format) = v.worker_format {
+        let worker = config.worker.get_or_insert_with(Default::default);
+        if worker.format.is_none() {
+            worker.format = Some(format);
+        }
     }
     if v.cors.is_some() || v.allowed_hosts.is_some() {
         let sc = config.server.get_or_insert_with(Default::default);

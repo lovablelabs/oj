@@ -1235,19 +1235,14 @@ impl Emitter {
             .extension()
             .map(|e| format!(".{}", e.to_string_lossy()))
             .unwrap_or_default();
-        let stem: String = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().trim_start_matches('\0').to_string())
-            .unwrap_or_default()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        // Through rolldown's sanitizeFileName (Rollup's), as every emitted
+        // name goes: `@ ( ) ~ ! '` and a space stay.
+        let stem = sanitize_file_name(
+            &path
+                .file_stem()
+                .map(|s| s.to_string_lossy().trim_start_matches('\0').to_string())
+                .unwrap_or_default(),
+        );
         // A stylesheet hashes as Vite names one (with its hash marker).
         let hash = if ext == ".css" {
             crate::build::css_asset_hash(&String::from_utf8_lossy(bytes))
@@ -1828,7 +1823,7 @@ fn data_uri(path: &Path) -> Result<String, String> {
 /// The options a worker wrapper starts its worker with: a module only when
 /// `worker.format` is "es" (Vite's worker load; unbundled dev always serves
 /// modules).
-fn worker_type_option(module: bool) -> &'static str {
+pub(crate) fn worker_type_option(module: bool) -> &'static str {
     if module {
         "{ type: \"module\", name: options?.name }"
     } else {
@@ -1841,7 +1836,7 @@ fn worker_type_option(module: bool) -> &'static str {
 /// (through `self.location` in a classic worker), falling back to a data:
 /// URL; a SharedWorker always takes the data: URL (a blob URL would make
 /// separate instances).
-fn inline_worker_module(shared: bool, code: &str, module: bool) -> String {
+pub(crate) fn inline_worker_module(shared: bool, code: &str, module: bool) -> String {
     let js_content = format!(
         "const jsContent = {};",
         serde_json::Value::String(code.to_string())

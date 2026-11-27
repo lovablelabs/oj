@@ -178,8 +178,10 @@ export default { base: "/loud/" };"#);
 #[test]
 fn worker_config_warns_only_in_an_spa_build() {
     let _g = lock();
-    let config = r#"export default { worker: { format: "es" } };"#;
-    let warning = "worker config is not applied";
+    // `worker.format` reaches an SPA build's worker bundles; the rest of
+    // the block does not, and says so there.
+    let config = r#"export default { worker: { format: "es", plugins: () => [] } };"#;
+    let warning = "worker config other than worker.format is not applied";
     let spa = app(config);
     let root = spa.path();
     let vite = root.join("vite.config.mjs");

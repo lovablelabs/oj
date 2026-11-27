@@ -1888,7 +1888,9 @@ function warnUnsupported(c, spaBuild = false) {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
     if (rest.length) warn(`esbuild options ${rest.join(", ")} are not applied (jsx* are)`);
   }
-  if (c.worker && spaBuild) warn("worker config is not applied");
+  if (c.worker && spaBuild && Object.keys(c.worker).some((k) => k !== "format")) {
+    warn("worker config other than worker.format is not applied");
+  }
   if (Array.isArray(c.optimizeDeps?.esbuildOptions?.plugins) && c.optimizeDeps.esbuildOptions.plugins.length) {
     warn("optimizeDeps.esbuildOptions.plugins are not applied (scalar esbuild options are)");
   }
@@ -2193,6 +2195,9 @@ async function extractValues(input) {
         ssrDedupe: extractEnvironmentDedupe(c, "ssr"),
         optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
         build: extractBuild(c.build),
+        // `worker.format`: "iife" (Vite's default) or "es", which decides how a
+        // build's worker bundles are wrapped and started.
+        workerFormat: typeof c.worker?.format === "string" ? c.worker.format : null,
         oxc: extractOxc(c.oxc),
         esbuild: extractEsbuild(c.esbuild),
         ssr: ssrRunnerBacked ? { ...(ssr ?? {}), runnerBacked: true } : ssr,
