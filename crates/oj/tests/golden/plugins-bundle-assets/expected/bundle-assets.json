@@ -1,0 +1,45 @@
+{
+  "chunks": [
+    {
+      "file": "assets/analytics-panel-HASH.js",
+      "css": []
+    },
+    {
+      "file": "assets/index-HASH.js",
+      "css": [
+        "assets/index-HASH.css"
+      ]
+    },
+    {
+      "file": "assets/tracking-HASH.js",
+      "css": [
+        "assets/tracking-HASH.css"
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "file": "assets/index-HASH.css",
+      "names": [
+        "index.css"
+      ],
+      "originalFileNames": [
+        "index.html"
+      ]
+    },
+    {
+      "file": "assets/tracking-HASH.css",
+      "names": [
+        "tracking.css"
+      ],
+      "originalFileNames": [
+        "src/tracking.js"
+      ]
+    },
+    {
+      "file": "from-build-start.txt",
+      "names": [],
+      "originalFileNames": []
+    }
+  ]
+}

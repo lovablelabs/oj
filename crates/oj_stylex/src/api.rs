@@ -402,7 +402,7 @@ pub fn parse_program<'a>(
 /// to `source`, as JSON.
 pub fn reprint_as_babel(source: &str, filename: &str) -> Result<(String, String), StylexError> {
     use oxc_ast::ast::{ArrowFunctionExpression, Function};
-    use oxc_ast_visit::{walk_mut, VisitMut};
+    use oxc_ast_visit::{VisitMut, walk_mut};
     use oxc_codegen::{Codegen, CodegenOptions};
     use oxc_parser::ParseOptions;
     use oxc_syntax::scope::ScopeFlags;

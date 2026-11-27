@@ -7318,9 +7318,33 @@ function reviveViteMetadata(bundle) {
   return bundle;
 }
 
+// The output options a renderChunk, generateBundle or writeBundle hook gets:
+// rolldown's normalized output options as Vite's build passes them, the
+// bundle's directory resolved against the root (a plugin writing beside the
+// bundle joins `options.dir`), the format, the environment's source map
+// setting and the file name patterns (the config's, else Vite's defaults
+// under `build.assetsDir`). A function pattern stays a function.
+function normalizedOutputOptions(c) {
+  const build = c.environment?.config?.build ?? c.resolvedConfig?.build ?? {};
+  const root = c.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+  const ro = build.rolldownOptions ?? build.rollupOptions ?? {};
+  const output = (Array.isArray(ro.output) ? ro.output[0] : ro.output) ?? {};
+  const assetsDir = build.assetsDir ?? "assets";
+  return {
+    format: "es",
+    exports: "auto",
+    sourcemap: build.sourcemap ?? false,
+    entryFileNames: `${assetsDir}/[name]-[hash].js`,
+    chunkFileNames: `${assetsDir}/[name]-[hash].js`,
+    assetFileNames: `${assetsDir}/[name]-[hash][extname]`,
+    ...output,
+    dir: pathResolve(root, build.outDir ?? "dist"),
+  };
+}
+
 async function generateBundle(c, bundleJson, isWrite) {
   const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
-  const outputOptions = c.environment.config?.build ?? {};
+  const outputOptions = normalizedOutputOptions(c);
   // Without `build.emitAssets` (the default off the client) vite:asset's
   // generateBundle deletes the bundle's assets, an ssr-manifest.json and JS
   // source maps aside. A core plugin with an unordered hook, it runs after
@@ -7467,10 +7491,8 @@ async function renderChunk(c, code, chunkJson) {
   const chunk = JSON.parse(chunkJson || "{}");
   // Rollup passes NormalizedOutputOptions as the 3rd arg; renderChunk hooks such
   // as UnoCSS's read `options.dir` (the resolved output dir) to key their
-  // vite:css-post lookup, so provide it resolved against the root.
-  const outDir = c.resolvedConfig?.build?.outDir ?? "dist";
-  const root = c.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
-  const options = { dir: pathResolve(root, outDir), format: "es" };
+  // vite:css-post lookup.
+  const options = normalizedOutputOptions(c);
   let current = code;
   const maps = [];
   const mapPlugins = [];
@@ -7495,7 +7517,7 @@ async function renderChunk(c, code, chunkJson) {
 async function writeBundle(c, bundleJson, isWrite) {
   const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
   installLazyOutputText(c, bundle);
-  const outputOptions = c.environment.config?.build ?? {};
+  const outputOptions = normalizedOutputOptions(c);
   for (const { p, fn } of pluginsWithHook(c, "writeBundle")) {
     await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
   }

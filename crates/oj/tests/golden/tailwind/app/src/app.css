@@ -1,0 +1,10 @@
+@import "tailwindcss" source(none);
+@source "../index.html";
+
+@theme {
+  --color-brand: #ff3e00;
+}
+
+.card {
+  @apply rounded bg-brand p-2;
+}

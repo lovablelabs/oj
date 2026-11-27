@@ -1,0 +1,1 @@
+{"version":3,"file":"heavy-HASH.js","names":["heavy","_","i"],"sources":["../../../src/lib/heavy.ts"],"sourcesContent":["export function heavy(): string {\n  return Array.from({ length: 3 }, (_, i) => `row ${i}`).join(\", \");\n}\n"],"mappings":"AAAA,SAAgBA,GAAgB,CAC9B,OAAO,MAAM,KAAK,CAAE,OAAQ,CAAE,EAAA,CAAIC,EAAGC,IAAM,OAAOA,CAAA,EAAG,EAAE,KAAK,IAAI,CAClE"}

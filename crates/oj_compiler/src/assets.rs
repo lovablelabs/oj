@@ -308,6 +308,21 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "pdf" => "application/pdf",
         "txt" => "text/plain",
         "css" => "text/css",
+        // The text and data types mrmime knows (Vite's asset plugin looks a
+        // data URL's type up there), for a `?url` import small enough to inline.
+        "md" | "markdown" => "text/markdown",
+        "mdx" => "text/mdx",
+        "json" | "map" => "application/json",
+        "jsonld" => "application/ld+json",
+        "geojson" => "application/geo+json",
+        "js" | "mjs" => "text/javascript",
+        "cjs" => "application/node",
+        "html" | "htm" => "text/html",
+        "xml" => "text/xml",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "text/yaml",
+        "toml" => "application/toml",
+        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }

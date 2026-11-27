@@ -1,0 +1,84 @@
+{
+  "chunks": [
+    {
+      "file": "assets/index-HASH.js",
+      "name": "index",
+      "isEntry": true,
+      "isDynamicEntry": false,
+      "facade": "index.html",
+      "imports": [],
+      "dynamicImports": [
+        "assets/x-HASH.js",
+        "assets/x-panel-HASH.js"
+      ],
+      "modules": [
+        "\u0000virtual:build-info",
+        "\u0000vite/modulepreload-HASH.js",
+        "\u0000vite/preload-helper.js",
+        "index.html",
+        "src/main.css",
+        "src/main.js",
+        "src/release.note",
+        "src/shared.js"
+      ],
+      "exports": [
+        "n",
+        "t"
+      ],
+      "bytes": 2772
+    },
+    {
+      "file": "assets/x-panel-HASH.js",
+      "name": "analytics-panel",
+      "isEntry": false,
+      "isDynamicEntry": true,
+      "facade": "src/analytics-panel.js",
+      "imports": [
+        "assets/index-HASH.js"
+      ],
+      "dynamicImports": [],
+      "modules": [
+        "src/analytics-panel.js"
+      ],
+      "exports": [
+        "panel"
+      ],
+      "bytes": 93
+    },
+    {
+      "file": "assets/x-HASH.js",
+      "name": "tracking",
+      "isEntry": false,
+      "isDynamicEntry": true,
+      "facade": "src/tracking.js",
+      "imports": [
+        "assets/index-HASH.js"
+      ],
+      "dynamicImports": [],
+      "modules": [
+        "src/tracking.css",
+        "src/tracking.js"
+      ],
+      "exports": [
+        "track"
+      ],
+      "bytes": 100
+    }
+  ],
+  "moduleCount": 8,
+  "entry": {
+    "id": "src/main.js",
+    "importedIds": [
+      "\u0000virtual:build-info",
+      "\u0000vite/preload-helper.js",
+      "src/main.css",
+      "src/release.note",
+      "src/shared.js"
+    ],
+    "dynamicallyImportedIds": [
+      "src/analytics-panel.js",
+      "src/tracking.js"
+    ],
+    "isEntry": false
+  }
+}

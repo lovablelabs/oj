@@ -11,13 +11,20 @@
 //!
 //! `OJ_UPDATE_GOLDEN=1 cargo test --test build_golden` re-records every
 //! case from Vite: the one in the node_modules directory `OJ_GOLDEN_VITE`
-//! names, else the fixture's (e2e/fixtures/start-app's install). The
-//! recorded output names its version in `expected/VITE_VERSION`; record
-//! from the Vite whose rolldown is the one oj embeds (Cargo.lock), since an
-//! older rolldown prints other helpers and comments. The fixture's install
-//! is needed either way (oj builds against it); without it the tests skip,
-//! unless `OJ_REQUIRE_FIXTURES`. Commit the re-recorded files with the
-//! Vite version bump they come from.
+//! names, else the fixture's (e2e/fixtures/start-app's install). Every
+//! other package (React, the Start plugin, Tailwind, the app's plugins)
+//! comes from the fixture's install on both sides, so a case can lean on
+//! them without the two builds seeing two versions. The recorded output
+//! names its Vite in `expected/VITE_VERSION`; record from the Vite whose
+//! rolldown is the one oj embeds (Cargo.lock), since an older rolldown
+//! prints other helpers and comments. The fixture's install is needed
+//! either way (oj builds against it); without it the tests skip, unless
+//! `OJ_REQUIRE_FIXTURES`. Commit the re-recorded files with the Vite
+//! version bump they come from.
+//!
+//! The staged root's path is written as `/ROOT` in the compared text, so a
+//! bundle naming the root (a Start server's module keys) compares across
+//! the two temporary directories.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +52,35 @@ const CASES: &[&str] = &[
     "typescript",
     "modulepreload-off",
     "lib-umd",
+    "react-app",
+    "tailwind",
+    "alias-paths",
+    "glob-variants",
+    "code-splitting",
+    "plugins",
+    "plugins-bundle-assets",
+    "sourcemap-esbuild",
+    "start-app",
 ];
+
+/// The part of a case's output that is compared, when not all of it: oj's
+/// build of a TanStack Start app for a Node server writes a server of its
+/// own (`server.mjs`, `worker.mjs` and their chunks), where `vite build`
+/// writes Start's `server/server.js`, so a Start case compares the client.
+fn compared_scope(case: &str) -> Option<&'static str> {
+    match case {
+        "start-app" => Some("client/"),
+        _ => None,
+    }
+}
+
+/// `tree` cut to the case's [`compared_scope`].
+fn scoped(case: &str, mut tree: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    if let Some(prefix) = compared_scope(case) {
+        tree.retain(|path, _| path.starts_with(prefix));
+    }
+    tree
+}
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
@@ -101,8 +136,10 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 /// Every file under `dir` by its path relative to it, hashes normalized in
-/// the path and, for text, in the content.
-fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+/// the path and, for text, in the content, where the staged `root` reads
+/// `/ROOT`.
+fn tree(dir: &Path, root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let root_text = root.to_string_lossy().into_owned();
     let mut out = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -119,7 +156,7 @@ fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
                 .into_owned();
             let bytes = std::fs::read(&path).unwrap();
             let bytes = match std::str::from_utf8(&bytes) {
-                Ok(text) => normalize_hashes(text).into_bytes(),
+                Ok(text) => normalize_hashes(&text.replace(&root_text, "/ROOT")).into_bytes(),
                 Err(_) => bytes,
             };
             out.insert(normalize_hashes(&rel), bytes);
@@ -164,6 +201,24 @@ fn vite_version(modules: &Path) -> String {
     package["version"].as_str().unwrap().to_string()
 }
 
+/// A node_modules for the recording: every package of the fixture's install
+/// by a symlink, with `vite` the one under `vite_modules` (its own
+/// dependencies resolve from there, as Node follows the link). The app's
+/// plugins import `vite` from here, so they see the Vite that builds.
+fn recording_modules(modules: &Path, vite_modules: &Path, into: &Path) -> PathBuf {
+    let dir = into.join("node_modules");
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(modules).unwrap().flatten() {
+        let name = entry.file_name();
+        if name == "vite" || name == ".bin" {
+            continue;
+        }
+        std::os::unix::fs::symlink(entry.path(), dir.join(&name)).unwrap();
+    }
+    std::os::unix::fs::symlink(vite_modules.join("vite"), dir.join("vite")).unwrap();
+    dir
+}
+
 /// Records `vite build`'s output as the case's expected tree, with the
 /// Vite `OJ_GOLDEN_VITE` names (a node_modules directory) or the fixture's.
 fn record(case: &str, modules: &Path) {
@@ -179,15 +234,21 @@ fn record(case: &str, modules: &Path) {
         "no vite under {}",
         vite_modules.display()
     );
-    let staged = stage(case, &vite_modules);
+    let overlay = tempfile::tempdir().unwrap();
+    let recording = if vite_modules == modules {
+        modules.to_path_buf()
+    } else {
+        recording_modules(modules, &vite_modules, overlay.path())
+    };
+    let staged = stage(case, &recording);
     let root = staged.path().canonicalize().unwrap();
     run(Command::new("node")
-        .arg(vite_modules.join("vite/bin/vite.js"))
+        .arg(recording.join("vite/bin/vite.js"))
         .args(["build", "--outDir", "dist"])
         .current_dir(&root));
     let expected = golden_dir().join(case).join("expected");
     let _ = std::fs::remove_dir_all(&expected);
-    for (rel, bytes) in tree(&root.join("dist")) {
+    for (rel, bytes) in scoped(case, tree(&root.join("dist"), &root)) {
         let dest = expected.join(&rel);
         std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
         std::fs::write(dest, bytes).unwrap();
@@ -212,7 +273,10 @@ fn check(case: &str) {
         expected_dir.is_dir(),
         "no recorded output for `{case}`: OJ_UPDATE_GOLDEN=1 cargo test --test build_golden"
     );
-    let mut expected = tree(&expected_dir);
+    let mut expected = scoped(
+        case,
+        tree(&expected_dir, Path::new("/nonexistent-golden-root")),
+    );
     expected.remove("VITE_VERSION");
     let staged = stage(case, &modules);
     let root = staged.path().canonicalize().unwrap();
@@ -220,7 +284,7 @@ fn check(case: &str) {
         .args(["build", "--outDir", "dist"])
         .arg(&root)
         .current_dir(&root));
-    let actual = tree(&root.join("dist"));
+    let actual = scoped(case, tree(&root.join("dist"), &root));
 
     let mut report = String::new();
     for name in expected.keys().filter(|k| !actual.contains_key(*k)) {
@@ -326,6 +390,47 @@ golden! {
     typescript_enums_and_a_jsx_pragma => "typescript",
     module_preload_off => "modulepreload-off",
     library_umd_and_iife => "lib-umd",
+    react_with_svgr_mdx_and_a_lazy_component => "react-app",
+    tailwind_through_postcss_config => "tailwind",
+    regex_alias_tsconfig_paths_and_package_imports => "alias-paths",
+    import_meta_glob_forms => "glob-variants",
+    chunk_groups_and_the_build_block_of_a_large_app => "code-splitting",
+    an_apps_own_plugins_hooks => "plugins",
+}
+
+/// A TanStack Start app's client bundle. The HTML, the manifest and the
+/// chunks' files match; what differs: oj's Start build reads the preload
+/// helper off the app's own Vite, as it should, and the fixture's is 8.2.1
+/// where the recording's is 8.4, which moves the entry chunk's minified
+/// names; a `?url` asset module sits after its importer's statements and
+/// names no source in the map; a lowered module's map is composed with
+/// other segments. Recorded for the day the fixture's Vite is the
+/// recording's, when the last two can be closed.
+#[test]
+#[ignore = "the fixture's Vite (8.2.1) composes an older preload helper than the recording's; a ?url module's place and the lowered modules' maps differ"]
+fn tanstack_start_client() {
+    check("start-app");
+}
+
+/// The bundle a plugin's generateBundle and writeBundle see. oj's plain
+/// build writes the chunks' stylesheets and the page after rolldown's bundle
+/// hooks ran, so a hook's bundle lists no sheet, no page and no asset
+/// emitted in buildStart, and a chunk's `viteMetadata.importedCss` is
+/// empty; the TanStack Start build has them. A known gap.
+#[test]
+#[ignore = "a plain build writes its stylesheets and page after the bundle hooks, so a hook's bundle lists neither"]
+fn a_hooks_bundle_lists_sheets_pages_and_early_assets() {
+    check("plugins-bundle-assets");
+}
+
+/// Hidden source maps of chunks esbuild minified. The code matches; the
+/// composed map's `names` differ (rolldown's JS side prunes and orders
+/// them by use, oj's composition keeps every name) and so do a few
+/// segments. A known gap.
+#[test]
+#[ignore = "the map of a chunk esbuild minified is composed with other names and segments than Vite's"]
+fn source_maps_of_esbuild_minified_chunks() {
+    check("sourcemap-esbuild");
 }
 
 /// `new URL("./file", import.meta.url)`: Vite's asset-import-meta-url plugin

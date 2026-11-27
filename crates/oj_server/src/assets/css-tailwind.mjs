@@ -278,6 +278,11 @@ function v4Sources(base, compiler) {
 // `dependency` / `dir-dependency` messages for the dev watcher.
 export async function compile(request) {
   const { base, css, from } = request;
+  // Vite's build sets NODE_ENV=production in its own process before PostCSS
+  // runs, and Tailwind's PostCSS plugin optimizes its output under it
+  // (lowering and minifying with lightningcss); this engine's env is its
+  // own, so the request's side says which.
+  if (!process.env.NODE_ENV) process.env.NODE_ENV = request.dev ? "development" : "production";
   const processor = await loadPostcss(base, request.postcssConfig || null);
   if (processor) {
     const result = await processor.process(css, { from, map: false });

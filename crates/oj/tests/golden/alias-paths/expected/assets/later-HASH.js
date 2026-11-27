@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";function t(){return e(`later`)}export{t as later};

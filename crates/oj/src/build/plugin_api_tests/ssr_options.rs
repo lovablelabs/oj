@@ -405,9 +405,11 @@ async fn an_initial_tagged_group_leaves_lazy_modules_out() {
     );
 }
 
-/// A function-valued rollup option cannot cross the config's JSON boundary;
-/// it is warned about and ignored, and the build still succeeds, from an
-/// oj.config.mjs and from a vite.config.
+/// A function-valued rollup option in an oj.config.mjs cannot cross the
+/// config's JSON boundary: it is warned about and ignored, and the build
+/// still succeeds. In a vite.config the plugin host runs the function, as
+/// rolldown does under Vite, so a `manualChunks` function names its chunks
+/// and nothing is warned about.
 #[tokio::test]
 async fn function_valued_rollup_options_do_not_fail_the_build() {
     let root = ssr_app("ssropts-fn-oj-config");
@@ -444,10 +446,10 @@ async fn function_valued_rollup_options_do_not_fail_the_build() {
         "vite.config build still succeeds"
     );
     let warnings = crate::build::take_build_warnings();
+    // (A group taking every module, the entry included, leaves the entry
+    // chunk under its own name, as rolldown has it.)
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("output.manualChunks is a function")),
-        "vite.config warns about the manualChunks function: {warnings:?}"
+        !warnings.iter().any(|w| w.contains("is a function")),
+        "the host runs a vite.config's manualChunks function: {warnings:?}"
     );
 }

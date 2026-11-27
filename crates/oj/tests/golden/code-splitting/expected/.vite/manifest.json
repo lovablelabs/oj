@@ -1,0 +1,98 @@
+{
+  "_app-boot-HASH.css": {
+    "file": "assets/app-boot-HASH.css",
+    "src": "_app-boot-HASH.css"
+  },
+  "_app-boot-HASH.js": {
+    "file": "assets/app-boot-HASH.js",
+    "name": "app-boot",
+    "imports": [
+      "_vendor-dates-HASH.js"
+    ],
+    "dynamicImports": [
+      "src/routes/dashboard.js",
+      "src/routes/settings.js",
+      "src/routes/report.js",
+      "src/i18n/en.js",
+      "src/i18n/fr.js"
+    ],
+    "css": [
+      "assets/app-boot-HASH.css"
+    ]
+  },
+  "_en-HASH.js": {
+    "file": "assets/i18n-fn/en-HASH.js",
+    "name": "i18n-fn/en"
+  },
+  "_fr-HASH.js": {
+    "file": "assets/i18n-fn/fr-HASH.js",
+    "name": "i18n-fn/fr"
+  },
+  "_lazy-commons-HASH.js": {
+    "file": "assets/lazy-commons-HASH.js",
+    "name": "lazy-commons"
+  },
+  "_vendor-charts-HASH.js": {
+    "file": "assets/vendor-charts-HASH.js",
+    "name": "vendor-charts"
+  },
+  "_vendor-dates-HASH.js": {
+    "file": "assets/vendor-dates-HASH.js",
+    "name": "vendor-dates"
+  },
+  "src/i18n/en.js": {
+    "file": "assets/en-HASH.js",
+    "name": "en",
+    "src": "src/i18n/en.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_en-HASH.js"
+    ]
+  },
+  "src/i18n/fr.js": {
+    "file": "assets/fr-HASH.js",
+    "name": "fr",
+    "src": "src/i18n/fr.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_fr-HASH.js"
+    ]
+  },
+  "src/routes/dashboard.js": {
+    "file": "assets/dashboard-HASH.js",
+    "name": "dashboard",
+    "src": "src/routes/dashboard.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_app-boot-HASH.js",
+      "_lazy-commons-HASH.js",
+      "_vendor-charts-HASH.js"
+    ],
+    "css": [
+      "assets/dashboard-HASH.css"
+    ]
+  },
+  "src/routes/report.js": {
+    "file": "assets/report-HASH.js",
+    "name": "report",
+    "src": "src/routes/report.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_vendor-charts-HASH.js"
+    ],
+    "css": [
+      "assets/report-HASH.css"
+    ]
+  },
+  "src/routes/settings.js": {
+    "file": "assets/settings-HASH.js",
+    "name": "settings",
+    "src": "src/routes/settings.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "_app-boot-HASH.js",
+      "_lazy-commons-HASH.js",
+      "_vendor-dates-HASH.js"
+    ]
+  }
+}

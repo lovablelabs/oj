@@ -37,6 +37,10 @@ pub(crate) struct Mode {
     /// The classes are scoped already ([`scope_css_module`]): compile the
     /// sheet as plain CSS.
     pub scoped: bool,
+    /// Leave the sheet's syntax as written, whatever the browser targets:
+    /// a build compile of a sheet Vite's own compile pass never hands
+    /// lightningcss (see [`compile_css_for_build`]).
+    pub skip_lowering: bool,
 }
 
 pub fn compile_css(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -74,6 +78,46 @@ pub fn compile_css_with_scope_source(
         ..Mode::default()
     };
     compile_css_depth(url, source, Some(scope_source), mode, resolve, 0)
+}
+
+/// [`compile_css_with`] for a build, `lowered` saying whether Vite's compile
+/// pass runs lightningcss on this sheet: it does with no PostCSS config for
+/// a CSS module, a sheet with an `@import` or one with a `url()`, lowering
+/// to its `css.lightningcss.targets` (the baseline browsers by default), and
+/// leaves every other sheet as written or as PostCSS printed it. The chunk's
+/// final minify ([`crate::finalize_chunk_css`]) lowers to `build.cssTarget`
+/// either way, so a sheet Vite lowers once is lowered once here too: a
+/// lowering adds to a sheet (a vendor-prefixed copy of a declaration beside
+/// the one the sheet carries), and a second one adds another.
+pub fn compile_css_for_build(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+    lowered: bool,
+) -> Result<CssOutput, String> {
+    let mode = Mode {
+        minify: resolve.minify,
+        skip_lowering: resolve.minify && !lowered,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, None, mode, resolve, 0)
+}
+
+/// [`compile_scoped_css_with`] for a build; `lowered` as in
+/// [`compile_css_for_build`].
+pub fn compile_scoped_css_for_build(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+    lowered: bool,
+) -> Result<CssOutput, String> {
+    let mode = Mode {
+        minify: resolve.minify,
+        scoped: true,
+        skip_lowering: resolve.minify && !lowered,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
 /// A build compile of a CSS module [`scope_css_module`] already scoped.
@@ -174,6 +218,7 @@ pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssO
         rebase: true,
         source_map: false,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
@@ -189,6 +234,7 @@ pub fn compile_css_rebased_with_map(
         rebase: true,
         source_map: true,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
@@ -206,6 +252,7 @@ pub fn compile_css_dev(
         rebase: true,
         source_map,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
@@ -222,6 +269,7 @@ pub fn compile_scoped_css_dev(
         rebase: true,
         source_map,
         scoped: true,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
@@ -287,7 +335,9 @@ pub(crate) fn compile_css_depth(
     // Vite lowers to `build.cssTarget` only in its build minify (minifyCSS),
     // so an unminified build compile keeps the sheet's syntax. No targets (dev)
     // still means the baseline.
-    let targets = if mode.minify || resolve.targets.is_empty() {
+    let targets = if mode.skip_lowering {
+        lightningcss::targets::Targets::default()
+    } else if mode.minify || resolve.targets.is_empty() {
         browser_targets(resolve.targets)
     } else {
         lightningcss::targets::Targets::default()
