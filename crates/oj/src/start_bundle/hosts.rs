@@ -221,6 +221,7 @@ impl BundleHost {
     pub async fn close_worker(&self) -> Result<(), String> {
         let closed = self.host.close_bundle().await;
         let _ = self.host.close_container().await;
+        self.host.clear_bundle_graph();
         closed.map_err(|e| format!("plugin closeBundle failed:\n{e}"))
     }
 }

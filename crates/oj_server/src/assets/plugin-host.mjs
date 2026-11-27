@@ -7366,7 +7366,11 @@ async function generateBundle(c, bundleJson, isWrite) {
     for (const key of Object.keys(out)) {
       if (key !== state.key) copy[key] = out[key];
     }
-    if (state.assigned) copy[state.key] = state.value;
+    // A hook that assigned through the accessor, or that replaced it with a
+    // plain value (`delete chunk.code; chunk.code = x`, defineProperty).
+    const text = Object.getOwnPropertyDescriptor(out, state.key);
+    if (text && "value" in text) copy[state.key] = text.value;
+    else if (state.assigned) copy[state.key] = state.value;
     changed[file] = copy;
   }
   return JSON.stringify(changed);

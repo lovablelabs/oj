@@ -3380,10 +3380,8 @@ impl Plugin for OjUserPlugin {
             Some(graph) => {
                 let (bundle_json, texts) =
                     serialize_bundle_for_hooks(args.bundle, Some(&self.emit.root), None);
-                graph.set_output_texts(Some(texts));
-                let mutated = self.host.generate_bundle(&bundle_json, args.is_write).await;
-                graph.set_output_texts(None);
-                mutated
+                let _texts = graph.with_output_texts(texts);
+                self.host.generate_bundle(&bundle_json, args.is_write).await
             }
             None => {
                 let bundle_json =
@@ -3445,10 +3443,8 @@ impl Plugin for OjUserPlugin {
         match &graph {
             Some(graph) => {
                 let (bundle_json, texts) = serialize_bundle_for_hooks(args.bundle, None, None);
-                graph.set_output_texts(Some(texts));
-                let result = self.host.write_bundle(&bundle_json, true).await;
-                graph.set_output_texts(None);
-                result
+                let _texts = graph.with_output_texts(texts);
+                self.host.write_bundle(&bundle_json, true).await
             }
             None => {
                 self.host
@@ -3969,8 +3965,8 @@ impl serde::Serialize for BundleJson<'_> {
     }
 }
 
-/// Rollup's `OutputChunk` as [`BundleJson`] writes it (fields in name order,
-/// as the sorted value tree this replaces wrote them).
+/// Rollup's `OutputChunk` as [`BundleJson`] writes it (fields in name order;
+/// a hook reads them by name).
 struct ChunkJson<'a> {
     chunk: &'a rolldown_common::OutputChunk,
     sheets: Option<&'a ChunkSheets>,
@@ -8556,6 +8552,43 @@ mod plugin_api_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `generateBundle` or `writeBundle` hook's bundle names its files
+    /// and leaves their text to the lookup; the eager form carries it.
+    #[test]
+    fn the_hooks_bundle_leaves_the_texts_to_the_lookup() {
+        use rolldown_common::{Output, OutputAsset, StrOrBytes};
+        let bundle = vec![
+            Output::Asset(Arc::new(OutputAsset {
+                names: vec!["note".into()],
+                original_file_names: vec![],
+                filename: "assets/note.txt".into(),
+                source: StrOrBytes::Str("hello".into()),
+            })),
+            Output::Asset(Arc::new(OutputAsset {
+                names: vec![],
+                original_file_names: vec![],
+                filename: "assets/pic.png".into(),
+                source: StrOrBytes::Bytes(vec![1, 2, 3]),
+            })),
+        ];
+        let (json, texts) = serialize_bundle_for_hooks(&bundle, None, None);
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let note = map["assets/note.txt"].as_object().unwrap();
+        assert_eq!(note["type"], "asset");
+        assert_eq!(note["fileName"], "assets/note.txt");
+        assert!(
+            !note.contains_key("source"),
+            "the text stays with the lookup: {note:?}"
+        );
+        assert_eq!(texts("assets/note.txt").as_deref(), Some("hello"));
+        assert_eq!(texts("assets/pic.png"), None, "a binary asset has no text");
+        assert_eq!(texts("assets/none.txt"), None);
+        let eager: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&serialize_bundle(&bundle)).unwrap();
+        assert_eq!(eager["assets/note.txt"]["source"], "hello");
+        assert_eq!(eager["assets/pic.png"]["source"], serde_json::Value::Null);
+    }
 
     /// The config and app env `build` resolves before running a phase.
     fn phase_inputs(root: &Path, mode: &str) -> (oj_config::OjConfig, oj_env::AppEnv) {

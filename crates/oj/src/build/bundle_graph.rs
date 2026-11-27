@@ -50,6 +50,23 @@ impl RolldownGraph {
     pub fn set_output_texts(&self, texts: Option<OutputTexts>) {
         *self.texts.lock().unwrap() = texts;
     }
+
+    /// [`RolldownGraph::set_output_texts`] for one hook call: the texts are
+    /// set now and cleared when the returned scope drops, however the call
+    /// ends (returned, failed, or cancelled with its future).
+    pub fn with_output_texts(&self, texts: OutputTexts) -> OutputTextsScope<'_> {
+        self.set_output_texts(Some(texts));
+        OutputTextsScope(self)
+    }
+}
+
+/// See [`RolldownGraph::with_output_texts`].
+pub(crate) struct OutputTextsScope<'a>(&'a RolldownGraph);
+
+impl Drop for OutputTextsScope<'_> {
+    fn drop(&mut self) {
+        self.0.set_output_texts(None);
+    }
 }
 
 impl oj_server::plugins::BundleGraph for RolldownGraph {

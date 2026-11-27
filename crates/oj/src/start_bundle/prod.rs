@@ -590,8 +590,13 @@ pub(crate) async fn build(
             .await
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
         // The bundler keeps its last bundle (plugin driver, module graph
-        // caches) until dropped; nothing below asks it anything.
+        // caches) until dropped, and the plugin host's record of the bundle's
+        // graph keeps rolldown's module table (every module's code) alive;
+        // nothing below asks either anything.
         drop(client);
+        if let Some(h) = &client_host {
+            h.host.clear_bundle_graph();
+        }
         let output = checked(output)?;
         // The page links the entry chunk's closure of sheets (Start's
         // manifest plugin lists a route's own from the chunks); with no

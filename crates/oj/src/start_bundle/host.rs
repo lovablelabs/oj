@@ -1121,10 +1121,8 @@ impl Plugin for StartHostPlugin {
                     Some(&self.root),
                     sheets.as_ref(),
                 );
-                graph.set_output_texts(Some(texts));
-                let mutated = self.host.generate_bundle(&bundle_json, args.is_write).await;
-                graph.set_output_texts(None);
-                mutated
+                let _texts = graph.with_output_texts(texts);
+                self.host.generate_bundle(&bundle_json, args.is_write).await
             }
             None => {
                 let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
@@ -1212,10 +1210,8 @@ impl Plugin for StartHostPlugin {
             Some(graph) => {
                 let (bundle_json, texts) =
                     crate::build::serialize_bundle_for_hooks(args.bundle, None, sheets.as_ref());
-                graph.set_output_texts(Some(texts));
-                let result = self.host.write_bundle(&bundle_json, true).await;
-                graph.set_output_texts(None);
-                result
+                let _texts = graph.with_output_texts(texts);
+                self.host.write_bundle(&bundle_json, true).await
             }
             None => {
                 let bundle_json = match &sheets {

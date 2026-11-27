@@ -2377,6 +2377,20 @@ impl PluginHost {
             .insert(self.container, graph);
     }
 
+    /// The container's bundle is over: its graph goes, and with it the
+    /// module table rolldown's context keeps alive (every module's code),
+    /// now rather than when the next bundle's buildStart replaces it. A
+    /// `this.getModuleInfo` asked in between answers from the container's
+    /// own records.
+    pub fn clear_bundle_graph(&self) {
+        self.core
+            .boot
+            .bundles
+            .lock()
+            .unwrap()
+            .remove(&self.container);
+    }
+
     /// Fail-open gates until the plan is fetched again (a respawned engine).
     fn reset_hook_plan(&self) {
         use std::sync::atomic::Ordering;
