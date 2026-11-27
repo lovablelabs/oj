@@ -22,22 +22,50 @@ pub fn is_css_module(url: &str) -> bool {
         .is_some_and(|f| f.contains(".module."))
 }
 
-/// The JS module for a class map, shaped like Vite's `dataToEsm(map, {
-/// namedExports: true })`: the map is the default export and every legal
-/// identifier is also a named export.
+/// The JS module for a class map, as Vite's css-post writes it:
+/// `dataToEsm(map, { namedExports: true, preferConst: true })` of
+/// @rollup/pluginutils (Vite's copy), text for text. Every legal identifier
+/// is a `const` named export and the default map names it (`dialog: dialog`,
+/// so a minifier keeps the one string); a key that is an identifier name but
+/// no legal identifier (a reserved word, a global's name) is exported
+/// through an `_arbitraryN` const; the rest are in the default map alone,
+/// quoted. The map is tab-indented, one key a line. oj repeated each string
+/// in the default map, so a chunk holding a CSS module minified to
+/// different text from Vite's (`H={dialog:"…"}` for `H="…",W={dialog:H}`).
 pub fn css_modules_esm(exports: &[(String, String)]) -> String {
-    let mut out = String::new();
-    let mut map = serde_json::Map::new();
-    for (name, scoped) in exports {
+    let max_underbars = exports
+        .iter()
+        .map(|(key, _)| key.chars().take_while(|c| *c == '_').count())
+        .max()
+        .unwrap_or(0);
+    let arbitrary_prefix = format!("{}arbitrary", "_".repeat(max_underbars + 1));
+    let mut named = String::new();
+    let mut rows: Vec<String> = Vec::new();
+    let mut arbitrary: Vec<String> = Vec::new();
+    for (key, scoped) in exports {
         let value = serde_json::Value::String(scoped.clone());
-        if is_legal_identifier(name) {
-            out.push_str(&format!("export const {name} = {value};\n"));
+        if is_legal_identifier(key) {
+            rows.push(format!("{key}: {key}"));
+            named.push_str(&format!("export const {key} = {value};\n"));
+        } else {
+            rows.push(format!(
+                "{}: {value}",
+                serde_json::Value::String(key.clone())
+            ));
+            if key != "default" && is_identifier_name(key) {
+                let var = format!("{arbitrary_prefix}{}", arbitrary.len());
+                named.push_str(&format!("const {var} = {value};\n"));
+                arbitrary.push(format!("{var} as {key}"));
+            }
         }
-        map.insert(name.clone(), value);
+    }
+    let mut out = named;
+    if !arbitrary.is_empty() {
+        out.push_str(&format!("export {{\n\t{}\n}};\n", arbitrary.join(",\n\t")));
     }
     out.push_str(&format!(
-        "export default {};\n",
-        serde_json::Value::Object(map)
+        "export default {{\n\t{}\n}};\n",
+        rows.join(",\n\t")
     ));
     out
 }
@@ -68,6 +96,18 @@ fn is_legal_identifier(name: &str) -> bool {
     name.chars().next().is_some_and(|c| !c.is_ascii_digit())
         && name.chars().all(ident_char)
         && !FORBIDDEN.contains(name)
+}
+
+/// dataToEsm's `identifierNameRE`: an IdentifierName (`/^[$_\p{ID_Start}]
+/// [$‌‍\p{ID_Continue}]*$/u`), reserved words included.
+fn is_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '$' || c == '_' || c.is_alphabetic())
+        && chars.all(|c| {
+            c == '$' || c == '_' || c == '\u{200c}' || c == '\u{200d}' || c.is_alphanumeric()
+        })
 }
 
 /// Whether a `.module.css` file is scoped: not `scopeBehaviour: "global"` and
@@ -1073,27 +1113,31 @@ mod tests {
             ("1st".to_string(), "m_1st_h".to_string()),
         ];
         let js = css_modules_esm(&exports);
-        assert!(js.contains("export const button = \"m_button_h\";"), "{js}");
-        assert!(
-            js.contains("export const _private = ") && js.contains("export const $x = "),
-            "{js}"
+        // dataToEsm(map, { namedExports: true, preferConst: true }), run
+        // on these keys under Vite 8.4.
+        assert_eq!(
+            js,
+            "export const button = \"m_button_h\";\n\
+             const __arbitrary0 = \"m_class_h\";\n\
+             const __arbitrary1 = \"m_Map_h\";\n\
+             export const _private = \"m__private_h\";\n\
+             export const $x = \"m_x_h\";\n\
+             export {\n\
+             \t__arbitrary0 as class,\n\
+             \t__arbitrary1 as Map\n\
+             };\n\
+             export default {\n\
+             \tbutton: button,\n\
+             \t\"my-class\": \"m_my-class_h\",\n\
+             \t\"default\": \"m_default_h\",\n\
+             \t\"class\": \"m_class_h\",\n\
+             \t\"Map\": \"m_Map_h\",\n\
+             \t_private: _private,\n\
+             \t$x: $x,\n\
+             \t\"1st\": \"m_1st_h\"\n\
+             };\n"
         );
-        for bad in ["my-class", "default", "class", "Map", "1st"] {
-            assert!(
-                !js.contains(&format!("export const {bad} ")),
-                "{bad} must not be a named export: {js}"
-            );
-        }
-        assert!(js.contains("export default {"), "{js}");
-        for key in [
-            "button", "my-class", "default", "class", "Map", "_private", "$x", "1st",
-        ] {
-            assert!(
-                js.contains(&format!("\"{key}\":\"m_")),
-                "{key} in the default map: {js}"
-            );
-        }
-        assert_eq!(css_modules_esm(&[]), "export default {};\n");
+        assert_eq!(css_modules_esm(&[]), "export default {\n\t\n};\n");
     }
 
     #[test]

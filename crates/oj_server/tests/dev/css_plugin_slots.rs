@@ -67,7 +67,7 @@ async fn stylesheet_transforms_run_in_vites_dev_slots() {
     let inline = server.text("/src/b.scss?inline").await;
     assert!(inline.starts_with("export default"), "{inline}");
     let module = server.text("/src/m.module.css").await;
-    assert!(module.contains("\"m\":\"_m_"), "{module}");
+    assert!(module.contains("export const m = \"_m_"), "{module}");
     // Asked again, each module is served from its transform: no plugin
     // runs twice.
     for url in [

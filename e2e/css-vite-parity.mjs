@@ -117,8 +117,12 @@ try {
   // Vite's names (postcss-modules' default, recorded from Vite 8.3.5):
   // `_${local}_${hash of the sheet}_${line}`.
   assert.match(mod, /export const button = "_button_18cl5_1";/, `css module named export:\n${mod}`);
-  assert.match(mod, /export default \{"button":"_button_18cl5_1"/, `css module default map kept:\n${mod}`);
-  assert.match(mod, /"my-class":"_my-class_18cl5_2"/, "kebab class stays in the default map");
+  assert.match(
+    mod,
+    /export default \{\n\tbutton: button,/,
+    `css module default map names the const, as Vite's dataToEsm does:\n${mod}`,
+  );
+  assert.match(mod, /\t"my-class": "_my-class_18cl5_2"/, "kebab class stays in the default map");
   assert.doesNotMatch(mod, /export const (my-class|default) /, "illegal identifiers are not named exports");
   console.log("[dev] alias + root-absolute + error recovery + css module named exports OK");
   srv.kill("SIGKILL");

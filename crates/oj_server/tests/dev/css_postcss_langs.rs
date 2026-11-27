@@ -31,7 +31,7 @@ async fn postcss_extensions_are_served_as_stylesheets() {
     assert!(wrapper.contains("updateStyle"), "{wrapper}");
     let module = server.text("/src/c.module.pcss").await;
     assert!(
-        module.contains("\"card\":\"_card_"),
+        module.contains("export const card = \"_card_"),
         "a .module.pcss is a CSS module:\n{module}"
     );
 }
