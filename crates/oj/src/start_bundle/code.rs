@@ -258,7 +258,14 @@ impl Plugin for StartCodePlugin {
                                 {
                                     let url = match &site.kind {
                                         meta_glob::MetaUrlKind::Worker { .. } => {
-                                            Some(emitter.worker(&abs, chain).await)
+                                            // Vite's worker-import-meta-url plugin
+                                            // lists the worker's file among the
+                                            // importing chunk's assets.
+                                            let url = emitter.worker(&abs, chain).await;
+                                            if let Ok(url) = &url {
+                                                emitter.note_module_asset(id, url);
+                                            }
+                                            Some(url)
                                         }
                                         meta_glob::MetaUrlKind::Asset { postfix, .. } => {
                                             let query = if postfix.starts_with('#') {
@@ -267,7 +274,13 @@ impl Plugin for StartCodePlugin {
                                                 postfix.as_str()
                                             };
                                             let asset_id = format!("{}{query}", abs.display());
-                                            Some(emitter.asset_url(&abs, &asset_id).await)
+                                            let url = emitter.asset_url(&abs, &asset_id).await;
+                                            // Vite's asset-import-meta-url plugin lists
+                                            // the file among the importing chunk's assets.
+                                            if let Ok(url) = &url {
+                                                emitter.note_module_asset(id, url);
+                                            }
+                                            Some(url)
                                         }
                                         meta_glob::MetaUrlKind::Template { .. } => None,
                                     };

@@ -1069,6 +1069,7 @@ async fn nested_workers_carry_the_chain_and_a_cycle_fails() {
                 Ok(super::assets::WorkerBundle {
                     code: String::new(),
                     file_name: "w.js".into(),
+                    ..Default::default()
                 })
             })
         }),
@@ -1120,6 +1121,7 @@ async fn a_cycle_between_two_client_workers_fails_both() {
                 Ok(super::assets::WorkerBundle {
                     code: String::new(),
                     file_name: "w.js".into(),
+                    ..Default::default()
                 })
             })
         }),

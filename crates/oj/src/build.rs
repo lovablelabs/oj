@@ -3547,6 +3547,11 @@ pub(crate) struct ChunkSheets {
     /// The stylesheets written, each with its text, for the bundle the
     /// generateBundle hooks see (see `with_sheet_assets`).
     sheet_assets: Vec<(String, String)>,
+    /// The worker bundles' manifest rows (`_worker_<file>`), appended after
+    /// the sorted rows as Vite's worker cache appends them, and the files
+    /// those bundles emitted, which get no row of their own.
+    worker_rows: Vec<(String, serde_json::Value)>,
+    worker_assets: std::collections::HashSet<String>,
 }
 
 impl ChunkSheets {
@@ -3559,6 +3564,8 @@ impl ChunkSheets {
             assets_by_module: Default::default(),
             asset_rows: Vec::new(),
             sheet_assets: Vec::new(),
+            worker_rows: Vec::new(),
+            worker_assets: Default::default(),
         }
     }
 
@@ -3602,6 +3609,17 @@ impl ChunkSheets {
     ) -> Self {
         self.assets_by_module = by_module;
         self.asset_rows = rows;
+        self
+    }
+
+    /// The worker bundles' rows and emitted files (see the fields).
+    pub fn with_workers(
+        mut self,
+        rows: Vec<(String, serde_json::Value)>,
+        assets: std::collections::HashSet<String>,
+    ) -> Self {
+        self.worker_rows = rows;
+        self.worker_assets = assets;
         self
     }
 
@@ -8013,8 +8031,21 @@ pub(crate) fn vite_manifest(
         });
     }
     for (source, file) in sheets.asset_rows() {
-        let Some(key) = chunk_source_key(source.to_str(), root) else {
+        // A worker bundle's file is listed on the worker's row alone (Vite
+        // emits it with a `fileName`, which gets no row).
+        if sheets.worker_assets.contains(file.as_str()) {
             continue;
+        }
+        // Vite's asset plugin emits a file under its root-relative name;
+        // css-post emits a `?url` sheet under `cleanUrl(id)`, the absolute
+        // path, and the manifest keys each by that `originalFileName`.
+        let key = if crate::start_bundle::assets::is_style_path(&source.to_string_lossy()) {
+            source.to_string_lossy().replace('\\', "/")
+        } else {
+            let Some(key) = chunk_source_key(source.to_str(), root) else {
+                continue;
+            };
+            key
         };
         if entries.iter().any(|e| e.key == key) || assets.iter().any(|a| a.key == key) {
             continue;
@@ -8025,7 +8056,7 @@ pub(crate) fn vite_manifest(
             name: None,
         });
     }
-    build_manifest(&entries, &assets)
+    build_manifest_with_workers(&entries, &assets, &sheets.worker_rows)
 }
 
 // Build Vite-manifest entries directly from a bundle (chunks only; CSS is added
@@ -8105,6 +8136,18 @@ pub(crate) fn serialize_bundle_with_vite_manifest(
 }
 
 fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_json::Value {
+    build_manifest_with_workers(entries, assets, &[])
+}
+
+/// [`build_manifest`] with the worker bundles' rows after the others. The
+/// rows are sorted by key, as rolldown's native vite-manifest plugin keeps
+/// them (a BTreeMap); Vite's worker cache then assigns its `_worker_` rows
+/// onto the parsed object, so those follow in the order it made the bundles.
+fn build_manifest_with_workers(
+    entries: &[ManifestEntry],
+    assets: &[ManifestAsset],
+    worker_rows: &[(String, serde_json::Value)],
+) -> serde_json::Value {
     // Vite's manifest references imports/dynamicImports by manifest KEY, not by
     // output filename, so build a filename -> key map first.
     let file_to_key: std::collections::HashMap<&str, &str> = entries
@@ -8121,7 +8164,8 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
             })
             .collect()
     };
-    let mut map = serde_json::Map::new();
+    let mut sorted: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
     for e in entries {
         let mut row = serde_json::Map::new();
         row.insert("file".into(), e.file.clone().into());
@@ -8149,7 +8193,7 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
         if !e.assets.is_empty() {
             row.insert("assets".into(), e.assets.clone().into());
         }
-        map.insert(e.key.clone(), serde_json::Value::Object(row));
+        sorted.insert(e.key.clone(), serde_json::Value::Object(row));
     }
     for a in assets {
         let mut row = serde_json::Map::new();
@@ -8158,7 +8202,14 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
         if let Some(name) = &a.name {
             row.insert("name".into(), name.clone().into());
         }
-        map.insert(a.key.clone(), serde_json::Value::Object(row));
+        sorted.insert(a.key.clone(), serde_json::Value::Object(row));
+    }
+    let mut map = serde_json::Map::new();
+    for (key, row) in sorted {
+        map.insert(key, row);
+    }
+    for (key, row) in worker_rows {
+        map.insert(key.clone(), row.clone());
     }
     serde_json::Value::Object(map)
 }

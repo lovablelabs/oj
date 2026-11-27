@@ -1227,6 +1227,7 @@ async fn bundle_worker(
     .await
     .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
     let output = checked(output).map_err(|e| e.to_string())?;
+    let mut worker_css: Vec<String> = Vec::new();
     if let Some(h) = host {
         write_emitted(&h.host, client_dir)
             .await
@@ -1239,7 +1240,8 @@ async fn bundle_worker(
             .map(|(_, css)| css)
             .collect();
         if !css.is_empty() {
-            emitter.worker_css(file, &css.join("\n"))?;
+            let url = emitter.worker_css(file, &css.join("\n"))?;
+            worker_css.push(emitter.written_file(&url));
         }
     }
     let write = |file_name: &str, bytes: &[u8]| -> Result<(), String> {
@@ -1265,6 +1267,11 @@ async fn bundle_worker(
                     entry = Some(super::assets::WorkerBundle {
                         code: c.code.clone(),
                         file_name: c.filename.to_string(),
+                        name: c.name.to_string(),
+                        entry: file.to_path_buf(),
+                        assets: emitter
+                            .assets_of_modules(c.module_ids.iter().map(|id| id.as_ref())),
+                        css: worker_css.clone(),
                     });
                 } else {
                     write(&c.filename, c.code.as_bytes())?;

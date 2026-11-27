@@ -1908,8 +1908,10 @@ fn a_chunk_sheet_with_an_emitted_assets_bytes_takes_the_assets_name() {
         serde_json::json!([format!("assets/{partners}")]),
         "the chunk's manifest row names the sheet:\n{raw}"
     );
+    // css-post keys a `?url` sheet's row by its absolute path (cleanUrl(id)).
+    let sheet_key = app.join("styles/partners.css").to_string_lossy().into_owned();
     assert_eq!(
-        manifest["styles/partners.css"]["file"],
+        manifest[&sheet_key]["file"],
         serde_json::json!(format!("assets/{partners}")),
         "the ?url import's row:\n{raw}"
     );
@@ -2375,6 +2377,166 @@ fn a_stylex_module_leaves_the_plugin_as_babel_prints_it() {
         code.contains("\"function\"?(..."),
         "{}: the arrow is there without them:\n{code}",
         chunk.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The client's `.vite/manifest.json` is laid out as Vite 8.4 lays it out:
+/// rolldown's native vite-manifest plugin keeps the rows in a BTreeMap, so
+/// they come sorted by key; css-post emits a `?url` sheet under
+/// `cleanUrl(id)`, its absolute path, so the sheet's row is keyed by that
+/// path (an image or font keeps its root-relative key); and Vite's worker
+/// cache then assigns a `_worker_<file>` row per worker bundle (the entry's
+/// source, file, the assets its modules emitted, `isWorkerEntry`, name,
+/// `isDynamicEntry`, `isWorker`), the worker's own assets having no row of
+/// their own, while the chunk that names the worker with
+/// `new URL(..., import.meta.url)` lists the worker's file among its assets.
+/// oj wrote the rows in bundle order, keyed the sheet relatively, gave the
+/// worker's assets rows and no worker row, and listed nothing on the chunk.
+#[test]
+fn the_manifest_is_sorted_and_lists_the_worker_bundles_as_vite_does() {
+    let Some(root) = app("manifest-workers") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen(
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") } },"#,
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") }, build: { manifest: true } },"#,
+        1,
+    );
+    assert!(
+        source.contains("manifest: true"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(&config, source).unwrap();
+    std::fs::write(
+        root.join("styles/extra.css"),
+        ".extra-marker { color: red }\n",
+    )
+    .unwrap();
+    // Over the inline limit, so the worker's asset is written as a file.
+    std::fs::write(root.join("src/wk-table.bin"), vec![0x4f; 6000]).unwrap();
+    std::fs::write(
+        root.join("src/wk.ts"),
+        "const table = new URL(\"./wk-table.bin\", import.meta.url).href;\nself.onmessage = () => { postMessage(table); };\n",
+    )
+    .unwrap();
+    let route = root.join("src/routes/__root.tsx");
+    let source = std::fs::read_to_string(&route).unwrap();
+    let source = source
+        .replacen(
+            "import \"../../styles/app.css\";",
+            "import \"../../styles/app.css\";\nimport extraUrl from \"../../styles/extra.css?url\";\nconst wk = typeof Worker === \"undefined\" ? null : new Worker(new URL(\"../wk.ts\", import.meta.url));",
+            1,
+        )
+        .replacen(
+            "    meta: [{ title: \"oj start fixture\" }],",
+            "    meta: [{ title: \"oj start fixture\" }, { name: \"x-extra\", content: extraUrl }, { name: \"x-wk\", content: String(wk) }],",
+            1,
+        );
+    assert!(
+        source.contains("content: extraUrl }"),
+        "the fixture's __root.tsx changed shape; update this test"
+    );
+    std::fs::write(&route, source).unwrap();
+    build(&root);
+
+    let raw = std::fs::read_to_string(root.join("dist/client/.vite/manifest.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let rows = manifest.as_object().unwrap();
+    let keys: Vec<&String> = rows.keys().collect();
+    let first_worker = keys
+        .iter()
+        .position(|k| k.starts_with("_worker_"))
+        .unwrap_or_else(|| panic!("a _worker_ row:\n{raw}"));
+    let (sorted, workers) = keys.split_at(first_worker);
+    assert!(
+        sorted.windows(2).all(|w| w[0] < w[1]),
+        "the rows come sorted by key:\n{raw}"
+    );
+    assert!(
+        workers.iter().all(|k| k.starts_with("_worker_")),
+        "the worker rows come last:\n{raw}"
+    );
+    // The `?url` sheet, keyed by its absolute path.
+    let sheet_key = root.join("styles/extra.css").to_string_lossy().into_owned();
+    let sheet = rows
+        .get(&sheet_key)
+        .unwrap_or_else(|| panic!("the ?url sheet keyed {sheet_key}:\n{raw}"));
+    assert_eq!(sheet["src"], serde_json::json!(sheet_key));
+    assert!(
+        sheet["file"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("assets/extra-")),
+        "{sheet}"
+    );
+    assert!(
+        !rows.contains_key("styles/extra.css"),
+        "no relative row for the sheet:\n{raw}"
+    );
+    // The worker's row and its asset.
+    let (worker_key, worker) = rows
+        .iter()
+        .find(|(k, _)| k.starts_with("_worker_assets/wk-"))
+        .unwrap_or_else(|| panic!("the worker's row:\n{raw}"));
+    let worker_file = worker["file"].as_str().unwrap();
+    assert_eq!(*worker_key, format!("_worker_{worker_file}"));
+    assert_eq!(worker["src"], serde_json::json!("src/wk.ts"));
+    assert_eq!(worker["name"], serde_json::json!("wk"));
+    assert_eq!(worker["isWorkerEntry"], serde_json::json!(true));
+    assert_eq!(worker["isDynamicEntry"], serde_json::json!(false));
+    assert_eq!(worker["isWorker"], serde_json::json!(true));
+    let worker_assets = worker["assets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{worker}"));
+    let table = worker_assets
+        .iter()
+        .filter_map(|a| a.as_str())
+        .find(|a| a.starts_with("assets/wk-table-"))
+        .unwrap_or_else(|| panic!("the worker's asset on its row: {worker}"));
+    assert!(
+        !rows.contains_key("src/wk-table.bin"),
+        "the worker's asset has no row of its own:\n{raw}"
+    );
+    assert!(
+        root.join("dist/client").join(table).is_file(),
+        "{table} is written"
+    );
+    let field_order: Vec<&String> = worker.as_object().unwrap().keys().collect();
+    assert_eq!(
+        field_order,
+        [
+            "src",
+            "file",
+            "assets",
+            "isWorkerEntry",
+            "name",
+            "isDynamicEntry",
+            "isWorker"
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .iter()
+        .collect::<Vec<_>>(),
+        "{worker}"
+    );
+    // The chunk naming the worker lists its file.
+    let owner = rows
+        .values()
+        .find(|r| {
+            r["assets"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|f| f.as_str() == Some(worker_file)))
+        })
+        .unwrap_or_else(|| panic!("a chunk listing {worker_file} among its assets:\n{raw}"));
+    assert!(
+        owner["src"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("src/routes/__root.tsx"))
+            || owner["isEntry"] == serde_json::json!(true),
+        "{owner}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

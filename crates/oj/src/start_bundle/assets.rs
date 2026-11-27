@@ -401,10 +401,21 @@ pub(crate) fn needs_css_compile(src: &str) -> bool {
 
 /// A worker entry's bundle: the entry chunk's code and the file name the
 /// bundler gave it (the chunks it loads are written already).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct WorkerBundle {
     pub code: String,
     pub file_name: String,
+    /// The entry chunk's name and source (Vite's chunk manifest of a worker
+    /// bundle: `name`, `originalFileName`), for the manifest's
+    /// `_worker_<file>` row.
+    pub name: String,
+    pub entry: PathBuf,
+    /// The files the bundle's modules emitted (its chunk's
+    /// `importedAssets`) and its stylesheets (`importedCss`): listed on the
+    /// worker's manifest row, with no row of their own (Vite emits them with
+    /// a `fileName` alone).
+    pub assets: Vec<String>,
+    pub css: Vec<String>,
 }
 
 /// Bundles a worker entry on its own (Vite's bundleWorkerEntry), given the
@@ -545,6 +556,9 @@ pub(crate) struct Emitter {
     worker_module: std::sync::atomic::AtomicBool,
     /// Finished worker bundles, by entry (Vite's worker output cache).
     worker_codes: Mutex<HashMap<PathBuf, WorkerBundle>>,
+    /// The worker entries in the order their bundles finished: the order
+    /// Vite's worker cache lists them in the manifest's `_worker_` rows.
+    worker_order: Mutex<Vec<PathBuf>>,
     /// Bundles in flight, by entry and the chain that asked: as in Vite, an
     /// unfinished bundle is never shared with another chain, which could be
     /// the one it waits on (a cycle between two workers the client imports).
@@ -582,6 +596,7 @@ impl Emitter {
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
+            worker_order: Mutex::new(Vec::new()),
             worker_bundling: Mutex::new(HashMap::new()),
             worker_files: Mutex::new(Default::default()),
             worker_error: Mutex::new(None),
@@ -671,6 +686,75 @@ impl Emitter {
                 self.module_assets.lock().unwrap().clone(),
                 self.asset_rows.lock().unwrap().clone(),
             )
+            .with_workers(self.worker_manifest_rows(), self.worker_asset_files())
+    }
+
+    /// The manifest rows of the worker bundles, as Vite's worker cache adds
+    /// them after the sorted rows (`getChunkManifest`): `_worker_<file>`,
+    /// with the entry's source, its file, the sheets and assets its modules
+    /// emitted, `isWorkerEntry`, its name, `isDynamicEntry` and `isWorker`,
+    /// in the order the bundles were made.
+    pub fn worker_manifest_rows(&self) -> Vec<(String, serde_json::Value)> {
+        let codes = self.worker_codes.lock().unwrap();
+        let root = self.styles.root();
+        self.worker_order
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| codes.get(entry))
+            .map(|bundle| {
+                let mut row = serde_json::Map::new();
+                let src = crate::build::chunk_source_key(bundle.entry.to_str(), root)
+                    .unwrap_or_else(|| bundle.entry.to_string_lossy().into_owned());
+                row.insert("src".into(), src.into());
+                row.insert("file".into(), bundle.file_name.clone().into());
+                if !bundle.css.is_empty() {
+                    row.insert("css".into(), bundle.css.clone().into());
+                }
+                if !bundle.assets.is_empty() {
+                    row.insert("assets".into(), bundle.assets.clone().into());
+                }
+                row.insert("isWorkerEntry".into(), true.into());
+                row.insert("name".into(), bundle.name.clone().into());
+                row.insert("isDynamicEntry".into(), false.into());
+                row.insert("isWorker".into(), true.into());
+                (
+                    format!("_worker_{}", bundle.file_name),
+                    serde_json::Value::Object(row),
+                )
+            })
+            .collect()
+    }
+
+    /// The files the worker bundles emitted (their rows list them; Vite
+    /// gives them no row of their own).
+    pub fn worker_asset_files(&self) -> std::collections::HashSet<String> {
+        self.worker_codes
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|b| b.assets.iter().chain(b.css.iter()).cloned())
+            .collect()
+    }
+
+    /// The assets written for the modules `ids` (each module's
+    /// `importedAssets`), first emit first, each once.
+    pub fn assets_of_modules<'a>(&self, ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let assets = self.module_assets.lock().unwrap();
+        let mut files: Vec<String> = Vec::new();
+        for id in ids {
+            for file in assets.get(id).into_iter().flatten() {
+                if !files.contains(file) {
+                    files.push(file.clone());
+                }
+            }
+        }
+        files
+    }
+
+    /// The output-relative file a URL this emitter returned names.
+    pub fn written_file(&self, url: &str) -> String {
+        self.file_of(url)
     }
 
     /// Every stylesheet written so far with its text (the chunks' sheets,
@@ -1607,11 +1691,11 @@ impl Emitter {
             .await
             .cloned();
         if let Ok(done) = &result {
-            self.worker_codes
-                .lock()
-                .unwrap()
-                .entry(path.to_path_buf())
-                .or_insert_with(|| done.clone());
+            let mut codes = self.worker_codes.lock().unwrap();
+            if !codes.contains_key(path) {
+                codes.insert(path.to_path_buf(), done.clone());
+                self.worker_order.lock().unwrap().push(path.to_path_buf());
+            }
         }
         if let Err(e) = &result {
             self.worker_error
