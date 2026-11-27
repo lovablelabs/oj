@@ -56,7 +56,7 @@ async fn serve_internal_route(
     // `base` is already stripped (base_middleware); the StyleX runtime's
     // unprefixed fetch of its sheet passes through it as is.
     let path = uri.path();
-    if let Some(resp) = crate::stylex::serve_route(state, path) {
+    if let Some(resp) = crate::stylex::serve_route(state, path).await {
         return Some(resp);
     }
     if path.starts_with(state.vite_deps_prefix.as_str()) {

@@ -16,6 +16,12 @@ impl Weigh for String {
     }
 }
 
+impl Weigh for Vec<u8> {
+    fn weight(&self) -> usize {
+        self.len()
+    }
+}
+
 /// Backlog and block sizes, scaled by worker count: one worker buffers a few
 /// dozen jobs, a full machine up to 1,024 lines / 8 MiB.
 #[derive(Clone, Copy)]

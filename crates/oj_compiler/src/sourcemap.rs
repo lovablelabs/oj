@@ -119,29 +119,39 @@ fn vlq(out: &mut String, value: i64) {
     }
 }
 
-/// Folds oj's map through the plugin `input_maps` (applied last to first) so
-/// served positions trace to the original source. Unparseable plugin maps are
-/// skipped; a failed fold degrades to oj's own map.
-pub(crate) fn compose_input_maps_json(
+/// A map an earlier transform of the module made, which oj's own map is
+/// folded through.
+pub enum InputMap<'a> {
+    /// A plugin's map as it returned it; skipped when it does not parse.
+    Json(&'a str),
+    Parsed(oxc_sourcemap::SourceMap<'a>),
+}
+
+/// Folds oj's map through the `input_maps` (applied last to first) so served
+/// positions trace to the original source, serializing the result once.
+pub(crate) fn compose_input_maps(
     oj_map: &oxc_sourcemap::SourceMap,
-    input_maps: &[String],
+    input_maps: &[InputMap<'_>],
 ) -> String {
-    let mut acc = oj_map.to_json_string();
-    for pm in input_maps.iter().rev() {
-        let outer = match oxc_sourcemap::SourceMap::from_json_string(&acc) {
-            Ok(m) => m,
-            Err(_) => return oj_map.to_json_string(),
+    let decoded: Vec<Option<oxc_sourcemap::SourceMap>> = input_maps
+        .iter()
+        .map(|input| match input {
+            InputMap::Json(json) => oxc_sourcemap::SourceMap::from_json_string(json).ok(),
+            InputMap::Parsed(_) => None,
+        })
+        .collect();
+    let mut folded: Option<oxc_sourcemap::SourceMap> = None;
+    for (input, decoded) in input_maps.iter().zip(&decoded).rev() {
+        let inner = match input {
+            InputMap::Parsed(map) => map,
+            InputMap::Json(_) => match decoded {
+                Some(map) => map,
+                None => continue,
+            },
         };
-        let inner = match oxc_sourcemap::SourceMap::from_json_string(pm) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        acc = compose_two(&outer, &inner).to_json_string();
+        folded = Some(compose_two(folded.as_ref().unwrap_or(oj_map), inner));
     }
-    match oxc_sourcemap::SourceMap::from_json_string(&acc) {
-        Ok(m) => m.to_json_string(),
-        Err(_) => oj_map.to_json_string(),
-    }
+    folded.as_ref().unwrap_or(oj_map).to_json_string()
 }
 
 /// `outer` (served -> intermediate) through `inner` (intermediate -> original).
@@ -267,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_input_maps_json_folds_and_degrades_gracefully() {
+    fn compose_input_maps_folds_and_degrades_gracefully() {
         use oxc_sourcemap::{SourceMap, SourceMapBuilder};
         let mut ib = SourceMapBuilder::default();
         let sid = ib.add_source_and_content("app.tsx", "let x = 1;");
@@ -289,7 +299,7 @@ mod tests {
 
         // The composed map is raw JSON; the serve-time encoder turns it into
         // the inline data URL (Vite's genSourceMapUrl split).
-        let json = compose_input_maps_json(&oj_map, &[plugin_map]);
+        let json = compose_input_maps(&oj_map, &[InputMap::Json(&plugin_map)]);
         assert!(json.trim_start().starts_with('{'), "raw JSON map: {json}");
         let url = map_json_to_data_url(&json);
         assert!(
@@ -298,7 +308,69 @@ mod tests {
         );
 
         // Garbage input maps degrade to oj's own map rather than erroring.
-        let fallback = compose_input_maps_json(&oj_map, &["not json".to_string()]);
-        assert!(fallback.trim_start().starts_with('{'));
+        let fallback = compose_input_maps(&oj_map, &[InputMap::Json("not json")]);
+        assert_eq!(fallback, oj_map.to_json_string());
+    }
+
+    /// The fold as it ran before maps were composed in memory: every step
+    /// through a JSON string.
+    fn compose_through_json(oj_map: &oxc_sourcemap::SourceMap, input_maps: &[String]) -> String {
+        use oxc_sourcemap::SourceMap;
+        let mut acc = oj_map.to_json_string();
+        for pm in input_maps.iter().rev() {
+            let outer = SourceMap::from_json_string(&acc).unwrap();
+            let Ok(inner) = SourceMap::from_json_string(pm) else {
+                continue;
+            };
+            acc = compose_two(&outer, &inner).to_json_string();
+        }
+        SourceMap::from_json_string(&acc).unwrap().to_json_string()
+    }
+
+    #[test]
+    fn the_in_memory_fold_serializes_what_the_json_fold_did() {
+        use oxc_sourcemap::SourceMapBuilder;
+        let mut first = SourceMapBuilder::default();
+        let id = first.add_source_and_content("app.tsx", "const é = 1;\nexport { é };\n");
+        for (line, col) in [(0, 0), (0, 6), (0, 10), (2, 0), (2, 9)] {
+            first.add_token(line, col, line.min(1), col / 2, Some(id), None);
+        }
+        let first = first.into_sourcemap();
+        let mut second = SourceMapBuilder::default();
+        let id = second.add_source_and_content("app.stylex.js", "intermediate one");
+        let name = second.add_name("é");
+        for (line, col) in [(0, 0), (1, 2), (1, 8), (3, 0), (3, 4)] {
+            second.add_token(line, col, line.saturating_sub(1), col, Some(id), Some(name));
+        }
+        let second = second.into_sourcemap();
+        let mut oj = SourceMapBuilder::default();
+        let id = oj.add_source_and_content("app.plugin.js", "intermediate two");
+        for (line, col) in [(0, 0), (0, 4), (1, 0), (2, 3), (4, 1), (5, 0)] {
+            oj.add_token(line, col, line.min(3), col, Some(id), None);
+        }
+        oj.add_token(6, 0, 0, 0, None, None);
+        let oj_map = oj.into_sourcemap();
+
+        let json = [first.to_json_string(), second.to_json_string()];
+        let garbage = "not json".to_string();
+        for maps in [
+            vec![],
+            vec![json[0].clone()],
+            vec![json[0].clone(), json[1].clone()],
+            vec![json[0].clone(), garbage.clone(), json[1].clone()],
+            vec![garbage.clone()],
+        ] {
+            let expected = compose_through_json(&oj_map, &maps);
+            let as_json: Vec<InputMap> = maps.iter().map(|m| InputMap::Json(m)).collect();
+            assert_eq!(compose_input_maps(&oj_map, &as_json), expected);
+            let as_parsed: Vec<InputMap> = maps
+                .iter()
+                .map(|m| match oxc_sourcemap::SourceMap::from_json_string(m) {
+                    Ok(map) => InputMap::Parsed(map),
+                    Err(_) => InputMap::Json(m),
+                })
+                .collect();
+            assert_eq!(compose_input_maps(&oj_map, &as_parsed), expected);
+        }
     }
 }

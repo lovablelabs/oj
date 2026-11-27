@@ -216,8 +216,15 @@ pub fn run(
                                 cwd: root,
                             };
                             match cache {
-                                Some(store) => match crate::cache::compile_through_cache_in(
-                                    &allocator, store, &ctx, options, fs, false,
+                                // Only the rules reach the sheet.
+                                Some(store) => match crate::cache::compile_through_cache_parts_in(
+                                    &allocator,
+                                    store,
+                                    &ctx,
+                                    options,
+                                    fs,
+                                    false,
+                                    crate::cache::HitParts::Rules,
                                 ) {
                                     Ok((result, status)) => {
                                         let hit = matches!(status, crate::cache::CacheStatus::Hit);

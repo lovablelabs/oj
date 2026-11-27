@@ -2,7 +2,7 @@ use crate::env::{defines_for, ImportMetaEnv};
 use crate::hot::lex_hot_accept;
 use crate::rewrite::rewrite_module_specifiers;
 use crate::scan::{export_names, scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
-use crate::sourcemap::{compose_input_maps_json, map_json_to_data_url};
+use crate::sourcemap::{compose_input_maps, map_json_to_data_url, InputMap};
 use crate::{glob, tsconfig};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{Program, Statement};
@@ -232,15 +232,47 @@ pub fn compile_module_with_maps(
     path: &Path,
     source_text: &str,
     opts: &CompileOptions,
-    mut rewriter: Option<&mut ImportRewriter>,
+    rewriter: Option<&mut ImportRewriter>,
     input_maps: &[String],
+) -> Result<CompileOutput, CompileError> {
+    let input_maps: Vec<InputMap> = input_maps.iter().map(|m| InputMap::Json(m)).collect();
+    compile_module_with_input_maps(path, source_text, opts, rewriter, &input_maps)
+}
+
+/// [`compile_module_with_maps`] over maps in either form (see [`InputMap`]).
+pub fn compile_module_with_input_maps(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    rewriter: Option<&mut ImportRewriter>,
+    input_maps: &[InputMap<'_>],
+) -> Result<CompileOutput, CompileError> {
+    compile_text(
+        path,
+        source_text,
+        opts,
+        rewriter,
+        input_maps,
+        opts.stylex.as_deref(),
+    )
+}
+
+/// [`compile_module_with_input_maps`] with the StyleX plugin to run given
+/// outright, whatever `opts.stylex` holds.
+pub(crate) fn compile_text(
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    rewriter: Option<&mut ImportRewriter>,
+    input_maps: &[InputMap<'_>],
+    stylex: Option<&oj_stylex::plugin::StylexPlugin>,
 ) -> Result<CompileOutput, CompileError> {
     let source_type = SourceType::from_path(path)
         .map_err(|_| CompileError::UnsupportedFileType(path.to_path_buf()))?;
     let allocator = Allocator::default();
 
     let mut program = parse(&allocator, path, source_text, source_type)?;
-    let stylex_rules = match &opts.stylex {
+    let stylex_rules = match stylex {
         Some(stylex) if stylex.handles(&path.to_string_lossy(), source_text) => stylex
             .transform_program(&allocator, &mut program, path, source_text)
             .map_err(|message| CompileError::Transform {
@@ -249,27 +281,54 @@ pub fn compile_module_with_maps(
             })?,
         _ => Vec::new(),
     };
-    transform(&allocator, path, source_text, opts, &mut program)?;
-    let runtime_import = apply_defines(&allocator, source_text, opts, &mut program);
-    let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
+    let mut output = emit(
+        &allocator,
+        path,
+        source_text,
+        opts,
+        &mut program,
+        rewriter,
+        input_maps,
+    )?;
+    output.stylex_rules = stylex_rules;
+    Ok(output)
+}
+
+/// Everything after the parse (and StyleX, which leaves no rules here):
+/// `program`, the parse of `source_text`, through oj's transforms to the
+/// emitted module. `program.source_type` names the language the output is
+/// validated against.
+pub(crate) fn emit<'a>(
+    allocator: &'a Allocator,
+    path: &Path,
+    source_text: &str,
+    opts: &CompileOptions,
+    program: &mut Program<'a>,
+    mut rewriter: Option<&mut ImportRewriter>,
+    input_maps: &[InputMap<'_>],
+) -> Result<CompileOutput, CompileError> {
+    let source_type = program.source_type;
+    transform(allocator, path, source_text, opts, program)?;
+    let runtime_import = apply_defines(allocator, source_text, opts, program);
+    let synthesized = expand_synthesized(allocator, path, opts, source_text, program);
 
     // A compile a dev loader imports: the browser (a rewriter maps its
     // specifiers to urls) or the SSR runner (`opts.ssr`); the build keeps
     // its attributes for the bundler.
     let served = rewriter.is_some() || opts.ssr;
-    let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter, served);
-    let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
+    let specifiers = rewrite_module_specifiers(allocator, program, &mut rewriter, served);
+    let mut hot_accept = lex_hot_accept(allocator, program, &mut rewriter);
     if let Some(h) = hot_accept.as_mut() {
-        promote_full_export_accept(h, &program);
+        promote_full_export_accept(h, program);
     }
-    let is_refresh_boundary = opts.refresh && detect_refresh_registrations(&program);
+    let is_refresh_boundary = opts.refresh && detect_refresh_registrations(program);
     // After the specifier pass: the served module is a route, not a graph
     // node, so it stays out of `imports`.
     if let Some(url) = runtime_import {
-        prepend_side_effect_import(&allocator, &mut program, &url);
+        prepend_side_effect_import(allocator, program, &url);
     }
 
-    let (code, map_json) = codegen(&program, path, opts, synthesized, input_maps);
+    let (code, map_json) = codegen(program, path, opts, synthesized, input_maps);
     validate_emitted(path, &code, source_type)?;
     Ok(CompileOutput {
         code,
@@ -279,7 +338,7 @@ pub fn compile_module_with_maps(
         import_bindings: specifiers.bindings,
         is_refresh_boundary,
         hot_accept,
-        stylex_rules,
+        stylex_rules: Vec::new(),
     })
 }
 
@@ -597,7 +656,7 @@ fn codegen(
     path: &Path,
     opts: &CompileOptions,
     synthesized: bool,
-    input_maps: &[String],
+    input_maps: &[InputMap<'_>],
 ) -> (String, Option<String>) {
     // Synthesized nodes carry generated-string spans; sourcemapping them panics
     // oxc's builder on out-of-range spans.
@@ -612,7 +671,7 @@ fn codegen(
         let mut json = if input_maps.is_empty() {
             oj_map.to_json_string()
         } else {
-            compose_input_maps_json(&oj_map, input_maps)
+            compose_input_maps(&oj_map, input_maps)
         };
         // to_json_string over-reserves ~4x and this String is retained per
         // module in every cache.

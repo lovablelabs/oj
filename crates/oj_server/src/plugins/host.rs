@@ -1761,6 +1761,13 @@ impl PluginHost {
             .wants(id, Some(code))
     }
 
+    /// [`Self::hook_wants_transform`] whatever the module's code: false only
+    /// when no `transform` takes `id` under any.
+    #[inline]
+    pub fn hook_may_want_transform(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().transform.wants(id, None)
+    }
+
     #[inline]
     pub fn hook_wants_load(&self, id: &str) -> bool {
         self.hook_plan.read().unwrap().load.wants(id, None)

@@ -499,6 +499,185 @@ async fn stylex_runs_before_the_apps_transforms() {
     assert!(css.contains("color: red"), "{css}");
 }
 
+const CARD: &str = r#"import * as stylex from "@stylexjs/stylex";
+import type { ReactNode } from "react";
+
+const styles = stylex.create({
+  root: {
+    color: "teal",
+    padding: 8,
+  },
+});
+
+export function Card({ children }: { children?: ReactNode }) {
+  return <section {...stylex.props(styles.root)}>{children}</section>;
+}
+"#;
+
+const COUNTER: &str = r#"import * as stylex from "@stylexjs/stylex";
+import { useState } from "react";
+import { step } from "cjs-kit";
+
+const styles = stylex.create({
+  count: {
+    color: "olive",
+    padding: 8,
+  },
+});
+
+export function Counter() {
+  const [n, setN] = useState(0);
+  return <button {...stylex.props(styles.count)} onClick={() => setN(n + step)}>{n}</button>;
+}
+"#;
+
+/// The app with React installed and two components: one whose imports need
+/// no CommonJS interop, one that reads a name off a CommonJS dependency.
+fn component_app() -> App {
+    let app = app("{}");
+    app.link_fixture("react");
+    app.link_fixture("react-dom");
+    app.write(&[
+        (
+            "node_modules/cjs-kit/package.json",
+            r#"{"name":"cjs-kit","version":"1.0.0","main":"index.js"}"#,
+        ),
+        ("node_modules/cjs-kit/index.js", "exports.step = 1;\n"),
+        ("src/Card.tsx", CARD),
+        ("src/Counter.tsx", COUNTER),
+        (
+            "src/main.ts",
+            "export { Card } from \"./Card\";\nexport { Counter } from \"./Counter\";\n",
+        ),
+    ]);
+    app
+}
+
+/// The served module's inline source map, as JSON.
+fn inline_map(code: &str) -> String {
+    let encoded = code
+        .rsplit_once("sourceMappingURL=data:application/json;base64,")
+        .unwrap_or_else(|| panic!("an inline source map in:\n{code}"))
+        .1
+        .trim();
+    String::from_utf8(crate::optimize_umd_namespace::base64_decode(encoded)).unwrap()
+}
+
+/// The 1-based line of `source` holding `needle`.
+fn line_of(source: &str, needle: &str) -> usize {
+    1 + source.lines().position(|l| l.contains(needle)).unwrap()
+}
+
+/// Where the served `needle` maps to: its source's name, content and
+/// 1-based line.
+fn mapped_line(code: &str, needle: &str) -> (String, String, usize) {
+    let json = inline_map(code);
+    let map = oxc_sourcemap::SourceMap::from_json_string(&json).unwrap();
+    let table = map.generate_lookup_table();
+    let (line, text) = code
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle} in:\n{code}"));
+    let col = text.find(needle).unwrap();
+    let token = map
+        .lookup_source_view_token(&table, line as u32, col as u32)
+        .unwrap_or_else(|| panic!("{needle} is mapped"));
+    (
+        token.get_source().unwrap().to_string(),
+        token.get_source_content().unwrap().to_string(),
+        token.get_src_line() as usize + 1,
+    )
+}
+
+// With no app plugin to run between them, the StyleX transform and oj's
+// compile share one parse: the module is the one the two make in turn, and
+// its positions are its own source's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_no_plugin_transforms_compiles_from_its_own_source() {
+    require_fixture!("vite", "react", "react-dom");
+    let app = component_app();
+    let server = app.serve().await;
+    crate::crawled(&app.root).await;
+
+    let card = server.text("/src/Card.tsx").await;
+    assert!(!card.contains("stylex.create"), "compiled away:\n{card}");
+    assert!(card.contains("Card__styles.root"), "{card}");
+    assert!(!card.contains("ReactNode"), "types stripped:\n{card}");
+    let section = line_of(CARD, "<section");
+    assert!(
+        card.contains(&format!("lineNumber: {section},")),
+        "the element's line in the file:\n{card}"
+    );
+    let (source, content, line) = mapped_line(&card, "function Card");
+    assert!(source.ends_with("/src/Card.tsx"), "{source}");
+    assert_eq!(content, CARD);
+    assert_eq!(line, line_of(CARD, "function Card"));
+
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: teal"), "{css}");
+}
+
+// A name read off a CommonJS dependency puts the interop rewrite between the
+// two: the transform's output is rewritten as text, and the compile's map
+// folds back through the transform's to the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_with_interop_imports_still_maps_to_its_source() {
+    require_fixture!("vite", "react", "react-dom");
+    let app = component_app();
+    let server = app.serve().await;
+    crate::crawled(&app.root).await;
+
+    let counter = server.text("/src/Counter.tsx").await;
+    assert!(!counter.contains("stylex.create"), "{counter}");
+    assert!(counter.contains("Counter__styles.count"), "{counter}");
+    assert!(
+        counter.contains("const { step } = __ojcjs0;"),
+        "the name is read off the CommonJS value:\n{counter}"
+    );
+    let (source, content, line) = mapped_line(&counter, "function Counter");
+    assert!(source.ends_with("/src/Counter.tsx"), "{source}");
+    assert_eq!(content, COUNTER);
+    assert_eq!(line, line_of(COUNTER, "function Counter"));
+
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: olive"), "{css}");
+}
+
+// An app plugin's transform keeps StyleX ahead of it, as a pass of its own:
+// the plugin sees the compiled module, and the served map still reaches the
+// file through both.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugins_transform_sees_the_compiled_module_and_the_map_holds() {
+    require_fixture!("vite", "react", "react-dom");
+    let app = component_app();
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\n\
+         const seen = { name: \"seen\", transform(code, id) {\n\
+           if (!id.endsWith(\"/src/Card.tsx\")) return;\n\
+           return { code: code + \"\\nexport const sawCreate = \" + code.includes(\"stylex.create\") + \";\\n\", map: null };\n\
+         } };\n\
+         export default { plugins: [seen, stylex.vite({})] };\n",
+    )]);
+    let server = app.serve().await;
+    crate::crawled(&app.root).await;
+
+    let card = server.text("/src/Card.tsx").await;
+    assert!(
+        card.contains("export const sawCreate = false;"),
+        "StyleX compiled first:\n{card}"
+    );
+    assert!(card.contains("Card__styles.root"), "{card}");
+    let (source, content, line) = mapped_line(&card, "function Card");
+    assert!(source.ends_with("/src/Card.tsx"), "{source}");
+    assert_eq!(content, CARD);
+    assert_eq!(line, line_of(CARD, "function Card"));
+
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: teal"), "{css}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn each_query_variant_keeps_its_own_rules() {
     require_fixture!("vite");

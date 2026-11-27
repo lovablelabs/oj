@@ -14,7 +14,7 @@ use crate::api::{
     FileContext, compile_program, compile_rules, parse_program, transform_source_in,
     transform_source_rules_in,
 };
-use crate::cache::{CacheStatus, CacheStore, compile_through_cache_in};
+use crate::cache::{CacheStatus, CacheStore, HitParts, compile_through_cache_parts_in};
 use crate::errors::StylexError;
 use crate::module_resolution::MemoFs;
 use crate::options::CompilerOptions;
@@ -109,7 +109,10 @@ impl<'a> OutBatch<'a> {
 }
 
 // std's `Write::write_all_vectored` is still unstable.
-fn write_all_vectored(out: &mut impl Write, mut bufs: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+pub(super) fn write_all_vectored(
+    out: &mut impl Write,
+    mut bufs: &mut [IoSlice<'_>],
+) -> std::io::Result<()> {
     IoSlice::advance_slices(&mut bufs, 0);
     while !bufs.is_empty() {
         match out.write_vectored(bufs) {
@@ -624,7 +627,10 @@ fn run_input(input: Input, ctx: &JobCtx<'_>) -> Item {
 }
 
 fn line_only(json: String) -> Emit {
-    let mut head = json.into_bytes();
+    bytes_only(json.into_bytes())
+}
+
+fn bytes_only(mut head: Vec<u8>) -> Emit {
     head.push(b'\n');
     Emit { head, body: None }
 }
@@ -684,7 +690,8 @@ fn run_job(job: &mut Job, ctx: &JobCtx<'_>) -> (Emit, Option<CacheOutcome>) {
             let _t = timings::start(Stage::NdjsonOut);
             let result = match (ctx.payload, ctx.format) {
                 (Payload::Rules, _) => {
-                    line_only(OkLine::new(&json_str(&job.id), 0).rules(&rules).finish())
+                    let line = OkLine::new(&json_str(&job.id), rules.len() * 96);
+                    bytes_only(line.rules(&rules).finish_bytes())
                 }
                 (Payload::Full, Format::Ndjson) => Emit {
                     head: result_line_ok(&job.id, &code, &rules),
@@ -848,13 +855,19 @@ fn compile<'a>(job: &Job, source: &'a str, ctx: &JobCtx<'_>) -> Result<Compiled<
             let mut allocator = cell.borrow_mut();
             allocator.reset();
             if let Some(cache) = ctx.cache {
-                let (result, status) = compile_through_cache_in(
+                // A hit decodes only what this run writes out: never a map.
+                let parts = match ctx.payload {
+                    Payload::Full => HitParts::Code,
+                    Payload::Rules => HitParts::Rules,
+                };
+                let (result, status) = compile_through_cache_parts_in(
                     &allocator,
                     &cache.store,
                     &file,
                     &options,
                     fs,
                     cache.verify,
+                    parts,
                 )?;
                 let outcome = Some(CacheOutcome::Status(status));
                 return match result {

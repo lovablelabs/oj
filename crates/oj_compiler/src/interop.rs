@@ -205,16 +205,13 @@ pub fn rewrite_cjs_interop_logged(
         warn,
         path,
         source,
-        program: &parsed.program,
-        // Symbols are read only off a parse without a diagnostic: a file
-        // with one is reported by the compile, and keeps its bindings here.
-        elides: source_type.is_typescript()
-            && !later.keep_value_imports
-            && parsed.diagnostics.is_empty(),
-        typescript: source_type.is_typescript(),
-        later,
-        scoping: std::cell::OnceCell::new(),
-        jsx_use: std::cell::OnceCell::new(),
+        bindings: KeptBindings::new(
+            source,
+            &parsed.program,
+            later,
+            source_type.is_typescript(),
+            parsed.diagnostics.is_empty(),
+        ),
         format,
         edits: Vec::new(),
         hoisted: String::new(),
@@ -273,6 +270,148 @@ pub fn rewrite_cjs_interop_logged(
     head.push_str(&hoisted);
     result.insert_str(file_start_index(source), &head);
     Some(result)
+}
+
+/// Whether [`rewrite_cjs_interop_logged`] could rewrite, or ask its `interop`
+/// about, a module whose parse (one without a diagnostic) is `program`: one
+/// with an import the later transforms leave a binding of, a re-export or a
+/// literal dynamic import of a specifier that may need interop. Where none
+/// may, the rewrite leaves the module as it is and resolves and registers
+/// nothing, so skipping it changes nothing.
+pub(crate) fn may_rewrite(
+    program: &oxc_ast::ast::Program,
+    source: &str,
+    later: &LaterTransforms,
+    may_need_interop: &dyn Fn(&str) -> bool,
+) -> bool {
+    if imports_may_need_interop(program, source, later, may_need_interop) {
+        return true;
+    }
+    if !names_import_call(source) {
+        return false;
+    }
+    struct DynamicImports<'f> {
+        may_need_interop: &'f dyn Fn(&str) -> bool,
+        found: bool,
+    }
+    impl<'a> Visit<'a> for DynamicImports<'_> {
+        fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+            self.found = self.found
+                || literal_specifier(&it.source).is_some_and(|spec| (self.may_need_interop)(&spec));
+            if !self.found {
+                walk::walk_import_expression(self, it);
+            }
+        }
+    }
+    let mut imports = DynamicImports {
+        may_need_interop,
+        found: false,
+    };
+    imports.visit_program(program);
+    imports.found
+}
+
+/// The static half of [`may_rewrite`]: the module's imports and re-exports.
+/// An import the pass never asks about (see [`KeptBindings::of`]) is none
+/// that may need interop: one written as a type, or whose every binding the
+/// TypeScript transform removes. The symbols that tell are built for the
+/// first import that may need interop, binds a name not written as a type
+/// and is not plainly used (see [`plainly_uses`]): most modules pay nothing
+/// for them.
+pub(crate) fn imports_may_need_interop(
+    program: &oxc_ast::ast::Program,
+    source: &str,
+    later: &LaterTransforms,
+    may_need_interop: &dyn Fn(&str) -> bool,
+) -> bool {
+    let bindings = KeptBindings::new(
+        source,
+        program,
+        later,
+        program.source_type.is_typescript(),
+        true,
+    );
+    program.body.iter().any(|stmt| {
+        let (is_type, specifier) = match stmt {
+            Statement::ImportDeclaration(decl) => (decl.import_kind.is_type(), &decl.source),
+            Statement::ExportFromDeclaration(decl) => (decl.export_kind.is_type(), &decl.source),
+            Statement::ExportAllDeclaration(decl) => (decl.export_kind.is_type(), &decl.source),
+            _ => return false,
+        };
+        if is_type || !may_need_interop(crate::lit_str(specifier.value)) {
+            return false;
+        }
+        match stmt {
+            Statement::ImportDeclaration(decl) => {
+                plainly_uses(source, decl) || bindings.of(decl).is_some()
+            }
+            _ => true,
+        }
+    })
+}
+
+/// Whether `source` plainly uses a binding of `decl` as a value: its name
+/// where a call starts (`use(`, `ns.use(`) or an element does (`<Name`, the
+/// `<` not one that follows a name, as a type argument list's does).
+///
+/// A shortcut for [`imports_may_need_interop`], which answers the same with
+/// or without it wherever the rewrite would ask: a use found here spares
+/// building the module's symbols to find it, and a module wrongly said to
+/// use a binding (its name in a comment) goes through the rewrite, which
+/// reads the symbols itself. A "no" settles nothing: a use this does not
+/// see (a read, a spread, a name written with an escape) is one the symbols
+/// find, and the caller asks them.
+fn plainly_uses(source: &str, decl: &ImportDeclaration) -> bool {
+    let bytes = source.as_bytes();
+    let in_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$') || !b.is_ascii();
+    // Whether the byte at `at` is part of a name; not one past either end.
+    let named = |at: Option<usize>| at.and_then(|at| bytes.get(at)).is_some_and(|b| in_name(*b));
+    let statement = decl.span.start as usize..decl.span.end as usize;
+    decl.specifiers.iter().flatten().any(|specifier| {
+        let name = specifier.local().name.as_str();
+        memchr::memmem::find_iter(bytes, name).any(|at| {
+            let mut after = at + name.len();
+            if statement.contains(&at) || named(at.checked_sub(1)) || named(Some(after)) {
+                return false;
+            }
+            if at.checked_sub(1).map(|open| bytes[open]) == Some(b'<') && !named(at.checked_sub(2))
+            {
+                return true;
+            }
+            while bytes.get(after) == Some(&b'.') {
+                after += 1;
+                while named(Some(after)) {
+                    after += 1;
+                }
+            }
+            bytes.get(after) == Some(&b'(')
+        })
+    })
+}
+
+/// Whether `source` holds `import` followed by `(`, whitespace and comments
+/// between them aside: every dynamic import does.
+fn names_import_call(source: &str) -> bool {
+    const KEYWORD: &str = "import";
+    memchr::memmem::find_iter(source.as_bytes(), KEYWORD).any(|at| {
+        let next = skip_trivia(source, at + KEYWORD.len(), false);
+        source.as_bytes().get(next) == Some(&b'(')
+    })
+}
+
+/// A dynamic import's specifier when it is a literal. A template literal
+/// without a substitution is one to Vite (importAnalysis.ts,
+/// `templateLiteralRE`).
+fn literal_specifier(source: &Expression) -> Option<String> {
+    match source {
+        Expression::StringLiteral(lit) => Some(crate::lit_str(lit.value).to_string()),
+        Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
+            .quasis
+            .first()
+            .and_then(|q| q.value.cooked)
+            .map(|cooked| crate::lit_str(cooked).to_string()),
+        _ => None,
+    }
 }
 
 /// The JSX pragmas of a module, as oxc's transform reads them
@@ -534,55 +673,72 @@ fn line_breaks(text: &str) -> String {
     "\n".repeat(text.matches('\n').count())
 }
 
-/// The top-level statement pass of `rewrite_cjs_interop_logged`. `idx`
-/// numbers the `__ojns{n}` / `__ojcjs{n}` bindings in source order. A
-/// statement is replaced in place by its import alone; the bindings read off
-/// it collect in `hoisted`.
-struct InteropRewriter<'r> {
-    interop: &'r dyn Fn(&str) -> Option<InteropTarget>,
-    may_need_interop: &'r dyn Fn(&str) -> bool,
-    warn: &'r mut dyn FnMut(String),
-    path: &'r Path,
+/// Which of a module's import bindings the transforms that run after the
+/// interop pass leave, read off its parse before they run.
+struct KeptBindings<'r> {
     source: &'r str,
     program: &'r oxc_ast::ast::Program<'r>,
-    /// A TypeScript source whose transform, which runs after this pass,
-    /// removes the import bindings no value refers to.
-    elides: bool,
-    typescript: bool,
     later: &'r LaterTransforms,
+    typescript: bool,
+    /// A TypeScript source whose transform removes the import bindings no
+    /// value refers to.
+    elides: bool,
     /// The module's symbols and references, built for the first import that
     /// asks.
     scoping: std::cell::OnceCell<oxc_semantic::Scoping>,
     /// The identifiers the JSX transform will refer to.
     jsx_use: std::cell::OnceCell<Vec<String>>,
-    format: ImporterFormat,
-    edits: Vec<Edit>,
-    hoisted: String,
-    idx: usize,
-    needs_helper: bool,
 }
 
-impl InteropRewriter<'_> {
-    fn next_idx(&mut self) -> usize {
-        let n = self.idx;
-        self.idx += 1;
-        n
-    }
-
-    /// Replaces the statement at `span` with `text` on one line.
-    fn push(&mut self, span: Span, text: String) {
-        let (start, end) = (span.start as usize, span.end as usize);
-        let text = text + &line_breaks(&self.source[start..end]);
-        self.edits.push(Edit { start, end, text });
-    }
-
-    fn statement(&mut self, stmt: &Statement) {
-        match stmt {
-            Statement::ImportDeclaration(decl) => self.import(decl),
-            Statement::ExportFromDeclaration(decl) => self.export_from(decl),
-            Statement::ExportAllDeclaration(decl) => self.export_all(decl),
-            _ => {}
+impl<'r> KeptBindings<'r> {
+    /// `checked`: whether `program` parsed without a diagnostic. Symbols are
+    /// read only off such a parse: a file with a diagnostic is reported by
+    /// the compile, and keeps its bindings here.
+    fn new(
+        source: &'r str,
+        program: &'r oxc_ast::ast::Program<'r>,
+        later: &'r LaterTransforms,
+        typescript: bool,
+        checked: bool,
+    ) -> Self {
+        Self {
+            source,
+            program,
+            later,
+            typescript,
+            elides: typescript && !later.keep_value_imports && checked,
+            scoping: std::cell::OnceCell::new(),
+            jsx_use: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The specifiers of the value import `decl` that still bind a name
+    /// when Vite's import analysis would see the module; `None` for an
+    /// import the pass leaves as written and never asks about.
+    ///
+    /// The TypeScript transform runs after this pass, Vite's import
+    /// analysis after it: an inline `type` specifier is erased, and so is a
+    /// binding no value refers to (`import { T } from "dep"`, `T` used only
+    /// as a type, or not at all) unless `verbatimModuleSyntax` keeps what
+    /// is written as a value. With no binding left the transform removes
+    /// the declaration (it keeps `import "dep"` under
+    /// `verbatimModuleSyntax`), and an import the browser never makes
+    /// registers nothing.
+    fn of<'d, 'a>(
+        &self,
+        decl: &'d ImportDeclaration<'a>,
+    ) -> Option<Vec<&'d ImportDeclarationSpecifier<'a>>> {
+        let all: &[ImportDeclarationSpecifier] = decl
+            .specifiers
+            .as_ref()
+            .map_or(&[], |specs| specs.as_slice());
+        let is_type = |spec: &&ImportDeclarationSpecifier| matches!(spec, ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type());
+        let specs: Vec<&ImportDeclarationSpecifier> = all
+            .iter()
+            .filter(|spec| !(self.typescript && is_type(spec)) && self.keeps(spec.local()))
+            .collect();
+        let emptied = !all.is_empty() && specs.is_empty();
+        (!emptied || self.later.keep_value_imports).then_some(specs)
     }
 
     /// Whether the TypeScript transform keeps the import binding `local`:
@@ -667,6 +823,48 @@ impl InteropRewriter<'_> {
                 }
             })
     }
+}
+
+/// The top-level statement pass of `rewrite_cjs_interop_logged`. `idx`
+/// numbers the `__ojns{n}` / `__ojcjs{n}` bindings in source order. A
+/// statement is replaced in place by its import alone; the bindings read off
+/// it collect in `hoisted`.
+struct InteropRewriter<'r> {
+    interop: &'r dyn Fn(&str) -> Option<InteropTarget>,
+    may_need_interop: &'r dyn Fn(&str) -> bool,
+    warn: &'r mut dyn FnMut(String),
+    path: &'r Path,
+    source: &'r str,
+    bindings: KeptBindings<'r>,
+    format: ImporterFormat,
+    edits: Vec<Edit>,
+    hoisted: String,
+    idx: usize,
+    needs_helper: bool,
+}
+
+impl InteropRewriter<'_> {
+    fn next_idx(&mut self) -> usize {
+        let n = self.idx;
+        self.idx += 1;
+        n
+    }
+
+    /// Replaces the statement at `span` with `text` on one line.
+    fn push(&mut self, span: Span, text: String) {
+        let (start, end) = (span.start as usize, span.end as usize);
+        let text = text + &line_breaks(&self.source[start..end]);
+        self.edits.push(Edit { start, end, text });
+    }
+
+    fn statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::ImportDeclaration(decl) => self.import(decl),
+            Statement::ExportFromDeclaration(decl) => self.export_from(decl),
+            Statement::ExportAllDeclaration(decl) => self.export_all(decl),
+            _ => {}
+        }
+    }
 
     /// Vite's default import of a dep that needs interop (transformCjsImport):
     /// module.exports for an importer that is an ES module to Node, else the
@@ -693,28 +891,11 @@ impl InteropRewriter<'_> {
         {
             return;
         }
-        let all: &[ImportDeclarationSpecifier] = decl
-            .specifiers
-            .as_ref()
-            .map_or(&[], |specs| specs.as_slice());
-        // The TypeScript transform runs after this pass, Vite's import
-        // analysis after it: an inline `type` specifier is erased, and so is
-        // a binding no value refers to (`import { T } from "dep"`, `T` used
-        // only as a type, or not at all) unless `verbatimModuleSyntax` keeps
-        // what is written as a value.
-        let is_type = |spec: &&ImportDeclarationSpecifier| matches!(spec, ImportDeclarationSpecifier::ImportSpecifier(s) if s.import_kind.is_type());
-        let specs: Vec<&ImportDeclarationSpecifier> = all
-            .iter()
-            .filter(|spec| !(self.typescript && is_type(spec)) && self.keeps(spec.local()))
-            .collect();
-        // With no binding left the transform removes the declaration (it
-        // keeps `import "dep"` under `verbatimModuleSyntax`). It is left as
-        // written for the transform to remove, and the dep is not asked
-        // about: an import the browser never makes registers nothing.
-        let emptied = !all.is_empty() && specs.is_empty();
-        if emptied && !self.later.keep_value_imports {
+        // An import the transform removes is left as written for it to
+        // remove, and the dep is not asked about.
+        let Some(specs) = self.bindings.of(decl) else {
             return;
-        }
+        };
         let Some(target) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
@@ -923,18 +1104,7 @@ struct DynamicImportInterop<'i> {
 
 impl<'a> Visit<'a> for DynamicImportInterop<'_> {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
-        // A template literal without a substitution is a literal to Vite
-        // (importAnalysis.ts, `templateLiteralRE`).
-        let spec = match &it.source {
-            Expression::StringLiteral(lit) => Some(crate::lit_str(lit.value).to_string()),
-            Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
-                .quasis
-                .first()
-                .and_then(|q| q.value.cooked)
-                .map(|cooked| crate::lit_str(cooked).to_string()),
-            _ => None,
-        };
-        let target = spec.and_then(|spec: String| (self.interop)(&spec));
+        let target = literal_specifier(&it.source).and_then(|spec| (self.interop)(&spec));
         // Vite rewrites only the URL of a builtin's dynamic import.
         if let Some(target) = target
             .as_ref()
@@ -1921,6 +2091,237 @@ mod tests {
         assert_eq!(skipped, expected, "the combinations that do not compile");
         assert_eq!(cases, SOURCES.len() * configs.len() * 2 - expected.len());
         eprintln!("differential cases: {cases}, skipped: {}", skipped.len());
+    }
+
+    /// What lets a compile skip the pass: the static imports that may need
+    /// interop are the ones the pass asks its `interop` about, under both
+    /// `verbatimModuleSyntax` settings.
+    #[test]
+    fn the_imports_that_may_need_interop_are_the_ones_the_pass_asks_about() {
+        let cjs = |spec: &str| spec == "cjs-dep";
+        // Whether the pass asks about the source's import.
+        let asks = |src: &str, later: &LaterTransforms| {
+            let asked = std::cell::Cell::new(false);
+            rewrite_cjs_interop_logged(
+                src,
+                Path::new("m.tsx"),
+                ImporterFormat::ESM,
+                later,
+                &cjs,
+                &|_| {
+                    asked.set(true);
+                    None
+                },
+                &mut |_| {},
+            );
+            asked.get()
+        };
+        let may_need = |src: &str, later: &LaterTransforms| {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, src, SourceType::tsx()).parse();
+            assert!(parsed.diagnostics.is_empty(), "{src}");
+            imports_may_need_interop(&parsed.program, src, later, &cjs)
+        };
+        let settings = [false, true].map(|keep_value_imports| LaterTransforms {
+            keep_value_imports,
+            ..Default::default()
+        });
+        for src in [
+            // Used as values: plainly, and where only the symbols tell.
+            "import { a } from \"cjs-dep\";\nexport const x = a();\n",
+            "import * as ns from \"cjs-dep\";\nexport const x = ns.deep.f();\n",
+            "import { A } from \"cjs-dep\";\nexport const x = <A />;\n",
+            "import { A } from \"cjs-dep\";\nexport const x = <i><A.B /></i>;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a;\n",
+            "import { a, T } from \"cjs-dep\";\nexport const x: T = [a];\n",
+            "import a from \"cjs-dep\";\nexport { a };\n",
+            "import React from \"cjs-dep\";\nexport const x = <p />;\n",
+            // Spread.
+            "import a from \"cjs-dep\";\nexport const x = { ...a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [...a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = Math.max(...a);\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p {...a} />;\n",
+            // Above the import.
+            "export function f() { return a(); }\nimport a from \"cjs-dep\";\n",
+            "export function f() { return a; }\nimport a from \"cjs-dep\";\n",
+            "export const f = () => [...a];\nimport { a } from \"cjs-dep\";\n",
+            "export let x: T;\nimport { T } from \"cjs-dep\";\n",
+            // Written with an escape, where it is used or where it is bound.
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u0053tate(0);\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u{53}tate;\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = { ...use\\u0053tate };\n",
+            "import { use\\u0053tate } from \"cjs-dep\";\nexport const x = useState;\n",
+            "import { use\\u0053tate } from \"cjs-dep\";\nexport let x: useState;\n",
+            // Every other place a value is read.
+            "import { a } from \"cjs-dep\";\nexport const x = { a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { [a]: 1 };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { k: a };\n",
+            "import { a } from \"cjs-dep\";\nexport const [x = a] = [];\n",
+            "import { a } from \"cjs-dep\";\nexport const { [a]: x } = {};\n",
+            "import { a } from \"cjs-dep\";\nexport const x = (y = a) => y;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = () => a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = typeof a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = `${a}`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a`x`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a?.b;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a?.b();\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a[0];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a!;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a as unknown;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = a satisfies unknown;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [!a, +a, -a, ~a, void a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = delete a.b;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = await a;\n",
+            "import { a } from \"cjs-dep\";\nexport function* x() { yield a; }\n",
+            "import { a } from \"cjs-dep\";\nexport function* x() { yield* a; }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = 1 in a;\n",
+            "import { A } from \"cjs-dep\";\nexport const x = 1 instanceof A;\n",
+            "import { a } from \"cjs-dep\";\nfor (const y of a) {}\n",
+            "import { a } from \"cjs-dep\";\nif (a) {}\n",
+            "import { a } from \"cjs-dep\";\na;\n",
+            "import { A } from \"cjs-dep\";\nexport class X extends A {}\n",
+            "import { a } from \"cjs-dep\";\nexport class X { y = a; }\n",
+            "import { a } from \"cjs-dep\";\nexport class X { static { a; } }\n",
+            "import { a } from \"cjs-dep\";\n@a\nexport class X {}\n",
+            "import { a } from \"cjs-dep\";\nexport class X { @a y = 1; }\n",
+            "import { a } from \"cjs-dep\";\nexport enum X { Y = a }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p>{a}</p>;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = <p k={a} />;\n",
+            "import { a } from \"cjs-dep\";\nexport default a;\n",
+            "import { a } from \"cjs-dep\";\nexport { a as b };\n",
+            "import { a } from \"cjs-dep\";\nexport { a as default };\n",
+            "import * as ns from \"cjs-dep\";\nimport X = ns.Y;\nexport const x = X;\n",
+            // And places a name is no value read.
+            "import { a } from \"cjs-dep\";\na: for (;;) { break a; }\n",
+            "import { a } from \"cjs-dep\";\nexport const x = { a: 1 }.a;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = \"a\" + `a`;\n",
+            "import { a } from \"cjs-dep\";\nexport const x = (a: number) => 1;\n",
+            "import { a } from \"cjs-dep\";\nexport let x: typeof a;\n",
+            "import * as ns from \"cjs-dep\";\nimport X = ns.Y;\nexport let x: X;\n",
+            // No binding to remove.
+            "import \"cjs-dep\";\n",
+            "import {} from \"cjs-dep\";\n",
+            "export { a } from \"cjs-dep\";\n",
+            "export * from \"cjs-dep\";\n",
+            "export * as ns from \"cjs-dep\";\n",
+            // Types, written as such or not, and unused bindings.
+            "import type { T } from \"cjs-dep\";\nexport let x: T;\n",
+            "import type T from \"cjs-dep\";\nexport let x: T;\n",
+            "import { type T, type U as V } from \"cjs-dep\";\nexport let x: T | V;\n",
+            "import { T } from \"cjs-dep\";\nexport let x: T;\n",
+            "import { T } from \"cjs-dep\";\nexport let x: Array<T>;\n",
+            "import { T } from \"cjs-dep\";\nexport function f<U extends T>(u: U) { return u; }\n",
+            "import d, { T } from \"cjs-dep\";\nexport let x: T | typeof d;\n",
+            "import * as ns from \"cjs-dep\";\nexport let x: ns.T;\n",
+            "import { unused } from \"cjs-dep\";\nexport const x = 1;\n",
+            "import React from \"cjs-dep\";\nexport const x = 1;\n",
+            "export type { T } from \"cjs-dep\";\n",
+            "export type * from \"cjs-dep\";\n",
+            // Another dep's.
+            "import { a } from \"esm-dep\";\nexport const x = a();\n",
+        ] {
+            for later in &settings {
+                assert_eq!(
+                    may_need(src, later),
+                    asks(src, later),
+                    "verbatimModuleSyntax {}:\n{src}",
+                    later.keep_value_imports
+                );
+            }
+        }
+        // The answer either way, as `verbatimModuleSyntax` leaves or takes
+        // the declaration.
+        let written_as_value = "import { T } from \"cjs-dep\";\nexport let x: T;\n";
+        assert!(!may_need(written_as_value, &settings[0]));
+        assert!(may_need(written_as_value, &settings[1]));
+
+        // A use the shortcut does not see is the symbols' to find: its "no"
+        // answers nothing.
+        let plain = |src: &str| {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, src, SourceType::tsx()).parse();
+            parsed.program.body.iter().any(|stmt| match stmt {
+                Statement::ImportDeclaration(decl) => plainly_uses(src, decl),
+                _ => false,
+            })
+        };
+        for src in [
+            "import a from \"cjs-dep\";\nexport const x = { ...a };\n",
+            "import { a } from \"cjs-dep\";\nexport const x = [...a];\n",
+            "import { a } from \"cjs-dep\";\nexport const x = Math.max(...a);\n",
+            "export function f() { return a; }\nimport a from \"cjs-dep\";\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u0053tate(0);\n",
+            "import { useState } from \"cjs-dep\";\nexport const x = use\\u{53}tate;\n",
+        ] {
+            assert!(!plain(src), "{src}");
+            assert!(may_need(src, &settings[0]), "{src}");
+            assert!(asks(src, &settings[0]), "{src}");
+        }
+        // A use above the import is as plain as one below it.
+        assert!(plain(
+            "export function f() { return a(); }\nimport a from \"cjs-dep\";\n"
+        ));
+
+        // A name that only reads as a use sends the module through the pass,
+        // which asks about nothing.
+        for src in [
+            "import { T } from \"cjs-dep\";\n// T()\nexport let x: T;\n",
+            "import { T } from \"cjs-dep\";\nexport let x: T = \"<T>\";\n",
+        ] {
+            assert!(may_need(src, &settings[0]), "{src}");
+            assert!(!asks(src, &settings[0]), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_plain_use_is_a_call_or_an_element() {
+        let uses = |src: &str| {
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, src, SourceType::tsx()).parse();
+            let Some(Statement::ImportDeclaration(decl)) = parsed.program.body.first() else {
+                panic!("{src}");
+            };
+            plainly_uses(src, decl)
+        };
+        for (body, plain) in [
+            ("use();", true),
+            ("ns.use();", true),
+            ("ns.a.b.use();", true),
+            ("new Use();", true),
+            ("f(use());", true),
+            ("x = <Use />;", true),
+            ("x = <Use>{1}</Use>;", true),
+            ("x = <ns.Use />;", true),
+            ("x = (<Use/>);", true),
+            // Read, not called.
+            ("x = use;", false),
+            ("x = ns.use;", false),
+            ("x = { use };", false),
+            ("x = { ...use };", false),
+            ("x = [...use];", false),
+            ("f(...use);", false),
+            // Types.
+            ("let x: Use;", false),
+            ("let x: ns.Use;", false),
+            ("let x: Array<Use>;", false),
+            ("let x = f<Use>(1);", false),
+            ("let x: Use<string>;", false),
+            // Other names.
+            ("reuse(); used(); x.use$();", false),
+            ("", false),
+        ] {
+            let name = if body.contains("ns.") {
+                "ns"
+            } else if body.contains("Use") {
+                "Use"
+            } else {
+                "use"
+            };
+            let src = format!("import {{ {name} }} from \"dep\";\n{body}\n");
+            assert_eq!(uses(&src), plain, "{body}");
+        }
+        // The statement's own text is no use.
+        assert!(!uses("import use, { a as b } from \"use(b(\";\n"));
     }
 
     /// oxc's `Pragma::parse` for the classic runtime: which identifier the

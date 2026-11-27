@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use oj_stylex::api::{FileContext, SourceCompileResult, transform_source};
+use oj_stylex::api::{
+    FileContext, SourceCompileResult, transform_source, transform_source_with_dep_log_in,
+};
 use oj_stylex::cache::{
     CacheStatus, CacheStore, cache_key, cache_key_with_fingerprint, compare_results,
     compile_through_cache, filename_key,
@@ -243,11 +245,21 @@ fn verify_mode_detects_a_poisoned_entry() {
         &filename_key(&fx.root, &fx.root.join("src/input.ts")),
         &opts,
     );
-    let entry_path = store.dir().join(key.hex());
-    let mut entry: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&entry_path).unwrap()).unwrap();
-    entry["result"]["code"] = serde_json::Value::String("POISON".into());
-    std::fs::write(&entry_path, serde_json::to_vec(&entry).unwrap()).unwrap();
+    // The same dep log under a doctored result: the entry replays as valid.
+    let filename = fx.root.join("src/input.ts");
+    let ctx = FileContext {
+        filename: &filename,
+        source_text: SOURCE,
+        cwd: &fx.root,
+    };
+    let allocator = oxc_allocator::Allocator::default();
+    let (recompiled, deps) =
+        transform_source_with_dep_log_in(&allocator, &ctx, &opts, &fx.fs()).unwrap();
+    let doctored = SourceCompileResult {
+        code: "POISON".into(),
+        ..recompiled.unwrap()
+    };
+    store.put(&key, &doctored, &deps).unwrap();
 
     let poisoned = store
         .get_validated(&key, &fx.root, &fx.fs(), ResolveConfig::of(&opts))

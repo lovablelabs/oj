@@ -3,17 +3,22 @@
 //! dev endpoints. oj claims the plugin by name and runs this in its place.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use memchr::memmem::Finder;
+use memchr::memmem::{self, Finder};
 use oxc_allocator::Allocator;
-use oxc_ast::ast::Program;
+use oxc_ast::ast::{Program, Statement};
 use serde_json::{Map, Value, json};
 
-use crate::api::{FileContext, MapMode, transform_program, transform_source_in_with_map};
+use crate::api::{
+    FileContext, MapMode, SourceCompileResult, SourceMappings, transform_parsed_source,
+    transform_program, transform_source_in_with_map, transform_source_with_mappings,
+};
 use crate::assemble::{AssembleConfig, RuleRegistry};
-use crate::errors::ErrorCode;
-use crate::fxhash::FxHashSet;
+use crate::errors::{ErrorCode, StylexError};
+use crate::fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
+use crate::jsrt::lit_text;
 use crate::module_resolution::MemoFs;
 use crate::options::{CompilerOptions, ResolvedOptions};
 use crate::rules::StylexRule;
@@ -71,18 +76,86 @@ pub struct StylexPlugin {
     gate: ImportGate,
     root: PathBuf,
     fs: MemoFs,
-    registry: Mutex<RuleRegistry>,
-    /// Module ids currently holding rules in `registry`. Never locked by
-    /// `stylesheet()`/`emit()`, so non-StyleX misses avoid contending on
-    /// `registry`. Strict lock order when both are held: `registry` -> `recorded`.
-    recorded: RwLock<FxHashSet<Box<str>>>,
+    store: RwLock<RuleStore>,
+    recorded: EverRecorded,
+    /// Bumped, under the store's write lock, by every change to it.
+    generation: AtomicU64,
+    assembly: Mutex<Assembly>,
     fingerprint: String,
-    on_change: Mutex<Option<ChangeListener>>,
+    on_change: RwLock<Option<ChangeListener>>,
     warnings: Vec<String>,
 }
 
 /// Called after a recorded module changed the stylesheet.
-pub type ChangeListener = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub type ChangeListener = Arc<dyn Fn() + Send + Sync>;
+
+/// Every recorded module's rules, by module id. Recording a module takes
+/// this lock alone, and only to write when its rules changed: a served
+/// module never waits on a stylesheet being assembled.
+#[derive(Default)]
+struct RuleStore {
+    modules: FxHashMap<Box<str>, Arc<[StylexRule]>>,
+    /// The modules whose rules changed since the registry last caught up.
+    unsynced: FxHashSet<Box<str>>,
+}
+
+/// The ids rules were ever recorded under, as a Bloom filter: most modules a
+/// dev server hands out have no StyleX and never had any, and learn here,
+/// from two atomic reads and no lock, that the store holds nothing of
+/// theirs. Ids are never taken out: a wrong "maybe" only costs the store's
+/// read lock.
+///
+/// The bits are set under the store's write lock, before the module they
+/// stand for goes in. Whatever orders a later call after that record (the
+/// lock, or the hand-off between the threads that serve the module) orders
+/// it after the bits too, and a call nothing orders after the record may as
+/// well have come before it: the bits take no ordering of their own.
+struct EverRecorded {
+    bits: Box<[AtomicU64]>,
+}
+
+impl EverRecorded {
+    /// 8 KiB: one "maybe" in a thousand for a module without rules next to
+    /// a thousand modules with them.
+    const BITS: usize = 1 << 16;
+
+    fn new() -> Self {
+        Self {
+            bits: (0..Self::BITS / 64).map(|_| AtomicU64::new(0)).collect(),
+        }
+    }
+
+    fn slots(id: &str) -> [(usize, u64); 2] {
+        use std::hash::BuildHasher;
+        let hash = FxBuildHasher::default().hash_one(id);
+        [hash, hash.wrapping_mul(0x9E37_79B9_7F4A_7C15)].map(|hash| {
+            // The multiply-xor hash's high bits are its well-mixed ones.
+            let bit = (hash >> 48) as usize % Self::BITS;
+            (bit / 64, 1 << (bit % 64))
+        })
+    }
+
+    fn insert(&self, id: &str) {
+        for (word, bit) in Self::slots(id) {
+            self.bits[word].fetch_or(bit, Ordering::Relaxed);
+        }
+    }
+
+    /// False only for an id [`Self::insert`] never saw.
+    fn may_contain(&self, id: &str) -> bool {
+        Self::slots(id)
+            .iter()
+            .all(|(word, bit)| self.bits[*word].load(Ordering::Relaxed) & bit != 0)
+    }
+}
+
+/// What assembles the stylesheet: the registry, and the store generation it
+/// holds. It catches up with the store when a sheet is asked for.
+#[derive(Default)]
+struct Assembly {
+    registry: RuleRegistry,
+    synced: u64,
+}
 
 impl std::fmt::Debug for StylexPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,6 +172,28 @@ pub struct SourceOutput {
     pub code: String,
     pub map: Option<String>,
     pub rules: Vec<StylexRule>,
+}
+
+/// [`SourceOutput`] with the map as the positions it would serialize.
+pub struct MappedOutput {
+    pub code: String,
+    pub mappings: Option<SourceMappings>,
+    pub rules: Vec<StylexRule>,
+}
+
+impl MappedOutput {
+    fn from_compile(
+        out: Result<Option<(SourceCompileResult, Option<SourceMappings>)>, StylexError>,
+    ) -> Result<Option<Self>, String> {
+        let out = out.map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        Ok(out
+            .filter(|(result, _)| result.modified)
+            .map(|(result, mappings)| Self {
+                code: result.code,
+                mappings,
+                rules: result.rules,
+            }))
+    }
 }
 
 impl StylexPlugin {
@@ -223,10 +318,12 @@ impl StylexPlugin {
             } else {
                 MemoFs::snapshot()
             },
-            registry: Mutex::new(RuleRegistry::new()),
-            recorded: RwLock::new(FxHashSet::default()),
+            store: RwLock::default(),
+            recorded: EverRecorded::new(),
+            generation: AtomicU64::new(0),
+            assembly: Mutex::default(),
             fingerprint,
-            on_change: Mutex::new(None),
+            on_change: RwLock::new(None),
             warnings,
         })
     }
@@ -273,7 +370,7 @@ impl StylexPlugin {
     /// styles (the plugin's `clearCollectedRulesForId`). Whether the sheet
     /// changed.
     pub fn clear_module_rules(&self, id: &str) -> bool {
-        is_js_like(id) && self.set_module_rules(id, Vec::new())
+        self.recorded.may_contain(id) && is_js_like(id) && self.record_module_rules(id, &[])
     }
 
     /// Compiles `program` (the parse of `source`) in place; the module's rules.
@@ -287,6 +384,71 @@ impl StylexPlugin {
         let ctx = self.context(file, source);
         transform_program(allocator, program, &ctx, &self.options, &self.fs.session())
             .map(|out| out.rules)
+            .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
+    }
+
+    /// Whether compiling `program` (the parse of `source`) may leave it a
+    /// value import of a specifier `flagged` holds for where `program` binds
+    /// no value of it: the runtime injection's module, which the compile of
+    /// a module with rules imports, or an import source, which an `sx` prop
+    /// reads through a namespace import (one the compile adds, or one of
+    /// the module's that bound a type alone). Any other import the compile
+    /// writes repeats one of `program`'s whose binding it read
+    /// (`treeshakeCompensation`), or names a relative path
+    /// (`rewriteAliases`).
+    pub fn may_add_import(
+        &self,
+        program: &Program<'_>,
+        source: &str,
+        flagged: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        let options = &self.options;
+        if options
+            .runtime_injection
+            .as_ref()
+            .is_some_and(|injection| flagged(&injection.from))
+        {
+            return true;
+        }
+        // An `sx` attribute's name is a JSX identifier: written as it reads.
+        let Some(sx) = options.sx_prop_name.as_deref() else {
+            return false;
+        };
+        if memmem::find(source.as_bytes(), sx.as_bytes()).is_none() {
+            return false;
+        }
+        let mut imported = program
+            .body
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::ImportDeclaration(decl) => Some(lit_text(decl.source.value)),
+                _ => None,
+            })
+            .filter(|specifier| options.is_import_source(specifier))
+            .peekable();
+        if imported.peek().is_none() {
+            // The source the namespace import names in a module that
+            // imports none.
+            return options
+                .import_source_at(2)
+                .or_else(|| options.import_source_at(0))
+                .is_some_and(flagged);
+        }
+        imported.any(|specifier| flagged(&specifier))
+    }
+
+    /// [`Self::transform_program`] answering as the string-level transform
+    /// does: `None` when the module has no StyleX to compile.
+    pub fn compile_program<'a>(
+        &self,
+        allocator: &'a Allocator,
+        program: &mut Program<'a>,
+        file: &Path,
+        source: &str,
+    ) -> Result<Option<Vec<StylexRule>>, String> {
+        let ctx = self.context(file, source);
+        transform_program(allocator, program, &ctx, &self.options, &self.fs.session())
+            .map(|out| out.modified.then_some(out.rules))
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
     }
 
@@ -313,63 +475,131 @@ impl StylexPlugin {
         }))
     }
 
-    /// Records a module's rules (none removes it); whether the sheet changed.
-    pub fn set_module_rules(&self, id: &str, rules: Vec<StylexRule>) -> bool {
-        // With runtime injection the modules insert their own styles, and the
-        // plugin keeps no rules (so serves and emits no sheet).
-        if self.options.runtime_injection.is_some() {
-            return false;
-        }
-        if rules.is_empty() && !self.recorded.read().unwrap().contains(id) {
-            return false;
-        }
-        let changed = {
-            let mut registry = self.registry.lock().unwrap();
-            let mut recorded = self.recorded.write().unwrap();
-            let before = registry.generation();
-            if rules.is_empty() {
-                registry.remove_file(id);
-                recorded.remove(id);
-            } else {
-                registry.set_file_rules(id, rules);
-                if !recorded.contains(id) {
-                    recorded.insert(id.into());
-                }
-            }
-            registry.generation() != before
-        };
-        if changed {
-            let listener = self.on_change.lock().unwrap().clone();
-            if let Some(listener) = listener {
-                listener();
-            }
-        }
-        changed
+    /// [`Self::transform_source`] with its positions left unserialized, and
+    /// only when `want_mappings`: what a compile that folds them into its own
+    /// map, or serves none, asks for.
+    pub fn transform_source_mapped(
+        &self,
+        file: &Path,
+        source: &str,
+        want_mappings: bool,
+    ) -> Result<Option<MappedOutput>, String> {
+        let ctx = self.context(file, source);
+        let allocator = Allocator::default();
+        let out = transform_source_with_mappings(
+            &allocator,
+            &ctx,
+            &self.options,
+            &self.fs.session(),
+            want_mappings,
+        );
+        MappedOutput::from_compile(out)
     }
 
-    /// Every recorded module's rules, by module id: what a cache that skips
-    /// the transform must restore with [`Self::set_module_rules`].
+    /// [`Self::transform_source_mapped`] over the caller's parse of `source`
+    /// (as TSX, the grammar this plugin reads every module in).
+    pub fn transform_parsed(
+        &self,
+        program: &Program<'_>,
+        file: &Path,
+        source: &str,
+        want_mappings: bool,
+    ) -> Result<Option<MappedOutput>, String> {
+        let ctx = self.context(file, source);
+        let out = transform_parsed_source(
+            program,
+            &ctx,
+            &self.options,
+            &self.fs.session(),
+            want_mappings,
+        );
+        MappedOutput::from_compile(out)
+    }
+
+    /// Records a module's rules (none removes it); whether the sheet changed.
+    pub fn set_module_rules(&self, id: &str, rules: Vec<StylexRule>) -> bool {
+        self.collects_rules() && !self.holds(id, &rules) && self.replace(id, rules.into())
+    }
+
+    /// [`Self::set_module_rules`] for rules the caller keeps (a cached
+    /// module's, recorded again each time it is served): cloned only when
+    /// they differ from what the module recorded last.
+    pub fn record_module_rules(&self, id: &str, rules: &[StylexRule]) -> bool {
+        self.collects_rules() && !self.holds(id, rules) && self.replace(id, rules.into())
+    }
+
+    /// With runtime injection the modules insert their own styles, and the
+    /// plugin keeps no rules (so serves and emits no sheet).
+    fn collects_rules(&self) -> bool {
+        self.options.runtime_injection.is_none()
+    }
+
+    /// Whether `id` is recorded with exactly `rules` (with none: is not
+    /// recorded), which is all there is to recording most served modules.
+    fn holds(&self, id: &str, rules: &[StylexRule]) -> bool {
+        if rules.is_empty() && !self.recorded.may_contain(id) {
+            return true;
+        }
+        self.store.read().unwrap().holds(id, rules)
+    }
+
+    fn replace(&self, id: &str, rules: Arc<[StylexRule]>) -> bool {
+        {
+            let mut store = self.store.write().unwrap();
+            // Another thread may have recorded the same rules since `holds`.
+            if store.holds(id, &rules) {
+                return false;
+            }
+            if rules.is_empty() {
+                store.modules.remove(id);
+            } else {
+                // Before the store has the module: a "no" from the filter
+                // then always means the store holds nothing under `id`.
+                self.recorded.insert(id);
+                store.modules.insert(id.into(), rules);
+            }
+            store.unsynced.insert(id.into());
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+        let listener = self.on_change.read().unwrap().clone();
+        if let Some(listener) = listener {
+            listener();
+        }
+        true
+    }
+
+    /// Every recorded module's rules, by module id in path order: what a
+    /// cache that skips the transform must restore with
+    /// [`Self::set_module_rules`].
     pub fn module_rules(&self) -> Vec<(String, Vec<StylexRule>)> {
-        let registry = self.registry.lock().unwrap();
-        registry
-            .files()
+        let mut modules: Vec<(String, Vec<StylexRule>)> = self
+            .store
+            .read()
+            .unwrap()
+            .modules
+            .iter()
             .map(|(id, rules)| (id.to_string(), rules.to_vec()))
-            .collect()
+            .collect();
+        modules.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        modules
     }
 
     /// Replaces the listener told about every stylesheet change.
     pub fn set_change_listener(&self, listener: ChangeListener) {
-        *self.on_change.lock().unwrap() = Some(listener);
+        *self.on_change.write().unwrap() = Some(listener);
     }
 
-    /// Bumped by every change [`Self::set_module_rules`] makes to the sheet.
+    /// Bumped by every change to a module's recorded rules; the sheet may
+    /// still assemble the same.
     pub fn generation(&self) -> u64 {
-        self.registry.lock().unwrap().generation()
+        self.generation.load(Ordering::Acquire)
     }
 
     /// `processStylexRules` over every recorded module, or `None` with none.
     pub fn stylesheet(&self) -> Result<Option<String>, String> {
-        let mut registry = self.registry.lock().unwrap();
+        let mut assembly = self.assembly();
+        self.sync(&mut assembly);
+        let registry = &mut assembly.registry;
         if registry.file_count() == 0 {
             return Ok(None);
         }
@@ -379,6 +609,69 @@ impl StylexPlugin {
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))
     }
 
+    /// The assembly, locked. One a panic left mid-way (a sync that took the
+    /// store's changes and applied some, a registry part-way through a
+    /// sheet) is started over from the store, which holds every module's
+    /// rules whatever became of the registry: the panic costs the sheet
+    /// that was being assembled, and no later one.
+    fn assembly(&self) -> MutexGuard<'_, Assembly> {
+        self.assembly.lock().unwrap_or_else(|poisoned| {
+            let mut assembly = poisoned.into_inner();
+            self.reassemble(&mut assembly);
+            // Past the reload: a panic in it leaves the next call to start
+            // over again.
+            self.assembly.clear_poison();
+            assembly
+        })
+    }
+
+    /// Replaces `assembly` with a new one holding every module in the store.
+    /// [`Self::sync`] hands over only what changed since the last one, which
+    /// is not enough for a registry that may have lost what came before.
+    fn reassemble(&self, assembly: &mut Assembly) {
+        *assembly = Assembly::default();
+        let modules: Vec<_> = {
+            let mut store = self.store.write().unwrap();
+            assembly.synced = self.generation();
+            store.unsynced.clear();
+            store
+                .modules
+                .iter()
+                .map(|(id, rules)| (id.clone(), Arc::clone(rules)))
+                .collect()
+        };
+        for (id, rules) in modules {
+            assembly.registry.set_file_rules(&id, rules.to_vec());
+        }
+    }
+
+    /// Hands the registry the modules recorded since it last caught up. The
+    /// store is held only to list them, not while the sheet is assembled.
+    fn sync(&self, assembly: &mut Assembly) {
+        if assembly.synced == self.generation() {
+            return;
+        }
+        let changed: Vec<_> = {
+            let mut store = self.store.write().unwrap();
+            assembly.synced = self.generation();
+            std::mem::take(&mut store.unsynced)
+                .into_iter()
+                .map(|id| {
+                    let rules = store.modules.get(&id).cloned();
+                    (id, rules)
+                })
+                .collect()
+        };
+        for (id, rules) in changed {
+            match rules {
+                Some(rules) => assembly.registry.set_file_rules(&id, rules.to_vec()),
+                None => {
+                    assembly.registry.remove_file(&id);
+                }
+            }
+        }
+    }
+
     fn context<'s>(&'s self, file: &'s Path, source: &'s str) -> FileContext<'s> {
         FileContext {
             filename: file,
@@ -386,6 +679,51 @@ impl StylexPlugin {
             cwd: &self.root,
         }
     }
+}
+
+impl RuleStore {
+    fn holds(&self, id: &str, rules: &[StylexRule]) -> bool {
+        match self.modules.get(id) {
+            Some(held) => same_rules(held, rules),
+            None => rules.is_empty(),
+        }
+    }
+}
+
+/// `a == b`, with a priority equal to itself whatever its bits, and told
+/// sooner for rules that share their strings: a module recorded again from a
+/// cache hands back the rules it recorded.
+fn same_rules(a: &[StylexRule], b: &[StylexRule]) -> bool {
+    fn same(a: &Arc<str>, b: &Arc<str>) -> bool {
+        Arc::ptr_eq(a, b) || a == b
+    }
+    fn same_or_none(a: &Option<Arc<str>>, b: &Option<Arc<str>>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => same(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            // Every field, so a new one cannot be left out of the comparison.
+            let StylexRule {
+                class_name,
+                ltr,
+                rtl,
+                const_key,
+                const_val,
+                priority,
+            } = a;
+            // By its bits: a NaN is the priority that was recorded, not a
+            // change to record on every serve.
+            priority.to_bits() == b.priority.to_bits()
+                && same(class_name, &b.class_name)
+                && same(ltr, &b.ltr)
+                && same_or_none(rtl, &b.rtl)
+                && same_or_none(const_key, &b.const_key)
+                && *const_val == b.const_val
+        })
 }
 
 /// The plugin's `config` hook list: the app's dependencies whose manifests
@@ -887,6 +1225,240 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
+    // The dev server records a module's rules each time it serves it, from
+    // a compile or from a cache: only rules that differ move the sheet.
+    #[test]
+    fn recording_a_modules_rules_again_changes_nothing() {
+        let p = plugin(json!({}));
+        let compile = |source: &str| {
+            p.transform_source(Path::new("/app/src/a.ts"), source)
+                .unwrap()
+                .unwrap()
+                .rules
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        p.set_change_listener(Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }));
+        let red = compile(SRC);
+        assert!(p.record_module_rules("/app/src/a.ts", &red));
+        assert!(!p.record_module_rules("/app/src/a.ts", &red));
+        // Equal rules of another compile, sharing no string with the first.
+        assert!(!p.record_module_rules("/app/src/a.ts", &compile(SRC)));
+        assert!(!p.set_module_rules("/app/src/a.ts", compile(SRC)));
+        // A module with no rules that never had any.
+        assert!(!p.record_module_rules("/app/src/plain.ts", &[]));
+        assert!(!p.set_module_rules("/app/src/plain.ts", Vec::new()));
+        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (1, 1));
+
+        // A priority that is not a number is still the one recorded.
+        let mut unordered = red.clone();
+        unordered[0].priority = f64::NAN;
+        assert!(p.record_module_rules("/app/src/nan.ts", &unordered));
+        assert!(!p.record_module_rules("/app/src/nan.ts", &unordered));
+        assert!(!p.set_module_rules("/app/src/nan.ts", unordered));
+        assert!(p.record_module_rules("/app/src/nan.ts", &[]));
+        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (3, 3));
+
+        let blue = compile(&SRC.replace("red", "blue"));
+        assert!(p.record_module_rules("/app/src/a.ts", &blue));
+        assert_eq!(p.stylesheet().unwrap().unwrap(), ".xju2f9n{color:blue}");
+        assert!(p.record_module_rules("/app/src/a.ts", &[]));
+        assert_eq!(p.stylesheet().unwrap(), None);
+        assert_eq!((p.generation(), calls.load(Ordering::SeqCst)), (5, 5));
+    }
+
+    // A served module's rules reach the store while a sheet is assembled:
+    // recording them, and reading the generation, wait on no stylesheet.
+    #[test]
+    fn recording_does_not_wait_on_the_stylesheet() {
+        let p = Arc::new(plugin(json!({})));
+        let rules = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap()
+            .rules;
+        assert!(p.record_module_rules("/app/src/a.ts", &rules));
+        assert_eq!(p.stylesheet().unwrap().unwrap(), ".x1e2nbdu{color:red}");
+
+        let assembling = p.assembly.lock().unwrap();
+        let (done, recorded) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let p = Arc::clone(&p);
+            move || {
+                let unchanged = p.record_module_rules("/app/src/a.ts", &rules);
+                let plain = p.clear_module_rules("/app/src/plain.ts");
+                let added = p.record_module_rules("/app/src/b.ts", &rules);
+                let removed = p.clear_module_rules("/app/src/a.ts");
+                done.send((unchanged, plain, added, removed, p.generation()))
+                    .unwrap();
+            }
+        });
+        let recorded = recorded
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("recording waited on the stylesheet");
+        assert_eq!(recorded, (false, false, true, true, 3));
+        drop(assembling);
+        worker.join().unwrap();
+
+        // The next sheet has what was recorded meanwhile.
+        assert_eq!(p.stylesheet().unwrap().unwrap(), ".x1e2nbdu{color:red}");
+        let ids: Vec<String> = p.module_rules().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, ["/app/src/b.ts"]);
+    }
+
+    #[test]
+    fn module_rules_come_in_path_order() {
+        let p = plugin(json!({}));
+        let rules = p
+            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .unwrap()
+            .unwrap()
+            .rules;
+        for id in [
+            "/app/src/b.ts",
+            "/app/src/a.ts?alt",
+            "/app/src/a.ts",
+            "/app/lib/z.ts",
+        ] {
+            assert!(p.record_module_rules(id, &rules));
+        }
+        let recorded = p.module_rules();
+        let ids: Vec<&str> = recorded.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "/app/lib/z.ts",
+                "/app/src/a.ts",
+                "/app/src/a.ts?alt",
+                "/app/src/b.ts"
+            ]
+        );
+        assert!(recorded.iter().all(|(_, recorded)| *recorded == rules));
+    }
+
+    // Modules recorded, edited and dropped from several threads while the
+    // sheet is read: it ends as the same recordings make it one at a time.
+    #[test]
+    fn recording_from_many_threads_ends_at_the_same_sheet() {
+        const THREADS: usize = 4;
+        const MODULES: usize = 12;
+        let p = plugin(json!({}));
+        let id = |thread: usize, module: usize| format!("/app/src/t{thread}/m{module}.ts");
+        let rules = |thread: usize, module: usize, edit: usize| {
+            let color = format!("rgb({thread}, {module}, {edit})");
+            p.transform_source(Path::new(&id(thread, module)), &SRC.replace("red", &color))
+                .unwrap()
+                .unwrap()
+                .rules
+        };
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let (p, id, rules) = (&p, &id, &rules);
+                scope.spawn(move || {
+                    for edit in 0..6 {
+                        for module in 0..MODULES {
+                            let id = id(thread, module);
+                            p.record_module_rules(&id, &rules(thread, module, edit));
+                            p.record_module_rules(&id, &rules(thread, module, edit));
+                            p.clear_module_rules(&format!("/app/src/t{thread}/plain{module}.ts"));
+                            // Every third module ends dropped.
+                            if module % 3 == 0 {
+                                p.clear_module_rules(&id);
+                            }
+                        }
+                    }
+                });
+            }
+            scope.spawn(|| {
+                for _ in 0..40 {
+                    p.stylesheet().unwrap();
+                }
+            });
+        });
+
+        let expected = plugin(json!({}));
+        for thread in 0..THREADS {
+            for module in (0..MODULES).filter(|module| module % 3 != 0) {
+                expected.set_module_rules(&id(thread, module), rules(thread, module, 5));
+            }
+        }
+        assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
+        assert_eq!(p.module_rules(), expected.module_rules());
+    }
+
+    // A panic while a sheet is assembled leaves the registry however far it
+    // got. The store still holds every module, and the next sheet is made
+    // from it.
+    #[test]
+    fn a_panic_while_assembling_costs_no_later_sheet() {
+        let p = plugin(json!({}));
+        let rules = |color: &str| {
+            p.transform_source(Path::new("/app/src/a.ts"), &SRC.replace("red", color))
+                .unwrap()
+                .unwrap()
+                .rules
+        };
+        let expected = plugin(json!({}));
+        let record = |id: &str, color: &str| {
+            assert!(p.record_module_rules(id, &rules(color)));
+            expected.set_module_rules(id, rules(color));
+        };
+        record("/app/src/a.ts", "red");
+        record("/app/src/b.ts", "blue");
+        assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
+        record("/app/src/b.ts", "green");
+        record("/app/src/c.ts", "blue");
+
+        // Panics holding the assembly, without the hook's report.
+        let panic_assembling = |spoil: &(dyn Fn(&mut Assembly) + Sync)| {
+            std::thread::scope(|scope| {
+                let assembling = scope.spawn(|| {
+                    let mut assembly = p.assembly.lock().unwrap();
+                    spoil(&mut assembly);
+                    std::panic::resume_unwind(Box::new("assembling"));
+                });
+                assert!(assembling.join().is_err());
+            });
+            assert!(p.assembly.is_poisoned());
+        };
+
+        // As a sync that panics once it took the store's changes: nothing
+        // is left to tell the registry of `b.ts` and `c.ts`. And a registry
+        // that holds what the store does not, and lacks what it does.
+        panic_assembling(&|assembly| {
+            assembly.synced = p.generation();
+            p.store.write().unwrap().unsynced.clear();
+            assembly.registry.remove_file("/app/src/a.ts");
+            assembly
+                .registry
+                .set_file_rules("/app/src/gone.ts", rules("black"));
+        });
+        let sheet = p.stylesheet().unwrap().unwrap();
+        assert_eq!(Some(&sheet), expected.stylesheet().unwrap().as_ref());
+        for color in ["red", "green", "blue"] {
+            assert!(sheet.contains(&format!("{{color:{color}}}")), "{sheet}");
+        }
+        assert!(!sheet.contains("black"), "{sheet}");
+        assert!(!p.assembly.is_poisoned());
+
+        // The assembly goes on from there as any other.
+        record("/app/src/a.ts", "pink");
+        assert!(p.clear_module_rules("/app/src/c.ts"));
+        expected.clear_module_rules("/app/src/c.ts");
+        assert_eq!(p.stylesheet().unwrap(), expected.stylesheet().unwrap());
+        assert_eq!(p.module_rules(), expected.module_rules());
+
+        // With every module dropped since, there is no sheet.
+        panic_assembling(&|_| {});
+        for id in ["/app/src/a.ts", "/app/src/b.ts"] {
+            assert!(p.clear_module_rules(id));
+        }
+        assert_eq!(p.stylesheet().unwrap(), None);
+        assert!(!p.assembly.is_poisoned());
+    }
+
     // StyleX 0.19.2 (#1817): the sheet joins `index.css` or `style.css` under
     // the hashed names bundlers give them, not only the bare ones.
     #[test]
@@ -1023,6 +1595,66 @@ mod tests {
             "class names stay hashed: {}",
             a.code
         );
+    }
+
+    // What a module's compile may import where its parse binds no value of
+    // it: the runtime injection's module, and the import source an `sx`
+    // prop reads.
+    #[test]
+    fn the_imports_a_compile_may_add() {
+        const INJECT: &str = "@stylexjs/stylex/lib/stylex-inject";
+        let may_add = |p: &StylexPlugin, source: &str, flagged: &[&str]| {
+            let allocator = Allocator::default();
+            let program = crate::api::parse_program(&allocator, source, "a.tsx").unwrap();
+            p.may_add_import(&program, source, &|spec| flagged.contains(&spec))
+        };
+        let injecting = plugin(json!({ "runtimeInjection": true }));
+        assert!(may_add(&injecting, SRC, &[INJECT]));
+        assert!(!may_add(&injecting, SRC, &["@stylexjs/stylex"]));
+        let named = plugin(json!({ "runtimeInjection": { "from": "my-inject", "as": "inject" } }));
+        assert!(may_add(&named, SRC, &["my-inject"]));
+        assert!(!may_add(&named, SRC, &[INJECT]));
+        assert!(!may_add(
+            &plugin(json!({})),
+            SRC,
+            &[INJECT, "@stylexjs/stylex"]
+        ));
+
+        // An `sx` prop reads the import sources the module names, or the
+        // one its compile names when the module names none: the first the
+        // config lists, which lists the built-in ones when it sets none.
+        let p = plugin(json!({}));
+        let typed = "import type { StyleXStyles } from 'stylex';\n\
+                     export const A = ({ s }: { s: StyleXStyles }) => <div sx={s} />;\n";
+        assert!(may_add(&p, typed, &["stylex"]));
+        assert!(!may_add(&p, typed, &["@stylexjs/stylex", "react"]));
+        let unnamed = "export const A = ({ s }: { s: unknown }) => <div sx={s} />;\n";
+        let compiled = |p: &StylexPlugin| {
+            p.transform_source(Path::new("/app/src/a.tsx"), unnamed)
+                .unwrap()
+                .unwrap()
+                .code
+        };
+        assert!(compiled(&p).starts_with("import * as stylex from \"stylex\";"));
+        assert!(may_add(&p, unnamed, &["stylex"]));
+        assert!(!may_add(&p, unnamed, &["@stylexjs/stylex"]));
+        let custom = plugin(json!({ "importSources": ["my-sx"] }));
+        assert!(compiled(&custom).starts_with("import * as stylex from \"my-sx\";"));
+        assert!(may_add(&custom, unnamed, &["my-sx"]));
+        assert!(!may_add(&custom, unnamed, &["stylex", "@stylexjs/stylex"]));
+        // Under another name, or none, `sx` is an attribute like any other.
+        assert!(!may_add(
+            &plugin(json!({ "sxPropName": false })),
+            typed,
+            &["stylex"]
+        ));
+        let renamed = plugin(json!({ "sxPropName": "css" }));
+        assert!(!may_add(&renamed, typed, &["stylex"]));
+        assert!(may_add(
+            &renamed,
+            &typed.replace("sx=", "css="),
+            &["stylex"]
+        ));
     }
 
     #[test]

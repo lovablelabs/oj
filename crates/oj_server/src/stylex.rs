@@ -2,13 +2,17 @@
 //! rules feed one stylesheet, served at the plugin's endpoint, and a changed
 //! sheet tells the plugin's runtimes to refetch it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::LazyLock;
+use std::cell::RefCell;
+use std::ffi::OsString;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, OnceLock, PoisonError, RwLock, Weak};
 
 use oj_stylex::plugin::{
     DevMode, StylexPlugin, CSS_UPDATE_EVENT, DEV_CSS_PATH, DEV_RUNTIME_JS, DEV_RUNTIME_PATH,
     RUNTIME_ID,
 };
+use oj_stylex::rules::StylexRule;
+use rustc_hash::FxHashMap;
 
 use super::*;
 
@@ -20,8 +24,21 @@ const UPDATE_COALESCE: std::time::Duration = std::time::Duration::from_millis(15
 /// dev bundler that load the same config share its rule store, as the plugin's
 /// own store is shared across Vite's environments. Held weakly, so a session
 /// that ends takes its rules with it.
-static SHARED: LazyLock<Mutex<HashMap<String, std::sync::Weak<StylexPlugin>>>> =
+static SHARED: LazyLock<Mutex<HashMap<String, Weak<StylexPlugin>>>> =
     LazyLock::new(Default::default);
+
+/// How many plugins [`plugin_for`] has made: what [`SERVING`] remembers
+/// holds until the next one.
+static PLUGINS_MADE: AtomicU64 = AtomicU64::new(0);
+
+/// What [`serving_plugin`] last found for each root, as its caller spelled it.
+static SERVING: LazyLock<RwLock<FxHashMap<OsString, Serving>>> = LazyLock::new(Default::default);
+
+struct Serving {
+    /// The [`PLUGINS_MADE`] the answer was found at.
+    made: u64,
+    plugin: Option<Weak<StylexPlugin>>,
+}
 
 /// The config's `@stylexjs/unplugin` as oj runs it for `command`; `None`
 /// without one, or under `serve` with `devMode: 'off'` (the plugin's `apply`).
@@ -49,7 +66,7 @@ pub fn plugin_for(
     let key = format!("{command}\0{dev}\0{}\0{options}", canonical.display());
     let mut shared = SHARED.lock().unwrap();
     shared.retain(|_, plugin| plugin.strong_count() > 0);
-    let plugin = match shared.get(&key).and_then(std::sync::Weak::upgrade) {
+    let plugin = match shared.get(&key).and_then(Weak::upgrade) {
         Some(plugin) => plugin,
         None => {
             let plugin = Arc::new(StylexPlugin::new(options, root, dev, !build)?);
@@ -57,6 +74,7 @@ pub fn plugin_for(
                 eprintln!("{warning}");
             }
             shared.insert(key, Arc::downgrade(&plugin));
+            PLUGINS_MADE.fetch_add(1, Ordering::Release);
             plugin
         }
     };
@@ -67,7 +85,36 @@ pub fn plugin_for(
 }
 
 /// The live dev plugin for `root`, as [`plugin_for`] made it for `serve`.
+/// Every module a runner environment loads asks, so the answer is kept per
+/// root for as long as it stands: until a plugin is made, or the one found
+/// ends with its session.
 pub(crate) fn serving_plugin(root: &Path) -> Option<Arc<StylexPlugin>> {
+    // Read first: a plugin made while this looks leaves the answer stale.
+    let made = PLUGINS_MADE.load(Ordering::Acquire);
+    if let Some(found) = SERVING.read().unwrap().get(root.as_os_str()) {
+        if found.made == made {
+            match found.plugin.as_ref().map(Weak::upgrade) {
+                Some(Some(plugin)) => return Some(plugin),
+                // Its session ended.
+                Some(None) => {}
+                None => return None,
+            }
+        }
+    }
+    let plugin = find_serving_plugin(root);
+    let mut serving = SERVING.write().unwrap();
+    serving.retain(|_, found| found.made == made);
+    serving.insert(
+        root.into(),
+        Serving {
+            made,
+            plugin: plugin.as_ref().map(Arc::downgrade),
+        },
+    );
+    plugin
+}
+
+fn find_serving_plugin(root: &Path) -> Option<Arc<StylexPlugin>> {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let prefix = format!("\0{}\0", canonical.display());
     let shared = SHARED.lock().unwrap();
@@ -113,16 +160,17 @@ pub(crate) fn notify_clients(plugin: &StylexPlugin, tx: broadcast::Sender<String
         return;
     };
     let pending = Arc::new(AtomicBool::new(false));
+    let event = serde_json::json!({ "type": "custom", "event": CSS_UPDATE_EVENT }).to_string();
     plugin.set_change_listener(Arc::new(move || {
-        if pending.swap(true, Ordering::AcqRel) {
+        // Every change within a window but the first only reads the flag.
+        if pending.load(Ordering::Acquire) || pending.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (pending, tx) = (Arc::clone(&pending), tx.clone());
+        let (pending, tx, event) = (Arc::clone(&pending), tx.clone(), event.clone());
         runtime.spawn(async move {
             tokio::time::sleep(UPDATE_COALESCE).await;
             pending.store(false, Ordering::Release);
-            let event = serde_json::json!({ "type": "custom", "event": CSS_UPDATE_EVENT });
-            let _ = tx.send(event.to_string());
+            let _ = tx.send(event);
         });
     }));
 }
@@ -130,27 +178,19 @@ pub(crate) fn notify_clients(plugin: &StylexPlugin, tx: broadcast::Sender<String
 /// What the plugin's transform made of a module ahead of the app's plugins.
 pub(crate) struct PreTransformed {
     pub code: String,
-    pub map: Option<String>,
-    pub rules: Vec<oj_stylex::rules::StylexRule>,
-}
-
-impl PreTransformed {
-    /// A module the transform left as it was: no rules.
-    pub(crate) fn unchanged(code: String) -> Self {
-        Self {
-            code,
-            map: None,
-            rules: Vec::new(),
-        }
-    }
+    /// The transform's positions, when asked for and the module changed.
+    pub map: Option<oj_stylex::api::SourceMappings>,
+    pub rules: Vec<StylexRule>,
 }
 
 /// The plugin's transform where Vite runs it, before the app plugins'
-/// (`enforce: 'pre'`): `None` when the plugin passes over `id`.
+/// (`enforce: 'pre'`): `None` when the plugin passes over `id`. `want_map`:
+/// whether a compile will fold the transform's positions into its own map.
 pub(crate) fn pre_transform(
     state: &ServerState,
     id: &str,
     source: &str,
+    want_map: bool,
 ) -> Result<Option<PreTransformed>, String> {
     let Some(plugin) = &state.stylex else {
         return Ok(None);
@@ -159,71 +199,103 @@ pub(crate) fn pre_transform(
         return Ok(None);
     }
     let file = Path::new(id.split('?').next().unwrap_or(id));
-    Ok(Some(match plugin.transform_source(file, source)? {
-        Some(out) => PreTransformed {
-            code: out.code,
-            map: out.map,
-            rules: out.rules,
+    Ok(Some(
+        match plugin.transform_source_mapped(file, source, want_map)? {
+            Some(out) => PreTransformed {
+                code: out.code,
+                map: out.mappings,
+                rules: out.rules,
+            },
+            None => PreTransformed {
+                code: source.to_string(),
+                map: None,
+                rules: Vec::new(),
+            },
         },
-        None => PreTransformed {
-            code: source.to_string(),
-            map: None,
-            rules: Vec::new(),
-        },
-    }))
+    ))
 }
 
-/// Stores a served module's rules under its id (see [`module_id`]).
-pub(crate) fn record(state: &ServerState, url: &str, rules: &[oj_stylex::rules::StylexRule]) {
-    record_id(state, &module_id(&state.root, url), rules);
+/// Stores a served module's rules under its id (see [`write_module_id`]).
+pub(crate) fn record(state: &ServerState, url: &str, rules: &[StylexRule]) {
+    if let Some(plugin) = &state.stylex {
+        record_url(plugin, &state.root, url, rules);
+    }
+}
+
+fn record_url(plugin: &StylexPlugin, root: &Path, url: &str, rules: &[StylexRule]) {
+    thread_local! {
+        /// The id of the module being recorded: most served modules have no
+        /// rules and are answered by the plugin's filter, so their id is
+        /// written over the last one's and costs no allocation.
+        static ID: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+    // Taken out for the call, not borrowed across it: the plugin's change
+    // listener runs inside.
+    let mut id = ID.take();
+    id.clear();
+    write_module_id(&mut id, root, url);
+    plugin.record_module_rules(&id, rules);
+    ID.set(id);
 }
 
 /// Stores a module's rules under `id`, Vite's module id: the plugin keys its
 /// rule store by it, so every environment (and a Start bundle) that compiles
 /// one module shares one entry, and each query variant has its own.
-pub(crate) fn record_id(state: &ServerState, id: &str, rules: &[oj_stylex::rules::StylexRule]) {
+pub(crate) fn record_id(state: &ServerState, id: &str, rules: &[StylexRule]) {
     if let Some(plugin) = &state.stylex {
-        plugin.set_module_rules(id, rules.to_vec());
+        plugin.record_module_rules(id, rules);
     }
 }
 
-/// A served url's module id: the file's absolute path with the query kept,
-/// minus the HMR timestamp and a dependency's `v=` version (which the SSR id
-/// of the same file never carries); oj's own `/@` urls stay as they are.
+#[cfg(test)]
 fn module_id(root: &Path, url: &str) -> String {
-    let url = strip_hmr_timestamp(url);
-    let url = match url.split_once('?') {
-        Some((path, query)) => {
-            // Only the dependency version Vite and oj add (`v=` and 8 hex
-            // digits): a user's own `v=` query is part of the id.
-            let dep_version = |kv: &&str| {
-                kv.strip_prefix("v=")
-                    .is_some_and(|v| v.len() == 8 && v.bytes().all(|b| b.is_ascii_hexdigit()))
-            };
-            let kept: Vec<&str> = query.split('&').filter(|kv| !dep_version(kv)).collect();
-            if kept.is_empty() {
-                path.to_string()
-            } else {
-                format!("{path}?{}", kept.join("&"))
-            }
-        }
-        None => url,
+    let mut id = String::new();
+    write_module_id(&mut id, root, url);
+    id
+}
+
+/// Appends a served url's module id to `id`: the file's absolute path with
+/// the query kept, minus the HMR timestamp and a dependency's `v=` version
+/// (which the SSR id of the same file never carries); oj's own `/@` urls stay
+/// as they are.
+fn write_module_id(id: &mut String, root: &Path, url: &str) {
+    let (path, query) = match url.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (url, None),
     };
-    if let Some(path) = url.strip_prefix("/@fs/") {
-        return format!("/{path}");
+    id.reserve(root.as_os_str().len() + url.len());
+    if let Some(path) = path.strip_prefix("/@fs/") {
+        id.push('/');
+        id.push_str(path);
+    } else if crate::is_dev_server_path(path) {
+        id.push_str(path);
+    } else {
+        id.push_str(&root.to_string_lossy());
+        id.push_str(path);
     }
-    if crate::is_dev_server_path(url.split('?').next().unwrap_or(&url)) {
-        return url;
+    // Only the dependency version Vite and oj add (`v=` and 8 hex digits):
+    // a user's own `v=` query is part of the id.
+    let dep_version = |kv: &str| {
+        kv.strip_prefix("v=")
+            .is_some_and(|v| v.len() == 8 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let mut separator = '?';
+    for kv in query.into_iter().flat_map(|query| query.split('&')) {
+        if is_hmr_timestamp(kv) || dep_version(kv) {
+            continue;
+        }
+        id.push(separator);
+        id.push_str(kv);
+        separator = '&';
     }
-    format!("{}{url}", root.display())
 }
 
 /// The plugin's dev routes: the stylesheet and, in `full` mode, the plain
 /// runtime script. `None` for any other path.
-pub(crate) fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
+pub(crate) async fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
     let plugin = state.stylex.as_ref()?;
     if path == DEV_CSS_PATH {
-        let css = match dev_stylesheet(state, plugin) {
+        let css = match state.stylex_css.fetch(&state.root, plugin).await {
             Ok(css) => css,
             Err(e) => {
                 return Some(
@@ -252,39 +324,162 @@ pub(crate) fn serve_route(state: &ServerState, path: &str) -> Option<Response> {
 /// sheet's targets without changing any rule.
 const BROWSERSLIST_FILES: [&str; 3] = ["package.json", ".browserslistrc", "browserslist"];
 
-/// What a processed dev stylesheet was built from: the registry generation
-/// and the root's browserslist files' mtimes.
-pub(crate) type SheetStamp = (u64, [Option<std::time::SystemTime>; 3]);
+/// The browserslist files' mtimes.
+type TargetsStamp = [Option<SystemTime>; 3];
+
+/// How long a read of the browserslist files' mtimes stands. The tabs fetch
+/// the sheet in bursts (each update event, every tab), and a poll that finds
+/// nothing new should cost no syscall; an edit to the app's browserslist
+/// tells no tab to refetch, so it reaches the first fetch this long after it.
+const TARGETS_RECHECK: Duration = UPDATE_COALESCE;
 
 /// The dev stylesheet as the plugin serves it (assembled, then lightningcss
 /// for the app's browserslist and `lightningcssOptions`), rebuilt only when
-/// its stamp moved: every update event makes each open tab refetch it.
-fn dev_stylesheet(state: &ServerState, plugin: &StylexPlugin) -> Result<String, String> {
-    let stamp: SheetStamp = (
-        plugin.generation(),
-        BROWSERSLIST_FILES.map(|f| {
-            std::fs::metadata(state.root.join(f))
-                .and_then(|m| m.modified())
-                .ok()
-        }),
-    );
-    if let Some((built, css)) = &*state.stylex_css.lock().unwrap() {
-        if *built == stamp {
-            return Ok(css.clone());
+/// the rule store or the browserslist files moved: every update event makes
+/// each open tab refetch it.
+///
+/// A request reads it through [`DevSheet::fetch`]: a rebuild blocks, on the
+/// sheet's assembly, on lightningcss and on a rebuild another caller began,
+/// so it runs on the blocking pool, one request's at a time.
+#[derive(Default)]
+pub(crate) struct DevSheet {
+    /// Whether `lightningcssOptions` names the targets, which then never
+    /// come from the browserslist files.
+    own_targets: OnceLock<bool>,
+    /// The browserslist files' mtimes, and when they were read.
+    targets: RwLock<Option<(Instant, TargetsStamp)>>,
+    /// The sheet polls are answered with, and the store generation and
+    /// targets it was built from.
+    served: RwLock<Option<(u64, TargetsStamp, Bytes)>>,
+    /// Held by the rebuild on the blocking pool until it is done, whether
+    /// the request that began it still waits for it or not: the tabs
+    /// refetching at once wait for it here, and park no thread of the pool.
+    rebuilding: Arc<tokio::sync::Mutex<()>>,
+    /// Held across a rebuild: callers of [`DevSheet::css`] at once wait for
+    /// one.
+    built: Mutex<Option<Built>>,
+}
+
+/// The last lightningcss pass: what went in, what came out.
+struct Built {
+    assembled: Option<String>,
+    targets: TargetsStamp,
+    css: Bytes,
+}
+
+impl DevSheet {
+    /// The sheet for a request. A poll that finds nothing new is answered
+    /// where it stands; a rebuild runs on the blocking pool, so the tabs
+    /// that refetch at once park none of the runtime's workers on it. They
+    /// take turns at it, so only the first holds a thread of the pool: the
+    /// others find its sheet when their turn comes.
+    pub(crate) async fn fetch(
+        self: &Arc<Self>,
+        root: &Path,
+        plugin: &Arc<StylexPlugin>,
+    ) -> Result<Bytes, String> {
+        if let Some(css) = self.current(root, plugin) {
+            return Ok(css);
+        }
+        let gate = Arc::clone(&self.rebuilding).lock_owned().await;
+        // The request that held the gate has built what this one came for.
+        if let Some(css) = self.current(root, plugin) {
+            return Ok(css);
+        }
+        let (sheet, root, plugin) = (Arc::clone(self), root.to_path_buf(), Arc::clone(plugin));
+        // The rebuild holds the gate, not this request: one dropped while it
+        // runs lets no other request past to wait on it with a thread.
+        tokio::task::spawn_blocking(move || {
+            let _gate = gate;
+            sheet.css(&root, &plugin)
+        })
+        .await
+        .unwrap_or_else(|err| Err(format!("the StyleX stylesheet was not built: {err}")))
+    }
+
+    /// The sheet, when the one last built still stands. Waits on no rebuild.
+    fn current(&self, root: &Path, plugin: &StylexPlugin) -> Option<Bytes> {
+        self.served(plugin.generation(), &self.targets(root, plugin))
+    }
+
+    /// The sheet, rebuilt on this thread when it moved.
+    pub(crate) fn css(&self, root: &Path, plugin: &StylexPlugin) -> Result<Bytes, String> {
+        let targets = self.targets(root, plugin);
+        if let Some(css) = self.served(plugin.generation(), &targets) {
+            return Ok(css);
+        }
+        // A rebuild that panicked wrote nothing here (the last pass is
+        // replaced whole, once the next is done), so what it left is still
+        // the last pass: the next request builds on it.
+        let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
+        // The generation the assembled sheet is at least as new as.
+        let generation = plugin.generation();
+        if let Some(css) = self.served(generation, &targets) {
+            return Ok(css);
+        }
+        let assembled = plugin.stylesheet()?;
+        let css = match &*built {
+            // The store moved and the sheet did not (a module whose rules
+            // others hold too came or went): lightningcss has nothing new.
+            Some(last) if last.assembled == assembled && last.targets == targets => {
+                last.css.clone()
+            }
+            _ => {
+                let css = match &assembled {
+                    Some(sheet) => Bytes::from(oj_css::process_for_browserslist(
+                        "stylex.css",
+                        sheet,
+                        root,
+                        "development",
+                        plugin.lightningcss_options(),
+                    )?),
+                    None => Bytes::new(),
+                };
+                *built = Some(Built {
+                    assembled,
+                    targets,
+                    css: css.clone(),
+                });
+                css
+            }
+        };
+        *self.served.write().unwrap() = Some((generation, targets, css.clone()));
+        Ok(css)
+    }
+
+    fn served(&self, generation: u64, targets: &TargetsStamp) -> Option<Bytes> {
+        match &*self.served.read().unwrap() {
+            Some((built, from, css)) if *built == generation && from == targets => {
+                Some(css.clone())
+            }
+            _ => None,
         }
     }
-    let css = match plugin.stylesheet()? {
-        Some(sheet) => oj_css::process_for_browserslist(
-            "stylex.css",
-            &sheet,
-            &state.root,
-            "development",
-            plugin.lightningcss_options(),
-        )?,
-        None => String::new(),
-    };
-    *state.stylex_css.lock().unwrap() = Some((stamp, css.clone()));
-    Ok(css)
+
+    fn targets(&self, root: &Path, plugin: &StylexPlugin) -> TargetsStamp {
+        let own_targets = *self.own_targets.get_or_init(|| {
+            plugin
+                .lightningcss_options()
+                .get("targets")
+                .is_some_and(serde_json::Value::is_object)
+        });
+        if own_targets {
+            return TargetsStamp::default();
+        }
+        let now = Instant::now();
+        if let Some((read, stamp)) = *self.targets.read().unwrap() {
+            if now.saturating_duration_since(read) < TARGETS_RECHECK {
+                return stamp;
+            }
+        }
+        let stamp = BROWSERSLIST_FILES.map(|f| {
+            std::fs::metadata(root.join(f))
+                .and_then(|m| m.modified())
+                .ok()
+        });
+        *self.targets.write().unwrap() = Some((now, stamp));
+        stamp
+    }
 }
 
 /// The plugin's virtual module for `id`: its source, compiled like any module
@@ -322,8 +517,8 @@ pub(crate) fn html_tags(
 
 #[cfg(test)]
 mod tests {
-    use super::module_id;
-    use std::path::Path;
+    use super::*;
+    use serde_json::json;
 
     #[test]
     fn module_ids_are_the_files_path_with_its_variant_query() {
@@ -341,14 +536,336 @@ mod tests {
             module_id(root, "/node_modules/ui/index.js?v=e80770d4"),
             "/app/node_modules/ui/index.js"
         );
+        assert_eq!(
+            module_id(root, "/src/a.tsx?t=1700000000000&alt&v=e80770d4&lang.ts"),
+            "/app/src/a.tsx?alt&lang.ts"
+        );
         // A user's own queries are part of the id.
         assert_eq!(module_id(root, "/src/a.tsx?t=1"), "/app/src/a.tsx?t=1");
         assert_eq!(module_id(root, "/src/a.tsx?v=2"), "/app/src/a.tsx?v=2");
+        assert_eq!(module_id(root, "/src/a.tsx?"), "/app/src/a.tsx?");
         assert_eq!(module_id(root, "/@fs/opt/lib/x.ts"), "/opt/lib/x.ts");
+        assert_eq!(
+            module_id(root, "/@fs/opt/lib/x.ts?v=e80770d4&raw"),
+            "/opt/lib/x.ts?raw"
+        );
         assert_eq!(module_id(root, "/@id/virtual:x"), "/@id/virtual:x");
         assert_eq!(
             module_id(root, "/@x/a.tsx?t=1700000000000"),
             "/app/@x/a.tsx"
         );
+        assert_eq!(
+            module_id(root, "/@id/virtual:x?t=1700000000000"),
+            "/@id/virtual:x"
+        );
+    }
+
+    fn plugin(root: &Path, options: serde_json::Value) -> StylexPlugin {
+        StylexPlugin::new(&options, root, true, true).unwrap()
+    }
+
+    fn rule(class: &str, declaration: &str) -> StylexRule {
+        StylexRule {
+            class_name: class.into(),
+            ltr: format!(".{class}{{{declaration}}}").into(),
+            rtl: None,
+            const_key: None,
+            const_val: None,
+            priority: 3000.0,
+        }
+    }
+
+    fn text(css: &Bytes) -> &str {
+        std::str::from_utf8(css).unwrap()
+    }
+
+    #[test]
+    fn the_dev_sheet_is_processed_once_per_sheet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), plugin(dir.path(), json!({})));
+        let sheet = DevSheet::default();
+        assert!(sheet.css(root, &p).unwrap().is_empty());
+
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+        let first = sheet.css(root, &p).unwrap();
+        assert!(text(&first).contains("color: red"), "{}", text(&first));
+        // A poll that finds nothing new is answered with the same bytes.
+        assert_eq!(sheet.css(root, &p).unwrap().as_ptr(), first.as_ptr());
+
+        // The store moved and the sheet did not: no second lightningcss pass.
+        assert!(p.record_module_rules("/app/b.ts", &[rule("xa", "color:red")]));
+        assert_eq!(sheet.css(root, &p).unwrap().as_ptr(), first.as_ptr());
+
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xb", "color:blue")]));
+        let edited = sheet.css(root, &p).unwrap();
+        assert!(
+            text(&edited).contains(".xb") && text(&edited).contains(".xa"),
+            "{}",
+            text(&edited)
+        );
+
+        assert!(p.record_module_rules("/app/a.ts", &[]));
+        assert!(p.record_module_rules("/app/b.ts", &[]));
+        assert!(sheet.css(root, &p).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tabs_refetching_at_once_wait_for_one_sheet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), plugin(dir.path(), json!({})));
+        let sheet = DevSheet::default();
+        let rules: Vec<StylexRule> = (0..200)
+            .map(|i| rule(&format!("x{i}"), &format!("margin-top:{i}px")))
+            .collect();
+        assert!(p.record_module_rules("/app/a.ts", &rules));
+        let start = std::sync::Barrier::new(8);
+        let fetched: Vec<usize> = std::thread::scope(|scope| {
+            let tabs: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        sheet.css(root, &p).unwrap().as_ptr() as usize
+                    })
+                })
+                .collect();
+            tabs.into_iter().map(|tab| tab.join().unwrap()).collect()
+        });
+        assert!(fetched.iter().all(|css| *css == fetched[0]), "{fetched:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sheet_being_built_parks_no_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        // Another request's rebuild holds the sheet until told, or for long
+        // enough that a fetch waiting on this test's one worker shows.
+        let (held, holds) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let building = std::thread::spawn({
+            let sheet = Arc::clone(&sheet);
+            move || {
+                let _built = sheet.built.lock().unwrap();
+                held.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(2));
+            }
+        });
+        holds.recv().unwrap();
+        let fetch = tokio::spawn({
+            let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+            async move { sheet.fetch(&root, &p).await }
+        });
+        // The worker runs on while the fetch waits for the rebuild.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!fetch.is_finished());
+        release.send(()).unwrap();
+        let css = fetch.await.unwrap().unwrap();
+        assert!(text(&css).contains("color: red"), "{}", text(&css));
+        building.join().unwrap();
+
+        // A poll that finds nothing new is answered where it stands.
+        assert_eq!(sheet.current(root, &p).unwrap().as_ptr(), css.as_ptr());
+        assert_eq!(sheet.fetch(root, &p).await.unwrap().as_ptr(), css.as_ptr());
+    }
+
+    #[test]
+    fn tabs_waiting_for_a_rebuild_take_no_thread_of_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // The pool's one thread is taken: a fetch that asked for one
+            // would not be answered before it is given back.
+            let (give_back, given_back) = std::sync::mpsc::channel::<()>();
+            let taken = tokio::task::spawn_blocking(move || {
+                let _ = given_back.recv();
+            });
+            // Another request's rebuild is under way.
+            let gate = sheet.rebuilding.lock().await;
+            let tabs: Vec<_> = (0..8)
+                .map(|_| {
+                    let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+                    tokio::spawn(async move { sheet.fetch(&root, &p).await })
+                })
+                .collect();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(tabs.iter().all(|tab| !tab.is_finished()));
+
+            let built = sheet.css(root, &p).unwrap();
+            drop(gate);
+            for tab in tabs {
+                let css = tokio::time::timeout(Duration::from_secs(5), tab)
+                    .await
+                    .expect("a tab waited for a thread of the pool")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(css.as_ptr(), built.as_ptr());
+            }
+            give_back.send(()).unwrap();
+            taken.await.unwrap();
+        });
+    }
+
+    // A request dropped while its rebuild runs (its tab closed) leaves the
+    // gate with the rebuild: the next requests wait for it there, not on the
+    // sheet with a thread of the pool each.
+    #[test]
+    fn a_dropped_request_leaves_its_rebuild_the_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), Arc::new(plugin(dir.path(), json!({}))));
+        let sheet = Arc::new(DevSheet::default());
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(2)
+            .build()
+            .unwrap();
+        // A long rebuild: the sheet, held until told.
+        let (held, holds) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let building = std::thread::spawn({
+            let sheet = Arc::clone(&sheet);
+            move || {
+                let _built = sheet.built.lock().unwrap();
+                held.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(10));
+            }
+        });
+        holds.recv().unwrap();
+        let fetch = || {
+            let (sheet, root, p) = (Arc::clone(&sheet), root.to_path_buf(), Arc::clone(&p));
+            tokio::spawn(async move { sheet.fetch(&root, &p).await })
+        };
+        runtime.block_on(async {
+            // Its rebuild takes the pool's first thread, and runs on after
+            // the request is dropped.
+            let dropped = fetch();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!dropped.is_finished());
+            dropped.abort();
+            assert!(dropped.await.unwrap_err().is_cancelled());
+            assert!(sheet.rebuilding.try_lock().is_err());
+
+            let tabs: Vec<_> = (0..4).map(|_| fetch()).collect();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(tabs.iter().all(|tab| !tab.is_finished()));
+            // The pool's other thread is free: no tab took it.
+            tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(|| ()))
+                .await
+                .expect("a tab waited on the sheet with a thread of the pool")
+                .unwrap();
+
+            release.send(()).unwrap();
+            for tab in tabs {
+                let css = tokio::time::timeout(Duration::from_secs(5), tab)
+                    .await
+                    .expect("a tab never found the sheet")
+                    .unwrap()
+                    .unwrap();
+                assert!(text(&css).contains("color: red"), "{}", text(&css));
+                assert_eq!(css.as_ptr(), sheet.current(root, &p).unwrap().as_ptr());
+            }
+        });
+        building.join().unwrap();
+    }
+
+    #[test]
+    fn a_rebuild_that_panicked_leaves_the_sheet_to_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), plugin(dir.path(), json!({})));
+        let sheet = DevSheet::default();
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "color:red")]));
+        let first = sheet.css(root, &p).unwrap();
+
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xb", "color:blue")]));
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _built = sheet.built.lock().unwrap();
+                    panic!("a rebuild that panics");
+                })
+                .join()
+        });
+        assert!(panicked.is_err() && sheet.built.is_poisoned());
+
+        let next = sheet.css(root, &p).unwrap();
+        assert!(text(&next).contains("color: #00f"), "{}", text(&next));
+        assert_ne!(next, first);
+        assert_eq!(sheet.css(root, &p).unwrap().as_ptr(), next.as_ptr());
+    }
+
+    #[test]
+    fn a_browserslist_edit_reaches_the_dev_sheet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, p) = (dir.path(), plugin(dir.path(), json!({})));
+        std::fs::write(root.join(".browserslistrc"), "chrome 80\n").unwrap();
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "inset:0")]));
+        let sheet = DevSheet::default();
+        let old = sheet.css(root, &p).unwrap();
+        assert!(
+            text(&old).contains("top: 0") && !text(&old).contains("inset"),
+            "{}",
+            text(&old)
+        );
+
+        // No rule changes: the files' mtimes alone say the targets moved.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join(".browserslistrc"), "chrome 120\n").unwrap();
+        std::thread::sleep(TARGETS_RECHECK + Duration::from_millis(50));
+        let new = sheet.css(root, &p).unwrap();
+        assert!(text(&new).contains("inset: 0"), "{}", text(&new));
+    }
+
+    #[test]
+    fn targets_the_options_name_leave_the_browserslist_files_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let p = plugin(
+            root,
+            json!({ "lightningcssOptions": { "targets": { "chrome": 120 << 16 } } }),
+        );
+        std::fs::write(root.join(".browserslistrc"), "chrome 80\n").unwrap();
+        assert!(p.record_module_rules("/app/a.ts", &[rule("xa", "inset:0")]));
+        let sheet = DevSheet::default();
+        let css = sheet.css(root, &p).unwrap();
+        assert!(text(&css).contains("inset: 0"), "{}", text(&css));
+        assert!(sheet.targets.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn the_serving_plugin_is_found_until_its_session_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let config = oj_config::OjConfig {
+            vite_stylex: Some(json!({ "options": {} })),
+            ..Default::default()
+        };
+        assert!(serving_plugin(root).is_none());
+
+        let serving = plugin_for(root, &config, "serve").unwrap().unwrap();
+        let found = |root: &Path| serving_plugin(root).expect("the dev plugin");
+        assert!(Arc::ptr_eq(&found(root), &serving));
+        assert!(Arc::ptr_eq(&found(root), &serving));
+        // However the caller spells the root.
+        assert!(Arc::ptr_eq(&found(&root.join("src/..")), &serving));
+        // A build's plugin is not the one serving.
+        let building = plugin_for(root, &config, "build").unwrap().unwrap();
+        assert!(Arc::ptr_eq(&found(root), &serving));
+
+        drop((serving, building));
+        assert!(serving_plugin(root).is_none());
+        let next = plugin_for(root, &config, "serve").unwrap().unwrap();
+        assert!(Arc::ptr_eq(&found(root), &next));
     }
 }
