@@ -1044,25 +1044,37 @@ fn template_glob(raw: &str) -> String {
 mod tests;
 
 /// Vite's worker plugin for a classic (`iife`) worker bundle (plugins/worker.ts,
-/// its "post" transform over every module with `import.meta` in it): an
-/// `import.meta.url` reads as `self.location.href`; any other `import.meta`
-/// is `_vite_importMeta`, a `{ url: self.location.href }` object declared
-/// once at the top of the module. The declaration shares the module's first
-/// line (Vite prepends a line of its own), so the line map holds; the
-/// bundle prints the same. `None` when the module has no `import.meta`.
+/// its "post" transform over every module with `import.meta` in it): a read
+/// of `import.meta.url` is `self.location.href`; any other `import.meta`,
+/// an assignment to `import.meta.url` included (Vite's build leaves
+/// `_vite_importMeta.url = …`, as the mozjpeg codec's
+/// `import.meta.url = "https://localhost"` shows), is `_vite_importMeta`, a
+/// `{ url: self.location.href }` object declared on a line of its own at
+/// the top of the module. `None` when the module has no `import.meta`.
 pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
     if !code.contains("import.meta") {
         return None;
     }
     static META: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = META.get_or_init(|| regex::Regex::new(r"\bimport\s*\.\s*meta\b").unwrap());
+    // `import.meta.url` on the left of an assignment (`=`, `+=`, `??=`, …).
+    fn assigned(rest: &str) -> bool {
+        let rest = rest.trim_start();
+        const COMPOUND: [&str; 15] = [
+            "**=", "<<=", ">>>=", ">>=", "&&=", "||=", "??=", "+=", "-=", "*=", "/=", "%=", "&=",
+            "|=", "^=",
+        ];
+        COMPOUND.iter().any(|op| rest.starts_with(op))
+            || (rest.starts_with('=') && !rest.starts_with("=="))
+    }
     let clean = strip_literals(code);
     let mut out = String::with_capacity(code.len() + 64);
     let mut last = 0;
     let mut injected = false;
     for m in re.find_iter(&clean) {
         out.push_str(&code[last..m.start()]);
-        if clean[m.end()..].starts_with(".url") {
+        let rest = &clean[m.end()..];
+        if rest.starts_with(".url") && !assigned(&rest[".url".len()..]) {
             out.push_str("self.location.href");
             last = m.end() + ".url".len();
         } else {
@@ -1076,7 +1088,7 @@ pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
     }
     out.push_str(&code[last..]);
     if injected {
-        out.insert_str(0, "const _vite_importMeta = { url: self.location.href };");
+        out.insert_str(0, "const _vite_importMeta = { url: self.location.href };\n");
     }
     Some(out)
 }
@@ -1089,10 +1101,12 @@ mod classic_worker_tests {
     fn import_meta_in_a_classic_worker_is_vites() {
         let code = "const u = import.meta.url;\nif (import.meta.url === undefined) import.meta.url = \"https://localhost\";\nconst m = import.meta;\nconsole.log(\"import.meta.url stays in a string\");\n";
         let out = rewrite_classic_worker_import_meta(code).unwrap();
-        assert!(out.starts_with("const _vite_importMeta = { url: self.location.href };const u = self.location.href;\n"), "{out}");
+        assert!(out.starts_with("const _vite_importMeta = { url: self.location.href };\nconst u = self.location.href;\n"), "{out}");
+        // An assignment to `import.meta.url` goes through the object, as
+        // Vite's build leaves it.
         assert!(
             out.contains(
-                "self.location.href === undefined) self.location.href = \"https://localhost\""
+                "self.location.href === undefined) _vite_importMeta.url = \"https://localhost\""
             ),
             "{out}"
         );
@@ -1101,7 +1115,12 @@ mod classic_worker_tests {
             out.contains("\"import.meta.url stays in a string\""),
             "{out}"
         );
-        assert_eq!(out.matches('\n').count(), code.matches('\n').count());
+        assert_eq!(out.matches('\n').count(), code.matches('\n').count() + 1);
+        let compound = rewrite_classic_worker_import_meta("import.meta.url += \"a\";\nimport.meta.url ??= \"z\";\nconst eq = import.meta.url == \"b\";\n").unwrap();
+        assert!(
+            compound.contains("_vite_importMeta.url += \"a\";\n_vite_importMeta.url ??= \"z\";\nconst eq = self.location.href == \"b\";"),
+            "{compound}"
+        );
         assert!(rewrite_classic_worker_import_meta("const x = 1;\n").is_none());
         let reads =
             rewrite_classic_worker_import_meta("new URL(\"/a.wasm\", '' + import.meta.url)\n")
