@@ -1795,9 +1795,8 @@ fn a_sheet_imported_plainly_and_by_url_joins_its_chunks_sheet_once() {
         "the sheet is in its chunk's stylesheet and the ?url asset, nowhere else: {with_marker:?}"
     );
     for (p, css) in &sheets {
-        assert_eq!(
+        assert!(
             css.matches(".dual-marker").count() <= 1,
-            true,
             "{} carries the sheet more than once",
             p.display()
         );

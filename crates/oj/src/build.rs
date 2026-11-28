@@ -2785,7 +2785,6 @@ impl Plugin for OjCssPlugin {
                 module_type: Some(rolldown_common::ModuleType::Js),
                 side_effects,
                 map: vite_asset_map(),
-                ..Default::default()
             }))
         };
         let (plugin, failed) = (self.name(), args.id.to_string());

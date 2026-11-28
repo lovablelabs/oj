@@ -77,6 +77,10 @@ fn shared_plugin(
     })
 }
 
+/// A module the StyleX plugin compiled for a build: the code, its map, and
+/// the module's rules as the plugin's babel metadata lists them.
+pub(crate) type BuildTransformed = (String, Option<String>, Vec<serde_json::Value>);
+
 /// The plugin's transform for a module a Start build's plugin host hands
 /// over (the stand-in's composition of the package's own plugin, see
 /// plugin-host.mjs `installStylexHost`) under `options`, the object its
@@ -88,7 +92,7 @@ pub(crate) fn build_transform(
     id: &str,
     code: &str,
     options: &serde_json::Value,
-) -> Result<Option<(String, Option<String>, Vec<serde_json::Value>)>, String> {
+) -> Result<Option<BuildTransformed>, String> {
     let plugin = shared_plugin("build", root, options)?;
     let file = Path::new(id.split('?').next().unwrap_or(id));
     // The plugin runs babel over every module importing StyleX and hands

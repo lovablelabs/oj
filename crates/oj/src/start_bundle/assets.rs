@@ -2591,7 +2591,6 @@ impl Plugin for StartAssetsPlugin {
             } else {
                 None
             },
-            ..Default::default()
         }))
     }
 }

@@ -461,7 +461,7 @@ impl<'a> ImportAnalysisVisitor<'a> {
                 rolldown_utils::xxhash::xxhash_with_base(seed.as_bytes(), 16)
             );
             let marker = self.ast_builder.allocator().alloc_str(&marker);
-            Expression::new_identifier(SPAN, &*marker, self)
+            Expression::new_identifier(SPAN, marker, self)
         } else {
             Expression::new_void_0(SPAN, self)
         }));
