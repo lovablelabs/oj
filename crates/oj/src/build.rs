@@ -2536,8 +2536,9 @@ impl Plugin for OjCssPlugin {
                     .await?;
                     // Vite's url rewrite runs on an inline sheet too: a small
                     // `url()` asset becomes a data URL, a large one a file;
-                    // then finalizeCss (its at-rules hoisted, minified under
-                    // `build.cssMinify`, without the trailing newline).
+                    // then css-post minifies it alone under `build.cssMinify`
+                    // (minifyCSS with `inlined`: no trailing newline) and
+                    // keeps it as compiled otherwise, at-rules where they are.
                     let css = match &url_sheets {
                         Some((out_dir, asset_names)) => rebase_css_urls(
                             &out.css,
@@ -2554,9 +2555,15 @@ impl Plugin for OjCssPlugin {
                         ),
                         None => out.css,
                     };
-                    let css = oj_css::finalize_chunk_css(&css, &css_resolve.as_ref())
-                        .map_err(|e| anyhow::anyhow!(e))?;
-                    let css = css.trim_end_matches('\n').to_string();
+                    let resolve = css_resolve.as_ref();
+                    let css = if resolve.minify {
+                        oj_css::minify_css(file, &css, resolve.targets, resolve.lightning)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                            .trim_end()
+                            .to_string()
+                    } else {
+                        css
+                    };
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
                             "export default {}",
@@ -3857,9 +3864,21 @@ impl Plugin for OjUserPlugin {
             });
             if let Some(changed) = changed {
                 for file in &sheet_files {
-                    if changed.get(file).is_some_and(|e| e.get("source").is_some()) {
+                    let what = match changed.get(file) {
+                        None => Some("removed"),
+                        Some(e)
+                            if e.get("fileName")
+                                .and_then(|f| f.as_str())
+                                .is_some_and(|f| f != file) =>
+                        {
+                            Some("renamed")
+                        }
+                        Some(e) if e.get("source").is_some() => Some("changed"),
+                        Some(_) => None,
+                    };
+                    if let Some(what) = what {
                         eprintln!(
-                            "oj build: (!) a generateBundle hook changed the stylesheet {file}; a plain build writes its stylesheets after the hooks, so the change is not applied"
+                            "oj build: (!) a generateBundle hook {what} the stylesheet {file}; a plain build writes its stylesheets after the hooks, so the change is not applied"
                         );
                     }
                 }
@@ -8382,7 +8401,7 @@ fn drop_pure_css_chunks(
                         .keys
                         .iter()
                         .any(|m| oj_css::is_css_module(unqueried(m.as_ref())))
-                    && (c.code.trim().is_empty()
+                    && (c.code.is_empty()
                         || c.modules
                             .keys
                             .iter()
@@ -8447,9 +8466,14 @@ fn drop_pure_css_chunks(
         let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
         imports_map.remove(file);
     }
-    output
-        .assets
-        .retain(|out| !matches!(out, Output::Chunk(c) if pure.contains(c.filename.as_str())));
+    // The chunk and its sourcemap leave the bundle (css-post deletes both).
+    output.assets.retain(|out| match out {
+        Output::Chunk(c) => !pure.contains(c.filename.as_str()),
+        Output::Asset(a) => !a
+            .filename
+            .strip_suffix(".map")
+            .is_some_and(|chunk| pure.contains(chunk)),
+    });
     chunk_css.retain(|(chunk, _)| !pure.contains(chunk));
     // The dropped chunk's row goes with it; its sheet, emitted under the
     // chunk's original file name (its facade), keeps a row of its own keyed
@@ -8491,15 +8515,31 @@ fn blank_pure_css_imports(code: &str, chunk_file: &str, pure: &[String]) -> Stri
         }
         for spec in specs {
             for quote in ['"', '\''] {
-                for gap in ["", " "] {
-                    let needle = format!("import{gap}{quote}{spec}{quote};");
-                    while let Some(at) = out.find(&needle) {
-                        let comment = format!(
-                            "/* empty css {}*/",
-                            " ".repeat(needle.len().saturating_sub(15))
-                        );
-                        out.replace_range(at..at + needle.len(), &comment);
+                // Vite's getEmptyChunkReplacer: `\bimport\s*["']spec["'];`.
+                let tail = format!("{quote}{spec}{quote};");
+                let mut from = 0;
+                while let Some(found) = out[from..].find("import") {
+                    let at = from + found;
+                    from = at + "import".len();
+                    let word_before = out[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+                    if word_before {
+                        continue;
                     }
+                    let rest = &out[from..];
+                    let gap = rest.len() - rest.trim_start().len();
+                    if !rest[gap..].starts_with(&tail) {
+                        continue;
+                    }
+                    let end = from + gap + tail.len();
+                    let comment = format!(
+                        "/* empty css {}*/",
+                        " ".repeat((end - at).saturating_sub(15))
+                    );
+                    out.replace_range(at..end, &comment);
+                    from = at + comment.len();
                 }
             }
         }

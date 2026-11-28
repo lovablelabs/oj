@@ -83,6 +83,7 @@ const CASES: &[&str] = &[
     "start-env",
     "start-chunks",
     "start-plugins",
+    "start-sourcemap",
 ];
 
 /// The part of a case's output that is compared, when not all of it: oj's
@@ -500,6 +501,19 @@ fn a_hooks_bundle_lists_sheets_pages_and_early_assets() {
 #[ignore = "new URL(file, import.meta.url) is an imported asset module in oj, not Vite's in-place rewrite"]
 fn asset_url_and_worker_url_from_import_meta_url() {
     check("asset-url");
+}
+
+/// The start-assets app under `build.sourcemap`: the code, the sheets and
+/// the manifest match, and the maps name the same sources (a `?url`
+/// asset's module, never a `?raw` file's or a sheet's, as Vite's asset
+/// and css plugins hand rolldown an empty map for those); a few segments
+/// differ: the tokens of a worker's `new URL(…, import.meta.url)`, which
+/// Vite rewrites in place, and a route's import expression a column apart.
+/// A known gap.
+#[test]
+#[ignore = "a few segments of the maps differ: a worker's new URL(…, import.meta.url) tokens, a route's import expression's column"]
+fn start_client_sourcemaps_name_assets_but_no_raw_file_or_sheet() {
+    check("start-sourcemap");
 }
 
 #[test]

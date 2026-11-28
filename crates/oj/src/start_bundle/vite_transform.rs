@@ -84,15 +84,21 @@ impl ViteTransform {
     /// The filters off the host's `oxc` fact (`Facts::oxc_filters`): each a
     /// pattern or list of patterns, a regex as `{ $regex, flags }`.
     pub fn with_filters(mut self, facts: Option<&serde_json::Value>) -> Self {
-        let Some(facts) = facts else {
-            return self;
+        let facts = match facts {
+            Some(facts) if facts.as_bool() == Some(false) => {
+                self.disabled = true;
+                return self;
+            }
+            Some(facts) => facts,
+            // No fact read: Vite's own defaults, as its plugin passes them
+            // to the native transform when the config names none.
+            None => &serde_json::Value::Null,
         };
-        if facts.as_bool() == Some(false) {
-            self.disabled = true;
-            return self;
-        }
         let patterns = |key: &str| -> Vec<StringOrRegex> {
-            let value = facts.get(key).unwrap_or(&serde_json::Value::Null);
+            let value = facts
+                .as_object()
+                .and_then(|o| o.get(key))
+                .unwrap_or(&serde_json::Value::Null);
             let items: Vec<&serde_json::Value> = match value {
                 serde_json::Value::Array(items) => items.iter().collect(),
                 serde_json::Value::Null => Vec::new(),

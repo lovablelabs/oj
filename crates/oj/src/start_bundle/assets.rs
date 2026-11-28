@@ -2463,16 +2463,16 @@ impl Plugin for StartAssetsPlugin {
         // A plain sheet stays in its chunk as well, as vite:css-post keeps
         // one: the chunk's modules then place its link.
         let plain = !id.contains('?') && is_style_path(id) && !is_css_module(id);
-        // A sheet's module and a worker's come with Vite's empty map (its css
-        // and worker plugins return one), so they name no source in the
-        // chunk's sourcemap; an asset's (`?url`, `?raw`, `?inline`, a bare
-        // svg) comes with none, as vite:asset returns none, so the chunk's
-        // map lists the asset's source.
+        // A sheet's module, a worker's and a `?raw` file's come with Vite's
+        // empty map (its css, worker and asset plugins return one for those),
+        // so they name no source in the chunk's sourcemap; any other asset's
+        // (`?url`, `?inline`, a bare svg) comes with none, as vite:asset
+        // returns none for it, so the chunk's map lists the asset's source.
         let path_str = path.to_string_lossy();
         let dev = matches!(self.mode, AssetMode::Dev { .. });
         let tag = asset_tag(&self.root, id.trim_start_matches('\0'), dev);
-        let empty_map = (is_style_path(&path_str) && !matches!(tag, Some(AssetTag::Raw)))
-            || matches!(tag, Some(AssetTag::Worker { .. }));
+        let empty_map = is_style_path(&path_str)
+            || matches!(tag, Some(AssetTag::Raw | AssetTag::Worker { .. }));
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),

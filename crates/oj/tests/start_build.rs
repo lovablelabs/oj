@@ -1640,23 +1640,23 @@ fn a_chunks_sourcemap_names_no_stylesheet_but_its_asset_modules() {
         .map(|(p, m)| (p, sources(m)))
         .find(|(_, s)| s.iter().any(|s| s.ends_with("src/routes/__root.tsx")))
         .expect("a chunk's map names the root route as a source");
-    // A stylesheet's module comes with Vite's empty map (its css plugin
-    // returns one), so no map names a sheet; an asset's module (`?raw`,
-    // `?url`) comes with none, as vite:asset returns none, so the chunk's
-    // map lists the asset's source, as Vite's does.
+    // A stylesheet's module and a `?raw` file's come with Vite's empty map
+    // (its css plugin and vite:asset's raw branch return one), so no map
+    // names a sheet or a raw file; a `?url` asset's module comes with none,
+    // as vite:asset returns none for it, so the chunk's map lists the
+    // asset's source, as Vite's does.
     let stray: Vec<&String> = root_sources
         .iter()
-        .filter(|s| s.ends_with(".css"))
+        .filter(|s| s.ends_with(".css") || s.contains("?raw"))
         .collect();
     assert!(
         stray.is_empty(),
-        "{} lists stylesheets as sources, which Vite's maps never do: {stray:?}",
+        "{} lists stylesheets or raw files as sources, which Vite's maps never do: {stray:?}",
         root_map.display()
     );
     assert!(
-        root_sources.iter().any(|s| s.contains("?raw"))
-            && root_sources.iter().any(|s| s.contains("?url")),
-        "{} names the root route's asset modules, as Vite's does: {root_sources:?}",
+        root_sources.iter().any(|s| s.contains("?url")),
+        "{} names the root route's `?url` asset module, as Vite's does: {root_sources:?}",
         root_map.display()
     );
     for (p, map) in &maps {

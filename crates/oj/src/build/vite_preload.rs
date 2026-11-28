@@ -881,6 +881,12 @@ fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
     let mut parts = map.into_parts();
     let mut used: Vec<String> = Vec::new();
     let mut renumbered: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    // The sources the kept segments reference, numbered by first use
+    // (gen-mapping's `put(sources, …)` as each segment is traced), so a
+    // module that mapped nothing (one loaded with an empty map) is absent.
+    let mut used_sources: Vec<u32> = Vec::new();
+    let mut source_renumbered: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::new();
     let first_sourced = parts
         .tokens
         .iter()
@@ -932,12 +938,18 @@ fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
                     }
                 })
             });
+            let source_id = t.get_source_id().map(|id| {
+                *source_renumbered.entry(id).or_insert_with(|| {
+                    used_sources.push(id);
+                    (used_sources.len() - 1) as u32
+                })
+            });
             oxc_sourcemap::Token::new(
                 t.get_dst_line(),
                 t.get_dst_col(),
                 t.get_src_line(),
                 t.get_src_col(),
-                t.get_source_id(),
+                source_id,
                 name_id,
             )
         })
@@ -952,14 +964,26 @@ fn vite_rewritten_map_json(map: oxc_sourcemap::SourceMap) -> String {
     out.insert("version".into(), serde_json::json!(3));
     out.insert("mappings".into(), serde_json::json!(mappings));
     out.insert("names".into(), serde_json::json!(used));
+    let pick = |i: &u32| json.sources.get(*i as usize).cloned();
+    let mut ignore_list: Vec<u32> = json
+        .ignore_list
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|i| source_renumbered.get(i).copied())
+        .collect();
+    ignore_list.sort_unstable();
+    out.insert("ignoreList".into(), serde_json::json!(ignore_list));
     out.insert(
-        "ignoreList".into(),
-        serde_json::json!(json.ignore_list.unwrap_or_default()),
+        "sources".into(),
+        serde_json::json!(used_sources.iter().map(pick).collect::<Vec<_>>()),
     );
-    out.insert("sources".into(), serde_json::json!(json.sources));
+    let contents = json.sources_content.unwrap_or_default();
     out.insert(
         "sourcesContent".into(),
-        serde_json::json!(json.sources_content.unwrap_or_default()),
+        serde_json::json!(used_sources
+            .iter()
+            .map(|i| contents.get(*i as usize).cloned().flatten())
+            .collect::<Vec<_>>()),
     );
     out.insert("file".into(), serde_json::json!(json.file));
     serde_json::Value::Object(out).to_string()

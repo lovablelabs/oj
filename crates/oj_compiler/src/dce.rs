@@ -886,44 +886,68 @@ fn removed_import_text(
     body: &[oxc_ast::ast::Statement<'_>],
     span: Span,
 ) -> &'static str {
-    use oxc_ast::ast::Statement;
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind, Statement};
     let Some(at) = body.iter().position(|s| s.span() == span) else {
         return ";";
     };
+    // An import or export starts a statement no expression continues.
     let next_safe = body.get(at + 1).is_none_or(|s| {
         matches!(
             s,
             Statement::ImportDeclaration(_)
-                | Statement::ExportNamedDeclaration(_)
-                | Statement::ExportDefaultDeclaration(_)
                 | Statement::ExportAllDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportFromDeclaration(_)
         )
     });
     // A `}` ends the statement before only when that statement is a
-    // declaration or a block (`const f = function () {}` is an expression
-    // `(g)()` would continue).
+    // declaration or a block (`const f = function () {}` and
+    // `export default {}` end in an expression `(g)()` would continue).
+    let block_declaration = |d: &Declaration<'_>| {
+        matches!(
+            d,
+            Declaration::FunctionDeclaration(_)
+                | Declaration::ClassDeclaration(_)
+                | Declaration::TSInterfaceDeclaration(_)
+                | Declaration::TSEnumDeclaration(_)
+                | Declaration::TSNamespaceDeclaration(_)
+                | Declaration::TSGlobalDeclaration(_)
+                | Declaration::TSExternalModuleDeclaration(_)
+        )
+    };
     let prev_safe = at == 0 || {
         let prev = &body[at - 1];
         let text = code[..prev.span().end as usize].trim_end();
         text.ends_with(';')
             || (text.ends_with('}')
-                && matches!(
-                    prev,
+                && match prev {
                     Statement::FunctionDeclaration(_)
-                        | Statement::ClassDeclaration(_)
-                        | Statement::BlockStatement(_)
-                        | Statement::IfStatement(_)
-                        | Statement::ForStatement(_)
-                        | Statement::ForInStatement(_)
-                        | Statement::ForOfStatement(_)
-                        | Statement::WhileStatement(_)
-                        | Statement::TryStatement(_)
-                        | Statement::SwitchStatement(_)
-                        | Statement::ExportNamedDeclaration(_)
-                        | Statement::ExportDefaultDeclaration(_)
-                        | Statement::TSEnumDeclaration(_)
-                        | Statement::TSInterfaceDeclaration(_)
-                ))
+                    | Statement::ClassDeclaration(_)
+                    | Statement::BlockStatement(_)
+                    | Statement::IfStatement(_)
+                    | Statement::ForStatement(_)
+                    | Statement::ForInStatement(_)
+                    | Statement::ForOfStatement(_)
+                    | Statement::WhileStatement(_)
+                    | Statement::TryStatement(_)
+                    | Statement::SwitchStatement(_)
+                    | Statement::ExportNamedDeclaration(_)
+                    | Statement::TSEnumDeclaration(_)
+                    | Statement::TSInterfaceDeclaration(_)
+                    | Statement::TSNamespaceDeclaration(_)
+                    | Statement::TSGlobalDeclaration(_)
+                    | Statement::TSExternalModuleDeclaration(_) => true,
+                    Statement::ExportDeclaration(d) => block_declaration(&d.declaration),
+                    Statement::ExportDefaultDeclaration(d) => matches!(
+                        d.declaration,
+                        ExportDefaultDeclarationKind::FunctionDeclaration(_)
+                            | ExportDefaultDeclarationKind::ClassDeclaration(_)
+                            | ExportDefaultDeclarationKind::TSInterfaceDeclaration(_)
+                    ),
+                    _ => false,
+                })
     };
     if next_safe || prev_safe {
         ""
