@@ -681,7 +681,12 @@ pub(crate) fn fill_preload_markers<'d>(
         let mut removed_pure = false;
         let deps: Vec<String> = match &import.url {
             Some(url) => {
-                let normalized = normalize_posix(&dir.join(url));
+                // Vite: `path.posix.join(dirname(chunk.fileName), cleanUrl(url))`:
+                // a string join, so a root-led url stays under the chunk's
+                // directory, and the query goes.
+                let clean = url.split(['?', '#']).next().unwrap_or(url);
+                let normalized =
+                    normalize_posix(Path::new(&format!("{}/{clean}", dir.to_string_lossy())));
                 removed_pure = dependency(&normalized).is_some_and(|d| d.js.is_none());
                 let mut seen = std::collections::HashSet::new();
                 collect_preload_dependencies(&normalized, file, dependency)

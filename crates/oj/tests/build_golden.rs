@@ -91,6 +91,13 @@ const CASES: &[&str] = &[
     "start-lazy",
     "start-esbuild",
     "start-css-no-split",
+    "css-no-split-order",
+    "css-modules-more",
+    "sourcemap-glob",
+    "entry-exports",
+    "base-external",
+    "lib-esbuild",
+    "builtins-plain",
 ];
 
 /// The part of a case's output that is compared, when not all of it: oj's
@@ -477,6 +484,12 @@ golden! {
     start_svgr_base_path_and_public_assets => "start-svgr",
     start_react_lazy_dynamic_sheets_and_variable_imports => "start-lazy",
     start_esbuild_minify_and_an_older_target => "start-esbuild",
+    one_stylesheet_in_the_order_css_post_collects => "css-no-split-order",
+    css_modules_unused_conventions_keyframes_and_a_composes_diamond => "css-modules-more",
+    an_entry_with_exports_keeps_no_signature => "entry-exports",
+    an_external_url_base => "base-external",
+    library_under_esbuild_without_identifier_mangling => "lib-esbuild",
+    node_builtins_in_a_browser_build => "builtins-plain",
 }
 
 /// A TanStack Start app's client bundle. The HTML, the manifest and every
@@ -539,6 +552,19 @@ fn start_client_sourcemaps_name_assets_but_no_raw_file_or_sheet() {
 #[ignore = "oj's Start build splits the client's CSS per chunk under cssCodeSplit: false, where Vite writes one style.css"]
 fn start_one_stylesheet_for_the_client() {
     check("start-css-no-split");
+}
+
+/// `build.sourcemap` with a glob, a variable import (one left as written
+/// for its missing extension, one with a query), and a glob over a file and
+/// a directory of one name. The code matches; the map differs in the
+/// segments inside the rewritten lines: Vite's native plugins return a
+/// character-boundary map of their text edits, oj a line map of its
+/// reprint, so a token after the edit on the same line maps a column apart.
+/// A known gap (the module used to map to nothing at all).
+#[test]
+#[ignore = "the map of a glob- or variable-import-expanded module is a line map, where Vite's is a boundary map of the edit"]
+fn source_maps_of_globs_and_variable_imports() {
+    check("sourcemap-glob");
 }
 
 #[test]

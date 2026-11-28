@@ -386,9 +386,12 @@ async fn built_sheets_link_in_execution_order() {
     };
     let (e, c, d) = (at(".e"), at(".c"), at(".d"));
     assert!(e < c && c < d, "{sheet}");
-    assert_eq!(
-        sheet[e..c].matches('{').count(),
-        3,
+    // The sheet is minified whole, as Vite's finalizeCss minifies it, so
+    // rules with one declaration merge into one selector list: the two CSS
+    // modules' selectors sit between e's and c's in it.
+    let (a, b) = (at("._a_"), at("._b_"));
+    assert!(
+        e < a && a < b && b < c,
         "the two CSS modules' rules sit between e and c: {sheet}"
     );
 }

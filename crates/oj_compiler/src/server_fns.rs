@@ -71,6 +71,8 @@ pub struct ServerFn {
     pub decl_start: usize,
     /// Byte offset just past the handler call's `(`.
     pub args_at: usize,
+    /// Byte offset of the handler call's closing `)`.
+    args_end: usize,
     /// The handler's first argument, as a span, when it has one.
     first_arg: Option<(usize, usize)>,
     /// `.validator(...)` / `.inputValidator(...)` links to delete on the
@@ -400,6 +402,7 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
                 name: id.name.to_string(),
                 decl_start,
                 args_at,
+                args_end: call.span.end as usize - 1,
                 first_arg,
                 // The `.validator(..)` / `.inputValidator(..)` links the
                 // client drops, as spans from each link's object end to its
@@ -972,11 +975,15 @@ pub fn rewrite_server(code: &str, rel: &str, modules: &dyn Modules) -> Option<St
 /// Start's provider module (`<file>?tss-serverfn-split`, what the resolver
 /// imports): [`rewrite_server`]'s handler siblings, with the module's own
 /// exports made local as the compiler's safeRemoveExports makes them (an
-/// `export const` loses its `export`, an `export { a, b }` list goes, an
-/// `export default` of a named function or class keeps the declaration) and
-/// the siblings as the module's only exports. Lines stay where they were.
+/// `export const`, `export function` or `export class` loses its `export`,
+/// an `export { a, b }` list goes, an `export default` of a named function
+/// or class keeps the declaration; `export enum`, `export namespace`,
+/// `export *` and `export * as ns` stay) and the siblings as the module's
+/// only exports. Each handler call's arguments become the sibling and the
+/// handler alone, as the compiler sets them (`[extractedFnIdentifier,
+/// serverFnNode]`). Lines stay where they were.
 pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> Option<String> {
-    use oxc_ast::ast::ExportDefaultDeclarationKind;
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind};
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(rel)).parse();
     if parsed.fatal_error {
@@ -992,6 +999,8 @@ pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> 
         name,
         decl_start,
         args_at,
+        args_end,
+        first_arg,
         ..
     } in &fns
     {
@@ -1005,16 +1014,32 @@ pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> 
                 "const {handler} = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
             ),
         ));
-        edits.push((*args_at, *args_at, format!("{handler}, ")));
+        // The handler is a deep clone in the compiler's output (new nodes),
+        // so nothing declared inside it is a dead-code candidate any more:
+        // the whole argument list is replaced, carrying nothing over.
+        let args = match first_arg {
+            Some((start, end)) => format!("{handler}, {}", &code[*start..*end]),
+            None => handler.clone(),
+        };
+        edits.push((*args_at, *args_end, args));
         handlers.push(handler);
     }
     for stmt in &parsed.program.body {
         match stmt {
-            Statement::ExportDeclaration(d) => edits.push((
-                d.span.start as usize,
-                d.declaration.span().start as usize,
-                String::new(),
-            )),
+            Statement::ExportDeclaration(d)
+                if matches!(
+                    d.declaration,
+                    Declaration::VariableDeclaration(_)
+                        | Declaration::FunctionDeclaration(_)
+                        | Declaration::ClassDeclaration(_)
+                ) =>
+            {
+                edits.push((
+                    d.span.start as usize,
+                    d.declaration.span().start as usize,
+                    String::new(),
+                ))
+            }
             Statement::ExportNamedDeclaration(d) => {
                 edits.push((d.span.start as usize, d.span.end as usize, String::new()));
             }
@@ -1038,21 +1063,44 @@ pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> 
             _ => {}
         }
     }
-    // Back to front; at one position, a deletion before an insertion, so the
+    edits.push((
+        code.len(),
+        code.len(),
+        format!("\nexport {{ {} }};\n", handlers.join(", ")),
+    ));
+    // Front to back; at one position, an insertion before a deletion, so the
     // sibling lands before the declaration the `export` left.
-    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-    let mut out = code.to_string();
+    edits.sort_by_key(|(start, end, _)| (*start, *end));
+    let mut out = String::with_capacity(code.len() + 256);
+    let mut step = Vec::with_capacity(edits.len());
+    let mut last = 0;
     for (start, end, text) in edits {
-        let lines = code[start..end].matches('\n').count();
-        out.replace_range(start..end, &format!("{text}{}", "\n".repeat(lines)));
+        out.push_str(&code[last..start]);
+        let lines = code[start..end]
+            .matches('\n')
+            .count()
+            .saturating_sub(text.matches('\n').count());
+        out.push_str(&text);
+        out.push_str(&"\n".repeat(lines));
+        step.push(crate::dce::Replaced {
+            start,
+            end,
+            len: text.len() + lines,
+            moved: Vec::new(),
+        });
+        last = end;
     }
-    // With the exports local, what nothing reads goes (the route and its
-    // component, the imports only they used), as the compiler's dead-code
-    // pass takes it; the siblings stay, exported.
-    let out = crate::dce::drop_unreferenced_module_bindings(
-        format!("{out}\nexport {{ {} }};\n", handlers.join(", ")),
-        rel,
-    );
+    out.push_str(&code[last..]);
+    let mut map = crate::dce::EditMap::default();
+    map.push(step);
+    // The compiler then runs its dead-code pass with the candidates it found
+    // before the edit (`findReferencedIdentifiers`): with the exports local,
+    // an exported declaration nothing reads goes (the route and its
+    // component, the imports only they used), as its export had it read;
+    // what nothing read before (`const unused = sideEffect();`), or was
+    // removable already (a self-recursive helper), is no candidate and
+    // stays. The siblings stay, exported.
+    let out = crate::dce::drop_dead_bindings(code, out, rel, &map);
     let at = prologue_end(&parsed.program, code);
     let sep = if at > 0 && !code[..at].ends_with('\n') {
         " "
@@ -1274,6 +1322,65 @@ mod tests {
         super::rewrite_ssr_caller(code, rel, &())
             .expect("rewrites")
             .expect("has a server fn")
+    }
+
+    // Start's provider output for this module (`?tss-serverfn-split`): the
+    // exports go local (`safeRemoveExports` unwraps function, class and
+    // variable exports, drops export lists, keeps `export enum E` and
+    // `export * as ns`), the handler call's arguments become the sibling and
+    // the handler (`"extra"` and `"more"` gone), and its dead-code pass runs
+    // with the candidates found before the edit, so `Route`, `Comp` and
+    // `createFileRoute` go while `const unused = sideEffect();` and `selfRec`
+    // stay:
+    //   import { createServerRpc } from '@tanstack/react-start/server-rpc';
+    //   import { createServerFn } from "@tanstack/react-start";
+    //   const unused = sideEffect();
+    //   function selfRec() {
+    //     return selfRec();
+    //   }
+    //   export enum E {
+    //     A,
+    //   }
+    //   export * as ns from "./other";
+    //   const fn_createServerFn_handler = createServerRpc({
+    //     id: "..",
+    //     name: "fn",
+    //     filename: "src/provider.ts"
+    //   }, opts => fn.__executeServer(opts));
+    //   const fn = createServerFn().handler(fn_createServerFn_handler, async () => 1);
+    //   export { fn_createServerFn_handler };
+    #[test]
+    fn the_provider_keeps_what_start_keeps_and_passes_the_handler_alone() {
+        let code = "import { createServerFn } from \"@tanstack/react-start\";\nimport { createFileRoute } from \"@tanstack/react-router\";\nconst unused = sideEffect();\nfunction selfRec() { return selfRec(); }\nexport enum E { A }\nexport * as ns from \"./other\";\nexport { a, b } from \"./x\";\nexport default function Comp() { return 1 }\nexport const Route = createFileRoute(\"/\")({ component: Comp });\nexport const fn = createServerFn().handler(async () => 1, \"extra\",\n  \"more\");\n";
+        let rel = "src/provider.ts";
+        let out = provider(code, rel);
+        for kept in [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "const unused = sideEffect();",
+            "function selfRec() { return selfRec(); }",
+            "export enum E { A }",
+            "export * as ns from \"./other\";",
+            // The dropped `"more"` line's newline pads the call, keeping lines.
+            "const fn = createServerFn().handler(fn_createServerFn_handler, async () => 1\n);",
+        ] {
+            assert!(out.contains(kept), "{kept}:\n{out}");
+        }
+        for gone in [
+            "createFileRoute",
+            "Comp",
+            "Route",
+            "export { a, b }",
+            "\"extra\"",
+            "\"more\"",
+        ] {
+            assert!(!out.contains(gone), "{gone}:\n{out}");
+        }
+        assert!(
+            out.ends_with("\nexport { fn_createServerFn_handler };\n"),
+            "{out}"
+        );
+        assert_eq!(out.lines().count(), code.lines().count() + 2, "{out}");
+        parses(&out, rel);
     }
 
     /// Start's build splits a server module in two: the provider

@@ -1920,6 +1920,29 @@ function esbuildMinifyPlugin() {
       if (target === "baseline-widely-available") target = [...BASELINE_WIDELY_AVAILABLE_TARGET];
       const { include: _i, exclude: _e, jsxInject: _j, ...options } = esbuildOptions;
       const raw = typeof options.tsconfigRaw === "object" && options.tsconfigRaw ? options.tsconfigRaw : {};
+      // Vite's resolveEsbuildTranspileOptions: `minify: false` with the three
+      // flags whenever one is set (esbuild ORs `minify` into each), and an ES
+      // library keeps its whitespace.
+      const format = opts?.format ?? "es";
+      const isEsLib = !!(config.build?.lib ?? rc.build?.lib) && format === "es";
+      const explicit =
+        options.minifyIdentifiers != null || options.minifySyntax != null || options.minifyWhitespace != null;
+      const minifyOptions =
+        explicit || isEsLib
+          ? {
+              minify: false,
+              minifyIdentifiers: options.minifyIdentifiers ?? true,
+              minifySyntax: options.minifySyntax ?? true,
+              minifyWhitespace: isEsLib ? false : (options.minifyWhitespace ?? true),
+              treeShaking: true,
+            }
+          : { minify: true, treeShaking: true };
+      // Vite defaults `useDefineForClassFields` to false only when the
+      // compiler options name neither it nor a target.
+      const compilerOptions = { ...raw.compilerOptions };
+      if (compilerOptions.useDefineForClassFields === undefined && compilerOptions.target === undefined) {
+        compilerOptions.useDefineForClassFields = false;
+      }
       const { transform } = await load();
       const result = await transform(code, {
         sourcemap: true,
@@ -1927,11 +1950,10 @@ function esbuildMinifyPlugin() {
         ...options,
         loader: "js",
         target: target || undefined,
-        format: { es: "esm", cjs: "cjs" }[opts?.format ?? "es"],
+        format: { es: "esm", cjs: "cjs" }[format],
         supported: { "dynamic-import": true, "import-meta": true, ...esbuildOptions.supported },
-        minify: true,
-        treeShaking: true,
-        tsconfigRaw: { ...raw, compilerOptions: { useDefineForClassFields: false, ...raw.compilerOptions } },
+        ...minifyOptions,
+        tsconfigRaw: { ...raw, compilerOptions },
       });
       return { code: result.code, map: JSON.parse(result.map) };
     },
@@ -2374,6 +2396,9 @@ function pluginContext(c) {
           id: file.id,
           name: file.name ?? null,
           fileName: file.fileName ?? null,
+          // Rollup's per-chunk `preserveSignature` (`strict`, `allow-extension`,
+          // `exports-only`, false); the build's `preserveEntrySignatures` otherwise.
+          preserveSignature: file.preserveSignature ?? null,
         };
         const bucket = transformEmitStore.getStore();
         if (bucket) bucket.push(rec);
@@ -7505,12 +7530,14 @@ function contentHash(source) {
   return createHash("sha256").update(source).digest("base64url");
 }
 
-async function renderChunk(c, code, chunkJson) {
+async function renderChunk(c, code, chunkJson, format) {
   const chunk = JSON.parse(chunkJson || "{}");
   // Rollup passes NormalizedOutputOptions as the 3rd arg; renderChunk hooks such
   // as UnoCSS's read `options.dir` (the resolved output dir) to key their
-  // vite:css-post lookup.
+  // vite:css-post lookup, and vite:esbuild-transpile reads `options.format`
+  // (a library build renders each format in turn).
   const options = normalizedOutputOptions(c);
+  if (format) options.format = format;
   let current = code;
   const maps = [];
   const mapPlugins = [];
@@ -7714,7 +7741,7 @@ async function run(hook, args, c) {
   if (hook === "hasRenderChunk") {
     return String(pluginsWithHook(c, "renderChunk").length > 0);
   }
-  if (hook === "renderChunk") return renderChunk(c, args[0], args[1]);
+  if (hook === "renderChunk") return renderChunk(c, args[0], args[1], args[2]);
   if (hook === "hasWriteBundle") {
     return String(pluginsWithHook(c, "writeBundle").length > 0);
   }

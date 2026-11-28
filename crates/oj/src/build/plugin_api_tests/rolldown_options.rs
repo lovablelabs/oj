@@ -90,7 +90,7 @@ async fn rolldown_output_options_shape_an_iife_bundle() {
             ),
             (
                 "oj.config.json",
-                r#"{"build":{"minify":false,"rolldownOptions":{"input":{"index":"src/main.js"},"external":["cdn-lib"],"treeshake":false,"output":[{"format":"iife","name":"App","banner":"/* BANNER */","footer":"/* FOOTER */","inlineDynamicImports":true,"globals":{"cdn-lib":"CdnLib"}},{"format":"cjs"}]}}}"#,
+                r#"{"build":{"minify":false,"rolldownOptions":{"input":{"index":"src/main.js"},"preserveEntrySignatures":"strict","external":["cdn-lib"],"treeshake":false,"output":[{"format":"iife","name":"App","banner":"/* BANNER */","footer":"/* FOOTER */","inlineDynamicImports":true,"globals":{"cdn-lib":"CdnLib"}},{"format":"cjs"}]}}}"#,
             ),
             ("index.html", INDEX_HTML),
         ],

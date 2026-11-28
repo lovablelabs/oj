@@ -1,0 +1,4 @@
+.accent {
+  composes: root from "./root.module.css";
+  color: tomato;
+}

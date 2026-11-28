@@ -1,0 +1,19 @@
+.card-title {
+  composes: base from "./base.module.css";
+  composes: accent from "./accent.module.css";
+  font-weight: 700;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+.plain-box {
+  margin: 0;
+}

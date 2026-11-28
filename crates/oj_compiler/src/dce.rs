@@ -8,7 +8,9 @@
 //!
 //! - candidates: the declared names (import specifiers, declarators,
 //!   destructured names, function declarations, at every scope) that were
-//!   read before the edit, minus the module bindings already removable then;
+//!   read before the edit (an exported declaration counts: Babel's scope
+//!   references it from its export), minus the module bindings already
+//!   removable then;
 //! - `findRemovableBindings`, over the module's bindings only: a reference
 //!   inside another binding's node is an edge from it, one anywhere else (an
 //!   export included) keeps it, as do a reassignment or a loop iterator; what
@@ -128,27 +130,6 @@ pub(crate) fn drop_dead_bindings(
     after
 }
 
-/// `code` with its unreferenced module-level bindings gone, every binding a
-/// candidate: what Start's provider compile leaves once a module's exports
-/// go local (the route and its component, and the imports only they used),
-/// as its dead-code pass removes them.
-pub(crate) fn drop_unreferenced_module_bindings(mut code: String, path: &str) -> String {
-    let Some(module) = Analysis::of(&code, path, |a| {
-        a.decls
-            .iter()
-            .filter(|d| d.module && !d.exported)
-            .map(|d| d.name.clone())
-            .collect::<HashSet<String>>()
-    }) else {
-        return code;
-    };
-    let nested = HashSet::new();
-    while let Some((out, _)) = drop_pass(&code, path, &module, &nested) {
-        code = out;
-    }
-    code
-}
-
 fn source_type(path: &str) -> SourceType {
     SourceType::from_path(path.split('?').next().unwrap_or(path))
         .unwrap_or_else(|_| SourceType::tsx())
@@ -229,8 +210,9 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 if reference.is_write() {
                     written.insert(d.symbol);
                 }
-                // Babel's scope counts value references (a `typeof x` in a
-                // type among them), not a type annotation's.
+                // Babel's scope counts value references, and a `typeof x`
+                // type query's outside a type annotation (see
+                // `reference_spans`), not a type annotation's.
                 if reference.is_read() || typeof_refs.contains(&rid) {
                     // An export specifier's local has no identifier node: it
                     // sits outside every binding and keeps it.
@@ -390,7 +372,11 @@ impl<'s, 'a> Analysis<'s, 'a> {
         let mut module = HashSet::new();
         let mut nested = Vec::new();
         for d in &self.decls {
-            if !self.read(d.symbol) || self.removable.contains(&d.symbol) {
+            // Babel's scope references an exported declaration from its
+            // export (its collector's `ExportDeclaration`), so one is a
+            // candidate: made local by the edit, as Start's provider compile
+            // makes a module's exports, it goes when nothing reads it.
+            if !(self.read(d.symbol) || d.exported) || self.removable.contains(&d.symbol) {
                 continue;
             }
             if d.module {
@@ -594,8 +580,13 @@ impl<'a> Visit<'a> for Collect<'_> {
 }
 
 /// Every identifier reference's span, by reference id, and the ones inside
-/// a `typeof` type query (a value read in a type, which Babel's scope counts
-/// as a reference; oxc resolves it to a plain type reference).
+/// a `typeof` type query that Babel's scope counts as a reference (oxc
+/// resolves it to a plain type reference): a value read in a type alias, a
+/// type argument, an `as` / `satisfies` / `<T>` type, a type parameter's
+/// constraint, an `extends` clause. Not one under a type annotation (`: T`
+/// of a parameter, variable, return, property or method signature, a
+/// function type's parameter or return): Babel's scope collector skips every
+/// `TSTypeAnnotation`, so `typeof x` there reads nothing.
 fn reference_spans(
     program: &Program,
 ) -> (
@@ -608,12 +599,13 @@ fn reference_spans(
         spans: HashMap<oxc_syntax::reference::ReferenceId, Span>,
         typeof_refs: HashSet<oxc_syntax::reference::ReferenceId>,
         in_query: usize,
+        in_annotation: usize,
     }
     impl<'a> Visit<'a> for Spans {
         fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
             if let Some(id) = it.reference_id.get() {
                 self.spans.insert(id, it.span);
-                if self.in_query > 0 {
+                if self.in_query > 0 && self.in_annotation == 0 {
                     self.typeof_refs.insert(id);
                 }
             }
@@ -622,6 +614,11 @@ fn reference_spans(
             self.in_query += 1;
             walk::walk_ts_type_query(self, it);
             self.in_query -= 1;
+        }
+        fn visit_ts_type_annotation(&mut self, it: &oxc_ast::ast::TSTypeAnnotation<'a>) {
+            self.in_annotation += 1;
+            walk::walk_ts_type_annotation(self, it);
+            self.in_annotation -= 1;
         }
     }
     let mut s = Spans::default();
@@ -1467,12 +1464,55 @@ mod tests {
         assert!(out.contains("export const x = 1;"), "{out}");
     }
 
-    // A type reference reads the binding.
+    // A `typeof` type query in a type alias reads the binding.
     #[test]
     fn babel_a_type_reference_keeps_its_binding() {
         let before = "export function make() {\n  const schema = mk();\n  type T = typeof schema;\n  let v: T | undefined;\n  return [v, keep(() => schema)];\n}\n";
         let out = dce(before, "() => schema");
         assert!(out.contains("const schema = mk();"), "{out}");
+    }
+
+    // Babel's scope collector skips every `TSTypeAnnotation`, so a `typeof
+    // x` in a parameter's, variable's, return's, property's or method
+    // signature's annotation, or a function type's, reads nothing, while one
+    // in a type alias's body, an `as` type, a type argument, a type
+    // parameter's constraint or an `extends` clause does. Babel's output for
+    // the first module starts `import { y, z } from "./m";`; the second
+    // keeps `import { x, y, z } from "./m";`.
+    #[test]
+    fn babel_a_typeof_under_a_type_annotation_does_not_keep_its_binding() {
+        let before = "import { x, y, z } from \"./m\";\nexport const s = keep(() => [x, y, z]);\nexport function f(a: typeof x): typeof x { return null as any; }\nlet v: typeof x;\ninterface I { a: typeof x; m(): typeof x }\ntype T = { a: typeof x; b: (p: typeof x) => typeof x };\ntype U = typeof y;\nexport const w = 1 as typeof z;\n";
+        let out = dce(before, "() => [x, y, z]");
+        assert!(out.starts_with("import { y, z } from \"./m\";\n"), "{out}");
+        let before = "import { x, y, z } from \"./m\";\nexport const s = keep(() => [x, y, z]);\nf<typeof x>();\ninterface I extends Array<typeof y> {}\nexport function g<T extends typeof z>() {}\n";
+        let out = dce(before, "() => [x, y, z]");
+        assert!(
+            out.starts_with("import { x, y, z } from \"./m\";\n"),
+            "{out}"
+        );
+    }
+
+    // Start's provider compile makes the module's exports local
+    // (`safeRemoveExports`) and runs the pass with the candidates found
+    // before: an exported declaration is one (Babel's scope references it
+    // from its export), so `export const Route`, made local and read by
+    // nothing, goes with its component and import; `const unused =
+    // sideEffect();` was never read and `selfRec` was removable already, so
+    // neither is a candidate and both stay. Babel's output:
+    // `const unused = sideEffect();\nfunction selfRec() {\n  return selfRec();\n}`.
+    #[test]
+    fn babel_an_export_made_local_goes_while_non_candidates_stay() {
+        let before = "import { createFileRoute } from \"@tanstack/react-router\";\nconst unused = sideEffect();\nfunction selfRec() { return selfRec(); }\nfunction Comp() { return 1 }\nexport const Route = createFileRoute(\"/\")({ component: Comp });\n";
+        let out = dce(before, "export ");
+        for gone in ["createFileRoute", "Comp", "Route"] {
+            assert!(!out.contains(gone), "{gone}:\n{out}");
+        }
+        assert!(
+            out.contains(
+                "const unused = sideEffect();\nfunction selfRec() { return selfRec(); }\n"
+            ),
+            "{out}"
+        );
     }
 
     // A `for` head's declarator goes like any other; a loop iterator stays.

@@ -1,0 +1,4 @@
+.base {
+  composes: root from "./root.module.css";
+  padding: 4px;
+}

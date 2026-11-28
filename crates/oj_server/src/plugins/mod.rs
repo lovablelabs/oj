@@ -133,6 +133,10 @@ pub struct ChunkEmit {
     pub id: String,
     pub name: Option<String>,
     pub file_name: Option<String>,
+    /// The emit's `preserveSignature`, as written (`"strict"`,
+    /// `"allow-extension"`, `"exports-only"`, `false`); none takes the
+    /// build's `preserveEntrySignatures`.
+    pub preserve_signature: Option<serde_json::Value>,
 }
 
 impl ChunkEmit {
@@ -145,6 +149,7 @@ impl ChunkEmit {
                 .get("fileName")
                 .and_then(|x| x.as_str())
                 .map(str::to_string),
+            preserve_signature: m.get("preserveSignature").filter(|v| !v.is_null()).cloned(),
         })
     }
 }

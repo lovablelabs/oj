@@ -1902,12 +1902,17 @@ impl PluginHost {
         self.call_flag("hasRenderChunk", false).await
     }
 
+    /// `format` is the output's (`es`, `cjs`, `iife`, `umd`): the hooks'
+    /// output options carry it, as a library build calls them per format.
     pub async fn render_chunk(
         &self,
         code: &str,
         chunk_json: &str,
+        format: &str,
     ) -> Result<HostTransform, String> {
-        let raw = self.call("renderChunk", &[code, chunk_json]).await?;
+        let raw = self
+            .call("renderChunk", &[code, chunk_json, format])
+            .await?;
         Ok(HostTransform::parse(raw, code))
     }
 

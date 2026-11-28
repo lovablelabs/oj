@@ -318,3 +318,63 @@ fn recursive_sass_definitions_abort_the_process() {
         None,
     );
 }
+
+/// `composes … from` sheets go in front of the module's own, each file once
+/// (postcss-modules' loader keys its `written` set by resolved path): two
+/// spellings of one file, and two routes to it, write it once; two files
+/// composing from each other end at the depth cap rather than looping.
+#[test]
+fn composed_files_are_written_once_whatever_the_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("deep")).unwrap();
+    std::fs::write(src.join("d.module.css"), ".d { padding: 1px }").unwrap();
+    std::fs::write(
+        src.join("deep/b.module.css"),
+        ".b { composes: d from \"../d.module.css\"; color: blue }",
+    )
+    .unwrap();
+    let source = ".a { composes: b from \"./deep/b.module.css\"; color: red }\n\
+                  .e { composes: d from \"./d.module.css\"; color: red }\n\
+                  .f { composes: d from \"./deep/../d.module.css\"; color: red }\n";
+    std::fs::write(src.join("a.module.css"), source).unwrap();
+    let cfg = oj_css::CssResolveConfig {
+        root: dir.path().to_path_buf(),
+        ..Default::default()
+    };
+    let out = oj_css::compile_css_with("/src/a.module.css", source, &cfg.as_ref()).unwrap();
+    let exports = out.exports.unwrap();
+    let names: Vec<&str> = exports.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["a", "e", "f"]);
+    let d = exports[1].1.split(' ').nth(1).unwrap();
+    assert!(d.starts_with("_d_"), "{exports:?}");
+    assert_eq!(out.css.matches(&format!(".{d}")).count(), 1, "{}", out.css);
+    assert!(
+        out.css.find(&format!(".{d}")) < out.css.find("._b_")
+            && out.css.find("._b_") < out.css.find("._a_"),
+        "{}",
+        out.css
+    );
+
+    // A cycle between files: each compile of the other goes one deeper
+    // until the cap, and both still export their own class.
+    std::fs::write(
+        src.join("x.module.css"),
+        ".x { composes: y from \"./y.module.css\"; color: red }",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("y.module.css"),
+        ".y { composes: x from \"./x.module.css\"; color: red }",
+    )
+    .unwrap();
+    let out = oj_css::compile_css_with(
+        "/src/x.module.css",
+        &std::fs::read_to_string(src.join("x.module.css")).unwrap(),
+        &cfg.as_ref(),
+    )
+    .unwrap();
+    let exports = out.exports.unwrap();
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].0, "x");
+}

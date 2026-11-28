@@ -218,6 +218,12 @@ pub(crate) struct Styles {
     /// `build.cssMinify` per environment and `build.cssTarget`.
     minify_client: bool,
     minify_ssr: bool,
+    /// A development app (`oj dev`, or a build in a development mode): the
+    /// Tailwind engine runs its PostCSS under `NODE_ENV=development`, as
+    /// Vite's process does. The engine's `process.env` is the process's,
+    /// so a production setting from here would reach the SSR engine too,
+    /// and React's production jsx-dev-runtime has no `jsxDEV`.
+    dev: bool,
     targets: Vec<String>,
     /// The dev urls' prefix under `base`.
     url_base: String,
@@ -245,6 +251,7 @@ impl Styles {
             engines: StyleEngines::default(),
             minify_client: oj_config::build_css_minify(&start.config, false),
             minify_ssr: oj_config::build_css_minify(&start.config, true),
+            dev: !start.is_production(),
             targets: oj_config::build_css_targets(&start.config),
             url_base: start.dev_url_base(),
             dev_sheets: Mutex::new(HashMap::new()),
@@ -377,7 +384,7 @@ impl Styles {
         self.engines
             .tailwind(&self.root)
             .await?
-            .compile_path(&css, path, serde_json::Value::Null, false)
+            .compile_path(&css, path, serde_json::Value::Null, self.dev)
             .await
     }
 
@@ -465,7 +472,7 @@ pub(crate) enum AssetNamer {
 /// Rolldown's sanitizeFileName for a `[name]`: the characters a file system
 /// or a URL could take amiss become `_`; a `/` stays, so a chunk group's
 /// `dir/name` keeps its directory.
-fn sanitize_file_name(name: &str) -> String {
+pub(crate) fn sanitize_file_name(name: &str) -> String {
     name.chars()
         .map(|c| match c {
             '\u{0}'..='\u{1f}' | '\u{7f}' => '_',
@@ -999,16 +1006,10 @@ impl Emitter {
                         if is_css_module(&path.to_string_lossy()) {
                             pure = false;
                         }
-                        // Vite minifies a chunk's sheet whole, so its modules'
-                        // sheets meet with nothing between them; oj minified
-                        // each on its own, with esbuild's trailing newline,
-                        // and a sheet of several modules carried one newline
-                        // per module (and a hash of its own for it).
-                        if self.minify {
-                            css.push_str(sheet.trim_end_matches('\n'));
-                        } else {
-                            css.push_str(sheet);
-                        }
+                        // The modules' sheets as compiled: the chunk's sheet
+                        // is finished whole below, as Vite's finalizeCss runs
+                        // on the concatenation.
+                        css.push_str(sheet);
                         modules.push(path.to_path_buf());
                     }
                     _ if !(js_empty && !chunk.is_entry) => pure = false,
@@ -1019,9 +1020,7 @@ impl Emitter {
         if modules.is_empty() {
             return Ok(None);
         }
-        if self.minify && !css.is_empty() {
-            css.push('\n');
-        }
+        let css = self.finalize_sheet(chunk.name.as_str(), css)?;
         let facade_is_css = chunk
             .facade_module_id
             .as_ref()
@@ -1079,6 +1078,26 @@ impl Emitter {
             pure,
         });
         Ok(Some(file))
+    }
+
+    /// Vite's finalizeCss for a chunk's concatenated sheet: `@import` and
+    /// `@charset` hoisted, minified once under the environment's cssMinify
+    /// (then ending in a newline, as Vite adds the one lightningcss leaves
+    /// out); as written otherwise.
+    fn finalize_sheet(&self, name: &str, css: String) -> Result<String, String> {
+        let css = if css.contains("@import") || css.contains("@charset") {
+            oj_css::hoist_at_rules(&css)
+        } else {
+            css
+        };
+        if !self.minify || css.is_empty() {
+            return Ok(css);
+        }
+        Ok(format!(
+            "{}\n",
+            self.styles
+                .minify(Path::new(&format!("{name}.css")), &css)?
+        ))
     }
 
     /// The sheet renderChunk wrote for the chunk with preliminary file name
@@ -1449,7 +1468,11 @@ impl Emitter {
             let css = self
                 .rewrite_urls(&css, path.parent().unwrap_or(path), owner.as_deref())
                 .await?;
-            let css = if self.minify {
+            // A `?url` sheet is an asset of its own, finished here; a linked
+            // sheet joins its chunk's, which renderChunk finishes whole
+            // (Vite's finalizeCss over the concatenation: one minify, the
+            // at-rules hoisted), so it waits as compiled.
+            let css = if self.minify && !link {
                 format!("{}\n", self.styles.minify(path, &css)?)
             } else {
                 css
@@ -1486,11 +1509,6 @@ impl Emitter {
             "" => self.assets_dir.join("plugin.css"),
             clean => PathBuf::from(clean),
         };
-        let css = if self.minify {
-            format!("{}\n", self.styles.minify(&path, css)?)
-        } else {
-            css.to_string()
-        };
         // The module's chunk sheet, rewritten with the plugin's CSS in the
         // module's place; the file keeps the name it was hashed and linked
         // under, as Vite's asset keeps its name when a plugin's generateBundle
@@ -1500,16 +1518,19 @@ impl Emitter {
             sheets
                 .iter()
                 .find(|s| s.modules.contains(&path))
-                .map(|s| (s.file.clone(), s.modules.clone()))
+                .map(|s| (s.chunk.clone(), s.file.clone(), s.modules.clone()))
         };
-        if let Some((file, modules)) = holder {
-            let mut module_css = self.module_css.lock().unwrap();
-            module_css.insert(path, css);
-            let joined: String = modules
-                .iter()
-                .filter_map(|m| module_css.get(m))
-                .cloned()
-                .collect();
+        if let Some((chunk, file, modules)) = holder {
+            let joined: String = {
+                let mut module_css = self.module_css.lock().unwrap();
+                module_css.insert(path, css.to_string());
+                modules
+                    .iter()
+                    .filter_map(|m| module_css.get(m))
+                    .cloned()
+                    .collect()
+            };
+            let joined = self.finalize_sheet(&chunk, joined)?;
             let dest = self
                 .assets_dir
                 .parent()
@@ -1517,6 +1538,11 @@ impl Emitter {
                 .join(&file);
             return std::fs::write(&dest, joined).map_err(|e| format!("{}: {e}", dest.display()));
         }
+        let css = if self.minify {
+            format!("{}\n", self.styles.minify(&path, css)?)
+        } else {
+            css.to_string()
+        };
         let url = self.write(&path.with_extension("css"), css.as_bytes())?;
         let old = self.standalone.lock().unwrap().insert(path, url.clone());
         let mut urls = self.css_urls.lock().unwrap();

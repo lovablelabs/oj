@@ -1,0 +1,1 @@
+{"version":3,"file":"en-HASH.js","names":[],"sources":["../../src/locales/en.js"],"sourcesContent":["export default { hello: \"hello\" };\n"],"mappings":";AAAA,IAAA,aAAe,EAAE,OAAO,QAAQ"}

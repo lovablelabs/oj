@@ -327,9 +327,15 @@ impl Plugin for StartCodePlugin {
         // Vite's dynamic-import-vars runs ahead of import-glob: a variable
         // `import(\`./x/${name}.ts\`)` becomes a call of rolldown's helper
         // over the `import.meta.glob` of the files it can name, which the
-        // block below expands (the plugin's exclude is node_modules).
-        if app && code.contains("import(") {
-            let out = oj_compiler::glob::expand_dynamic_import_vars_vite_source(&code, &file);
+        // block below expands (the plugin's exclude is node_modules). A
+        // build's rewrite alone (the emitter marks one): the dev server has
+        // no helper module to serve and expands its globs first.
+        if app && self.urls.is_some() && code.contains("import(") {
+            let out = oj_compiler::glob::expand_dynamic_import_vars_vite_source_aliased(
+                &code,
+                &file,
+                &|id: &str| self.alias.iter().find_map(|e| e.apply(id)),
+            );
             if out != code {
                 code = Cow::Owned(out);
             }
@@ -384,8 +390,7 @@ impl Plugin for StartCodePlugin {
             Cow::Owned(out) => {
                 // The rewrites keep every line: a line map, as Vite's own
                 // (and Start's compiler) return one.
-                let map = (out.matches('\n').count() == original.matches('\n').count())
-                    .then(|| oj_compiler::line_map_json(id, original, &out))
+                let map = Some(oj_compiler::line_map_json(id, original, &out))
                     .and_then(|json| {
                         oxc_sourcemap::SourceMap::from_json_string(&json)
                             .ok()

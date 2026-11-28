@@ -6,9 +6,14 @@
 //! other side's code never reaches a bundle:
 //!
 //! - `createIsomorphicFn().server(s).client(c)` becomes this side's function,
-//!   or a no-op when it has none;
+//!   or a no-op when it has none; the chain may start from a module variable
+//!   holding an isomorphic function (`const iso = createIsomorphicFn()`),
+//!   which Start resolves through its binding, while a bare
+//!   `createIsomorphicFn()` is no candidate and stays as written;
 //! - `createServerOnlyFn(f)` / `createClientOnlyFn(f)` become `f` on their
-//!   side, and a function that throws on the other;
+//!   side, and a function that throws on the other: found anywhere under the
+//!   factory's own name, and under a renamed import only as a module
+//!   variable's initializer, as Start's candidate scan has it;
 //! - `createMiddleware()` chains lose their `.server(..)`, `.validator(..)`
 //!   and `.inputValidator(..)` links on the client (handleCreateMiddleware),
 //!   keeping `.middleware(..)` and `.client(..)`.
@@ -65,6 +70,9 @@ const FACTORIES: [(&str, Factory); 5] = [
 /// The middleware links the client drops (handleCreateMiddleware's
 /// `stripMethodCall`s): the server implementation and its input validation.
 const SERVER_MIDDLEWARE_LINKS: [&str; 3] = ["server", "validator", "inputValidator"];
+
+/// An isomorphic chain's links, and the calls that make it a candidate.
+const ISOMORPHIC_LINKS: [&str; 2] = ["server", "client"];
 
 /// The calls a middleware chain must end in to be a compiler candidate
 /// (Start's `candidateCallIdentifier`). Only a chain's outermost call is one
@@ -330,7 +338,7 @@ pub fn declares_start_instance(
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     let mut bindings = Bindings::of(&parsed.program, reexported, &[]);
-    bindings.find_instances(&parsed.program);
+    bindings.find_held(&parsed.program, Held::Instance);
     let is_instance = |expr: &Expression| bindings.is_instance(expr);
     for statement in &parsed.program.body {
         match statement {
@@ -398,15 +406,25 @@ fn rewrite_outermost(
     if bindings.is_empty() {
         return Ok(None);
     }
-    bindings.find_instances(&parsed.program);
-    bindings.find_middlewares(&parsed.program);
+    for held in [Held::Instance, Held::Middleware, Held::Isomorphic] {
+        bindings.find_held(&parsed.program, held);
+    }
     let mut parens = ParenPositions::default();
     parens.visit_program(&parsed.program);
+    // Start's `isTopLevelDirectCallCandidate`: a call that initializes a
+    // module variable, through parentheses and TypeScript's wrappers.
+    let top_level_calls = module_declarators(&parsed.program)
+        .filter_map(|(_, init)| match init.get_inner_expression() {
+            Expression::CallExpression(call) => Some((call.span.start, call.span.end)),
+            _ => None,
+        })
+        .collect();
     let mut finder = Finder {
         bindings: &bindings,
         env,
         code,
         parens: &parens.0,
+        top_level_calls,
         edits: Vec::new(),
         kept: Vec::new(),
         error: None,
@@ -495,6 +513,10 @@ struct Bindings {
     /// Module variables holding a middleware (`const base = createMiddleware()`),
     /// whose chains the compiler resolves through the binding.
     middlewares: Vec<String>,
+    /// Module variables holding an isomorphic function (`const iso =
+    /// createIsomorphicFn()`, or a chain on one), whose `.server(..)` /
+    /// `.client(..)` chains the compiler resolves through the binding too.
+    isomorphics: Vec<String>,
     /// The app's Start instance: module variables holding `createStart(..)`,
     /// and the imports the caller found declare one.
     instances: Vec<String>,
@@ -551,23 +573,49 @@ impl Bindings {
         self.names.is_empty() && self.namespaces.is_empty() && self.instances.is_empty()
     }
 
-    /// The module variables holding the Start instance: `createStart(..)`,
-    /// or another such variable, to a fixed point. TanStack's compiler
-    /// resolves a binding through its initializer, type wrappers aside.
-    fn find_instances(&mut self, program: &Program) {
+    /// The module variables holding `held` (`createStart(..)`, a middleware,
+    /// an isomorphic function), or another such variable, to a fixed point.
+    /// TanStack's compiler resolves a binding through its initializer, type
+    /// wrappers aside (`resolveIdentifierKind`), by name over the module's
+    /// top-level declarations.
+    fn find_held(&mut self, program: &Program, held: Held) {
         let declarators: Vec<_> = module_declarators(program).collect();
         loop {
             let found: Vec<String> = declarators
                 .iter()
                 .filter(|(name, init)| {
-                    !self.instances.iter().any(|i| i == name) && self.is_instance(init)
+                    !self.held(held).iter().any(|h| h == name) && self.is_held(held, init)
                 })
                 .map(|(name, _)| name.to_string())
                 .collect();
             if found.is_empty() {
                 return;
             }
-            self.instances.extend(found);
+            self.held_mut(held).extend(found);
+        }
+    }
+
+    fn held(&self, held: Held) -> &Vec<String> {
+        match held {
+            Held::Instance => &self.instances,
+            Held::Middleware => &self.middlewares,
+            Held::Isomorphic => &self.isomorphics,
+        }
+    }
+
+    fn held_mut(&mut self, held: Held) -> &mut Vec<String> {
+        match held {
+            Held::Instance => &mut self.instances,
+            Held::Middleware => &mut self.middlewares,
+            Held::Isomorphic => &mut self.isomorphics,
+        }
+    }
+
+    fn is_held(&self, held: Held, expr: &Expression) -> bool {
+        match held {
+            Held::Instance => self.is_instance(expr),
+            Held::Middleware => self.is_middleware(expr),
+            Held::Isomorphic => self.is_isomorphic(expr),
         }
     }
 
@@ -582,25 +630,6 @@ impl Bindings {
         }
     }
 
-    /// The module variables whose initializer is a middleware: a chain on
-    /// the factory or on another such variable, to a fixed point.
-    fn find_middlewares(&mut self, program: &Program) {
-        let declarators: Vec<_> = module_declarators(program).collect();
-        loop {
-            let found: Vec<String> = declarators
-                .iter()
-                .filter(|(name, init)| {
-                    !self.middlewares.iter().any(|m| m == name) && self.is_middleware(init)
-                })
-                .map(|(name, _)| name.to_string())
-                .collect();
-            if found.is_empty() {
-                return;
-            }
-            self.middlewares.extend(found);
-        }
-    }
-
     /// Whether `expr` is a middleware: the factory's call, a chain on one, or
     /// a variable holding one.
     fn is_middleware(&self, expr: &Expression) -> bool {
@@ -612,6 +641,26 @@ impl Bindings {
                         call.callee.without_parentheses(),
                         Expression::StaticMemberExpression(m)
                             if !m.optional && self.is_middleware(&m.object)
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `expr` is an isomorphic function, as the compiler resolves a
+    /// kind (`resolveExprKind`): the factory's call, a `.server(..)` /
+    /// `.client(..)` link on one, or a variable holding one, through
+    /// parentheses and TypeScript's wrappers.
+    fn is_isomorphic(&self, expr: &Expression) -> bool {
+        match expr.get_inner_expression() {
+            Expression::Identifier(id) => self.isomorphics.iter().any(|i| *i == id.name.as_str()),
+            Expression::CallExpression(call) => {
+                self.factory(&call.callee) == Some(Factory::Isomorphic)
+                    || matches!(
+                        call.callee.without_parentheses(),
+                        Expression::StaticMemberExpression(m)
+                            if ISOMORPHIC_LINKS.contains(&m.property.name.as_str())
+                                && self.is_isomorphic(&m.object)
                     )
             }
             _ => false,
@@ -642,6 +691,15 @@ impl Bindings {
             _ => None,
         }
     }
+}
+
+/// What a module variable may hold that the compiler resolves through the
+/// binding (see [`Bindings::find_held`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Instance,
+    Middleware,
+    Isomorphic,
 }
 
 /// The module's variable declarators with an identifier and an initializer,
@@ -683,6 +741,10 @@ struct Finder<'b> {
     /// The calls whose place needs parentheses around a function (see
     /// [`ParenPositions`]).
     parens: &'b HashSet<(u32, u32)>,
+    /// The calls that initialize a module variable, as spans: where Start
+    /// takes any simple call as a direct-call candidate (a renamed import's
+    /// among them) and lets its binding resolution decide.
+    top_level_calls: HashSet<(u32, u32)>,
     edits: Vec<Edit>,
     /// The implementations kept as replacement text, as source spans.
     kept: Vec<(usize, usize)>,
@@ -697,7 +759,10 @@ struct Finder<'b> {
 /// and babel's generator prints the parentheses the position asks for: a
 /// callee, a member expression's object, a template's tag, a conditional's
 /// test, a unary, binary, logical or await operand, an expression
-/// statement's own expression. Anywhere else (`const f = <fn>`, an
+/// statement's own expression, the expression under a TypeScript wrapper
+/// (`(<fn>)!`, `(<fn>) as T`, `(<fn>) satisfies T`, `<T> (<fn>)`: without
+/// them `() => { .. }!` does not parse and `() => 1 as T` types the body),
+/// a class's `extends` expression. Anywhere else (`const f = <fn>`, an
 /// argument, a return) the function stands bare, and the chunk's minifier
 /// keeps the parentheses it is given, so a wrapped function differed from
 /// Vite's output by two bytes per call.
@@ -769,6 +834,28 @@ impl<'a> Visit<'a> for ParenPositions {
         self.note(&it.expression);
         walk::walk_expression_statement(self, it);
     }
+    fn visit_ts_non_null_expression(&mut self, it: &oxc_ast::ast::TSNonNullExpression<'a>) {
+        self.note(&it.expression);
+        walk::walk_ts_non_null_expression(self, it);
+    }
+    fn visit_ts_as_expression(&mut self, it: &oxc_ast::ast::TSAsExpression<'a>) {
+        self.note(&it.expression);
+        walk::walk_ts_as_expression(self, it);
+    }
+    fn visit_ts_satisfies_expression(&mut self, it: &oxc_ast::ast::TSSatisfiesExpression<'a>) {
+        self.note(&it.expression);
+        walk::walk_ts_satisfies_expression(self, it);
+    }
+    fn visit_ts_type_assertion(&mut self, it: &oxc_ast::ast::TSTypeAssertion<'a>) {
+        self.note(&it.expression);
+        walk::walk_ts_type_assertion(self, it);
+    }
+    fn visit_class(&mut self, it: &oxc_ast::ast::Class<'a>) {
+        if let Some(heritage) = &it.heritage {
+            self.note(&heritage.expression);
+        }
+        walk::walk_class(self, it);
+    }
 }
 
 /// An isomorphic chain's implementations.
@@ -801,23 +888,32 @@ enum Arg {
 }
 
 impl Finder<'_> {
-    /// `call` as `createIsomorphicFn()` followed by `.server(..)` /
-    /// `.client(..)` links; None when it is not one.
+    /// `call` as an isomorphic chain: `.server(..)` / `.client(..)` links on
+    /// `createIsomorphicFn()`, or on a module variable holding an isomorphic
+    /// function, whose kind the compiler resolves through the binding
+    /// (`resolveCalleeKind`), TypeScript's wrappers aside. None when it is
+    /// not one: a bare `createIsomorphicFn()` is no candidate (Start's are
+    /// the `.server(` / `.client(` calls), so it and its import stay. The
+    /// compiler's methodChain walk follows the chain's own calls only, so the
+    /// links of a variable's initializer, or under a wrapper
+    /// (`(iso.server(s) as any).client(c)`), are not this chain's.
     fn chain(&self, call: &CallExpression) -> Option<Chain> {
-        if self.bindings.factory(&call.callee) == Some(Factory::Isomorphic) {
-            return Some(Chain::default());
-        }
         let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
             return None;
         };
         let side = m.property.name.as_str();
-        if side != "server" && side != "client" {
+        if !ISOMORPHIC_LINKS.contains(&side) {
             return None;
         }
-        let Expression::CallExpression(inner) = m.object.without_parentheses() else {
-            return None;
+        let mut chain = match m.object.without_parentheses() {
+            Expression::CallExpression(inner) => match self.chain(inner) {
+                Some(chain) => chain,
+                None if self.bindings.is_isomorphic(&m.object) => Chain::default(),
+                None => return None,
+            },
+            _ if self.bindings.is_isomorphic(&m.object) => Chain::default(),
+            _ => return None,
         };
-        let mut chain = self.chain(inner)?;
         let arg = first_arg(call);
         if side == "server" {
             chain.server = Some(arg);
@@ -825,6 +921,26 @@ impl Finder<'_> {
             chain.client = Some(arg);
         }
         Some(chain)
+    }
+
+    /// Whether `call`, the `factory`'s, is one of Start's direct-call
+    /// candidates: found anywhere by its callee's name alone
+    /// (`isNestedDirectCallCandidate`: the factory's own name, as an
+    /// identifier or a member's property), or any simple call initializing a
+    /// module variable (`isTopLevelDirectCallCandidate`), which the binding
+    /// resolution then verifies. So a renamed import (`createServerOnlyFn as
+    /// so`) compiles at module level only, and `so(f)()` inside a function
+    /// stays as written.
+    fn direct_candidate(&self, call: &CallExpression, factory: Factory) -> bool {
+        let name = match call.callee.without_parentheses() {
+            Expression::Identifier(id) => id.name.as_str(),
+            Expression::StaticMemberExpression(m) => m.property.name.as_str(),
+            _ => return false,
+        };
+        factory_named(name) == Some(factory)
+            || self
+                .top_level_calls
+                .contains(&(call.span.start, call.span.end))
     }
 
     /// `call` as a middleware chain: `createMiddleware(..)`, or a module
@@ -1004,8 +1120,10 @@ impl<'a> Visit<'a> for Finder<'_> {
                     });
                 }
             }
-        } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) =
-            self.bindings.factory(&call.callee)
+        } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) = self
+            .bindings
+            .factory(&call.callee)
+            .filter(|&factory| self.direct_candidate(call, factory))
         {
             let (target, name) = match factory {
                 Factory::ServerOnly => (Env::Server, "Server"),
@@ -1735,5 +1853,196 @@ mod tests {
         let mut out = String::new();
         assert_eq!(passes(|| out = rewrite(nested, Env::Server)), 2);
         assert!(out.contains("const a = () => () => 2;"), "{out}");
+    }
+
+    // Start resolves `iso.server(s).client(c)` through the binding
+    // (compiler.js `resolveCalleeKind` -> `resolveIdentifierKind`, by name
+    // over the module's top-level declarations, an alias or a `let`
+    // included). Its client output for the first module is
+    // `import { createServerOnlyFn } from "@tanstack/react-start";` and
+    // `export const x = () => "c";`, `iso` and its factory gone; the
+    // server's is `export const x = () => "s";`. An exported `iso` stays as
+    // written (`export const iso = createIsomorphicFn();`).
+    #[test]
+    fn an_isomorphic_chain_on_a_module_variable_compiles_through_the_binding() {
+        let code = "import { createIsomorphicFn, createServerOnlyFn } from \"@tanstack/react-start\";\nconst iso = createIsomorphicFn();\nexport const x = iso.server(() => \"s\").client(() => \"c\");\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            client.starts_with("import { createServerOnlyFn } from \"@tanstack/react-start\";\n"),
+            "{client}"
+        );
+        assert!(client.contains("export const x = () => \"c\";"), "{client}");
+        assert!(
+            !client.contains("iso") && !client.contains("\"s\""),
+            "{client}"
+        );
+        assert_eq!(client.lines().count(), code.lines().count(), "{client}");
+        let server = rewrite_env_fns(code, "a.ts", Env::Server).unwrap().unwrap();
+        assert!(server.contains("export const x = () => \"s\";"), "{server}");
+        assert!(
+            !server.contains("createIsomorphicFn") && !server.contains("\"c\""),
+            "{server}"
+        );
+        let aliased = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nlet iso = createIsomorphicFn();\nconst iso2 = iso;\nexport const x = iso2.server(() => \"s\").client(() => \"c\");\n";
+        let client = rewrite_env_fns(aliased, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(client.contains("export const x = () => \"c\";"), "{client}");
+        assert!(!client.contains("iso"), "{client}");
+        let exported = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const iso = createIsomorphicFn();\nexport const x = iso.server(() => \"s\").client(() => \"c\");\n";
+        let client = rewrite_env_fns(exported, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            client,
+            "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const iso = createIsomorphicFn();\nexport const x = () => \"c\";\n"
+        );
+    }
+
+    // Start's methodChain walk follows the chain's own calls only. For
+    // `const base = createIsomorphicFn().server(() => "s"); export const x =
+    // base.client(() => "c"); export const y = base;` its client output is
+    // `const base = () => {};`, `export const x = () => "c";`, `export const
+    // y = base;`, and the server's `const base = () => "s";`, `export const
+    // x = () => {};` (no `.server` link in `x`'s own chain). Under a wrapper
+    // (`(iso as any).server(() => "s")!.client(() => "c")`) the walk stops
+    // too: the client gets `() => "c"`, the server `() => {}`.
+    #[test]
+    fn only_a_chains_own_links_count_through_a_binding_or_a_wrapper() {
+        let partial = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nconst base = createIsomorphicFn().server(() => \"s\");\nexport const x = base.client(() => \"c\");\nexport const y = base;\n";
+        let client = rewrite_env_fns(partial, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(
+            client.contains(
+                "\nconst base = () => {};\nexport const x = () => \"c\";\nexport const y = base;\n"
+            ),
+            "{client}"
+        );
+        let server = rewrite_env_fns(partial, "a.ts", Env::Server)
+            .unwrap()
+            .unwrap();
+        assert!(
+            server.contains(
+                "\nconst base = () => \"s\";\nexport const x = () => {};\nexport const y = base;\n"
+            ),
+            "{server}"
+        );
+        let wrapped = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nconst iso = createIsomorphicFn() as any;\nexport const x = (iso as any).server(() => \"s\")!.client(() => \"c\");\n";
+        let client = rewrite_env_fns(wrapped, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(client.contains("export const x = () => \"c\";"), "{client}");
+        let server = rewrite_env_fns(wrapped, "a.ts", Env::Server)
+            .unwrap()
+            .unwrap();
+        assert!(server.contains("export const x = () => {};"), "{server}");
+    }
+
+    // A method chain is a candidate anywhere; Start's client output:
+    // `export function f() {\n  return () => "c";\n}`.
+    #[test]
+    fn a_chain_on_a_module_variable_compiles_inside_a_function_too() {
+        let code = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nconst iso = createIsomorphicFn();\nexport function f() { return iso.server(() => \"s\").client(() => \"c\"); }\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            client.contains("export function f() { return () => \"c\"; }"),
+            "{client}"
+        );
+        assert!(!client.contains("iso"), "{client}");
+    }
+
+    // Start's candidates are the `.server(` / `.client(` calls: a bare
+    // `createIsomorphicFn()` is left as written, its import with it (client
+    // output: `import { createIsomorphicFn } from "@tanstack/react-start";`,
+    // `export const fn = createIsomorphicFn();`, `export const g = () => {};`),
+    // and a module with nothing else is unchanged.
+    #[test]
+    fn a_bare_isomorphic_factory_call_stays_with_its_import() {
+        let code = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const fn = createIsomorphicFn();\nexport const g = createIsomorphicFn().server(() => 1);\nexport function f() { return createIsomorphicFn(); }\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert_eq!(
+            client,
+            "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const fn = createIsomorphicFn();\nexport const g = () => {};\nexport function f() { return createIsomorphicFn(); }\n"
+        );
+        assert_eq!(
+            rewrite_env_fns(
+                "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const fn = createIsomorphicFn();\n",
+                "a.ts",
+                Env::Client
+            ),
+            Ok(None)
+        );
+    }
+
+    // Start finds a direct call anywhere by its callee's name
+    // (`isNestedDirectCallCandidate`), and any simple call initializing a
+    // module variable (`isTopLevelDirectCallCandidate`), resolving the
+    // binding after. So for `import { createServerOnlyFn as so,
+    // createClientOnlyFn }` its client output keeps `export function f() {
+    // return so(() => 1)(); }` and `export const h = () => so(() => 2);` as
+    // written, the import of `so` too, while `export const g = so(() => 2);`
+    // becomes the throwing stub and `export default createClientOnlyFn(() =>
+    // 3);` becomes `export default () => 3;`. A namespace member carries the
+    // factory's name: `S.createServerOnlyFn(() => 1)()` in a function
+    // compiles to `(() => {\n  throw new Error(..);\n})()`.
+    #[test]
+    fn a_renamed_env_only_import_compiles_at_module_level_only() {
+        let code = "import { createServerOnlyFn as so, createClientOnlyFn, createIsomorphicFn as iso } from \"@tanstack/react-start\";\nexport function f() { return so(() => 1)(); }\nexport const g = so(() => 2);\nexport default createClientOnlyFn(() => 3);\nexport const h = () => so(() => 2);\nexport function k() { return iso().client(() => 1); }\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            client.starts_with(
+                "import { createServerOnlyFn as so } from \"@tanstack/react-start\";\n"
+            ),
+            "{client}"
+        );
+        for expected in [
+            "export function f() { return so(() => 1)(); }",
+            "export const g = () => { throw new Error(\"createServerOnlyFn() functions can only be called on the server!\"); };",
+            "export default () => 3;",
+            "export const h = () => so(() => 2);",
+            "export function k() { return () => 1; }",
+        ] {
+            assert!(client.contains(expected), "{expected}:\n{client}");
+        }
+        let ns = "import * as S from \"@tanstack/react-start\";\nexport function f() { return S.createServerOnlyFn(() => 1)(); }\n";
+        let client = rewrite_env_fns(ns, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            client.contains("export function f() { return (() => { throw new Error("),
+            "{client}"
+        );
+        assert!(!client.contains("import * as S"), "{client}");
+    }
+
+    // Babel's generator parenthesizes the replacement under a TypeScript
+    // wrapper and in a class's `extends`. Start's client output: `export
+    // const c = (() => {\n  throw new Error(..);\n})!;`, `export const d =
+    // (() => {..}) as any;`, `export const e = (() => 2) satisfies
+    // Function;`, `export const a = <any> (() => {..});`, `class K extends
+    // (() => {..}) {}`, `export const b = (() => 2)!;`, and bare where no
+    // parentheses are needed: `export const h = [() => 3];`, `const i = x ??
+    // (() => 4);`.
+    #[test]
+    fn a_replacement_under_a_typescript_wrapper_or_extends_is_parenthesized() {
+        let stub = "(() => { throw new Error(\"createServerOnlyFn() functions can only be called on the server!\"); })";
+        let body = "export const c = createServerOnlyFn(fn)!;\nexport const d = createServerOnlyFn(() => 1) as any;\nexport const e = createIsomorphicFn().client(() => 2) satisfies Function;\nexport const a = <any>createServerOnlyFn(() => 1);\nclass K extends createServerOnlyFn(() => 1) {}\nexport const b = createIsomorphicFn().client(() => 2)!;\nexport const h = [createIsomorphicFn().client(() => 3)];\nconst i = x ?? createIsomorphicFn().client(() => 4);\n";
+        let client = rewrite(body, Env::Client);
+        for expected in [
+            format!("export const c = {stub}!;"),
+            format!("export const d = {stub} as any;"),
+            "export const e = (() => 2) satisfies Function;".to_string(),
+            format!("export const a = <any>{stub};"),
+            format!("class K extends {stub} {{}}"),
+            "export const b = (() => 2)!;".to_string(),
+            "export const h = [() => 3];".to_string(),
+            "const i = x ?? (() => 4);".to_string(),
+        ] {
+            assert!(client.contains(&expected), "{expected}:\n{client}");
+        }
+        let server = rewrite(body, Env::Server);
+        assert!(
+            server.contains("export const d = (() => 1) as any;"),
+            "{server}"
+        );
     }
 }

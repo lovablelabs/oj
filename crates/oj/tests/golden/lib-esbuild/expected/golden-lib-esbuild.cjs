@@ -1,0 +1,1 @@
+Object.defineProperty(exports,Symbol.toStringTag,{value:"Module"});function helper(input){return"hello "+input}function greet(name){return helper(name).toUpperCase()}var kinds=["a","b"];exports.greet=greet;exports.kinds=kinds;

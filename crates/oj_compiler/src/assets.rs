@@ -283,7 +283,8 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "apng" => "image/apng",
-        "jpg" | "jpeg" | "jfif" | "pjpeg" | "pjp" => "image/jpeg",
+        // mrmime knows no jfif/pjpeg/pjp: those fall to the octet stream.
+        "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "avif" => "image/avif",
@@ -295,7 +296,8 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "ttf" => "font/ttf",
         "otf" => "font/otf",
         "eot" => "application/vnd.ms-fontobject",
-        "mp4" | "m4a" => "video/mp4",
+        "mp4" => "video/mp4",
+        "m4a" => "audio/mp4",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
         "mp3" => "audio/mpeg",
@@ -572,7 +574,8 @@ mod tests {
     #[test]
     fn mime_is_case_insensitive_with_octet_stream_fallback() {
         assert_eq!(asset_mime("SVG"), "image/svg+xml");
-        assert_eq!(asset_mime("jfif"), "image/jpeg");
+        assert_eq!(asset_mime("jfif"), "application/octet-stream");
+        assert_eq!(asset_mime("m4a"), "audio/mp4");
         assert_eq!(asset_mime("webmanifest"), "application/manifest+json");
         assert_eq!(asset_mime("xyz"), "application/octet-stream");
     }

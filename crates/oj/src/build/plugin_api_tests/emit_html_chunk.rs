@@ -21,7 +21,7 @@ async fn an_emitted_html_chunk_is_built_as_a_page_at_its_root_relative_path() {
             ("src/entry.js", "console.log(\"entry\");\n"),
             (
                 "src/pages/popup/popup.js",
-                "export const popup = \"popup-page-body\";\n",
+                "document.title = \"popup-page-body\";\n",
             ),
             (
                 "src/pages/popup/index.html",

@@ -1,0 +1,21 @@
+{
+  "index.html": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/late.js"
+    ]
+  },
+  "src/late.js": {
+    "file": "assets/late-HASH.js",
+    "name": "late",
+    "src": "src/late.js",
+    "isDynamicEntry": true
+  },
+  "style.css": {
+    "file": "assets/style-HASH.css",
+    "src": "style.css"
+  }
+}

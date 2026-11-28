@@ -198,7 +198,14 @@ impl ViteTransform {
     pub fn lower(&self, id: &str, code: &str, sourcemap: bool) -> anyhow::Result<Lowered> {
         let cwd = self.cwd();
         let clean = id.split(['?', '#']).next().unwrap_or(id);
-        let ext = Path::new(clean).extension().map(|e| e.to_string_lossy());
+        // vite:oxc reads the lang off the id as written when its tail is a
+        // script extension (`App.vue?vue&type=script&lang.ts`), else off
+        // the id without its query.
+        let raw_ext = Path::new(id).extension().map(|e| e.to_string_lossy());
+        let ext = match raw_ext.as_deref() {
+            Some("js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts") => raw_ext,
+            _ => Path::new(clean).extension().map(|e| e.to_string_lossy()),
+        };
         // A module only the refresh include names, with an extension of its
         // own (an .mdx), is read as JavaScript.
         let refresh_lang = self.jsx_refresh_filter(id, &cwd) == RefreshFilter::True

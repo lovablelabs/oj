@@ -12,8 +12,8 @@ use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleS
 
 use crate::lightning::LightningOptions;
 use crate::modules::{
-    declared_locals, is_css_module, module_exports, module_is_scoped, scoped_name_pattern,
-    ScopedNames,
+    composed_sheet, is_css_module, module_exports, module_is_scoped, scoped_name_pattern,
+    ComposedSheet, ScopedNames,
 };
 use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
@@ -22,7 +22,8 @@ use crate::targets::browser_targets;
 #[derive(Debug)]
 pub struct CssOutput {
     pub css: String,
-    /// A CSS module's class map, sorted by name; None for a plain stylesheet.
+    /// A CSS module's class map, in postcss-modules' export order; None for
+    /// a plain stylesheet.
     pub exports: Option<Vec<(String, String)>>,
 }
 
@@ -166,18 +167,12 @@ pub fn scope_css_module(
         .to_css(PrinterOptions::default())
         .map_err(|err| format!("css print error in {url}: {err}"))?;
     let (exports, composed) = match result.exports {
-        Some(map) => {
-            let map = match scoped {
-                true => keep_declared(map, &declared_locals(&result.code)),
-                false => map,
-            };
-            module_exports(map, url, resolve, 0, source)
-        }
-        None => (Vec::new(), String::new()),
+        Some(map) => module_exports(map, url, resolve, 0, &result.code),
+        None => (Vec::new(), Vec::new()),
     };
     Ok(named_by_default(
         CssOutput {
-            css: format!("{composed}{}", result.code),
+            css: format!("{}{}", composed_sheet(&composed), result.code),
             exports: Some(exports),
         },
         scoped.then(|| ScopedNames::new(scope_source, url, resolve)),
@@ -213,18 +208,6 @@ fn named_by_default(out: CssOutput, names: Option<ScopedNames<'_>>) -> CssOutput
                 .collect()
         }),
     }
-}
-
-/// The locals postcss-modules exports: the ones the sheet declares as a
-/// class, an id or a `@keyframes` name (lightningcss also exports custom
-/// idents such as a `@counter-style` name).
-fn keep_declared(
-    map: css_modules::CssModuleExports,
-    declared: &std::collections::HashSet<String>,
-) -> css_modules::CssModuleExports {
-    map.into_iter()
-        .filter(|(name, _)| declared.contains(name))
-        .collect()
 }
 
 pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -337,6 +320,24 @@ pub(crate) fn compile_css_depth(
     resolve: &CssResolve<'_>,
     depth: u8,
 ) -> Result<CssOutput, String> {
+    let (mut out, composed) = compile_css_parts(url, source, scope_source, mode, resolve, depth)?;
+    if !composed.is_empty() {
+        out.css = format!("{}{}", composed_sheet(&composed), out.css);
+    }
+    Ok(out)
+}
+
+/// [`compile_css_depth`] with the sheets of the files a module's `composes`
+/// name apart from its own (postcss-modules prepends them): a module
+/// composing from this one writes each file once.
+pub(crate) fn compile_css_parts(
+    url: &str,
+    source: &str,
+    scope_source: Option<&str>,
+    mode: Mode,
+    resolve: &CssResolve<'_>,
+    depth: u8,
+) -> Result<(CssOutput, Vec<ComposedSheet>), String> {
     let is_module_file = is_css_module(url) && !mode.scoped;
     let scoped = is_module_file && module_is_scoped(url, resolve);
     let modules = scoped.then(modules_config);
@@ -396,9 +397,11 @@ pub(crate) fn compile_css_depth(
         }
         _ => result.code,
     };
-    let declared = names.as_ref().map(|_| declared_locals(&css));
+    // The marked sheet, which the class map's order and contents follow.
+    let mut marked = None;
     if let Some(names) = &names {
-        css = names.rename(&css);
+        let renamed = names.rename(&css);
+        marked = Some(std::mem::replace(&mut css, renamed));
     }
     if mode.source_map {
         // `sourceRoot: "/"` makes devtools resolve `src/app.css` to the served url.
@@ -411,21 +414,12 @@ pub(crate) fn compile_css_depth(
         ));
     }
 
+    let mut composed = Vec::new();
     let exports = match result.exports {
         Some(map) => {
-            let (pairs, composed) = module_exports(
-                match &declared {
-                    Some(declared) => keep_declared(map, declared),
-                    None => map,
-                },
-                url,
-                resolve,
-                depth,
-                source,
-            );
-            if !composed.is_empty() {
-                css = format!("{composed}{css}");
-            }
+            let (pairs, sheets) =
+                module_exports(map, url, resolve, depth, marked.as_deref().unwrap_or(""));
+            composed = sheets;
             Some(
                 pairs
                     .into_iter()
@@ -440,7 +434,7 @@ pub(crate) fn compile_css_depth(
         None if is_module_file => Some(Vec::new()),
         None => None,
     };
-    Ok(CssOutput { css, exports })
+    Ok((CssOutput { css, exports }, composed))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

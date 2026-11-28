@@ -1047,6 +1047,12 @@ impl Plugin for StartHostPlugin {
         } else {
             crate::build::serialize_rendered_chunk(&args.chunk)
         };
+        let format = match args.options.format {
+            rolldown_common::OutputFormat::Esm => "es",
+            rolldown_common::OutputFormat::Cjs => "cjs",
+            rolldown_common::OutputFormat::Iife => "iife",
+            rolldown_common::OutputFormat::Umd => "umd",
+        };
         async move {
             let on = *enabled
                 .get_or_init(|| async { host.has_render_chunk().await })
@@ -1055,7 +1061,7 @@ impl Plugin for StartHostPlugin {
                 return Ok(None);
             }
             match host
-                .render_chunk(&code, &chunk_json)
+                .render_chunk(&code, &chunk_json, format)
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin renderChunk failed:\n{e}"))?
             {
