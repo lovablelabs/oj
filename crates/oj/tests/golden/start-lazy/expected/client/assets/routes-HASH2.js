@@ -1,0 +1,1 @@
+import{r as e}from"./index-HASH.js";var t=e(),n=({error:e})=>(0,t.jsx)(`pre`,{children:String(e)}),r=()=>(0,t.jsx)(`p`,{children:`loading`});export{n as errorComponent,r as pendingComponent};

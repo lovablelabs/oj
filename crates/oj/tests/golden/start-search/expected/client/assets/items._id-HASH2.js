@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";import{t}from"./jsx-runtime-HASH.js";var n=t();function r(){let{name:t}=e.useLoaderData(),{id:r}=e.useParams();return(0,n.jsx)(`article`,{"data-id":r,children:(0,n.jsx)(`h1`,{children:t})})}export{r as component};

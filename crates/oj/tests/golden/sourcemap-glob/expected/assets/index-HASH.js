@@ -163,8 +163,8 @@ var __vitePreload = function preload(baseModule, deps, importerUrl) {
 };
 // src/main.js
 var pages = /* #__PURE__ */ Object.assign({
-	"./pages/about/index.js": () => __vitePreload(() => import("./about-HASH.js"), []),
-	"./pages/about.js": () => __vitePreload(() => import("./about-HASH.js"), []),
+	"./pages/about/index.js": () => __vitePreload(() => import("./about-HASH1.js"), []),
+	"./pages/about.js": () => __vitePreload(() => import("./about-HASH2.js"), []),
 	"./pages/home.js": () => __vitePreload(() => import("./home-HASH.js"), [])
 });
 var texts = /* #__PURE__ */ Object.assign({

@@ -40,7 +40,7 @@
     ]
   },
   "src/routes/items.$id.tsx?tsr-split=component": {
-    "file": "assets/items._id-HASH.js",
+    "file": "assets/items._id-HASH2.js",
     "name": "items._id",
     "src": "src/routes/items.$id.tsx?tsr-split=component",
     "isDynamicEntry": true,
@@ -50,7 +50,7 @@
     ]
   },
   "src/routes/items.$id.tsx?tsr-split=notFoundComponent": {
-    "file": "assets/items._id-HASH.js",
+    "file": "assets/items._id-HASH1.js",
     "name": "items._id",
     "src": "src/routes/items.$id.tsx?tsr-split=notFoundComponent",
     "isDynamicEntry": true,

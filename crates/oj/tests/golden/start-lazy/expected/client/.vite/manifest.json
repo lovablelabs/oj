@@ -37,7 +37,7 @@
     "isDynamicEntry": true
   },
   "src/routes/index.tsx?tsr-split=component---loader": {
-    "file": "assets/routes-HASH.js",
+    "file": "assets/routes-HASH1.js",
     "name": "routes",
     "src": "src/routes/index.tsx?tsr-split=component---loader",
     "isDynamicEntry": true,
@@ -51,7 +51,7 @@
     ]
   },
   "src/routes/index.tsx?tsr-split=errorComponent---notFoundComponent---pendingComponent": {
-    "file": "assets/routes-HASH.js",
+    "file": "assets/routes-HASH2.js",
     "name": "routes",
     "src": "src/routes/index.tsx?tsr-split=errorComponent---notFoundComponent---pendingComponent",
     "isDynamicEntry": true,

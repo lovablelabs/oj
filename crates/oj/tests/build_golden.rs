@@ -174,7 +174,7 @@ fn copy_tree(from: &Path, to: &Path) {
 /// `/ROOT`.
 fn tree(dir: &Path, root: &Path) -> BTreeMap<String, Vec<u8>> {
     let root_text = root.to_string_lossy().into_owned();
-    let mut out = BTreeMap::new();
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         for entry in std::fs::read_dir(&d).unwrap().flatten() {
@@ -188,18 +188,64 @@ fn tree(dir: &Path, root: &Path) -> BTreeMap<String, Vec<u8>> {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned();
-            let bytes = std::fs::read(&path).unwrap();
-            let bytes = match std::str::from_utf8(&bytes) {
-                Ok(text) => {
-                    normalize_hashes(&normalize_module_paths(&text.replace(&root_text, "/ROOT")))
-                        .into_bytes()
-                }
-                Err(_) => bytes,
-            };
-            out.insert(normalize_hashes(&rel), bytes);
+            files.push((rel, std::fs::read(&path).unwrap()));
         }
     }
+    // Two files of one name apart from the hash (a route's component chunk
+    // and its pending component's, both `reports-<hash>.js`) would fold into
+    // one `reports-HASH.js`, the survivor depending on the directory's
+    // order. Such files take numbered hashes instead, in the order of their
+    // hashes, in their names and wherever the text names them: the same
+    // bytes give the same hashes on both sides, so the numbering agrees.
+    let mut by_name: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (rel, _) in &files {
+        by_name
+            .entry(normalize_hashes(rel))
+            .or_default()
+            .push(rel.as_str());
+    }
+    let mut numbered: Vec<(String, String)> = Vec::new();
+    for rels in by_name.values_mut().filter(|rels| rels.len() > 1) {
+        rels.sort();
+        for (i, rel) in rels.iter().enumerate() {
+            if let Some(hash) = hash_in(rel) {
+                numbered.push((format!("-{hash}."), format!("-HASH{}.", i + 1)));
+            }
+        }
+    }
+    let renumber = |text: &str| -> String {
+        let mut text = text.to_string();
+        for (from, to) in &numbered {
+            text = text.replace(from, to);
+        }
+        text
+    };
+    let mut out = BTreeMap::new();
+    for (rel, bytes) in files {
+        let bytes = match std::str::from_utf8(&bytes) {
+            Ok(text) => normalize_hashes(&renumber(&normalize_module_paths(
+                &text.replace(&root_text, "/ROOT"),
+            )))
+            .into_bytes(),
+            Err(_) => bytes,
+        };
+        out.insert(normalize_hashes(&renumber(&rel)), bytes);
+    }
     out
+}
+
+/// The eight-character hash before a file name's extension, if any.
+fn hash_in(name: &str) -> Option<&str> {
+    let dot = name.rfind('.')?;
+    let stem = &name[..dot];
+    let dash = stem.len().checked_sub(9)?;
+    let hash = &stem[dash + 1..];
+    (stem.as_bytes()[dash] == b'-'
+        && hash.len() == 8
+        && hash
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then_some(hash)
 }
 
 /// A path into the fixture's install, however it was reached (an absolute
