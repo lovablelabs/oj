@@ -38,8 +38,8 @@ export default [{
   name: "gb-fidelity",
   buildStart(options) {
     if (typeof options.input !== "undefined") {
-      this.emitFile({ type: "chunk", id: path.join(root, "src", "keep.js"), name: "keepme" });
-      this.emitFile({ type: "chunk", id: path.join(root, "src", "gone.js"), name: "goneme" });
+      this.emitFile({ type: "chunk", id: path.join(root, "src", "keep.js"), name: "keepme", preserveSignature: "strict" });
+      this.emitFile({ type: "chunk", id: path.join(root, "src", "gone.js"), name: "goneme", preserveSignature: "strict" });
     }
   },
   generateBundle(options, bundle) {

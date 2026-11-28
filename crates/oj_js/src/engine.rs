@@ -132,9 +132,11 @@ impl JsEngine {
 
     /// Force a full garbage collection in this engine and return once it has
     /// run (false when the engine is already gone). A memory-probing
-    /// instrument, never a runtime lever: V8 schedules its own collections
-    /// better than callers can. Blocking; async callers go through
-    /// spawn_blocking.
+    /// instrument, and a build's lever at one point only: between its
+    /// environments, when the finished one's state is released on both sides
+    /// and the next one's allocations are about to begin (V8 schedules its
+    /// collections for the heap it sees, not the one about to come).
+    /// Blocking; async callers go through spawn_blocking.
     pub fn collect_garbage(&self, wait: Duration) -> bool {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         let sent = match lock(&self.running).as_ref() {
@@ -154,6 +156,66 @@ impl JsEngine {
         self.isolate.terminate_execution();
         // Dropping the JoinHandle detaches the thread; Drop will find None.
         drop(lock(&self.running).take());
+    }
+
+    /// The JS stack the engine thread is on, one frame a line, taken at V8's
+    /// next interrupt check (a loop's back edge, a call): a diagnostic for a
+    /// job that has stopped the event loop. `None` when no check came within
+    /// `wait` (the thread is in native code, or gone), or the stack is empty.
+    pub fn dump_stack(&self, wait: Duration) -> Option<String> {
+        type Reply = std::sync::mpsc::Sender<String>;
+        extern "C" fn on_interrupt(isolate: v8::UnsafeRawIsolatePtr, data: *mut std::ffi::c_void) {
+            // SAFETY: `data` is the Box<Reply> `dump_stack` leaked for this
+            // one callback, which V8 runs once, on the isolate's thread.
+            let reply = unsafe { Box::from_raw(data as *mut Reply) };
+            // SAFETY: V8 hands the callback the live isolate it interrupted,
+            // on its own thread (deno_core's inspector takes it the same way).
+            let mut isolate = unsafe { v8::Isolate::from_raw_isolate_ptr(isolate) };
+            let isolate = &mut isolate;
+            v8::scope!(let unit, isolate);
+            // SAFETY: a scope's context parameter is a marker type over the
+            // same bytes; capturing the stack enters no context (the frames
+            // belong to whatever the interrupted code was running in).
+            let scope: &v8::PinScope<'_, '_> = unsafe {
+                &*(&*unit as *const v8::PinnedRef<'_, v8::HandleScope<'_, ()>>
+                    as *const v8::PinScope<'_, '_>)
+            };
+            let mut lines = Vec::new();
+            if let Some(trace) = v8::StackTrace::current_stack_trace(scope, 40) {
+                for i in 0..trace.get_frame_count() {
+                    let Some(frame) = trace.get_frame(scope, i) else {
+                        continue;
+                    };
+                    let name = |s: Option<v8::Local<v8::String>>| {
+                        s.map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
+                    };
+                    let function = name(frame.get_function_name(scope));
+                    let script = name(frame.get_script_name_or_source_url(scope));
+                    lines.push(format!(
+                        "    at {}{} ({}:{}:{})",
+                        if function.is_empty() {
+                            "<anonymous>"
+                        } else {
+                            &function
+                        },
+                        "",
+                        script,
+                        frame.get_line_number(),
+                        frame.get_column()
+                    ));
+                }
+            }
+            let _ = reply.send(lines.join("\n"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let data = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
+        if !self.isolate.request_interrupt(on_interrupt, data) {
+            // SAFETY: V8 took no callback, so the Box is still ours.
+            drop(unsafe { Box::from_raw(data as *mut Reply) });
+            return None;
+        }
+        // An interrupt that never comes leaks the Sender: a few bytes, once.
+        rx.recv_timeout(wait).ok().filter(|s| !s.is_empty())
     }
 
     /// Executes an ES module to completion. `deadline` bounds this one job;

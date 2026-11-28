@@ -1,0 +1,32 @@
+{
+  "index.html": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/extra.js"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ],
+    "assets": [
+      "assets/logo-HASH.svg",
+      "assets/bg-HASH.svg"
+    ]
+  },
+  "src/bg.svg": {
+    "file": "assets/bg-HASH.svg",
+    "src": "src/bg.svg"
+  },
+  "src/extra.js": {
+    "file": "assets/extra-HASH.js",
+    "name": "extra",
+    "src": "src/extra.js",
+    "isDynamicEntry": true
+  },
+  "src/logo.svg": {
+    "file": "assets/logo-HASH.svg",
+    "src": "src/logo.svg"
+  }
+}

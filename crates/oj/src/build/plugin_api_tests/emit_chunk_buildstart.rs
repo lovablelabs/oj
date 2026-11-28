@@ -37,7 +37,7 @@ export default [{
   name: "buildstart-emitter",
   buildStart(options) {
     if (typeof options.input !== "undefined") {
-      ref = this.emitFile({ type: "chunk", id: path.join(root, "src", "background.js"), name: "background" });
+      ref = this.emitFile({ type: "chunk", id: path.join(root, "src", "background.js"), name: "background", preserveSignature: "strict" });
     }
   },
   generateBundle() {

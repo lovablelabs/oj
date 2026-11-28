@@ -1,0 +1,6 @@
+{
+  "name": "golden-alias-paths",
+  "private": true,
+  "type": "module",
+  "imports": { "#lib/*": "./src/lib/*" }
+}

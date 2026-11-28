@@ -539,7 +539,7 @@ fn framework_aliases(root: &Path, cache: &Path) -> Vec<(String, PathBuf)> {
         ),
         (
             "#tanstack-start-plugin-adapters".into(),
-            cache.join("plugin-adapters.ts"),
+            cache.join("empty-plugin-adapters.ts"),
         ),
         (
             "#tanstack-start-server-fn-resolver".into(),

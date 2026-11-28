@@ -76,7 +76,8 @@ impl Plugin for AppAliasPlugin {
 /// manifest names no stylesheet: oj links the client's sheets itself and
 /// settles their URLs after the client bundle is written (a plugin's late CSS
 /// replaces a sheet). So the framework's import goes to a wrapper oj writes
-/// (`manifest-sheets.ts`), which imports the manifest by the same specifier
+/// (`_tanstack-start-manifest_v.ts`, named for the chunk name Vite's virtual
+/// manifest module gets), which imports the manifest by the same specifier
 /// and adds the sheets to the root route. With no Start plugin answering,
 /// the wrapper's import ends at oj's own manifest through the alias.
 #[derive(Debug)]
@@ -99,16 +100,21 @@ export const tsrStartManifest = () => {{
   const manifest = startManifest();
   const routes = (manifest.routes ??= {{}});
   const root = (routes.__root__ ??= {{}});
-  const css = root.css ?? [];
-  const linked = new Set(css.map(hrefOf));
-  root.css = [...css, ...sheets.filter((href) => !linked.has(href))];
-  const assets = root.assets ?? [];
-  const tagged = new Set(assets.map((asset) => asset?.attrs?.href));
+  // The root links every sheet, in the order oj linked them; what Start
+  // listed for a route (from the chunks' `importedCss`) is one of them, so
+  // it goes from that route and stays with the root alone.
+  const ours = new Set(sheets);
+  const others = (list) => (list ?? []).filter((sheet) => !ours.has(hrefOf(sheet)));
+  const otherAssets = (list) => (list ?? []).filter((asset) => !ours.has(asset?.attrs?.href));
+  for (const [id, route] of Object.entries(routes)) {{
+    if (id === "__root__" || !route) continue;
+    if (route.css) route.css = others(route.css);
+    if (route.assets) route.assets = otherAssets(route.assets);
+  }}
+  root.css = [...sheets, ...others(root.css)];
   root.assets = [
-    ...assets,
-    ...sheets
-      .filter((href) => !tagged.has(href))
-      .map((href) => ({{ tag: "link", attrs: {{ rel: "stylesheet", href }} }})),
+    ...otherAssets(root.assets),
+    ...sheets.map((href) => ({{ tag: "link", attrs: {{ rel: "stylesheet", href }} }})),
   ];
   manifest.clientEntry ??= clientEntry;
   return manifest;
@@ -126,7 +132,7 @@ impl Plugin for StartManifestSheets {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::ResolveId
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::Load
     }
 
     async fn resolve_id(
@@ -134,18 +140,38 @@ impl Plugin for StartManifestSheets {
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
-        if args.specifier != START_MANIFEST
-            || args
-                .importer
-                .is_some_and(|from| Path::new(from) == self.wrapper)
-        {
+        if args.specifier != START_MANIFEST || args.importer == Some(WRAPPER_ID) {
             return Ok(None);
         }
-        Ok(Some(HookResolveIdOutput::from_id(
-            self.wrapper.to_string_lossy().into_owned(),
-        )))
+        Ok(Some(HookResolveIdOutput::from_id(WRAPPER_ID)))
+    }
+
+    async fn load(
+        &self,
+        _ctx: rolldown_plugin::SharedLoadPluginContext,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> rolldown_plugin::HookLoadReturn {
+        if args.id != WRAPPER_ID {
+            return Ok(None);
+        }
+        let code = std::fs::read_to_string(&self.wrapper)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", self.wrapper.display()))?;
+        Ok(Some(rolldown_plugin::HookLoadOutput {
+            code: code.into(),
+            module_type: Some(rolldown_common::ModuleType::Js),
+            ..Default::default()
+        }))
     }
 }
+
+/// The wrapper's module id: virtual, as Start's own manifest module is
+/// (`\0tanstack-start-manifest:v`), so the chunk holding both gets no
+/// sourcemap, as under `vite build` (rolldown maps no virtual module), and
+/// keeps the name Vite's chunk has (rolldown sanitizes either id to
+/// `_tanstack-start-manifest_v`). The manifest keys the chunk by Vite's
+/// module, `\0` dropped: [`WRAPPER_VITE_KEY`].
+pub(crate) const WRAPPER_ID: &str = "\0tanstack-start-manifest_v";
+pub(crate) const WRAPPER_VITE_KEY: &str = "tanstack-start-manifest:v";
 
 /// tsconfig `paths` as the app's Vite applies them, where vite:resolve
 /// sits, ahead of rolldown's own resolver, which applies them natively
@@ -338,6 +364,48 @@ impl Plugin for DedupePlugin {
         }
         Ok(Some(HookResolveIdOutput::from_resolved_id(
             rolldown_common::ResolvedId::from(from_root),
+        )))
+    }
+}
+
+/// `#tanstack-start-plugin-adapters`, as Start resolves it with no
+/// serialization adapters configured: the framework's own
+/// `empty-plugin-adapters.js` beside the importing module (start-client-core's
+/// and start-server-core's dist each carry one), so the chunk it makes is
+/// named as under `vite build`; where no such sibling exists, oj's stub of
+/// the same module.
+#[derive(Debug)]
+pub(crate) struct StartPluginAdapters {
+    pub stub: std::path::PathBuf,
+}
+
+pub(crate) const START_PLUGIN_ADAPTERS: &str = "#tanstack-start-plugin-adapters";
+
+impl Plugin for StartPluginAdapters {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:start-plugin-adapters")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        if args.specifier != START_PLUGIN_ADAPTERS {
+            return Ok(None);
+        }
+        let sibling = args
+            .importer
+            .and_then(|from| Path::new(from).parent())
+            .map(|dir| dir.join("empty-plugin-adapters.js"))
+            .filter(|file| file.is_file());
+        let id = sibling.unwrap_or_else(|| self.stub.clone());
+        Ok(Some(HookResolveIdOutput::from_id(
+            id.to_string_lossy().into_owned(),
         )))
     }
 }

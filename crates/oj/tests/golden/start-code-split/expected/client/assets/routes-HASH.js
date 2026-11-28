@@ -1,0 +1,1 @@
+import{t as e}from"./link-HASH.js";import{t}from"./jsx-runtime-HASH.js";var n=t(),r=()=>(0,n.jsxs)(`nav`,{children:[(0,n.jsx)(e,{to:`/reports`,children:`reports`}),(0,n.jsx)(e,{to:`/docs`,children:`docs`})]});export{r as component};

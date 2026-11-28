@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";import{p as t}from"./env-HASH.js";var n=t(),r=()=>(0,n.jsx)(`p`,{children:e.useLoaderData().hidden});export{r as component};

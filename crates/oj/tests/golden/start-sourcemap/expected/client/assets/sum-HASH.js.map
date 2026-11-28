@@ -1,0 +1,1 @@
+{"version":3,"file":"sum-HASH.js","names":["a","b"],"sources":["../../src/workers/sum.ts"],"sourcesContent":["self.onmessage = (e: MessageEvent<number[]>) => {\n  self.postMessage(e.data.reduce((a, b) => a + b, 0));\n};\n"],"mappings":"C,WAAA,KAAK,UAAa,GAA8B,CAC9C,KAAK,YAAY,EAAE,KAAK,QAAQA,EAAGC,IAAMD,EAAIC,EAAG,CAAC,CAAC,CACpD,C"}

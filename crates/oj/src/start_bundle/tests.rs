@@ -367,17 +367,41 @@ async fn built_sheets_link_in_execution_order() {
     let out = bundle_output(&app, "src/entry.js", vec![plugin])
         .await
         .unwrap();
-    emitter.order_links(&out);
+    emitter.link_sheets(&out, true);
     let linked = emitter.css_urls();
-    assert_eq!(
-        sheet_names(&linked),
-        ["e", "a", "b", "c", "d"],
-        "{linked:?}"
+    // One sheet per chunk, named after it (Vite's css-post), its modules'
+    // CSS in the bundle's execution order: e (first.js's), the two CSS
+    // modules, c, d.
+    assert_eq!(sheet_names(&linked), ["entry"], "{linked:?}");
+    let sheet = std::fs::read_to_string(
+        app.dir
+            .join("dist/client")
+            .join(linked[0].trim_start_matches('/')),
+    )
+    .unwrap();
+    let at = |rule: &str| {
+        sheet
+            .find(rule)
+            .unwrap_or_else(|| panic!("{rule} in {sheet}"))
+    };
+    let (e, c, d) = (at(".e"), at(".c"), at(".d"));
+    assert!(e < c && c < d, "{sheet}");
+    // The sheet is minified whole, as Vite's finalizeCss minifies it, so
+    // rules with one declaration merge into one selector list: the two CSS
+    // modules' selectors sit between e's and c's in it.
+    let (a, b) = (at("._a_"), at("._b_"));
+    assert!(
+        e < a && a < b && b < c,
+        "the two CSS modules' rules sit between e and c: {sheet}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_build_emits_assets_once_by_content_hash() {
+    // Over `build.assetsInlineLimit`, so the files are emitted (a smaller
+    // asset inlines as its data URL, as under Vite).
+    let same_bytes = "same-bytes".repeat(500);
+    let font = "font".repeat(1200);
     let app = App::new(&[
         (
             "src/entry.js",
@@ -387,9 +411,9 @@ import "./style.css";
 console.log(a, b);
 "#,
         ),
-        ("src/logo.png", "same-bytes"),
-        ("src/copy.png", "same-bytes"),
-        ("src/font.woff2", "font"),
+        ("src/logo.png", same_bytes.as_str()),
+        ("src/copy.png", same_bytes.as_str()),
+        ("src/font.woff2", font.as_str()),
         ("src/style.css", ".a { background: url(./font.woff2) }"),
     ]);
     let start = app.start();
@@ -417,9 +441,9 @@ console.log(a, b);
         &urls[1][urls[1].len() - 12..],
         "same bytes, same hash"
     );
-    let css = emitter.css_urls();
+    let css = emitter.sheet_files();
     assert_eq!(css.len(), 1, "{css:?}");
-    let sheet = std::fs::read_to_string(client.join(css[0].trim_start_matches('/'))).unwrap();
+    let sheet = std::fs::read_to_string(client.join(&css[0].1)).unwrap();
     assert!(
         sheet.contains("url(/assets/font-") || sheet.contains("url(\"/assets/font-"),
         "a sheet's url() points at the emitted file:\n{sheet}"
@@ -447,10 +471,9 @@ async fn late_css_joins_the_first_client_sheet_in_place() {
         .append_generated_css("stylex.css", ".x1{color:green}")
         .unwrap();
 
-    assert_eq!(
-        emitter.css_urls(),
-        vec![a.clone(), b.clone()],
-        "no new link"
+    assert!(
+        emitter.css_urls().is_empty(),
+        "a sheet emitted as an asset is not a page link, and the late CSS adds none"
     );
     assert_eq!(
         std::fs::read_to_string(file(&a)).unwrap(),
@@ -1049,6 +1072,7 @@ async fn nested_workers_carry_the_chain_and_a_cycle_fails() {
                 Ok(super::assets::WorkerBundle {
                     code: String::new(),
                     file_name: "w.js".into(),
+                    ..Default::default()
                 })
             })
         }),
@@ -1100,6 +1124,7 @@ async fn a_cycle_between_two_client_workers_fails_both() {
                 Ok(super::assets::WorkerBundle {
                     code: String::new(),
                     file_name: "w.js".into(),
+                    ..Default::default()
                 })
             })
         }),
@@ -1329,8 +1354,8 @@ async fn stylesheet_transforms_run_in_vites_slots_in_the_client_dev_bundle() {
 }
 
 /// CSS a plugin hands vite:css-post for a module (UnoCSS's layers) takes the
-/// place of the sheet emitted for it, in the links and on disk; CSS for no
-/// emitted sheet is linked as its own.
+/// module's place: in its chunk's sheet when a chunk holds the module, else
+/// as a linked sheet of its own; CSS for no module is linked as its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn plugin_css_takes_the_place_of_its_modules_sheet() {
     let app = App::new(&[("src/a.css", ".a{color:red}")]);
@@ -1339,7 +1364,9 @@ async fn plugin_css_takes_the_place_of_its_modules_sheet() {
     let emitter = Emitter::new(&client, "/", Arc::new(Styles::new(&start)));
     let placeholder = app.dir.join("src/__uno.css");
     let a = emitter.emit(&app.dir.join("src/a.css")).await.unwrap();
-    let old = emitter
+    // The placeholder's sheet waits for a chunk that never comes (no bundle
+    // runs here): the plugin's CSS stands in as a sheet of its own.
+    emitter
         .css(&placeholder, "#--unocss--{layer:__ALL__}".into(), None)
         .await
         .unwrap();
@@ -1349,15 +1376,16 @@ async fn plugin_css_takes_the_place_of_its_modules_sheet() {
     emitter.plugin_css("", ".late{margin:1px}").unwrap();
 
     let urls = emitter.css_urls();
-    assert_eq!(urls.len(), 3, "{urls:?}");
-    assert_eq!(urls[0], a, "the other sheet keeps its place");
-    assert_ne!(urls[1], old, "a new name for the new content");
+    assert_eq!(urls.len(), 2, "{urls:?}");
+    assert!(
+        !urls.contains(&a),
+        "a sheet emitted as an asset is not linked"
+    );
     let file = |url: &str| client.join(url.trim_start_matches('/'));
-    assert!(!file(&old).exists(), "the placeholder sheet is gone");
-    assert!(std::fs::read_to_string(file(&urls[1]))
+    assert!(std::fs::read_to_string(file(&urls[0]))
         .unwrap()
         .contains(".p-4{padding:1rem}"));
-    assert!(std::fs::read_to_string(file(&urls[2]))
+    assert!(std::fs::read_to_string(file(&urls[1]))
         .unwrap()
         .contains(".late{margin:1px}"));
 }
@@ -1827,4 +1855,28 @@ fn a_defined_env_key_joins_the_bundles_import_meta_env_object() {
             "{key} missing from the server object:\n{server}"
         );
     }
+}
+
+/// A chunk's sheet is named as Vite's css-post names the asset it emits.
+#[test]
+fn a_chunk_sheet_takes_the_chunks_name_with_css_for_its_extension() {
+    use super::assets::chunk_sheet_stem;
+    assert_eq!(chunk_sheet_stem("index", true, false), "index");
+    assert_eq!(chunk_sheet_stem("dir/index", true, false), "index");
+    assert_eq!(chunk_sheet_stem("routeTree.gen", false, false), "routeTree");
+    assert_eq!(
+        chunk_sheet_stem("use-cases.websites", false, false),
+        "use-cases"
+    );
+    assert_eq!(
+        chunk_sheet_stem("i18n-fn/marketing.home", false, false),
+        "i18n-fn/marketing"
+    );
+    assert_eq!(
+        chunk_sheet_stem("about-widget", false, false),
+        "about-widget"
+    );
+    assert_eq!(chunk_sheet_stem(".hidden", false, false), ".hidden");
+    // A pure CSS entry chunk (its facade a stylesheet) keeps the full name.
+    assert_eq!(chunk_sheet_stem("styles/app", true, true), "styles/app");
 }

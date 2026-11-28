@@ -1,0 +1,1 @@
+const e=(e,t)=>e+t;let t=0;self.onmessage=n=>{t=e(t,n.data),self.postMessage(t)};

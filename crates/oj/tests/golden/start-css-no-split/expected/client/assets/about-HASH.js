@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";var t=e(),n=()=>(0,t.jsx)(`main`,{className:`about`,children:`about`});export{n as component};

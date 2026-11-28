@@ -1,0 +1,38 @@
+{
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ],
+    "assets": [
+      "assets/dots-HASH.svg"
+    ]
+  },
+  "src/icons/dots.svg": {
+    "file": "assets/dots-HASH.svg",
+    "src": "src/icons/dots.svg"
+  },
+  "src/icons/star.svg": {
+    "file": "assets/star-HASH.svg",
+    "src": "src/icons/star.svg"
+  },
+  "src/routes/index.tsx?tsr-split=component": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ],
+    "assets": [
+      "assets/star-HASH.svg",
+      "assets/dots-HASH.svg"
+    ]
+  }
+}

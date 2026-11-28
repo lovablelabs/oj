@@ -389,3 +389,81 @@ pub fn parse_program<'a>(
         .unwrap_or_else(|| "unknown parse error".to_string());
     Err(StylexError::parse_error(&detail))
 }
+
+/// The module printed as @stylexjs/unplugin prints it. Vite runs the
+/// plugin's `babel.transformAsync` over every module that imports StyleX
+/// and hands on babel's print, and @babel/generator writes an expression's
+/// parentheses only where the grammar needs them: a source's
+/// `cond ? ((...a) => x) : y` loses the arrow's, so Vite's own transform
+/// after it sees none. oj's compiler splices the source and keeps them, and
+/// oxc's parser marks a parenthesized function (`pife`), so every later
+/// print kept them, through esbuild's minify to the chunk (Lovable's
+/// drawer). Parsed as TSX, as the compiler parses; the map, reprinted text
+/// to `source`, as JSON.
+pub fn reprint_as_babel(source: &str, filename: &str) -> Result<(String, String), StylexError> {
+    use oxc_ast::ast::{ArrowFunctionExpression, Function};
+    use oxc_ast_visit::{VisitMut, walk_mut};
+    use oxc_codegen::{Codegen, CodegenOptions};
+    use oxc_parser::ParseOptions;
+    use oxc_syntax::scope::ScopeFlags;
+
+    struct ClearPife;
+    impl<'a> VisitMut<'a> for ClearPife {
+        fn visit_function(&mut self, it: &mut Function<'a>, flags: ScopeFlags) {
+            it.pife = false;
+            walk_mut::walk_function(self, it, flags);
+        }
+        fn visit_arrow_function_expression(&mut self, it: &mut ArrowFunctionExpression<'a>) {
+            it.pife = false;
+            walk_mut::walk_arrow_function_expression(self, it);
+        }
+    }
+
+    let allocator = Allocator::default();
+    let ret = Parser::new(&allocator, source, SourceType::tsx())
+        .with_options(ParseOptions {
+            preserve_parens: false,
+            ..ParseOptions::default()
+        })
+        .parse();
+    if ret.fatal_error || ret.diagnostics.has_errors() {
+        let detail = ret
+            .diagnostics
+            .errors()
+            .next()
+            .map(|d| d.message.to_string())
+            .unwrap_or_else(|| "unknown parse error".to_string());
+        return Err(StylexError::parse_error(&detail));
+    }
+    let mut program = ret.program;
+    ClearPife.visit_program(&mut program);
+    let out = Codegen::new()
+        .with_options(CodegenOptions {
+            source_map_path: Some(std::path::PathBuf::from(filename)),
+            ..CodegenOptions::default()
+        })
+        .build(&program);
+    let map = out.map.map(|m| m.to_json_string()).unwrap_or_default();
+    Ok((out.code, map))
+}
+
+#[cfg(test)]
+mod reprint_tests {
+    use super::reprint_as_babel;
+
+    #[test]
+    fn source_parentheses_around_functions_go_as_babel_drops_them() {
+        let (code, map) = reprint_as_babel(
+            "const r = typeof c === \"function\" ? ((...a: unknown[]) => <>{a}</>) : <>{c}</>;\nconst f = (function () {})();\nconst g = (() => 1)();\nconst h = (x) => ({ x });\n",
+            "/app/src/p.tsx",
+        )
+        .unwrap();
+        assert!(!code.contains("((...a"), "{code}");
+        // Parentheses the grammar needs stay; a function expression called
+        // in an initializer needs none (babel prints `function() {}()` too).
+        assert!(code.contains("function() {}()"), "{code}");
+        assert!(code.contains("(() => 1)()"), "{code}");
+        assert!(code.contains("({ x })"), "{code}");
+        assert!(map.contains("\"mappings\""), "{map}");
+    }
+}

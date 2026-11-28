@@ -36,8 +36,10 @@ impl std::error::Error for GlobError {}
 /// Expands every `import.meta.glob(...)` call of the module at `file` into
 /// the object Vite writes for it. `root` is the project root (`/` patterns
 /// and `/`-led keys), `alias` the app's `resolve.alias`. Each call's resolved patterns are pushed to `scopes`,
-/// what a dev rebundle gate matches created files against. Calls whose
-/// arguments are not static values are left as written.
+/// what a dev rebundle gate matches created files against. Arguments that
+/// are not literals count for nothing, as in rolldown's native import-glob
+/// plugin (a variable pattern is an empty object); a pattern the alias
+/// cannot make absolute leaves its call as written.
 pub fn transform_glob(
     code: &str,
     file: &Path,
@@ -79,29 +81,42 @@ pub fn transform_glob(
         let Some(args_end) = matching_paren(code, args_start) else {
             continue;
         };
-        let Some(args) = static_args(&code[args_start..args_end]) else {
+        let Some((patterns, opts)) = glob_args(&code[args_start..args_end]) else {
             continue;
         };
         from = args_end + 1;
         let call_end = args_end + 1;
+        // The plugin numbers every call it collected, a call it then leaves
+        // as written included.
+        let call_index = calls;
+        calls += 1;
+        // Vite's objectKeysRE / objectValuesRE on the code before the call:
+        // `Object.keys(import.meta.glob(…))` gets the keys alone (`"k": 0`,
+        // nothing imported), `Object.values(…)` the values in an array.
+        let before = clean[..head].trim_end();
+        let ends_with_call = |callee: &str| {
+            before.strip_suffix(callee).is_some_and(|rest| {
+                !rest
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        };
+        let only_keys = ends_with_call("Object.keys(");
+        let only_values = !only_keys && ends_with_call("Object.values(");
 
-        let patterns: Vec<String> = match args.first() {
-            Some(Value::Array(items)) => items
-                .iter()
-                .filter_map(|v| match v {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect(),
-            Some(Value::Str(s)) => vec![s.clone()],
-            _ => Vec::new(),
-        };
-        let opts = match args.get(1) {
-            Some(Value::Object(o)) => o.clone(),
-            _ => Vec::new(),
-        };
         let opts = GlobOpts::normalize(&opts)
             .map_err(|e| GlobError(format!("{e} (import.meta.glob in {})", file.display())))?;
+
+        // The native plugin's `to_absolute_glob`: a pattern that is not
+        // `/`, `**`, `./` or `../`-led goes through the resolver, and one it
+        // cannot make absolute warns and leaves the whole call as written.
+        if patterns.iter().any(|p| {
+            let p = p.strip_prefix('!').unwrap_or(p);
+            crate::glob::glob_needs_resolve(p) && crate::glob::aliased_glob(p, alias).is_none()
+        }) {
+            continue;
+        }
 
         let is_relative = patterns
             .iter()
@@ -118,8 +133,13 @@ pub fn transform_glob(
         let files: Vec<PathBuf> = call.files().into_iter().filter(|f| f != file).collect();
         scopes.push(call);
 
+        // The replacement is the native import-glob plugin's, text for text
+        // (rolldown sizes a module by this text when it splits chunks):
+        // `/* #__PURE__ */ Object.assign({"k": () => import("s"),…})`, a
+        // named import through `.then(m => m["name"])`, an eager entry a
+        // `__import_glob__<call>_<file>_` binding its static import
+        // declares.
         let import_name = opts.import.as_deref().filter(|i| *i != "*");
-        let want_default = import_name == Some("default");
         let mut entries: Vec<String> = Vec::with_capacity(files.len());
         for (idx, f) in files.iter().enumerate() {
             let spec = format!("{}{}", relative_import(file_dir, f), opts.query);
@@ -130,48 +150,67 @@ pub fn transform_glob(
                 opts.base.as_deref(),
                 is_relative,
             ));
-            let spec_json = json(&spec);
-            if opts.eager {
-                let id = format!("__oj_glob{calls}_{idx}");
-                prelude.push(match import_name {
-                    _ if want_default => format!("import {id} from {spec_json};"),
-                    Some(name) => format!("import {{ {name} as {id} }} from {spec_json};"),
-                    None => format!("import * as {id} from {spec_json};"),
-                });
-                entries.push(format!("{key}: {id}"));
-            } else {
-                entries.push(match import_name {
-                    _ if want_default => {
-                        format!("{key}: () => import({spec_json}).then((m) => m.default)")
-                    }
-                    Some(name) => format!(
-                        "{key}: () => import({spec_json}).then((m) => m[{}])",
-                        json(name)
-                    ),
-                    None => format!("{key}: () => import({spec_json})"),
-                });
+            if only_keys {
+                entries.push(format!("{key}: 0"));
+                continue;
             }
+            let spec_json = json(&spec);
+            let value = if opts.eager {
+                let id = format!("__import_glob__{call_index}_{idx}_");
+                prelude.push(match import_name {
+                    Some(name) => format!("import {{ {name} as {id} }} from {spec_json}"),
+                    None => format!("import * as {id} from {spec_json}"),
+                });
+                id
+            } else {
+                match import_name {
+                    Some(name) => {
+                        format!("() => import({spec_json}).then(m => m[{}])", json(name))
+                    }
+                    None => format!("() => import({spec_json})"),
+                }
+            };
+            entries.push(if only_values {
+                value
+            } else {
+                format!("{key}: {value}")
+            });
         }
         let spanned = code[head..call_end].matches('\n').count();
         out.push_str(&code[last..head]);
-        out.push('{');
-        out.push_str(&entries.join(", "));
+        let (open, close) = if only_keys {
+            ("{", "}")
+        } else if only_values {
+            ("[", "]")
+        } else {
+            ("/* #__PURE__ */ Object.assign({", "})")
+        };
+        out.push_str(open);
+        out.push_str(&entries.join(","));
         out.push_str(&"\n".repeat(spanned));
-        out.push('}');
+        out.push_str(close);
         last = call_end;
-        calls += 1;
     }
     out.push_str(&code[last..]);
     Ok(if prelude.is_empty() {
         out
     } else {
-        format!("{} {out}", prelude.join(" "))
+        format!("{};{out}", prelude.join(";"))
     })
 }
+
+/// The literal `(key, value)` properties of a call's options object.
+type GlobOptionPairs = Vec<(String, Value)>;
 
 /// A call's options after Vite's normalization: the deprecated `as` is
 /// `query` under another name, and `as: 'raw' | 'url'` forces the default
 /// import.
+///
+/// `as` is Vite's JS plugin's: rolldown's native import-glob plugin (Vite
+/// 8's build) has no `as` arm in its `update_options`, so `{ as: 'raw' }`
+/// is dropped there without a word and the entries import the modules
+/// themselves. oj keeps the JS plugin's reading, which is what the option
+/// ever meant.
 #[derive(Default)]
 struct GlobOpts {
     eager: bool,
@@ -192,12 +231,28 @@ impl GlobOpts {
         };
         let mut query = match get("query") {
             Some(Value::Str(s)) => s.clone(),
+            // The native plugin's query object: `key=value` pairs joined by
+            // `&`, written raw (no URL encoding), a string, boolean, number
+            // or `null` value as its text and any other value skipped; no
+            // query at all when nothing is left.
             Some(Value::Object(pairs)) => {
-                let mut ser = url::form_urlencoded::Serializer::new(String::new());
+                let mut query = String::from("?");
                 for (k, v) in pairs {
-                    ser.append_pair(k, &v.as_query_value());
+                    let Some(v) = v.as_native_query_value() else {
+                        continue;
+                    };
+                    if query.len() != 1 {
+                        query.push('&');
+                    }
+                    query.push_str(k);
+                    query.push('=');
+                    query.push_str(&v);
                 }
-                format!("?{}", ser.finish())
+                if query.len() != 1 {
+                    query
+                } else {
+                    String::new()
+                }
             }
             _ => String::new(),
         };
@@ -351,35 +406,65 @@ enum Value {
 }
 
 impl Value {
-    /// The value as URLSearchParams stringifies it.
-    fn as_query_value(&self) -> String {
+    /// The value as the native plugin's query object writes it: a string as
+    /// is, a boolean as `true`/`false`, a number as Rust prints the f64,
+    /// `null`; an array or object is skipped (`None`).
+    fn as_native_query_value(&self) -> Option<String> {
         match self {
-            Value::Str(s) => s.clone(),
-            Value::Num(n) if n.fract() == 0.0 && n.abs() < 1e21 => format!("{}", *n as i64),
-            Value::Num(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Null => "null".into(),
-            Value::Array(items) => items
-                .iter()
-                .map(Value::as_query_value)
-                .collect::<Vec<_>>()
-                .join(","),
-            Value::Object(_) => "[object Object]".into(),
+            Value::Str(s) => Some(s.clone()),
+            Value::Num(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Null => Some("null".into()),
+            Value::Array(_) | Value::Object(_) => None,
         }
     }
 }
 
-/// The call's arguments as static values; `None` when any argument is not one
-/// (a variable, a call), which Vite rejects and oj leaves untouched.
-fn static_args(src: &str) -> Option<Vec<Value>> {
+/// The call's arguments as the native plugin reads them (`glob_values`,
+/// `update_options`): the patterns are the first argument's string literals
+/// and substitution-free templates, alone or as an array's elements, and
+/// the options the second argument's literal properties; anything else (a
+/// variable, a call, a spread) counts for nothing, so `import.meta.glob(p)`
+/// is an empty object. `None` only when the arguments do not parse.
+fn glob_args(src: &str) -> Option<(Vec<String>, GlobOptionPairs)> {
     let wrapped = format!("[{src}]");
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, &wrapped, SourceType::mjs()).parse_expression();
-    let expr = parsed.ok()?;
-    match static_value(&expr)? {
-        Value::Array(items) => Some(items),
+    let Expression::ArrayExpression(args) = parsed.ok()? else {
+        return None;
+    };
+    let string_of = |expr: &Expression| match static_value(expr) {
+        Some(Value::Str(s)) => Some(s),
         _ => None,
-    }
+    };
+    let patterns = match args.elements.first().and_then(|el| el.as_expression()) {
+        Some(Expression::ArrayExpression(items)) => items
+            .elements
+            .iter()
+            .filter_map(|el| el.as_expression().and_then(string_of))
+            .collect(),
+        Some(expr) => string_of(expr).into_iter().collect(),
+        None => Vec::new(),
+    };
+    let opts = match args.elements.get(1).and_then(|el| el.as_expression()) {
+        Some(Expression::ObjectExpression(obj)) => obj
+            .properties
+            .iter()
+            .filter_map(|prop| {
+                let ObjectPropertyKind::ObjectProperty(p) = prop else {
+                    return None;
+                };
+                let key = match &p.key {
+                    PropertyKey::StaticIdentifier(id) => id.name.to_string(),
+                    PropertyKey::StringLiteral(s) => crate::lit_str(s.value).to_string(),
+                    _ => return None,
+                };
+                Some((key, static_value(&p.value)?))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Some((patterns, opts))
 }
 
 fn static_value(expr: &Expression) -> Option<Value> {
@@ -827,6 +912,10 @@ pub fn has_scheme(file: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaUrlTarget {
     File(PathBuf),
+    /// The file's built URL, known already (a build that bundled the worker
+    /// or wrote the asset as it resolved the site): the literal Vite's
+    /// plugins leave once renderChunk fills their placeholder in.
+    Literal(String),
     /// A worker starting its own entry: `self.location.href`.
     SelfWorker,
     Unresolved,
@@ -898,6 +987,29 @@ pub fn apply_import_meta_urls(code: &str, sites: &[MetaUrl], targets: &[MetaUrlT
                     site.start,
                     site.end,
                     format!("new URL({href}, '' + import.meta.url)"),
+                ));
+            }
+            // The built URL as Vite's plugins leave it (the worker plugin's
+            // `/* @vite-ignore */`, the asset plugin's not): a string in the
+            // call, nothing hoisted.
+            (MetaUrlKind::Worker { .. }, MetaUrlTarget::Literal(url)) => edits.push((
+                site.start,
+                site.end,
+                format!(
+                    "new URL(/* @vite-ignore */ {}, '' + import.meta.url)",
+                    json(url)
+                ),
+            )),
+            (MetaUrlKind::Asset { postfix, .. }, MetaUrlTarget::Literal(url)) => {
+                let href = if postfix.starts_with('#') {
+                    format!("{url}{postfix}")
+                } else {
+                    url.clone()
+                };
+                edits.push((
+                    site.start,
+                    site.end,
+                    format!("new URL({}, '' + import.meta.url)", json(&href)),
                 ));
             }
             (MetaUrlKind::Asset { .. }, MetaUrlTarget::SelfWorker) => {}
@@ -986,3 +1098,90 @@ fn template_glob(raw: &str) -> String {
 #[cfg(test)]
 #[path = "meta_glob_tests.rs"]
 mod tests;
+
+/// Vite's worker-post plugin for a classic (`iife`) worker bundle, which a
+/// build runs natively (rolldown's `builtin:vite-web-worker-post`, a "post"
+/// transformAst over every module): an `import.meta.url` read as a member
+/// expression is `self.location.href`; the `import.meta` of anything else,
+/// an assignment to `import.meta.url` included (the mozjpeg codec's
+/// `import.meta.url = "https://localhost"` leaves `_vite_importMeta.url =
+/// …`, the target's object visited on its own), is `_vite_importMeta`, a
+/// `var _vite_importMeta = { url: self.location.href }` the plugin puts
+/// first in the module. `None` when the module has no `import.meta`.
+pub fn rewrite_classic_worker_import_meta(code: &str) -> Option<String> {
+    if !code.contains("import.meta") {
+        return None;
+    }
+    static META: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = META.get_or_init(|| regex::Regex::new(r"\bimport\s*\.\s*meta\b").unwrap());
+    // `import.meta.url` on the left of an assignment (`=`, `+=`, `??=`, …).
+    fn assigned(rest: &str) -> bool {
+        let rest = rest.trim_start();
+        const COMPOUND: [&str; 15] = [
+            "**=", "<<=", ">>>=", ">>=", "&&=", "||=", "??=", "+=", "-=", "*=", "/=", "%=", "&=",
+            "|=", "^=",
+        ];
+        COMPOUND.iter().any(|op| rest.starts_with(op))
+            || (rest.starts_with('=') && !rest.starts_with("=="))
+    }
+    let clean = strip_literals(code);
+    let mut out = String::with_capacity(code.len() + 64);
+    let mut last = 0;
+    let mut injected = false;
+    for m in re.find_iter(&clean) {
+        out.push_str(&code[last..m.start()]);
+        let rest = &clean[m.end()..];
+        if rest.starts_with(".url") && !assigned(&rest[".url".len()..]) {
+            out.push_str("self.location.href");
+            last = m.end() + ".url".len();
+        } else {
+            out.push_str("_vite_importMeta");
+            injected = true;
+            last = m.end();
+        }
+    }
+    if last == 0 {
+        return None;
+    }
+    out.push_str(&code[last..]);
+    if injected {
+        out.insert_str(0, "var _vite_importMeta = { url: self.location.href };\n");
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod classic_worker_tests {
+    use super::rewrite_classic_worker_import_meta;
+
+    #[test]
+    fn import_meta_in_a_classic_worker_is_vites() {
+        let code = "const u = import.meta.url;\nif (import.meta.url === undefined) import.meta.url = \"https://localhost\";\nconst m = import.meta;\nconsole.log(\"import.meta.url stays in a string\");\n";
+        let out = rewrite_classic_worker_import_meta(code).unwrap();
+        assert!(out.starts_with("var _vite_importMeta = { url: self.location.href };\nconst u = self.location.href;\n"), "{out}");
+        // An assignment to `import.meta.url` goes through the object, as
+        // Vite's build leaves it.
+        assert!(
+            out.contains(
+                "self.location.href === undefined) _vite_importMeta.url = \"https://localhost\""
+            ),
+            "{out}"
+        );
+        assert!(out.contains("const m = _vite_importMeta;"), "{out}");
+        assert!(
+            out.contains("\"import.meta.url stays in a string\""),
+            "{out}"
+        );
+        assert_eq!(out.matches('\n').count(), code.matches('\n').count() + 1);
+        let compound = rewrite_classic_worker_import_meta("import.meta.url += \"a\";\nimport.meta.url ??= \"z\";\nconst eq = import.meta.url == \"b\";\n").unwrap();
+        assert!(
+            compound.contains("_vite_importMeta.url += \"a\";\n_vite_importMeta.url ??= \"z\";\nconst eq = self.location.href == \"b\";"),
+            "{compound}"
+        );
+        assert!(rewrite_classic_worker_import_meta("const x = 1;\n").is_none());
+        let reads =
+            rewrite_classic_worker_import_meta("new URL(\"/a.wasm\", '' + import.meta.url)\n")
+                .unwrap();
+        assert_eq!(reads, "new URL(\"/a.wasm\", '' + self.location.href)\n");
+    }
+}

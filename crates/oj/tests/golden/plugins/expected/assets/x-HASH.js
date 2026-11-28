@@ -1,0 +1,1 @@
+import{n as e,t}from"./index-HASH.js";function n(n){return`${t()}:${n}:${e}`}export{n as track};

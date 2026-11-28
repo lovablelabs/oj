@@ -283,7 +283,8 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "apng" => "image/apng",
-        "jpg" | "jpeg" | "jfif" | "pjpeg" | "pjp" => "image/jpeg",
+        // mrmime knows no jfif/pjpeg/pjp: those fall to the octet stream.
+        "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "avif" => "image/avif",
@@ -295,7 +296,8 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "ttf" => "font/ttf",
         "otf" => "font/otf",
         "eot" => "application/vnd.ms-fontobject",
-        "mp4" | "m4a" => "video/mp4",
+        "mp4" => "video/mp4",
+        "m4a" => "audio/mp4",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
         "mp3" => "audio/mpeg",
@@ -308,6 +310,21 @@ pub fn asset_mime(ext: &str) -> &'static str {
         "pdf" => "application/pdf",
         "txt" => "text/plain",
         "css" => "text/css",
+        // The text and data types mrmime knows (Vite's asset plugin looks a
+        // data URL's type up there), for a `?url` import small enough to inline.
+        "md" | "markdown" => "text/markdown",
+        "mdx" => "text/mdx",
+        "json" | "map" => "application/json",
+        "jsonld" => "application/ld+json",
+        "geojson" => "application/geo+json",
+        "js" | "mjs" => "text/javascript",
+        "cjs" => "application/node",
+        "html" | "htm" => "text/html",
+        "xml" => "text/xml",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "text/yaml",
+        "toml" => "application/toml",
+        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -557,7 +574,8 @@ mod tests {
     #[test]
     fn mime_is_case_insensitive_with_octet_stream_fallback() {
         assert_eq!(asset_mime("SVG"), "image/svg+xml");
-        assert_eq!(asset_mime("jfif"), "image/jpeg");
+        assert_eq!(asset_mime("jfif"), "application/octet-stream");
+        assert_eq!(asset_mime("m4a"), "audio/mp4");
         assert_eq!(asset_mime("webmanifest"), "application/manifest+json");
         assert_eq!(asset_mime("xyz"), "application/octet-stream");
     }

@@ -34,6 +34,21 @@ pub fn plugin_for(
         return Ok(None);
     };
     let options = stylex.get("options").unwrap_or(&serde_json::Value::Null);
+    let plugin = shared_plugin(command, root, options)?;
+    if command != "build" && plugin.dev_mode() == DevMode::Off {
+        return Ok(None);
+    }
+    Ok(Some(plugin))
+}
+
+/// The plugin for `options` (the object a `stylex.vite(...)` call received)
+/// under `command`, shared by everything in the process that asks for the
+/// same.
+fn shared_plugin(
+    command: &str,
+    root: &Path,
+    options: &serde_json::Value,
+) -> Result<Arc<StylexPlugin>, String> {
     let build = command == "build";
     // The plugin's `dev` default reads NODE_ENV (the shell's value or Vite's
     // per-command default) and BABEL_ENV as the config loads.
@@ -49,7 +64,7 @@ pub fn plugin_for(
     let key = format!("{command}\0{dev}\0{}\0{options}", canonical.display());
     let mut shared = SHARED.lock().unwrap();
     shared.retain(|_, plugin| plugin.strong_count() > 0);
-    let plugin = match shared.get(&key).and_then(std::sync::Weak::upgrade) {
+    Ok(match shared.get(&key).and_then(std::sync::Weak::upgrade) {
         Some(plugin) => plugin,
         None => {
             let plugin = Arc::new(StylexPlugin::new(options, root, dev, !build)?);
@@ -59,11 +74,60 @@ pub fn plugin_for(
             shared.insert(key, Arc::downgrade(&plugin));
             plugin
         }
+    })
+}
+
+/// A module the StyleX plugin compiled for a build: the code, its map, and
+/// the module's rules as the plugin's babel metadata lists them.
+pub(crate) type BuildTransformed = (String, Option<String>, Vec<serde_json::Value>);
+
+/// The plugin's transform for a module a Start build's plugin host hands
+/// over (the stand-in's composition of the package's own plugin, see
+/// plugin-host.mjs `installStylexHost`) under `options`, the object its
+/// `stylex.vite(...)` received: the compiled code, its map, and the module's
+/// rules as the plugin's babel metadata lists them, for the store the host
+/// keeps. `None` when the module compiles to nothing.
+pub(crate) fn build_transform(
+    root: &Path,
+    id: &str,
+    code: &str,
+    options: &serde_json::Value,
+) -> Result<Option<BuildTransformed>, String> {
+    let plugin = shared_plugin("build", root, options)?;
+    let file = Path::new(id.split('?').next().unwrap_or(id));
+    // The plugin runs babel over every module importing StyleX and hands
+    // on its print, compiled or not.
+    let (code, map, rules) = match plugin.transform_source(file, code)? {
+        Some(out) => (
+            out.code,
+            out.map,
+            out.rules.iter().map(|r| r.to_metadata_tuple()).collect(),
+        ),
+        None => (code.to_string(), None, Vec::new()),
     };
-    if !build && plugin.dev_mode() == DevMode::Off {
-        return Ok(None);
-    }
-    Ok(Some(plugin))
+    let (code, map) = babel_shaped(file, &code, map.as_deref())?;
+    Ok(Some((code, Some(map), rules)))
+}
+
+/// [`oj_stylex::api::reprint_as_babel`] over the compiler's output for
+/// `file`: the code, and its map back to the source (the compiler's map,
+/// when it changed the module, composed with the reprint's).
+pub fn babel_shaped(
+    file: &Path,
+    code: &str,
+    map: Option<&str>,
+) -> Result<(String, String), String> {
+    let filename = file.to_string_lossy().replace('\\', "/");
+    let (code, reprint_map) =
+        oj_stylex::api::reprint_as_babel(code, &filename).map_err(|e| e.to_string())?;
+    let Some(map) = map else {
+        return Ok((code, reprint_map));
+    };
+    let first = oxc_sourcemap::SourceMap::from_json_string(map).map_err(|e| e.to_string())?;
+    let second =
+        oxc_sourcemap::SourceMap::from_json_string(&reprint_map).map_err(|e| e.to_string())?;
+    let composed = rolldown_sourcemap::collapse_sourcemaps(&[&first, &second]);
+    Ok((code, composed.to_json_string()))
 }
 
 /// The live dev plugin for `root`, as [`plugin_for`] made it for `serve`.

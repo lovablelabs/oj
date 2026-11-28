@@ -40,7 +40,12 @@ pub(crate) enum CodeTarget {
     Server,
     /// A worker bundle whose entry is `entry`: URL and glob rewrites
     /// everywhere, a worker starting itself getting `self.location.href`.
-    Worker { entry: PathBuf },
+    Worker {
+        entry: PathBuf,
+        /// A classic (`iife`) worker: its `import.meta` is Vite's worker
+        /// plugin's rewrite (meta_glob::rewrite_classic_worker_import_meta).
+        classic: bool,
+    },
 }
 
 pub(crate) struct StartCodePlugin {
@@ -66,6 +71,11 @@ pub(crate) struct StartCodePlugin {
     /// the tree's modification time.
     route_files: Mutex<Option<(std::time::SystemTime, HashSet<PathBuf>)>>,
     warned: Mutex<HashSet<String>>,
+    /// A build's emitter and this bundle's worker chain: a `new URL(file,
+    /// import.meta.url)` site takes its file's built URL as a string, as
+    /// Vite's plugins leave it, the worker bundled or the asset written as
+    /// the site resolves. Without (dev), the site imports the URL.
+    urls: Option<(Arc<super::assets::Emitter>, Vec<PathBuf>)>,
 }
 
 impl std::fmt::Debug for StartCodePlugin {
@@ -86,7 +96,19 @@ impl StartCodePlugin {
             route_tree: root.join("src").join("routeTree.gen.ts"),
             route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
+            urls: None,
         }
+    }
+
+    /// A build: a `new URL(file, import.meta.url)` site takes its file's
+    /// built URL as a string (see `urls`).
+    pub fn with_built_urls(
+        mut self,
+        emitter: Arc<super::assets::Emitter>,
+        worker_chain: Vec<PathBuf>,
+    ) -> Self {
+        self.urls = Some((emitter, worker_chain));
+        self
     }
 
     /// The route tree the app's Start generates, when not Start's default.
@@ -222,10 +244,55 @@ impl Plugin for StartCodePlugin {
                     None => MetaUrlTarget::Unresolved,
                     Some(spec) => match self.resolve_url_file(&ctx, spec, id).await? {
                         Some(abs) => match &self.target {
-                            CodeTarget::Worker { entry } if *entry == abs => {
+                            CodeTarget::Worker { entry, .. } if *entry == abs => {
                                 MetaUrlTarget::SelfWorker
                             }
-                            _ => MetaUrlTarget::File(abs),
+                            _ => match &self.urls {
+                                // A build: the worker bundled, the asset
+                                // written, and the site given the URL as a
+                                // string, as Vite's plugins leave it. A
+                                // stylesheet keeps its import (compiled
+                                // through the plugins as a `?url` sheet).
+                                Some((emitter, chain))
+                                    if !super::assets::is_style_path(&abs.to_string_lossy()) =>
+                                {
+                                    let url = match &site.kind {
+                                        meta_glob::MetaUrlKind::Worker { .. } => {
+                                            // Vite's worker-import-meta-url plugin
+                                            // lists the worker's file among the
+                                            // importing chunk's assets.
+                                            let url = emitter.worker(&abs, chain).await;
+                                            if let Ok(url) = &url {
+                                                emitter.note_module_asset(id, url);
+                                            }
+                                            Some(url)
+                                        }
+                                        meta_glob::MetaUrlKind::Asset { postfix, .. } => {
+                                            let query = if postfix.starts_with('#') {
+                                                ""
+                                            } else {
+                                                postfix.as_str()
+                                            };
+                                            let asset_id = format!("{}{query}", abs.display());
+                                            let url = emitter.asset_url(&abs, &asset_id).await;
+                                            // Vite's asset-import-meta-url plugin lists
+                                            // the file among the importing chunk's assets.
+                                            if let Ok(url) = &url {
+                                                emitter.note_module_asset(id, url);
+                                            }
+                                            Some(url)
+                                        }
+                                        meta_glob::MetaUrlKind::Template { .. } => None,
+                                    };
+                                    match url {
+                                        Some(url) => MetaUrlTarget::Literal(
+                                            url.map_err(|e| anyhow::anyhow!("{id}: {e}"))?,
+                                        ),
+                                        None => MetaUrlTarget::File(abs),
+                                    }
+                                }
+                                _ => MetaUrlTarget::File(abs),
+                            },
                         },
                         None => {
                             // Vite's warning for a file that is not there; a
@@ -248,7 +315,31 @@ impl Plugin for StartCodePlugin {
                 code = Cow::Owned(out);
             }
         }
+        // A classic worker's `import.meta`, as Vite's worker plugin rewrites
+        // it after the URL plugins ran (its "post" transform).
+        if matches!(self.target, CodeTarget::Worker { classic: true, .. }) {
+            if let Some(out) = meta_glob::rewrite_classic_worker_import_meta(&code) {
+                urls_changed = true;
+                code = Cow::Owned(out);
+            }
+        }
 
+        // Vite's dynamic-import-vars runs ahead of import-glob: a variable
+        // `import(\`./x/${name}.ts\`)` becomes a call of rolldown's helper
+        // over the `import.meta.glob` of the files it can name, which the
+        // block below expands (the plugin's exclude is node_modules). A
+        // build's rewrite alone (the emitter marks one): the dev server has
+        // no helper module to serve and expands its globs first.
+        if app && self.urls.is_some() && code.contains("import(") {
+            let out = oj_compiler::glob::expand_dynamic_import_vars_vite_source_aliased(
+                &code,
+                &file,
+                &|id: &str| self.alias.iter().find_map(|e| e.apply(id)),
+            );
+            if out != code {
+                code = Cow::Owned(out);
+            }
+        }
         // App code always expands its globs; a dependency only the ones a URL
         // rewrite produced (Vite runs the glob plugin on every module, and a
         // dependency's own globs come prebuilt).
@@ -299,8 +390,7 @@ impl Plugin for StartCodePlugin {
             Cow::Owned(out) => {
                 // The rewrites keep every line: a line map, as Vite's own
                 // (and Start's compiler) return one.
-                let map = (out.matches('\n').count() == original.matches('\n').count())
-                    .then(|| oj_compiler::line_map_json(id, original, &out))
+                let map = Some(oj_compiler::line_map_json(id, original, &out))
                     .and_then(|json| {
                         oxc_sourcemap::SourceMap::from_json_string(&json)
                             .ok()
@@ -371,8 +461,16 @@ impl StartCodePlugin {
                     oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
+                // Start's build splits a server module: the provider
+                // (`?tss-serverfn-split`, what the resolver imports) keeps
+                // the handlers, the module itself calls them through
+                // `createSsrRpc`.
+                CodeTarget::Server if id.contains("tss-serverfn-split") => {
+                    oj_compiler::server_fns::rewrite_server_provider(&code, &rel, &modules)
+                }
                 CodeTarget::Server => {
-                    oj_compiler::server_fns::rewrite_server(&code, &rel, &modules)
+                    oj_compiler::server_fns::rewrite_ssr_caller(&code, &rel, &modules)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
                 CodeTarget::Worker { .. } => None,
             };

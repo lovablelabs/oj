@@ -1,0 +1,1 @@
+export default { dashboard: "Dashboard" };

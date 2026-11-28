@@ -28,7 +28,10 @@ pub(crate) mod lazy;
 pub(crate) mod prod;
 pub(crate) mod refresh;
 pub(crate) mod route_tree;
+pub(crate) mod server_fn_provider;
 pub(crate) mod shims;
+pub(crate) mod side_effects;
+pub(crate) mod vite_transform;
 
 use std::path::{Path, PathBuf};
 
@@ -118,6 +121,17 @@ impl StartConfig {
         crate::start_dev::configured_start_server_entry(&self.config, &self.root)
     }
 
+    /// The client bundle's entry: the app's own Start client entry
+    /// (`tanstackStart({ client: { entry } })`, or `src/client.tsx` by
+    /// convention), as `virtual:tanstack-start-client-entry` resolves under
+    /// Vite; else oj's stub of the framework's default (hydrateRoot of
+    /// StartClient). The app's file is the chunk's facade, so `vite build`'s
+    /// manifest keys the entry by it.
+    pub fn client_entry(&self) -> PathBuf {
+        crate::start_dev::configured_start_client_entry(&self.config, &self.root)
+            .unwrap_or_else(|| self.cache.join("client-entry.tsx"))
+    }
+
     /// The framework seam every client bundle fills in (what TanStack's Vite
     /// plugin resolves): the router, the start instance, the plugin adapter
     /// list, the manifest, the injected head scripts and the fn stubs.
@@ -127,7 +141,7 @@ impl StartConfig {
             ("#tanstack-start-entry".into(), self.start_entry()),
             (
                 "#tanstack-start-plugin-adapters".into(),
-                self.cache.join("plugin-adapters.ts"),
+                self.cache.join("empty-plugin-adapters.ts"),
             ),
             (
                 "tanstack-start-manifest:v".into(),
@@ -167,28 +181,31 @@ impl StartConfig {
     }
 
     /// The defines of a client bundle, in application order (a later key
-    /// wins): `process.env` as the Start runtime reads it, `global`,
-    /// `import.meta.env`, then the config's `define`, the client
-    /// environment's own and what plugin config hooks added, as Vite's define
-    /// plugin layers them.
+    /// wins): Vite's define plugin's `process.env` (an empty object, NODE_ENV
+    /// its one key, under `global` and `globalThis` too), the server-fn base
+    /// Start's plugin defines, `import.meta.env`, then the config's `define`,
+    /// the client environment's own and what plugin config hooks added, as
+    /// Vite's define plugin layers them. No `global` alias and no banner: a
+    /// chunk of `vite build` carries neither.
     pub fn client_defines(
         &self,
         env_delta: &[(String, String)],
         plugin_defines: &[(String, String)],
     ) -> Vec<(String, String)> {
-        let node_env = self.node_env();
-        let process_env = serde_json::json!({
-            "NODE_ENV": node_env,
-            "TSS_SERVER_FN_BASE": SERVER_FN_BASE,
-        })
-        .to_string();
+        let node_env = serde_json::Value::String(self.node_env().to_string()).to_string();
+        let fn_base = serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string();
         let mut out = vec![
-            ("process.env".to_string(), process_env),
+            ("process.env".to_string(), "{}".to_string()),
+            ("global.process.env".to_string(), "{}".to_string()),
+            ("globalThis.process.env".to_string(), "{}".to_string()),
+            ("process.env.NODE_ENV".to_string(), node_env.clone()),
+            ("global.process.env.NODE_ENV".to_string(), node_env.clone()),
+            ("globalThis.process.env.NODE_ENV".to_string(), node_env),
             (
-                "process.env.NODE_ENV".to_string(),
-                serde_json::Value::String(node_env.to_string()).to_string(),
+                "process.env.TSS_SERVER_FN_BASE".to_string(),
+                fn_base.clone(),
             ),
-            ("global".to_string(), "globalThis".to_string()),
+            ("import.meta.env.TSS_SERVER_FN_BASE".to_string(), fn_base),
         ];
         out.extend(self.app_env.import_meta_env_defines(
             oj_env::get(),
@@ -198,6 +215,10 @@ impl StartConfig {
         ));
         if self.command == Command::Build {
             out.push(("import.meta.hot".into(), "undefined".into()));
+            // Vite's define for a bundled environment: a key the env has
+            // not is `undefined`, so a branch on `import.meta.env.VITE_X`
+            // the build has no value for is dead, its `import()` with it.
+            out.push(("import.meta.env.*".into(), "undefined".into()));
         }
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, "client"));
@@ -225,6 +246,10 @@ impl StartConfig {
                 "process.env.TSS_SERVER_FN_BASE".to_string(),
                 serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string(),
             ),
+            (
+                "import.meta.env.TSS_SERVER_FN_BASE".to_string(),
+                serde_json::Value::String(SERVER_FN_BASE.to_string()).to_string(),
+            ),
             ("import.meta.hot".to_string(), "undefined".to_string()),
         ];
         out.extend(self.app_env.import_meta_env_defines(
@@ -233,6 +258,7 @@ impl StartConfig {
             &self.base,
             true,
         ));
+        out.push(("import.meta.env.*".into(), "undefined".into()));
         out.extend(oj_config::config_defines(&self.config));
         out.extend(oj_config::environment_defines(&self.config, env_name));
         out.extend(plugin_defines.iter().cloned());
@@ -256,12 +282,20 @@ impl StartConfig {
         crate::build::bundle_graph::jsx_config(&self.config)
     }
 
-    /// rolldown's JSX transform: automatic by default, the config's runtime,
-    /// import source and pragmas, `development` following NODE_ENV.
+    /// rolldown's transform options as Vite's buildEnvironment passes them:
+    /// `target` is `build.target` (the baseline browsers by default), which
+    /// the lowering and rolldown's own passes read (a `new RegExp` of a
+    /// lookbehind folds to a literal only where the target supports it, so
+    /// `marked`'s `!!new RegExp("(?<=1)(?<!1)")` is `true` under Vite); the
+    /// JSX transform is automatic by default, the config's runtime, import
+    /// source and pragmas, `development` following NODE_ENV.
     pub fn transform_options(&self) -> rolldown_common::BundlerTransformOptions {
         let jsx = oj_config::jsx_settings(&self.config);
         let classic = jsx.runtime.as_deref() == Some("classic");
         rolldown_common::BundlerTransformOptions {
+            target: Some(rolldown_common::Either::Right(oj_config::build_targets(
+                &self.config,
+            ))),
             jsx: Some(rolldown_common::Either::Right(
                 rolldown_common::JsxOptions {
                     runtime: Some(if classic { "classic" } else { "automatic" }.to_string()),
@@ -359,7 +393,9 @@ pub(crate) fn write_server_fn_resolver(
                 stack.push(path);
             } else if matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("ts" | "tsx")
+                // Start's compiler takes `.[cm]?[tj]sx?`: a server function
+                // in a .js or .jsx module has an entry too.
+                Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs")
             ) {
                 files.push(path);
             }
@@ -391,7 +427,15 @@ pub(crate) fn write_server_fn_resolver(
         // edited, as the engine keeps the errored module (Vite's too).
         let var = format!("__m{module_count}");
         module_count += 1;
-        let spec = server_fn_module(cache, path);
+        // A build's resolver imports the provider module (`?tss-serverfn-split`,
+        // the handlers alone), as Start's does; dev's imports the module.
+        // A build's resolver is served as Start's virtual module, so its
+        // imports are absolute, as Start's own resolver writes them.
+        let spec = if dev {
+            server_fn_module(cache, path)
+        } else {
+            json(&format!("{}?tss-serverfn-split", path.display()))
+        };
         modules.push_str(&format!(
             "let {var};\nconst {var}_load = async () => ({var} ??= await import({spec}));\n"
         ));
@@ -599,12 +643,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("src/plain.tsx"), "export const x = 1;\n").unwrap();
+        // Start's compiler takes `.[cm]?[tj]sx?`: a .jsx server function has
+        // an entry; a file of another kind never does.
         std::fs::write(
-            root.join("src/server/skip.js"),
-            "export const c = createServerFn().handler(() => 3);\n",
+            root.join("src/server/legacy.jsx"),
+            "export const getC = createServerFn().handler(() => 3);\n",
         )
         .unwrap();
-        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 2);
+        std::fs::write(
+            root.join("src/server/notes.md"),
+            "createServerFn().handler(() => 4)\n",
+        )
+        .unwrap();
+        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 3);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         // Loaded on the first call, never imported statically: a static import
         // runs the module inside the framework's import of the resolver.
@@ -618,7 +669,11 @@ mod tests {
             "{out}"
         );
         // Both functions of the file share its one importer.
-        assert_eq!(out.matches("import(").count(), 1, "{out}");
+        assert_eq!(out.matches("import(").count(), 2, "{out}");
+        assert!(
+            out.contains("src/server/legacy.jsx") && out.contains("getC_createServerFn_handler"),
+            "{out}"
+        );
         // Under oj's id and Start's Vite dev id alike.
         for id in [
             oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB"),
@@ -645,11 +700,11 @@ mod tests {
         ] {
             assert!(out.contains(error), "{error}\n{out}");
         }
-        assert!(!out.contains("skip.js") && !out.contains("plain"), "{out}");
+        assert!(!out.contains("notes.md") && !out.contains("plain"), "{out}");
         assert!(out.contains("export async function getServerFnById(id)"));
         // A build maps oj's ids only: a Vite build knows no dev id.
         // Into its own file: the dev resolver stays as it was.
-        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 2);
+        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 3);
         let dev_out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         assert_eq!(dev_out, out);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.build.mjs")).unwrap();

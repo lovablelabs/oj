@@ -1,0 +1,1 @@
+(function(){let e=(e,t)=>e+t;self.onmessage=t=>{self.postMessage(e(t.data,100))}})();

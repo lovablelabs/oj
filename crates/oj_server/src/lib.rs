@@ -267,8 +267,8 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/start-entry.ts"),
     ),
     (
-        "plugin-adapters.ts",
-        include_str!("assets/start/plugin-adapters.ts"),
+        "empty-plugin-adapters.ts",
+        include_str!("assets/start/empty-plugin-adapters.ts"),
     ),
     ("manifest.ts", include_str!("assets/start/manifest.ts")),
     (

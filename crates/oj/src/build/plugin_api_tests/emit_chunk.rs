@@ -35,7 +35,7 @@ export default [{
   name: "chunk-emitter",
   transform(code, id) {
     if (id.endsWith("entry.js")) {
-      ref = this.emitFile({ type: "chunk", id: path.join(root, "src", "content.js"), name: "content" });
+      ref = this.emitFile({ type: "chunk", id: path.join(root, "src", "content.js"), name: "content", preserveSignature: "strict" });
     }
     return null;
   },

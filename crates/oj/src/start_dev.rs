@@ -2793,7 +2793,28 @@ pub(crate) fn configured_start_server_entry(
         .into_iter()
         .find(|(find, _)| find == "virtual:tanstack-start-server-entry")
         .map(|(_, replacement)| replacement)?;
-    let path = PathBuf::from(target.split('?').next().unwrap_or(&target));
+    app_entry_file(root, &target)
+}
+
+/// The app's own Start client entry (`tanstackStart({ client: { entry } })`, or
+/// its `src/client.tsx` by convention), as Start's config hook aliases
+/// `virtual:tanstack-start-client-entry` to it: an app file, never the
+/// framework's default entry under node_modules (oj's stub stands in for that).
+pub(crate) fn configured_start_client_entry(
+    config: &oj_config::OjConfig,
+    root: &Path,
+) -> Option<PathBuf> {
+    let target = oj_config::resolve_alias(config, "client")
+        .into_iter()
+        .find(|(find, _)| find == "virtual:tanstack-start-client-entry")
+        .map(|(_, replacement)| replacement)?;
+    app_entry_file(root, &target)
+}
+
+/// `target`, an alias replacement, as an app file: absolute or root-relative,
+/// under the root, outside node_modules, and a file.
+fn app_entry_file(root: &Path, target: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(target.split('?').next().unwrap_or(target));
     let path = if path.is_absolute() {
         path
     } else {
@@ -2895,6 +2916,7 @@ pub async fn start_build(
         out_dir: out_dir.clone(),
         sourcemap: oj_config::build_sourcemap(&config),
         minify: oj_config::build_minify(&config),
+        minifier: oj_config::build_minifier(&config),
         prerender: build_cfg.prerender.clone().unwrap_or_default(),
     };
     let start = crate::start_bundle::StartConfig {
@@ -2926,6 +2948,9 @@ pub async fn start_build(
 /// generate.mjs); a generator built into oj is keyed by oj's version alone.
 /// `env`: what the codegen script's `process.env` holds; the route tree's
 /// generator runs app code (virtual route configs) that can read it.
+/// What the server-fn resolver oj writes looks like; bumped with it.
+const SERVER_FN_RESOLVER_SHAPE: &str = "providers:tss-serverfn-split;ids:sha256(file--name)";
+
 fn codegen_store(
     root: &Path,
     cache: &Path,
@@ -2965,6 +2990,13 @@ fn codegen_store(
     .to_vec();
     // The server-fn finder resolves an import through the tsconfig `paths`.
     if kind.starts_with("server-fn") {
+        // The resolver's shape is oj's own: a change to what it writes (the
+        // provider ids it imports, the function ids it keys) must miss a
+        // cache a build of the same oj version left, or the bundle's callers
+        // and resolver disagree (a stale resolver imported the modules whole,
+        // and the split callers had no handler to reach).
+        extra.extend_from_slice(SERVER_FN_RESOLVER_SHAPE.as_bytes());
+        extra.push(0);
         names.extend(
             resolution_configs(root)
                 .iter()

@@ -118,6 +118,9 @@ pub(crate) struct HostCore {
     /// liveness (and logs progress); never a budget the hook must finish
     /// within. Tests compress it.
     probe_wait: std::time::Duration,
+    /// The last probe's verdict and when it came: the calls waiting at the
+    /// same time share it instead of each pinging the host (see `probe`).
+    probe_gate: tokio::sync::Mutex<Option<(tokio::time::Instant, ProbeVerdict)>>,
     /// Last "still initializing" progress line, so concurrent init-gated calls
     /// print one line per interval, not one each.
     init_progress: Mutex<std::time::Instant>,
@@ -725,8 +728,17 @@ pub(crate) fn ctx_rpc(
             } else {
                 resolver.resolve(&dir, source)
             };
-            let Ok(p) = resolved else {
-                return Ok(serde_json::Value::Null);
+            let p = match resolved {
+                Ok(p) => p,
+                // A package's `browser` field mapping the import to `false`
+                // (node-forge's `crypto`): Vite's resolver answers with its
+                // browser-external stub, one module for every such import
+                // and every builtin; rolldown's own answer was an empty
+                // module named for the package's directory.
+                Err(failure) if failure.ignored && !server => {
+                    return Ok(serde_json::Value::String("__vite-browser-external".into()));
+                }
+                Err(_) => return Ok(serde_json::Value::Null),
             };
             // The client's deps optimizer answers for the client alone: Vite
             // gives any other environment its own (or none).
@@ -737,7 +749,22 @@ pub(crate) fn ctx_rpc(
             };
             Ok(match answer {
                 OptimizedAnswer::Id(id) => serde_json::Value::String(id),
-                OptimizedAnswer::File => serde_json::Value::String(p.display().to_string()),
+                // The file with its package.json (the nearest one above it),
+                // as rolldown's resolver answers: a plugin passing the answer
+                // on keeps the module's format with it.
+                OptimizedAnswer::File => match nearest_package_json(&p) {
+                    Some(pkg) => {
+                        let mut answer = serde_json::json!({
+                            "id": p.display().to_string(),
+                            "packageJsonPath": pkg.path,
+                        });
+                        if let Some(side_effects) = pkg.side_effects {
+                            answer["moduleSideEffects"] = serde_json::Value::Bool(side_effects);
+                        }
+                        answer
+                    }
+                    None => serde_json::Value::String(p.display().to_string()),
+                },
                 OptimizedAnswer::ScanPending => serde_json::json!({ "scanPending": true }),
             })
         }
@@ -769,12 +796,27 @@ pub(crate) fn ctx_rpc(
                 .collect();
             Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
         }
-        "stylexTransform" => Ok(
-            match crate::stylex::runner_transform(root, arg(0), arg(1))? {
+        // With options (a Start build's composed plugin, plugin-host.mjs
+        // `installStylexHost`): the plugin for them, and the module's rules
+        // for the store the host keeps. Without: the dev server's plugin,
+        // whose store is its own.
+        "stylexTransform" => Ok(match args.get(2).filter(|o| !o.is_null()) {
+            Some(options) => match crate::stylex::build_transform(root, arg(0), arg(1), options)? {
+                Some((code, map, rules)) => {
+                    serde_json::json!({ "code": code, "map": map, "rules": rules })
+                }
+                None => serde_json::Value::Null,
+            },
+            None => match crate::stylex::runner_transform(root, arg(0), arg(1))? {
                 Some((code, map)) => serde_json::json!({ "code": code, "map": map }),
                 None => serde_json::Value::Null,
             },
-        ),
+        }),
+        // rolldown's hash of an asset's bytes, for the name the host gives an
+        // asset a plugin emits while the bundle is generated.
+        "contentHash" => Ok(serde_json::Value::String(
+            rolldown_utils::xxhash::xxhash_with_base(arg(0).as_bytes(), 64),
+        )),
         other => Err(format!("unknown ctx method: {other}")),
     }
 }
@@ -860,15 +902,27 @@ pub trait BundleGraph: Send + Sync {
     /// The module's code as plugins read it, once loaded.
     fn module_code(&self, id: &str) -> Option<String>;
     fn module_ids(&self) -> Vec<String>;
+    /// The text of one of the bundle's outputs (a chunk's code, an asset's
+    /// source) while a `generateBundle` or `writeBundle` hook runs. The
+    /// bundle those hooks get names its files and carries their metadata;
+    /// the text stays here and is read when a hook asks for one
+    /// (`bundleOutputText`), so the hook call carries kilobytes of metadata
+    /// instead of the whole output, hundreds of MB on a large app and copied
+    /// several times on its way into the isolate. None outside those hooks,
+    /// and for a binary asset.
+    fn output_text(&self, _file: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Each container's bundle, by container id.
 pub(crate) type BundleGraphs =
     Arc<std::sync::Mutex<std::collections::HashMap<u32, Arc<dyn BundleGraph>>>>;
 
-/// `bundleModuleInfo`, `bundleModuleCode` and `bundleModuleIds` (the asking
-/// container first), answered SYNCHRONOUSLY on the isolate thread from that
-/// container's bundle; null while it has none. None for any other method.
+/// `bundleModuleInfo`, `bundleModuleCode`, `bundleModuleIds` and
+/// `bundleOutputText` (the asking container first), answered SYNCHRONOUSLY
+/// on the isolate thread from that container's bundle; null while it has
+/// none. None for any other method.
 fn bundle_rpc(
     method: &str,
     args: &[serde_json::Value],
@@ -876,7 +930,7 @@ fn bundle_rpc(
 ) -> Option<Result<serde_json::Value, String>> {
     if !matches!(
         method,
-        "bundleModuleInfo" | "bundleModuleCode" | "bundleModuleIds"
+        "bundleModuleInfo" | "bundleModuleCode" | "bundleModuleIds" | "bundleOutputText"
     ) {
         return None;
     }
@@ -890,6 +944,9 @@ fn bundle_rpc(
         "bundleModuleInfo" => graph.module_info(id).unwrap_or_default(),
         "bundleModuleCode" => graph
             .module_code(id)
+            .map_or(serde_json::Value::Null, serde_json::Value::String),
+        "bundleOutputText" => graph
+            .output_text(id)
             .map_or(serde_json::Value::Null, serde_json::Value::String),
         _ => serde_json::json!(graph.module_ids()),
     }))
@@ -1177,6 +1234,7 @@ impl PluginHost {
             resync_done: tokio::sync::watch::channel(0).0,
             init_progress_seen: tokio::sync::watch::channel(0).0,
             probe_wait,
+            probe_gate: tokio::sync::Mutex::new(None),
             init_progress: Mutex::new(std::time::Instant::now()),
             boot: BootContext {
                 boot_seed,
@@ -1322,9 +1380,30 @@ impl PluginHost {
 
     pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
         self.call_unit("switchEnvironment", &[name]).await?;
+        // The host just let go of the finished environment's module infos,
+        // and the next environment's build allocates from here: a full
+        // collection now, instead of V8's own later, shrinks the heap the next
+        // build grows on, so the two builds' peaks do not add up.
+        self.collect_garbage().await;
         self.reset_hook_plan();
         self.ensure_hook_plan().await;
         Ok(())
+    }
+
+    /// A full V8 collection in the host's engine, awaited. Between a build's
+    /// environments (see [`PluginHost::switch_environment`]); otherwise V8
+    /// schedules its own collections better than callers can. False when the
+    /// engine is gone or did not answer in time.
+    pub async fn collect_garbage(&self) -> bool {
+        let engine = self.core.engine.lock().unwrap().clone();
+        let Some(engine) = engine else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || {
+            engine.collect_garbage(std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach
@@ -1823,12 +1902,17 @@ impl PluginHost {
         self.call_flag("hasRenderChunk", false).await
     }
 
+    /// `format` is the output's (`es`, `cjs`, `iife`, `umd`): the hooks'
+    /// output options carry it, as a library build calls them per format.
     pub async fn render_chunk(
         &self,
         code: &str,
         chunk_json: &str,
+        format: &str,
     ) -> Result<HostTransform, String> {
-        let raw = self.call("renderChunk", &[code, chunk_json]).await?;
+        let raw = self
+            .call("renderChunk", &[code, chunk_json, format])
+            .await?;
         Ok(HostTransform::parse(raw, code))
     }
 
@@ -2296,6 +2380,20 @@ impl PluginHost {
             .lock()
             .unwrap()
             .insert(self.container, graph);
+    }
+
+    /// The container's bundle is over: its graph goes, and with it the
+    /// module table rolldown's context keeps alive (every module's code),
+    /// now rather than when the next bundle's buildStart replaces it. A
+    /// `this.getModuleInfo` asked in between answers from the container's
+    /// own records.
+    pub fn clear_bundle_graph(&self) {
+        self.core
+            .boot
+            .bundles
+            .lock()
+            .unwrap()
+            .remove(&self.container);
     }
 
     /// Fail-open gates until the plan is fetched again (a respawned engine).
@@ -3082,30 +3180,31 @@ impl HostCore {
                 r = &mut call => return self.finish_call(hook, generation, r),
                 _ = self.host_gone_wait() => return Err("plugin host exited".into()),
                 _ = probe.tick() => {
-                    // The probe is deliberately UNGUARDED (no engine deadline):
-                    // an armed watchdog terminates whatever executes on the
-                    // isolate, which could be someone else's healthy work.
-                    let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
-                    match tokio::time::timeout(2 * self.probe_wait, ping).await {
-                        Ok(Err(oj_js::EngineError::Closed)) => {
-                            return Err("plugin host exited".into());
+                    let (verdict, fresh) = self.probe(&engine).await;
+                    match verdict {
+                        ProbeVerdict::Exited => return Err("plugin host exited".into()),
+                        ProbeVerdict::Alive(answer) => {
+                            // One line per probe, from the call that made it;
+                            // the calls that took its answer say nothing.
+                            if fresh {
+                                eprintln!(
+                                    "{}",
+                                    long_hooks_notice(hook, args, started.elapsed().as_secs(), &answer)
+                                );
+                            }
                         }
-                        Ok(answer) => {
-                            let running = answer
-                                .ok()
-                                .as_ref()
-                                .map(running_hooks_of)
-                                .unwrap_or_default();
-                            eprintln!(
-                                "{}",
-                                long_hook_notice(hook, args, started.elapsed().as_secs(), &running)
-                            );
-                        }
-                        Err(_) => {
+                        ProbeVerdict::Silent => {
                             let msg = format!(
                                 "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
                                 (2 * self.probe_wait).as_secs()
                             );
+                            // Where its JS is, when V8 reaches an interrupt
+                            // check in time: the one lead on what wedged it.
+                            if fresh {
+                                if let Some(stack) = engine.dump_stack(std::time::Duration::from_secs(3)) {
+                                    eprintln!("oj: the plugin host's JS stack:\n{stack}");
+                                }
+                            }
                             self.declare_gone(&msg, generation);
                             return Err(msg);
                         }
@@ -3113,6 +3212,40 @@ impl HostCore {
                 }
             }
         }
+    }
+
+    /// One ping for every call waiting at the same time: the first to ask
+    /// pings, and the others take its verdict while it is younger than half
+    /// a probe window (`fresh` tells the two apart). Each waiting call used
+    /// to ping for itself, and the host answered each with every hook in
+    /// flight: a build resolving a large graph has thousands of calls
+    /// waiting at once, so the host spent its time on pings about itself,
+    /// and was declared wedged for it.
+    ///
+    /// The ping is deliberately UNGUARDED (no engine deadline): an armed
+    /// watchdog terminates whatever executes on the isolate, which could be
+    /// someone else's healthy work.
+    async fn probe(&self, engine: &std::sync::Arc<oj_js::JsEngine>) -> (ProbeVerdict, bool) {
+        let mut gate = self.probe_gate.lock().await;
+        if let Some((at, verdict)) = &*gate {
+            if at.elapsed() < self.probe_wait / 2 {
+                return (verdict.clone(), false);
+            }
+        }
+        let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
+        let verdict = match tokio::time::timeout(2 * self.probe_wait, ping).await {
+            Ok(Err(oj_js::EngineError::Closed)) => ProbeVerdict::Exited,
+            Ok(answer) => ProbeVerdict::Alive(
+                answer
+                    .ok()
+                    .as_ref()
+                    .map(probe_answer_of)
+                    .unwrap_or_default(),
+            ),
+            Err(_) => ProbeVerdict::Silent,
+        };
+        *gate = Some((tokio::time::Instant::now(), verdict.clone()));
+        (verdict, true)
     }
 
     /// Maps one engine reply to the hook result, latching init or death as it proves.
@@ -3338,15 +3471,46 @@ pub struct RunningHook {
     pub ms: u64,
 }
 
-/// The running hooks a ping answered with (an older host answers `true`: none).
+/// A ping's answer: how many hook calls the host has in flight, and the
+/// oldest of them (up to eight; every one when there are no more).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbeAnswer {
+    pub total: usize,
+    pub oldest: Vec<RunningHook>,
+}
+
+/// What a probe found: the engine gone, the host answering (with what it
+/// runs), or an isolate that gave no answer in two probe windows.
+#[derive(Debug, Clone)]
+enum ProbeVerdict {
+    Exited,
+    Alive(ProbeAnswer),
+    Silent,
+}
+
+/// The running hooks a ping answered with, oldest first (an older host
+/// answers `true`: none; one older still answers the whole list).
 pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
+    probe_answer_of(answer).oldest
+}
+
+pub(crate) fn probe_answer_of(answer: &serde_json::Value) -> ProbeAnswer {
     let text = answer.as_str().unwrap_or("");
-    let Ok(serde_json::Value::Array(list)) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Vec::new();
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ProbeAnswer::default();
+    };
+    let (total, list) = match &parsed {
+        serde_json::Value::Array(list) => (list.len(), list.as_slice()),
+        serde_json::Value::Object(_) => (
+            parsed["total"].as_u64().unwrap_or(0) as usize,
+            parsed["oldest"].as_array().map_or(&[][..], Vec::as_slice),
+        ),
+        _ => return ProbeAnswer::default(),
     };
     let string =
         |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).map(str::to_string);
-    list.iter()
+    let oldest = list
+        .iter()
         .map(|v| RunningHook {
             hook: string(v, "hook").unwrap_or_default(),
             id: string(v, "id"),
@@ -3354,7 +3518,8 @@ pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
             plugin: string(v, "plugin"),
             ms: v.get("ms").and_then(serde_json::Value::as_u64).unwrap_or(0),
         })
-        .collect()
+        .collect();
+    ProbeAnswer { total, oldest }
 }
 
 /// The hooks whose identical concurrent calls share one run (see
@@ -3499,6 +3664,36 @@ pub(crate) fn long_hook_notice(
     line
 }
 
+/// [`long_hook_notice`] for the call that probed, when other calls are
+/// waiting too: the one line names how many, and the oldest of them.
+pub(crate) fn long_hooks_notice(
+    hook: &str,
+    args: &[&str],
+    elapsed_secs: u64,
+    answer: &ProbeAnswer,
+) -> String {
+    if answer.total <= 1 {
+        return long_hook_notice(hook, args, elapsed_secs, &answer.oldest);
+    }
+    let describe = |r: &RunningHook| {
+        let mut s = hook_name(&r.hook).to_string();
+        if let Some(id) = &r.id {
+            s.push_str(&format!(" of {id}"));
+        }
+        if let Some(plugin) = &r.plugin {
+            s.push_str(&format!(" in plugin {plugin}"));
+        }
+        s.push_str(&format!(" ({}s)", r.ms / 1000));
+        s
+    };
+    let oldest: Vec<String> = answer.oldest.iter().take(3).map(describe).collect();
+    format!(
+        "oj: {} plugin hook calls are running, this {hook} for {elapsed_secs}s (the plugin host is responsive); the oldest: {}…",
+        answer.total,
+        oldest.join("; ")
+    )
+}
+
 /// The plugin hook a host call runs: a phase call is still the plugins' `transform` or `load`.
 fn hook_name(hook: &str) -> &str {
     match hook {
@@ -3530,6 +3725,10 @@ pub struct HostTransform {
     /// chain as in Rollup (`map: null` does not).
     pub map_broken: Option<String>,
     pub chunks: Vec<ChunkEmit>,
+    /// The module type the chain left the code as, when a plugin said
+    /// (vite:oxc's strip returns `"js"`): rolldown then runs no TypeScript
+    /// transform of its own over the lowered code.
+    pub module_type: Option<String>,
 }
 
 impl HostTransform {
@@ -3552,6 +3751,9 @@ impl HostTransform {
             self.map_broken = next.map_broken;
         }
         self.chunks.extend(next.chunks);
+        if next.module_type.is_some() {
+            self.module_type = next.module_type;
+        }
     }
 
     /// A reply that is not the host's JSON is the code itself; none leaves
@@ -3593,6 +3795,113 @@ impl HostTransform {
                 .and_then(|n| n.as_str())
                 .map(str::to_string),
             chunks: emitted_chunks(&v),
+            module_type: v
+                .get("moduleType")
+                .and_then(|n| n.as_str())
+                .map(str::to_string),
         }
+    }
+}
+
+/// What a module's nearest `package.json` says about it, as Vite's resolver
+/// answers a resolution: the file's real path (rolldown reads the module's
+/// format, ESM or CommonJS, off its `type` field where the extension does
+/// not say) and, when the package declares `sideEffects`, whether the
+/// module is covered. Vite returns that as `moduleSideEffects`, and rolldown
+/// takes a `true` as "analyze the module", not as a side effect in itself,
+/// so a pure module a glob covers (a StyleX tokens file under
+/// `**/*.stylex.ts`) still drops out of a chunk that imports it for
+/// nothing; without the answer rolldown reads the field itself and keeps
+/// the module, and the chunk its import.
+struct PackageFacts {
+    path: String,
+    side_effects: Option<bool>,
+}
+
+fn nearest_package_json(file: &Path) -> Option<PackageFacts> {
+    let mut dir = file.parent()?;
+    loop {
+        let candidate = dir.join("package.json");
+        if candidate.is_file() {
+            let real = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            let side_effects = std::fs::read_to_string(&real)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|json| {
+                    let relative = std::fs::canonicalize(file)
+                        .ok()
+                        .and_then(|f| f.strip_prefix(real.parent()?).ok().map(Path::to_path_buf))
+                        .unwrap_or_else(|| file.to_path_buf());
+                    package_side_effects(json.get("sideEffects")?, &relative.to_string_lossy())
+                });
+            return Some(PackageFacts {
+                path: real.to_string_lossy().into_owned(),
+                side_effects,
+            });
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Whether `sideEffects` (a package.json field: a boolean, a glob or a list
+/// of globs over the package's files) covers `relative`, the module's path
+/// from the package's directory. Globs match as rolldown matches them: one
+/// without a slash, or starting `./`, applies at any depth.
+fn package_side_effects(field: &serde_json::Value, relative: &str) -> Option<bool> {
+    let covers = |pattern: &str| {
+        let trimmed = pattern.trim_start_matches("./");
+        let glob = if trimmed.len() != pattern.len() || !trimmed.contains('/') {
+            format!("**/{trimmed}")
+        } else {
+            trimmed.to_string()
+        };
+        globset::GlobBuilder::new(&glob)
+            .literal_separator(true)
+            .build()
+            .map(|g| {
+                g.compile_matcher()
+                    .is_match(relative.trim_start_matches("./"))
+            })
+            .unwrap_or(false)
+    };
+    match field {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::String(pattern) => Some(covers(pattern)),
+        serde_json::Value::Array(patterns) => {
+            Some(patterns.iter().filter_map(|p| p.as_str()).any(covers))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod package_side_effects_tests {
+    use super::package_side_effects;
+    use serde_json::json;
+
+    #[test]
+    fn side_effects_globs_match_as_rolldowns_do() {
+        // A bare pattern applies at any depth; `./`-relative and slashed
+        // ones from the package root; a boolean answers for every file.
+        let field = json!(["*.css", "./src/setup.js", "lib/**/*.fx.js"]);
+        assert_eq!(package_side_effects(&field, "dist/a.css"), Some(true));
+        assert_eq!(package_side_effects(&field, "src/setup.js"), Some(true));
+        assert_eq!(
+            package_side_effects(&field, "lib/deep/tokens.fx.js"),
+            Some(true)
+        );
+        assert_eq!(package_side_effects(&field, "lib/tokens.js"), Some(false));
+        assert_eq!(
+            package_side_effects(&json!("**/*.stylex.ts"), "stylex/theme.stylex.ts"),
+            Some(true)
+        );
+        assert_eq!(package_side_effects(&json!(false), "any.js"), Some(false));
+        assert_eq!(package_side_effects(&json!(true), "any.js"), Some(true));
+        assert_eq!(package_side_effects(&json!(null), "any.js"), None);
+        // `*` stays within one path segment, as in rolldown's matcher.
+        assert_eq!(
+            package_side_effects(&json!(["src/*.js"]), "src/deep/a.js"),
+            Some(false)
+        );
     }
 }

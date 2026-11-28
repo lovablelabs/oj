@@ -100,6 +100,52 @@ fn the_notice_names_the_module_its_phase_and_the_plugin() {
     assert!(running_hooks_of(&serde_json::Value::Bool(true)).is_empty());
 }
 
+/// A ping answers with the count and the oldest few, and the one notice a
+/// probe prints for every call waiting names both; the older list shape
+/// and a lone call read as before.
+#[test]
+fn the_probe_answer_counts_the_hooks_in_flight_and_names_the_oldest() {
+    use super::host::{long_hooks_notice, probe_answer_of, ProbeAnswer};
+    let answer = serde_json::Value::String(
+        serde_json::json!({
+            "total": 1413,
+            "oldest": [
+                { "hook": "resolveIdPhase", "id": "react", "phase": "pre", "plugin": "tanstack-start-core:import-protection", "ms": 21_300 },
+                { "hook": "load", "id": "/app/src/a.svg", "phase": null, "plugin": "vite-plugin-svgr", "ms": 20_100 },
+            ],
+        })
+        .to_string(),
+    );
+    let parsed = probe_answer_of(&answer);
+    assert_eq!(parsed.total, 1413);
+    assert_eq!(parsed.oldest.len(), 2);
+    assert_eq!(
+        parsed.oldest[0].plugin.as_deref(),
+        Some("tanstack-start-core:import-protection")
+    );
+    assert_eq!(running_hooks_of(&answer), parsed.oldest);
+    assert_eq!(
+        long_hooks_notice("resolveIdPhase", &["react", "/app/src/main.tsx", "pre"], 21, &parsed),
+        "oj: 1413 plugin hook calls are running, this resolveIdPhase for 21s (the plugin host is responsive); \
+         the oldest: resolveId of react in plugin tanstack-start-core:import-protection (21s); \
+         load of /app/src/a.svg in plugin vite-plugin-svgr (20s)…"
+    );
+    // The whole list, as an older host answers: every entry, counted.
+    let list = serde_json::Value::String(
+        serde_json::json!([{ "hook": "load", "id": "/app/src/a.ts", "ms": 40_000 }]).to_string(),
+    );
+    let lone = probe_answer_of(&list);
+    assert_eq!((lone.total, lone.oldest.len()), (1, 1));
+    assert_eq!(
+        long_hooks_notice("load", &["/app/src/a.ts"], 40, &lone),
+        long_hook_notice("load", &["/app/src/a.ts"], 40, &lone.oldest)
+    );
+    assert_eq!(
+        probe_answer_of(&serde_json::Value::Bool(true)),
+        ProbeAnswer::default()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_running_hook_reports_the_plugin_it_awaits() {
     let root = plugins_root("running");

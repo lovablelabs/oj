@@ -1,0 +1,44 @@
+{
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component",
+      "src/routes/tools.tsx?tsr-split=component"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/routes/index.tsx?tsr-split=component": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ]
+  },
+  "src/routes/tools.tsx?tsr-split=component": {
+    "file": "assets/tools-HASH.js",
+    "name": "tools",
+    "src": "src/routes/tools.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ],
+    "assets": [
+      "assets/sum-HASH.js"
+    ]
+  },
+  "_worker_assets/sum-HASH.js": {
+    "src": "src/workers/sum.ts",
+    "file": "assets/sum-HASH.js",
+    "isWorkerEntry": true,
+    "name": "sum",
+    "isDynamicEntry": false,
+    "isWorker": true
+  }
+}

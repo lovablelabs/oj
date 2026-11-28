@@ -8,23 +8,44 @@ pub fn map_json_to_data_url(json: &str) -> String {
     )
 }
 
-/// A map for edits that keep every line where it was (Start's compile):
-/// each generated line maps to the same source line, a segment at every
-/// token, so a token keeps its exact column wherever its line's text before
-/// or after the edit is unchanged, and one inside the edit maps to where the
-/// edit began. Columns count UTF-16 code units. A line count that differs
-/// maps line for line from column 0.
+/// A map for edits that keep lines where they were (Start's compile, the
+/// glob and variable-import expansions): each generated line maps to its
+/// source line, a segment at every token, so a token keeps its exact column
+/// wherever its line's text before or after the edit is unchanged, and one
+/// inside the edit maps to where the edit began. Columns count UTF-16 code
+/// units. When lines were added (a hoisted import) or removed, the lines are
+/// aligned: a generated line identical to a source line ahead maps to it,
+/// an edited or new one to the source line the alignment stands at.
 pub fn line_map_json(source: &str, original: &str, generated: &str) -> String {
     let olines: Vec<&str> = original.split('\n').collect();
     let glines: Vec<&str> = generated.split('\n').collect();
     let same_count = olines.len() == glines.len();
+    let aligned: Vec<usize> = if same_count {
+        (0..glines.len()).collect()
+    } else {
+        let mut at = 0usize;
+        glines
+            .iter()
+            .map(
+                |g| match olines[at.min(olines.len())..].iter().position(|o| o == g) {
+                    Some(k) => {
+                        let found = at + k;
+                        at = found + 1;
+                        found
+                    }
+                    None => at.min(olines.len().saturating_sub(1)),
+                },
+            )
+            .collect()
+    };
     let mut mappings = String::new();
     let (mut prev_src_line, mut prev_src_col) = (0i64, 0i64);
     for (line, g) in glines.iter().enumerate() {
         if line > 0 {
             mappings.push(';');
         }
-        let o = olines.get(line).copied().unwrap_or("");
+        let src_line = aligned[line];
+        let o = olines.get(src_line).copied().unwrap_or("");
         let gc: Vec<char> = g.chars().collect();
         let oc: Vec<char> = o.chars().collect();
         let units = |cs: &[char]| -> Vec<i64> {
@@ -38,15 +59,13 @@ pub fn line_map_json(source: &str, original: &str, generated: &str) -> String {
             out
         };
         let (gu, ou) = (units(&gc), units(&oc));
-        let starts: Vec<usize> = if same_count {
+        let starts: Vec<usize> = {
             (0..gc.len())
                 .filter(|&k| {
                     let c = gc[k];
                     !c.is_whitespace() && (k == 0 || !is_word(c) || !is_word(gc[k - 1]))
                 })
                 .collect()
-        } else {
-            Vec::new()
         };
         let prefix = gc.iter().zip(&oc).take_while(|(a, b)| a == b).count();
         let max_suffix = gc.len().min(oc.len()) - prefix;
@@ -59,7 +78,7 @@ pub fn line_map_json(source: &str, original: &str, generated: &str) -> String {
             .count();
         let mut segments: Vec<(i64, i64)> = Vec::new();
         if starts.is_empty() || starts[0] != 0 {
-            segments.push((0, if prefix > 0 || !same_count { 0 } else { ou[0] }));
+            segments.push((0, if prefix > 0 { 0 } else { ou[0] }));
         }
         for k in starts {
             let src = if k < prefix {
@@ -78,10 +97,10 @@ pub fn line_map_json(source: &str, original: &str, generated: &str) -> String {
             }
             vlq(&mut mappings, gen_col - prev_gen_col);
             vlq(&mut mappings, 0);
-            vlq(&mut mappings, line as i64 - prev_src_line);
+            vlq(&mut mappings, src_line as i64 - prev_src_line);
             vlq(&mut mappings, src_col - prev_src_col);
             prev_gen_col = gen_col;
-            prev_src_line = line as i64;
+            prev_src_line = src_line as i64;
             prev_src_col = src_col;
         }
     }

@@ -1,0 +1,1 @@
+var e={dashboard:`Dashboard`};export{e as t};

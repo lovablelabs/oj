@@ -1,0 +1,1 @@
+var e=`about`,t=()=>`about page`;export{t as default,e as title};

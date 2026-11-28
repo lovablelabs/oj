@@ -8,7 +8,9 @@
 //!
 //! - candidates: the declared names (import specifiers, declarators,
 //!   destructured names, function declarations, at every scope) that were
-//!   read before the edit, minus the module bindings already removable then;
+//!   read before the edit (an exported declaration counts: Babel's scope
+//!   references it from its export), minus the module bindings already
+//!   removable then;
 //! - `findRemovableBindings`, over the module's bindings only: a reference
 //!   inside another binding's node is an edge from it, one anywhere else (an
 //!   export included) keeps it, as do a reassignment or a loop iterator; what
@@ -208,8 +210,9 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 if reference.is_write() {
                     written.insert(d.symbol);
                 }
-                // Babel's scope counts value references (a `typeof x` in a
-                // type among them), not a type annotation's.
+                // Babel's scope counts value references, and a `typeof x`
+                // type query's outside a type annotation (see
+                // `reference_spans`), not a type annotation's.
                 if reference.is_read() || typeof_refs.contains(&rid) {
                     // An export specifier's local has no identifier node: it
                     // sits outside every binding and keeps it.
@@ -369,7 +372,11 @@ impl<'s, 'a> Analysis<'s, 'a> {
         let mut module = HashSet::new();
         let mut nested = Vec::new();
         for d in &self.decls {
-            if !self.read(d.symbol) || self.removable.contains(&d.symbol) {
+            // Babel's scope references an exported declaration from its
+            // export (its collector's `ExportDeclaration`), so one is a
+            // candidate: made local by the edit, as Start's provider compile
+            // makes a module's exports, it goes when nothing reads it.
+            if !(self.read(d.symbol) || d.exported) || self.removable.contains(&d.symbol) {
                 continue;
             }
             if d.module {
@@ -573,8 +580,13 @@ impl<'a> Visit<'a> for Collect<'_> {
 }
 
 /// Every identifier reference's span, by reference id, and the ones inside
-/// a `typeof` type query (a value read in a type, which Babel's scope counts
-/// as a reference; oxc resolves it to a plain type reference).
+/// a `typeof` type query that Babel's scope counts as a reference (oxc
+/// resolves it to a plain type reference): a value read in a type alias, a
+/// type argument, an `as` / `satisfies` / `<T>` type, a type parameter's
+/// constraint, an `extends` clause. Not one under a type annotation (`: T`
+/// of a parameter, variable, return, property or method signature, a
+/// function type's parameter or return): Babel's scope collector skips every
+/// `TSTypeAnnotation`, so `typeof x` there reads nothing.
 fn reference_spans(
     program: &Program,
 ) -> (
@@ -587,12 +599,13 @@ fn reference_spans(
         spans: HashMap<oxc_syntax::reference::ReferenceId, Span>,
         typeof_refs: HashSet<oxc_syntax::reference::ReferenceId>,
         in_query: usize,
+        in_annotation: usize,
     }
     impl<'a> Visit<'a> for Spans {
         fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
             if let Some(id) = it.reference_id.get() {
                 self.spans.insert(id, it.span);
-                if self.in_query > 0 {
+                if self.in_query > 0 && self.in_annotation == 0 {
                     self.typeof_refs.insert(id);
                 }
             }
@@ -601,6 +614,11 @@ fn reference_spans(
             self.in_query += 1;
             walk::walk_ts_type_query(self, it);
             self.in_query -= 1;
+        }
+        fn visit_ts_type_annotation(&mut self, it: &oxc_ast::ast::TSTypeAnnotation<'a>) {
+            self.in_annotation += 1;
+            walk::walk_ts_type_annotation(self, it);
+            self.in_annotation -= 1;
         }
     }
     let mut s = Spans::default();
@@ -785,8 +803,15 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
     for statement in &parsed.program.body {
         match statement {
             Statement::ImportDeclaration(i) => {
+                // A type import leaves nothing, as a removed import does
+                // (see `Removals::remove_import`).
+                let gone = |span: Span| Edit {
+                    start: span.start as usize,
+                    end: span.end as usize,
+                    with: removed_import_text(code, &parsed.program.body, span),
+                };
                 if i.import_kind.is_type() {
-                    edits.push(whole(i.span));
+                    edits.push(gone(i.span));
                     continue;
                 }
                 let Some(specifiers) = &i.specifiers else {
@@ -800,7 +825,7 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
                     continue;
                 }
                 if removed.iter().all(|r| *r) {
-                    edits.push(whole(i.span));
+                    edits.push(gone(i.span));
                     continue;
                 }
                 for (start, end) in import_deletions(code, i, &removed) {
@@ -847,6 +872,87 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
 
 /// `code` with `edits` applied (an edit inside an earlier one is skipped),
 /// each padded with the newlines it removed, and what each one did.
+/// What a removed import leaves in `body`: nothing when the statements
+/// around it stay apart without it (none before it, or one ending in `;` or
+/// `}`, or an import or export after it, which no expression continues
+/// into, so ASI ends the one before), else `;`, as any removed statement
+/// leaves (`foo()` and `[1].forEach()` must not meet). Babel's printer
+/// writes the semicolons itself; oj splices the text as written.
+fn removed_import_text(
+    code: &str,
+    body: &[oxc_ast::ast::Statement<'_>],
+    span: Span,
+) -> &'static str {
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind, Statement};
+    let Some(at) = body.iter().position(|s| s.span() == span) else {
+        return ";";
+    };
+    // An import or export starts a statement no expression continues.
+    let next_safe = body.get(at + 1).is_none_or(|s| {
+        matches!(
+            s,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportFromDeclaration(_)
+        )
+    });
+    // A `}` ends the statement before only when that statement is a
+    // declaration or a block (`const f = function () {}` and
+    // `export default {}` end in an expression `(g)()` would continue).
+    let block_declaration = |d: &Declaration<'_>| {
+        matches!(
+            d,
+            Declaration::FunctionDeclaration(_)
+                | Declaration::ClassDeclaration(_)
+                | Declaration::TSInterfaceDeclaration(_)
+                | Declaration::TSEnumDeclaration(_)
+                | Declaration::TSNamespaceDeclaration(_)
+                | Declaration::TSGlobalDeclaration(_)
+                | Declaration::TSExternalModuleDeclaration(_)
+        )
+    };
+    let prev_safe = at == 0 || {
+        let prev = &body[at - 1];
+        let text = code[..prev.span().end as usize].trim_end();
+        text.ends_with(';')
+            || (text.ends_with('}')
+                && match prev {
+                    Statement::FunctionDeclaration(_)
+                    | Statement::ClassDeclaration(_)
+                    | Statement::BlockStatement(_)
+                    | Statement::IfStatement(_)
+                    | Statement::ForStatement(_)
+                    | Statement::ForInStatement(_)
+                    | Statement::ForOfStatement(_)
+                    | Statement::WhileStatement(_)
+                    | Statement::TryStatement(_)
+                    | Statement::SwitchStatement(_)
+                    | Statement::ExportNamedDeclaration(_)
+                    | Statement::TSEnumDeclaration(_)
+                    | Statement::TSInterfaceDeclaration(_)
+                    | Statement::TSNamespaceDeclaration(_)
+                    | Statement::TSGlobalDeclaration(_)
+                    | Statement::TSExternalModuleDeclaration(_) => true,
+                    Statement::ExportDeclaration(d) => block_declaration(&d.declaration),
+                    Statement::ExportDefaultDeclaration(d) => matches!(
+                        d.declaration,
+                        ExportDefaultDeclarationKind::FunctionDeclaration(_)
+                            | ExportDefaultDeclarationKind::ClassDeclaration(_)
+                            | ExportDefaultDeclarationKind::TSInterfaceDeclaration(_)
+                    ),
+                    _ => false,
+                })
+    };
+    if next_safe || prev_safe {
+        ""
+    } else {
+        ";"
+    }
+}
+
 fn apply_edits(code: &str, mut edits: Vec<Edit>) -> (String, Vec<Applied>) {
     edits.sort_by_key(|e| (e.start, std::cmp::Reverse(e.end)));
     let mut out = String::with_capacity(code.len());
@@ -1059,7 +1165,22 @@ impl Removals<'_, '_, '_> {
     /// goes with its body; an `if` consequent or a loop body becomes `{}`; a
     /// `for` head's declaration leaves nothing; anything else leaves `;`, so
     /// the statements around it stay apart (`foo()` and `;[1].forEach()`).
+    /// An import declaration leaves nothing either (`import` starts no
+    /// continuation of the statement before it): Babel's printer drops the
+    /// node, and oxc's transformer adds the imports it needs (the JSX
+    /// runtime's) after the last import of the leading run, so a `;` among
+    /// them would put the new import before the rest, and the chunk's
+    /// modules in another order than under Vite.
     fn remove_statement(&mut self, span: Span) {
+        self.remove_statement_with(span, ";");
+    }
+
+    fn remove_import(&mut self, span: Span) {
+        let with = removed_import_text(self.a.code, &self.a.program.body, span);
+        self.remove_statement_with(span, with);
+    }
+
+    fn remove_statement_with(&mut self, span: Span, plain: &'static str) {
         let mut span = span;
         while let Some(&label) = self.labels.get(&span.start) {
             span = label;
@@ -1069,7 +1190,7 @@ impl Removals<'_, '_, '_> {
         } else if self.block_slots.contains(&span.start) {
             "{}"
         } else {
-            ";"
+            plain
         };
         self.edits.push(Edit {
             start: span.start as usize,
@@ -1095,7 +1216,7 @@ impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
             return;
         }
         if removed.iter().all(|r| *r) {
-            return self.remove_statement(import.span);
+            return self.remove_import(import.span);
         }
         for (start, end) in import_deletions(self.a.code, import, &removed) {
             self.edits.push(Edit {
@@ -1343,12 +1464,55 @@ mod tests {
         assert!(out.contains("export const x = 1;"), "{out}");
     }
 
-    // A type reference reads the binding.
+    // A `typeof` type query in a type alias reads the binding.
     #[test]
     fn babel_a_type_reference_keeps_its_binding() {
         let before = "export function make() {\n  const schema = mk();\n  type T = typeof schema;\n  let v: T | undefined;\n  return [v, keep(() => schema)];\n}\n";
         let out = dce(before, "() => schema");
         assert!(out.contains("const schema = mk();"), "{out}");
+    }
+
+    // Babel's scope collector skips every `TSTypeAnnotation`, so a `typeof
+    // x` in a parameter's, variable's, return's, property's or method
+    // signature's annotation, or a function type's, reads nothing, while one
+    // in a type alias's body, an `as` type, a type argument, a type
+    // parameter's constraint or an `extends` clause does. Babel's output for
+    // the first module starts `import { y, z } from "./m";`; the second
+    // keeps `import { x, y, z } from "./m";`.
+    #[test]
+    fn babel_a_typeof_under_a_type_annotation_does_not_keep_its_binding() {
+        let before = "import { x, y, z } from \"./m\";\nexport const s = keep(() => [x, y, z]);\nexport function f(a: typeof x): typeof x { return null as any; }\nlet v: typeof x;\ninterface I { a: typeof x; m(): typeof x }\ntype T = { a: typeof x; b: (p: typeof x) => typeof x };\ntype U = typeof y;\nexport const w = 1 as typeof z;\n";
+        let out = dce(before, "() => [x, y, z]");
+        assert!(out.starts_with("import { y, z } from \"./m\";\n"), "{out}");
+        let before = "import { x, y, z } from \"./m\";\nexport const s = keep(() => [x, y, z]);\nf<typeof x>();\ninterface I extends Array<typeof y> {}\nexport function g<T extends typeof z>() {}\n";
+        let out = dce(before, "() => [x, y, z]");
+        assert!(
+            out.starts_with("import { x, y, z } from \"./m\";\n"),
+            "{out}"
+        );
+    }
+
+    // Start's provider compile makes the module's exports local
+    // (`safeRemoveExports`) and runs the pass with the candidates found
+    // before: an exported declaration is one (Babel's scope references it
+    // from its export), so `export const Route`, made local and read by
+    // nothing, goes with its component and import; `const unused =
+    // sideEffect();` was never read and `selfRec` was removable already, so
+    // neither is a candidate and both stay. Babel's output:
+    // `const unused = sideEffect();\nfunction selfRec() {\n  return selfRec();\n}`.
+    #[test]
+    fn babel_an_export_made_local_goes_while_non_candidates_stay() {
+        let before = "import { createFileRoute } from \"@tanstack/react-router\";\nconst unused = sideEffect();\nfunction selfRec() { return selfRec(); }\nfunction Comp() { return 1 }\nexport const Route = createFileRoute(\"/\")({ component: Comp });\n";
+        let out = dce(before, "export ");
+        for gone in ["createFileRoute", "Comp", "Route"] {
+            assert!(!out.contains(gone), "{gone}:\n{out}");
+        }
+        assert!(
+            out.contains(
+                "const unused = sideEffect();\nfunction selfRec() { return selfRec(); }\n"
+            ),
+            "{out}"
+        );
     }
 
     // A `for` head's declarator goes like any other; a loop iterator stays.

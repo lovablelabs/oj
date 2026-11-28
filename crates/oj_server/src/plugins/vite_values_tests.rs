@@ -1667,6 +1667,7 @@ fn parse_tolerates_nulls_and_missing() {
 fn merge_adopts_only_unset_fields() {
     let mut config = oj_config::OjConfig::default();
     let v = ViteValues {
+        worker_format: None,
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
         cache_dir: None,
@@ -1729,6 +1730,7 @@ fn merge_never_overrides_config() {
     };
     config.public_dir = Some("my-public".into());
     let v = ViteValues {
+        worker_format: None,
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
         cache_dir: None,

@@ -1,0 +1,1 @@
+{"version":3,"file":"panel-HASH.js","names":["panel","label","format"],"sources":["../../src/panel.js"],"sourcesContent":["import { format } from \"./format.js\";\nimport \"./panel.css\";\n\nexport function panel(label) {\n  return `${format(\"panel\")} ${label}`;\n}\n"],"mappings":"A,mCAGA,SAAgBA,EAAMC,EAAO,CAC3B,MAAO,GAAGC,EAAO,OAAO,CAAA,IAAKD,CAAA,EAC/B"}

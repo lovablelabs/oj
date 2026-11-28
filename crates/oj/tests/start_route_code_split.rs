@@ -297,7 +297,7 @@ fn routes_split_into_the_chunks_vites_build_makes() {
         "helper-for-both",
         "home page",
     ] {
-        let oj_client = chunk_names(&oj_app.0.join("dist/client"), needle, "client");
+        let oj_client = chunk_names(&oj_app.0.join("dist/client"), needle, "index");
         let vite_client = chunk_names(&vite_app.0.join("dist/client"), needle, "index");
         assert!(
             !vite_client.is_empty(),

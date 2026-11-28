@@ -8,7 +8,7 @@ function preloadOnce(seen, href, preload) {
 	const preloadPromise = promise.then(() => {
 		seen[href] = void 0;
 	}, (err) => {
-		seen[href] = void 0;
+		delete seen[href];
 		throw err;
 	});
 	seen[href] = preloadPromise;

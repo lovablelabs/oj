@@ -70,6 +70,12 @@ async fn a_workers_dynamic_import_gets_no_preload_helper() {
         &root,
         &[
             ("package.json", r#"{"name":"worker-app","version":"1.0.0"}"#),
+            // A module worker: Vite's default, "iife", inlines a worker's
+            // dynamic imports (one chunk, no splitting).
+            (
+                "vite.config.js",
+                "export default { worker: { format: \"es\" } };\n",
+            ),
             ("src/lazy.js", "export const suffix = \"!\";\n"),
             ("src/page-lazy.js", "export const page = 1;\n"),
             (

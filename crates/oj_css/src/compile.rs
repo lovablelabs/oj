@@ -12,8 +12,8 @@ use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleS
 
 use crate::lightning::LightningOptions;
 use crate::modules::{
-    declared_locals, is_css_module, module_exports, module_is_scoped, scoped_name_pattern,
-    ScopedNames,
+    composed_sheet, is_css_module, module_exports, module_is_scoped, scoped_name_pattern,
+    ComposedSheet, ScopedNames,
 };
 use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
@@ -22,7 +22,8 @@ use crate::targets::browser_targets;
 #[derive(Debug)]
 pub struct CssOutput {
     pub css: String,
-    /// A CSS module's class map, sorted by name; None for a plain stylesheet.
+    /// A CSS module's class map, in postcss-modules' export order; None for
+    /// a plain stylesheet.
     pub exports: Option<Vec<(String, String)>>,
 }
 
@@ -37,6 +38,10 @@ pub(crate) struct Mode {
     /// The classes are scoped already ([`scope_css_module`]): compile the
     /// sheet as plain CSS.
     pub scoped: bool,
+    /// Leave the sheet's syntax as written, whatever the browser targets:
+    /// a build compile of a sheet Vite's own compile pass never hands
+    /// lightningcss (see [`compile_css_for_build`]).
+    pub skip_lowering: bool,
 }
 
 pub fn compile_css(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -76,6 +81,61 @@ pub fn compile_css_with_scope_source(
     compile_css_depth(url, source, Some(scope_source), mode, resolve, 0)
 }
 
+/// [`compile_css_with`] for a build, `lowered` saying whether Vite's compile
+/// pass runs lightningcss on this sheet: it does under `css.transformer:
+/// "lightningcss"`, lowering to its `css.lightningcss.targets` (the baseline
+/// browsers by default); under its default transformer, PostCSS, it leaves
+/// every sheet as written or as PostCSS printed it. The chunk's
+/// final minify ([`crate::finalize_chunk_css`]) lowers to `build.cssTarget`
+/// either way, so a sheet Vite lowers once is lowered once here too: a
+/// lowering adds to a sheet (a vendor-prefixed copy of a declaration beside
+/// the one the sheet carries), and a second one adds another. With
+/// `build.cssMinify` off, a sheet Vite's compile leaves alone is emitted as
+/// written (or as PostCSS printed it), comments, zero units and all: no
+/// lightningcss pass touches it; a lowered one is printed by lightningcss.
+pub fn compile_css_for_build(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+    lowered: bool,
+) -> Result<CssOutput, String> {
+    if !resolve.minify && !lowered {
+        return Ok(CssOutput {
+            css: source.to_string(),
+            exports: None,
+        });
+    }
+    let mode = Mode {
+        minify: resolve.minify,
+        skip_lowering: resolve.minify && !lowered,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, None, mode, resolve, 0)
+}
+
+/// [`compile_scoped_css_with`] for a build; `lowered` as in
+/// [`compile_css_for_build`].
+pub fn compile_scoped_css_for_build(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+    lowered: bool,
+) -> Result<CssOutput, String> {
+    if !resolve.minify && !lowered {
+        return Ok(CssOutput {
+            css: source.to_string(),
+            exports: None,
+        });
+    }
+    let mode = Mode {
+        minify: resolve.minify,
+        scoped: true,
+        skip_lowering: resolve.minify && !lowered,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, None, mode, resolve, 0)
+}
+
 /// A build compile of a CSS module [`scope_css_module`] already scoped.
 pub fn compile_scoped_css_with(
     url: &str,
@@ -106,19 +166,13 @@ pub fn scope_css_module(
     let result = stylesheet
         .to_css(PrinterOptions::default())
         .map_err(|err| format!("css print error in {url}: {err}"))?;
-    let exports = match result.exports {
-        Some(map) => {
-            let map = match scoped {
-                true => keep_declared(map, &declared_locals(&result.code)),
-                false => map,
-            };
-            module_exports(map, url, resolve, 0)
-        }
-        None => Vec::new(),
+    let (exports, composed) = match result.exports {
+        Some(map) => module_exports(map, url, resolve, 0, &result.code),
+        None => (Vec::new(), Vec::new()),
     };
     Ok(named_by_default(
         CssOutput {
-            css: result.code,
+            css: format!("{}{}", composed_sheet(&composed), result.code),
             exports: Some(exports),
         },
         scoped.then(|| ScopedNames::new(scope_source, url, resolve)),
@@ -156,24 +210,13 @@ fn named_by_default(out: CssOutput, names: Option<ScopedNames<'_>>) -> CssOutput
     }
 }
 
-/// The locals postcss-modules exports: the ones the sheet declares as a
-/// class, an id or a `@keyframes` name (lightningcss also exports custom
-/// idents such as a `@counter-style` name).
-fn keep_declared(
-    map: css_modules::CssModuleExports,
-    declared: &std::collections::HashSet<String>,
-) -> css_modules::CssModuleExports {
-    map.into_iter()
-        .filter(|(name, _)| declared.contains(name))
-        .collect()
-}
-
 pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
     let mode = Mode {
         minify,
         rebase: true,
         source_map: false,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
@@ -189,6 +232,7 @@ pub fn compile_css_rebased_with_map(
         rebase: true,
         source_map: true,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
@@ -206,6 +250,7 @@ pub fn compile_css_dev(
         rebase: true,
         source_map,
         scoped: false,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
@@ -222,6 +267,7 @@ pub fn compile_scoped_css_dev(
         rebase: true,
         source_map,
         scoped: true,
+        skip_lowering: false,
     };
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
@@ -274,6 +320,24 @@ pub(crate) fn compile_css_depth(
     resolve: &CssResolve<'_>,
     depth: u8,
 ) -> Result<CssOutput, String> {
+    let (mut out, composed) = compile_css_parts(url, source, scope_source, mode, resolve, depth)?;
+    if !composed.is_empty() {
+        out.css = format!("{}{}", composed_sheet(&composed), out.css);
+    }
+    Ok(out)
+}
+
+/// [`compile_css_depth`] with the sheets of the files a module's `composes`
+/// name apart from its own (postcss-modules prepends them): a module
+/// composing from this one writes each file once.
+pub(crate) fn compile_css_parts(
+    url: &str,
+    source: &str,
+    scope_source: Option<&str>,
+    mode: Mode,
+    resolve: &CssResolve<'_>,
+    depth: u8,
+) -> Result<(CssOutput, Vec<ComposedSheet>), String> {
     let is_module_file = is_css_module(url) && !mode.scoped;
     let scoped = is_module_file && module_is_scoped(url, resolve);
     let modules = scoped.then(modules_config);
@@ -287,7 +351,9 @@ pub(crate) fn compile_css_depth(
     // Vite lowers to `build.cssTarget` only in its build minify (minifyCSS),
     // so an unminified build compile keeps the sheet's syntax. No targets (dev)
     // still means the baseline.
-    let targets = if mode.minify || resolve.targets.is_empty() {
+    let targets = if mode.skip_lowering {
+        lightningcss::targets::Targets::default()
+    } else if mode.minify || resolve.targets.is_empty() {
         browser_targets(resolve.targets)
     } else {
         lightningcss::targets::Targets::default()
@@ -331,9 +397,11 @@ pub(crate) fn compile_css_depth(
         }
         _ => result.code,
     };
-    let declared = names.as_ref().map(|_| declared_locals(&css));
+    // The marked sheet, which the class map's order and contents follow.
+    let mut marked = None;
     if let Some(names) = &names {
-        css = names.rename(&css);
+        let renamed = names.rename(&css);
+        marked = Some(std::mem::replace(&mut css, renamed));
     }
     if mode.source_map {
         // `sourceRoot: "/"` makes devtools resolve `src/app.css` to the served url.
@@ -346,29 +414,27 @@ pub(crate) fn compile_css_depth(
         ));
     }
 
+    let mut composed = Vec::new();
     let exports = match result.exports {
-        Some(map) => Some(
-            module_exports(
-                match &declared {
-                    Some(declared) => keep_declared(map, declared),
-                    None => map,
-                },
-                url,
-                resolve,
-                depth,
+        Some(map) => {
+            let (pairs, sheets) =
+                module_exports(map, url, resolve, depth, marked.as_deref().unwrap_or(""));
+            composed = sheets;
+            Some(
+                pairs
+                    .into_iter()
+                    .map(|(name, value)| match &names {
+                        Some(names) => (name, names.rename_value(&value)),
+                        None => (name, value),
+                    })
+                    .collect(),
             )
-            .into_iter()
-            .map(|(name, value)| match &names {
-                Some(names) => (name, names.rename_value(&value)),
-                None => (name, value),
-            })
-            .collect(),
-        ),
+        }
         // A module compiled in global mode still exports an (empty) map.
         None if is_module_file => Some(Vec::new()),
         None => None,
     };
-    Ok(CssOutput { css, exports })
+    Ok((CssOutput { css, exports }, composed))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

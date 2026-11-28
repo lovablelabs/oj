@@ -96,6 +96,10 @@ pub struct ResolvedId {
     pub id: String,
     pub external: Option<serde_json::Value>,
     pub module_side_effects: Option<bool>,
+    /// The module's `package.json`, as rolldown's resolved id carries it
+    /// (`packageJsonPath`): what tells an ESM module from a CommonJS one
+    /// where the file's extension does not (`"type": "module"`).
+    pub package_json_path: Option<String>,
 }
 
 impl ResolvedId {
@@ -104,6 +108,11 @@ impl ResolvedId {
             id: v.get("id")?.as_str()?.to_string(),
             external: v.get("external").cloned(),
             module_side_effects: v.get("moduleSideEffects").and_then(|b| b.as_bool()),
+            package_json_path: v
+                .get("packageJsonPath")
+                .and_then(|p| p.as_str())
+                .filter(|p| !p.is_empty())
+                .map(str::to_string),
         })
     }
 
@@ -124,6 +133,10 @@ pub struct ChunkEmit {
     pub id: String,
     pub name: Option<String>,
     pub file_name: Option<String>,
+    /// The emit's `preserveSignature`, as written (`"strict"`,
+    /// `"allow-extension"`, `"exports-only"`, `false`); none takes the
+    /// build's `preserveEntrySignatures`.
+    pub preserve_signature: Option<serde_json::Value>,
 }
 
 impl ChunkEmit {
@@ -136,6 +149,7 @@ impl ChunkEmit {
                 .get("fileName")
                 .and_then(|x| x.as_str())
                 .map(str::to_string),
+            preserve_signature: m.get("preserveSignature").filter(|v| !v.is_null()).cloned(),
         })
     }
 }

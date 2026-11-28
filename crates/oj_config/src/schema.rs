@@ -51,6 +51,8 @@ pub struct OjConfig {
     pub ssr: Option<serde_json::Value>,
     /// Vite's `html` block (`cspNonce`).
     pub html: Option<HtmlConfig>,
+    /// Vite's `worker` block: `format` (see [`WorkerConfig`]).
+    pub worker: Option<WorkerConfig>,
     /// Vite's `assetsInclude`: files beyond the known asset types whose
     /// import is their URL. String globs (resolved against the root) and
     /// RegExps (extracted as `{ regex, flags }`, tested against the file's
@@ -75,6 +77,26 @@ pub struct OjConfig {
     /// `recordStartImportProtection` writes.
     #[serde(skip)]
     pub vite_start_import_protection: Option<serde_json::Value>,
+}
+
+/// Vite's `worker` block, the part a build's worker bundles take.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkerConfig {
+    /// `worker.format`: "iife" (Vite's default), a classic script wrapped in
+    /// a function, or "es", a module. See [`worker_is_module`].
+    pub format: Option<String>,
+}
+
+/// Whether a build's worker bundles are modules: `worker.format: "es"`.
+/// Vite's default, "iife", bundles a worker as one classic script, started
+/// without `type: "module"`, its `import.meta` rewritten.
+pub fn worker_is_module(config: &OjConfig) -> bool {
+    config
+        .worker
+        .as_ref()
+        .and_then(|w| w.format.as_deref())
+        .is_some_and(|f| f == "es")
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -131,6 +153,10 @@ pub struct CssConfig {
     /// Vite's `css.lightningcss`, as JSON (its build minify spreads it into
     /// lightningcss; see oj_css's `LightningOptions`).
     pub lightningcss: Option<serde_json::Value>,
+    /// Vite's `css.transformer`: `"postcss"` (its default) or
+    /// `"lightningcss"`, which has its compile pass lower every sheet to the
+    /// baseline browsers.
+    pub transformer: Option<String>,
 }
 
 /// Vite's `css.modules` as it crosses the config boundary: functions arrive

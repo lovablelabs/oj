@@ -1,0 +1,19 @@
+{
+  "name": "golden-start-tailwind",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tanstack/react-router": "*",
+    "@tanstack/react-start": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "*",
+    "@vitejs/plugin-react": "*",
+    "postcss": "*",
+    "sass": "*",
+    "tailwindcss": "*",
+    "vite": "*"
+  }
+}

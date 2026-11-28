@@ -1,0 +1,16 @@
+{
+  "name": "golden-start-svgr",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tanstack/react-router": "*",
+    "@tanstack/react-start": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "*",
+    "vite": "*",
+    "vite-plugin-svgr": "*"
+  }
+}

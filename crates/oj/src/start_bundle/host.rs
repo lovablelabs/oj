@@ -138,9 +138,32 @@ async fn answer(
         .await
         .map_err(|e| e.to_string())?;
     Ok(match resolved {
+        // A `browser` field mapping the import to `false` (node-forge's
+        // `crypto`): rolldown answers with an empty module named for the
+        // package's directory; Vite's resolver answers with its browser
+        // external stub, the one module every stubbed builtin shares.
+        Ok(r) if r.id.is_empty_module() => serde_json::json!({
+            "id": "__vite-browser-external",
+            "external": false,
+        }),
         Ok(r) => serde_json::json!({
             "id": r.id.as_str(),
             "external": !matches!(r.external, ResolvedExternal::Bool(false)),
+            // As rolldown's `this.resolve` answers it: a plugin passing the
+            // answer on keeps the module's format (`"type": "module"`) with it.
+            "packageJsonPath": r
+                .package_json
+                .as_ref()
+                .map(|p| p.realpath().to_string_lossy().into_owned()),
+            // And the package's `sideEffects` verdict on the module, as
+            // Vite's resolver answers every resolution (see the host's
+            // own "resolve" rpc for why it matters).
+            "moduleSideEffects": r.package_json.as_ref().and_then(|p| {
+                let relative = Path::new(r.id.as_str())
+                    .strip_prefix(p.realpath().parent()?)
+                    .unwrap_or(Path::new(r.id.as_str()));
+                p.check_side_effects_for(&relative.to_string_lossy())
+            }),
         }),
         Err(_) => serde_json::Value::Null,
     })
@@ -187,9 +210,18 @@ pub(crate) struct StartHostPlugin {
     /// Start's compiler, run in its Vite slot: between the host's
     /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
     compile: Option<Arc<super::code::StartCodePlugin>>,
+    /// The client build's emitter: the stylesheets it wrote, for the
+    /// `viteMetadata.importedCss` of the chunks the bundle hooks see.
+    sheets: Option<Arc<super::assets::Emitter>>,
+    /// A build's vite:oxc slot (see `vite_transform`): the chain splits
+    /// around it, the "pre" plugins before, the normal and post ones after.
+    lower: Option<Arc<super::vite_transform::ViteTransform>>,
     /// The dev client bundle leaves its dependencies to the bundler (see
     /// [`StartHostPlugin::leaving_deps_to_the_bundler`]): which of them.
     bundled_deps: Option<BundledDeps>,
+    /// The bundle's graph as the host reads it, from buildStart: the outputs'
+    /// text goes on it while a hook that sees the whole bundle runs.
+    graph: Mutex<Option<Arc<RolldownGraph>>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -223,7 +255,10 @@ impl StartHostPlugin {
             warned_virtual: Mutex::new(HashSet::new()),
             map_warnings: Arc::default(),
             compile: None,
+            sheets: None,
+            lower: None,
             bundled_deps: None,
+            graph: Mutex::new(None),
         }
     }
 
@@ -250,6 +285,13 @@ impl StartHostPlugin {
             .is_some_and(|deps| is_bundled_dep(deps, id) && Path::new(id).is_file())
     }
 
+    /// Runs Vite's vite:oxc slot in the chain, as a build does: the module
+    /// lowered and printed between the "pre" plugins and the normal ones.
+    pub fn lowering(mut self, lower: super::vite_transform::ViteTransform) -> Self {
+        self.lower = Some(Arc::new(lower));
+        self
+    }
+
     /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
     /// compiler sits in Vite: after the `order: "pre"` hooks and the "pre"
     /// plugins listed before it, before the rest. A plugin after it (Start's
@@ -258,6 +300,17 @@ impl StartHostPlugin {
     pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
         self.compile = Some(Arc::new(compile));
         self
+    }
+
+    /// The bundle hooks' chunks carry Vite's `viteMetadata`, `importedCss`
+    /// the sheets `emitter` wrote for the modules a chunk holds.
+    pub fn with_sheets(mut self, emitter: Option<Arc<super::assets::Emitter>>) -> Self {
+        self.sheets = emitter;
+        self
+    }
+
+    fn chunk_sheets(&self) -> Option<crate::build::ChunkSheets> {
+        self.sheets.as_ref().map(|emitter| emitter.chunk_sheets())
     }
 
     /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
@@ -318,6 +371,9 @@ fn hook_output(r: ResolvedId) -> HookResolveIdOutput {
                 rolldown_common::side_effects::HookSideEffects::False
             }
         }),
+        // Kept from the plugin's answer (a `this.resolve` result it passed
+        // on), as rolldown keeps it: the module's format follows from it.
+        package_json_path: r.package_json_path,
         ..HookResolveIdOutput::from_id(r.id)
     }
 }
@@ -544,8 +600,9 @@ impl Plugin for StartHostPlugin {
         _args: &rolldown_plugin::HookBuildStartArgs<'_>,
     ) -> rolldown_plugin::HookNoopReturn {
         self.bundler_ctx.set(ctx);
-        self.host
-            .set_bundle_graph(RolldownGraph::new(ctx, self.jsx.clone()));
+        let graph = RolldownGraph::new(ctx, self.jsx.clone());
+        *self.graph.lock().unwrap() = Some(Arc::clone(&graph));
+        self.host.set_bundle_graph(graph);
         // Before any module loads: a plugin compiling on startup (i18n
         // catalogs) has its state ready for the loads it serves. The host runs
         // buildStart once per session, as Vite's container does.
@@ -790,22 +847,107 @@ impl Plugin for StartHostPlugin {
             .compile
             .clone()
             .filter(|c| !proxy && phase.is_none() && c.may_compile(id, code));
+        // A build's vite:oxc slot (`lowering`): the chain splits around it.
+        let lower = self.lower.clone().filter(|_| eligible && phase.is_none());
         async move {
             let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
-            let t = match (phase, compile) {
-                (Some(phase), _) => {
+            let t = match (phase, compile, lower) {
+                (Some(phase), _, _) => {
                     if !pass {
                         return Ok(None);
                     }
                     host.transform_phase(code, id, phase).await.map_err(fail)?
                 }
-                (None, None) => {
+                (None, None, None) => {
                     if !pass {
                         return Ok(None);
                     }
                     host.transform(code, id, "{}").await.map_err(fail)?
                 }
-                (None, Some(compile)) => {
+                // The build's chain in Vite's order: the "pre" plugins (around
+                // Start's compiler, where it sits among them), vite:oxc, then
+                // the normal and post plugins over the lowered module, which
+                // their filters read as Vite evaluates them.
+                (None, compile, Some(lower)) => {
+                    let mut t = match compile {
+                        Some(compile) => {
+                            let mut t = if pass {
+                                host.transform_phase(code, id, "before-compile")
+                                    .await
+                                    .map_err(fail)?
+                            } else {
+                                HostTransform::unchanged(code)
+                            };
+                            if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                                if out.matches('\n').count() == t.code.matches('\n').count() {
+                                    t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                                    t.map_plugins
+                                        .push("tanstack-start-core::server-fn".to_string());
+                                } else if t.map_broken.is_none() {
+                                    t.map_broken =
+                                        Some("tanstack-start-core::server-fn".to_string());
+                                }
+                                t.code = out;
+                            }
+                            if pass || host.hook_wants_transform(id, &t.code) {
+                                let prior = serde_json::json!({
+                                    "original": code,
+                                    "maps": t.maps,
+                                    "broken": t.map_broken.is_some(),
+                                })
+                                .to_string();
+                                let rest = host
+                                    .transform_phase_after(&t.code, id, "after-compile-pre", &prior)
+                                    .await
+                                    .map_err(fail)?;
+                                t.then(rest);
+                            }
+                            t
+                        }
+                        None if pass => {
+                            host.transform_phase(code, id, "pre").await.map_err(fail)?
+                        }
+                        None => HostTransform::unchanged(code),
+                    };
+                    if lower.handles(id) {
+                        // Always with a map: Vite's vite:oxc asks for one
+                        // whenever `environment.config.mode !== "build"`,
+                        // which the Vite mode (production, development)
+                        // never is, so a later plugin's getCombinedSourcemap
+                        // reaches the source through the lowering with
+                        // `build.sourcemap` off too (Start's import
+                        // protection reports where the source uses the
+                        // denied import).
+                        let lowered = lower.lower(id, &t.code, true)?;
+                        match lowered.map {
+                            Some(map) => {
+                                t.maps.push(map);
+                                t.map_plugins.push("vite:oxc".to_string());
+                            }
+                            None if t.map_broken.is_none() => {
+                                t.map_broken = Some("vite:oxc".to_string());
+                            }
+                            None => {}
+                        }
+                        t.code = lowered.code;
+                        t.module_type = Some("js".to_string());
+                    }
+                    if pass || host.hook_wants_transform(id, &t.code) {
+                        let prior = serde_json::json!({
+                            "original": code,
+                            "maps": t.maps,
+                            "broken": t.map_broken.is_some(),
+                        })
+                        .to_string();
+                        let rest = host
+                            .transform_phase_after(&t.code, id, "normal-post", &prior)
+                            .await
+                            .map_err(fail)?;
+                        t.then(rest);
+                    }
+                    t
+                }
+                (None, Some(compile), None) => {
                     let mut t = if pass {
                         host.transform_phase(code, id, "before-compile")
                             .await
@@ -854,6 +996,7 @@ impl Plugin for StartHostPlugin {
                     crate::build::ChainHook::Transform,
                     warnings.as_deref(),
                 ),
+                module_type: crate::build::host_module_type(t.module_type.as_deref()),
                 code: Some(t.code),
                 ..Default::default()
             }))
@@ -904,6 +1047,12 @@ impl Plugin for StartHostPlugin {
         } else {
             crate::build::serialize_rendered_chunk(&args.chunk)
         };
+        let format = match args.options.format {
+            rolldown_common::OutputFormat::Esm => "es",
+            rolldown_common::OutputFormat::Cjs => "cjs",
+            rolldown_common::OutputFormat::Iife => "iife",
+            rolldown_common::OutputFormat::Umd => "umd",
+        };
         async move {
             let on = *enabled
                 .get_or_init(|| async { host.has_render_chunk().await })
@@ -912,7 +1061,7 @@ impl Plugin for StartHostPlugin {
                 return Ok(None);
             }
             match host
-                .render_chunk(&code, &chunk_json)
+                .render_chunk(&code, &chunk_json, format)
                 .await
                 .map_err(|e| anyhow::anyhow!("plugin renderChunk failed:\n{e}"))?
             {
@@ -962,15 +1111,93 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_generate_bundle().await {
             return Ok(());
         }
-        let bundle_json =
-            crate::build::serialize_bundle_with_vite_manifest(args.bundle, &self.root);
-        let mutated = self
-            .host
-            .generate_bundle(&bundle_json, args.is_write)
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
-        if let Some(mutated) = mutated {
-            crate::build::apply_bundle_mutations(args.bundle, &mutated);
+        // The client's sheets ride along as the assets Vite's css-post
+        // emitted (oj wrote the files itself, so rolldown's bundle has none).
+        let sheets = self.chunk_sheets().map(|sheets| match &self.sheets {
+            Some(emitter) => sheets.with_sheet_assets(emitter.sheet_assets()),
+            None => sheets,
+        });
+        let graph = self.graph.lock().unwrap().clone();
+        let mutated = match &graph {
+            // The hooks read a text through the bundle's graph when they ask
+            // for one; the call carries the bundle's metadata.
+            Some(graph) => {
+                let (bundle_json, texts) = crate::build::serialize_bundle_for_hooks(
+                    args.bundle,
+                    Some(&self.root),
+                    sheets.as_ref(),
+                );
+                let _texts = graph.with_output_texts(texts);
+                self.host.generate_bundle(&bundle_json, args.is_write).await
+            }
+            None => {
+                let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
+                    args.bundle,
+                    &self.root,
+                    sheets.as_ref(),
+                );
+                self.host.generate_bundle(&bundle_json, args.is_write).await
+            }
+        }
+        .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
+        let Some(mutated) = mutated else {
+            return Ok(());
+        };
+        let synthesized: HashSet<String> = sheets
+            .as_ref()
+            .map(|s| s.sheet_asset_files().map(str::to_string).collect())
+            .unwrap_or_default();
+        let before: HashSet<String> = args
+            .bundle
+            .iter()
+            .map(|out| out.filename().to_string())
+            .chain(synthesized.iter().cloned())
+            .collect();
+        let Some(after) =
+            crate::build::apply_bundle_mutations_except(args.bundle, &mutated, |file| {
+                synthesized.contains(file)
+            })
+        else {
+            return Ok(());
+        };
+        // A sheet a hook replaced with an emit of its own (@stylexjs/unplugin
+        // appends its rules and re-emits the sheet under a new hash): the
+        // emitter's records follow the new name, which rolldown writes.
+        if let Some(emitter) = &self.sheets {
+            // A sheet a hook edited in place keeps its name and takes the
+            // text, the hash marker gone as css-post's generateBundle
+            // leaves it.
+            if let Some(sheets) = &sheets {
+                for (file, text) in sheets.sheet_assets() {
+                    let Some(source) = after
+                        .get(file)
+                        .and_then(|entry| entry.get("source"))
+                        .and_then(|s| s.as_str())
+                    else {
+                        continue;
+                    };
+                    let source = crate::build::strip_vite_hash_marker(file, source);
+                    if source != *text {
+                        emitter.overwrite_sheet(file, &source);
+                    }
+                }
+            }
+            for old in synthesized.iter().filter(|file| !after.contains_key(*file)) {
+                let name = crate::build::sheet_asset_name(old);
+                let replacement = after.iter().find(|(file, entry)| {
+                    !before.contains(*file)
+                        && entry.get("type").and_then(|t| t.as_str()) == Some("asset")
+                        && entry.get("name").and_then(|n| n.as_str()) == Some(name.as_str())
+                });
+                if let Some((new, entry)) = replacement {
+                    let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                    // The hook appended to a source carrying the hash marker;
+                    // css-post strips it from what is written, so the copy a
+                    // server bundle's `?url` import writes carries none either.
+                    let source = crate::build::strip_vite_hash_marker(new, source);
+                    emitter.rename_sheet(old, new, &source);
+                }
+            }
         }
         Ok(())
     }
@@ -983,11 +1210,24 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_write_bundle().await {
             return Ok(());
         }
-        let bundle_json = crate::build::serialize_bundle(args.bundle);
-        self.host
-            .write_bundle(&bundle_json, true)
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
+        let sheets = self.chunk_sheets();
+        let graph = self.graph.lock().unwrap().clone();
+        match &graph {
+            Some(graph) => {
+                let (bundle_json, texts) =
+                    crate::build::serialize_bundle_for_hooks(args.bundle, None, sheets.as_ref());
+                let _texts = graph.with_output_texts(texts);
+                self.host.write_bundle(&bundle_json, true).await
+            }
+            None => {
+                let bundle_json = match &sheets {
+                    Some(sheets) => crate::build::serialize_bundle_with_sheets(args.bundle, sheets),
+                    None => crate::build::serialize_bundle(args.bundle),
+                };
+                self.host.write_bundle(&bundle_json, true).await
+            }
+        }
+        .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
     }
 }
 

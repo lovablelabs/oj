@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";import{o as t}from"./useStore-HASH.js";var n=t(),r=()=>(0,n.jsx)(`h1`,{children:e.useLoaderData().title});export{r as component};

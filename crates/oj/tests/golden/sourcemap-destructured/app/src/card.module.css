@@ -1,0 +1,12 @@
+.card {
+  padding: 1rem;
+  border: 1px solid #ccc;
+}
+
+.cardTitle {
+  font-weight: 600;
+}
+
+.card .cardTitle:hover {
+  color: rebeccapurple;
+}

@@ -1,0 +1,1 @@
+import{n as e,r as t,t as n}from"./index-HASH.js";var r=t(e()),i=n();function a(){let[e,t]=(0,r.useState)(0);return(0,r.useEffect)(()=>{let e=new Worker(new URL(`/assets/sum-HASH.js`,``+import.meta.url),{type:`module`});return e.onmessage=e=>t(e.data),e.postMessage([1,2,3]),()=>e.terminate()},[]),(0,i.jsx)(`p`,{children:e})}export{a as component};

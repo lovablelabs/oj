@@ -1,0 +1,1 @@
+var e={dashboard:`Tableau de bord`};export{e as t};

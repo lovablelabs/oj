@@ -81,7 +81,19 @@ fn wildcards_omit_hidden_paths_unless_asked_or_exhaustive() {
         !normal.contains(".hidden.md") && !normal.contains(".draft"),
         "{normal}"
     );
-    assert!(explicit.contains("./content/.hidden.md"), "{explicit}");
+    // rolldown's native plugin (utils.rs `walk_files`) skips every dot-led
+    // entry below the walk's root unless exhaustive, spelled out or not;
+    // Vite's JS plugin matched a spelled-out one.
+    assert!(!explicit.contains(".hidden.md"), "{explicit}");
+    let own_root = glob(
+        "const m = import.meta.glob(\"./content/.draft/*.md\");",
+        &file,
+        &r,
+    );
+    assert!(
+        own_root.contains("./content/.draft/nested.md"),
+        "the walk's root may be dot-led: {own_root}"
+    );
 
     fs::create_dir_all(r.join("content/node_modules")).unwrap();
     fs::write(r.join("content/node_modules/dep.md"), "dep").unwrap();
@@ -165,7 +177,7 @@ fn eager_query_and_import_default_produce_static_imports() {
         &r.join("index.ts"),
         &r,
     );
-    assert!(out.starts_with("import __oj_glob0_0 from \"./content/a.md?raw\"; import __oj_glob0_1 from \"./content/b.md?raw\";"), "{out}");
+    assert!(out.starts_with("import { default as __import_glob__0_0_ } from \"./content/a.md?raw\";import { default as __import_glob__0_1_ } from \"./content/b.md?raw\";"), "{out}");
     assert!(!out.contains("=> import"), "{out}");
     let lazy = glob(
         "const s = import.meta.glob(\"./content/*.md\", { import: \"default\" });",
@@ -173,25 +185,35 @@ fn eager_query_and_import_default_produce_static_imports() {
         &r,
     );
     assert!(
-        lazy.contains("() => import(\"./content/a.md\").then((m) => m.default)"),
+        lazy.contains("() => import(\"./content/a.md\").then(m => m[\"default\"])"),
         "{lazy}"
     );
 }
 
+// rolldown's native import-glob plugin (utils.rs `update_options`, the
+// `query` object arm): `key=value` joined by `&`, written raw, a boolean,
+// number or `null` as its text, an array or object skipped, and no `?` at
+// all when nothing is left.
 #[test]
-fn query_objects_serialize_like_url_search_params() {
+fn query_objects_serialize_like_the_native_plugin() {
     let dir = fixture();
     let r = root(&dir);
     let out = glob(
-        "const m = import.meta.glob(\"./content/*.md\", { query: { raw: \"\", locale: \"en US\" } });",
+        "const m = import.meta.glob(\"./content/*.md\", { query: { raw: \"\", locale: \"en US\", n: 1.5, i: 2, t: true, z: null, list: [1], o: {} } });",
         &r.join("index.ts"),
         &r,
     );
     assert!(
-        out.contains("import(\"./content/a.md?raw=&locale=en+US\")"),
+        out.contains("import(\"./content/a.md?raw=&locale=en US&n=1.5&i=2&t=true&z=null\")"),
         "{out}"
     );
     assert!(out.contains("\"./content/a.md\":"), "{out}");
+    let empty = glob(
+        "const m = import.meta.glob(\"./content/*.md\", { query: { list: [1] } });",
+        &r.join("index.ts"),
+        &r,
+    );
+    assert!(empty.contains("import(\"./content/a.md\")"), "{empty}");
 }
 
 #[test]
@@ -210,11 +232,11 @@ fn named_imports_select_the_export_in_both_modes() {
         &r,
     );
     assert!(
-        lazy.contains("import(\"./content/a.md\").then((m) => m[\"metadata\"])"),
+        lazy.contains("import(\"./content/a.md\").then(m => m[\"metadata\"])"),
         "{lazy}"
     );
     assert!(
-        eager.starts_with("import { metadata as __oj_glob0_0 } from \"./content/a.md\";"),
+        eager.starts_with("import { metadata as __import_glob__0_0_ } from \"./content/a.md\";"),
         "{eager}"
     );
     let namespace = glob(
@@ -223,7 +245,7 @@ fn named_imports_select_the_export_in_both_modes() {
         &r,
     );
     assert!(
-        namespace.contains("() => import(\"./content/a.md\")}")
+        namespace.contains("() => import(\"./content/a.md\")})")
             || namespace.contains("() => import(\"./content/a.md\"),"),
         "{namespace}"
     );
@@ -317,7 +339,7 @@ fn an_empty_glob_yields_an_empty_map() {
         &r.join("index.ts"),
         &r,
     );
-    assert_eq!(out, "const m = {};");
+    assert_eq!(out, "const m = /* #__PURE__ */ Object.assign({});");
 }
 
 #[test]
@@ -339,15 +361,15 @@ fn the_rewrite_adds_no_lines() {
     assert_eq!(lines.len(), code.split('\n').count(), "{out}");
     assert_eq!(
         lines[0],
-        "import * as __oj_glob0_0 from \"./content/a.md\"; import * as __oj_glob0_1 from \"./content/b.md\"; // header"
+        "import * as __import_glob__0_0_ from \"./content/a.md\";import * as __import_glob__0_1_ from \"./content/b.md\";// header"
     );
     assert_eq!(
         lines[1],
-        "const eager = {\"./content/a.md\": __oj_glob0_0, \"./content/b.md\": __oj_glob0_1"
+        "const eager = /* #__PURE__ */ Object.assign({\"./content/a.md\": __import_glob__0_0_,\"./content/b.md\": __import_glob__0_1_"
     );
-    assert_eq!(lines[4], "} as Record<string, unknown>;");
+    assert_eq!(lines[4], "}) as Record<string, unknown>;");
     assert!(
-        re(r"^const lazy = \{.*\};$").is_match(lines[5]),
+        re(r"^const lazy = /\* #__PURE__ \*/ Object\.assign\(\{.*\}\);$").is_match(lines[5]),
         "{}",
         lines[5]
     );
@@ -416,7 +438,7 @@ fn the_as_option_maps_to_a_query() {
         &r,
     );
     assert!(
-        raw.starts_with("import __oj_glob0_0 from \"./content/a.md?raw\";"),
+        raw.starts_with("import { default as __import_glob__0_0_ } from \"./content/a.md?raw\";"),
         "{raw}"
     );
     let url = glob(
@@ -425,7 +447,7 @@ fn the_as_option_maps_to_a_query() {
         &r,
     );
     assert!(
-        url.contains("import(\"./content/a.md?url\").then((m) => m.default)"),
+        url.contains("import(\"./content/a.md?url\").then(m => m[\"default\"])"),
         "{url}"
     );
     // An explicit namespace import beside `as` stays a namespace.
@@ -435,7 +457,7 @@ fn the_as_option_maps_to_a_query() {
         &r,
     );
     assert!(
-        star.starts_with("import * as __oj_glob0_0 from \"./content/a.md?raw\";"),
+        star.starts_with("import * as __import_glob__0_0_ from \"./content/a.md?raw\";"),
         "{star}"
     );
     let bare = glob(
@@ -495,10 +517,61 @@ fn case_insensitive_matching_and_the_importer_itself_is_skipped() {
     assert!(!own.contains("\"./index.ts\""), "{own}");
 }
 
+// rolldown's native plugin (utils.rs `glob_values`, `update_options`) reads
+// only the literal arguments: a variable pattern is no pattern (an empty
+// object), variable options are the defaults. `globEager` is no call of it.
 #[test]
-fn a_call_with_non_static_arguments_is_left_as_written() {
+fn arguments_that_are_not_literals_count_for_nothing() {
     let code = "const m = import.meta.glob(pattern);\nconst n = import.meta.globEager(\"./x\");";
-    assert_eq!(glob(code, Path::new("/app/x.ts"), Path::new("/app")), code);
+    assert_eq!(
+        glob(code, Path::new("/app/x.ts"), Path::new("/app")),
+        "const m = /* #__PURE__ */ Object.assign({});\nconst n = import.meta.globEager(\"./x\");"
+    );
+    let dir = fixture();
+    let r = root(&dir);
+    let out = glob(
+        "const m = import.meta.glob([\"./content/*.md\", other, `./content/*.json`], opts);",
+        &r.join("index.ts"),
+        &r,
+    );
+    assert!(
+        out.contains("\"./content/a.md\": () => import(\"./content/a.md\")"),
+        "{out}"
+    );
+    assert!(out.contains("\"./content/index.json\":"), "{out}");
+    let out = glob(
+        "const m = import.meta.glob(\"./content/*.md\", { eager, import: \"default\" });",
+        &r.join("index.ts"),
+        &r,
+    );
+    assert!(
+        out.contains("() => import(\"./content/a.md\").then(m => m[\"default\"])"),
+        "{out}"
+    );
+}
+
+// The native plugin's `to_absolute_glob`: a pattern that is neither `/`,
+// `**`, `./` nor `../`-led and that the resolver (oj: the alias) cannot
+// make absolute warns and leaves the call as written. The call still
+// counts in the eager binding numbering of the calls after it.
+#[test]
+fn an_unresolvable_bare_pattern_leaves_the_call_as_written() {
+    let dir = fixture();
+    let r = root(&dir);
+    let code = "const m = import.meta.glob(\"pkg/*.md\");\nconst n = import.meta.glob([\"./content/*.md\", \"!pkg/*.md\"]);\nconst e = import.meta.glob(\"./content/*.md\", { eager: true });";
+    let out = glob(code, &r.join("index.ts"), &r);
+    assert!(
+        out.contains("const m = import.meta.glob(\"pkg/*.md\");\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("const n = import.meta.glob([\"./content/*.md\", \"!pkg/*.md\"]);\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("import * as __import_glob__2_0_ from \"./content/a.md\";"),
+        "{out}"
+    );
 }
 
 // Vite's vite:worker-import-meta-url and vite:asset-import-meta-url on a
@@ -615,11 +688,11 @@ fn a_template_asset_url_becomes_the_eager_url_glob_lookup() {
     );
     let expanded = glob(&out, &id, &r);
     assert!(
-        expanded.contains("import __oj_glob0_0 from \"./img/a.png?url\";"),
+        expanded.contains("import { default as __import_glob__0_0_ } from \"./img/a.png?url\";"),
         "{expanded}"
     );
     assert!(
-        expanded.contains("\"./img/b.png\": __oj_glob0_1"),
+        expanded.contains("\"./img/b.png\": __import_glob__0_1_"),
         "{expanded}"
     );
 }
@@ -775,7 +848,7 @@ fn a_glob_inside_a_string_or_comment_is_left_alone() {
         "{out}"
     );
     assert!(
-        !out.contains("import __oj_glob"),
+        !out.contains("__import_glob__"),
         "a comment's eager glob hoists nothing:\n{out}"
     );
     assert!(

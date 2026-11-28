@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-HASH.js";var t=e(),n=({error:e})=>(0,t.jsx)(`pre`,{children:String(e)});export{n as errorComponent};

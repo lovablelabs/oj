@@ -1,0 +1,38 @@
+[
+  {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "isEntry": true,
+    "isDynamicEntry": false,
+    "imports": [],
+    "dynamicImports": [
+      "assets/routes-HASH.js",
+      "assets/x-HASH.js"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "isEntry": false,
+    "isDynamicEntry": true,
+    "imports": [
+      "assets/index-HASH.js"
+    ],
+    "dynamicImports": [],
+    "css": []
+  },
+  {
+    "file": "assets/x-HASH.js",
+    "name": "tracking",
+    "isEntry": false,
+    "isDynamicEntry": true,
+    "imports": [
+      "assets/index-HASH.js"
+    ],
+    "dynamicImports": [],
+    "css": []
+  }
+]

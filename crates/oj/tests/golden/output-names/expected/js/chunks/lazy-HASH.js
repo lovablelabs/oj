@@ -1,0 +1,1 @@
+function e(){return`lazy`}export{e as lazy};

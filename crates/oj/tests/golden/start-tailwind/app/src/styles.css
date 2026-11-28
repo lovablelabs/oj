@@ -1,0 +1,11 @@
+@import "tailwindcss" source(none);
+@source "./routes";
+
+@theme {
+  --color-brand: #ff3e00;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+.card {
+  @apply rounded bg-brand p-2 text-white;
+}

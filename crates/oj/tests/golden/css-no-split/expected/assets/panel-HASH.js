@@ -1,0 +1,1 @@
+function e(){document.body.classList.add(`panel-open`)}export{e as open};

@@ -110,6 +110,21 @@ function mergeConfigLite(defaults, overrides, rootPath = "") {
   return merged;
 }
 
+// Vite's mergeWithDefaults: a default is replaced by the user's value, never
+// joined with it (mergeConfigLite joins arrays, as Vite's mergeConfig does
+// for two user configs: a string default and the user's `build.target` list
+// made `["modules", ...]`).
+function mergeWithDefaults(defaults, value) {
+  const out = { ...defaults };
+  for (const key of Object.keys(value ?? {})) {
+    const v = value[key];
+    if (v == null) continue;
+    const d = out[key];
+    out[key] = isPlainObject(d) && isPlainObject(v) ? mergeWithDefaults(d, v) : v;
+  }
+  return out;
+}
+
 const pluginsPath = ojEngineBoot ? ojEngineBoot.pluginsPath : process.argv[2];
 const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.argv[3]) ?? "{}");
 
@@ -218,7 +233,6 @@ if (ojEngineBoot) {
   } catch {}
 }
 
-process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
 // Vite's ConfigEnv (config.ts): `{ mode, command, isSsrBuild, isPreview }`.
 // Vite computes it once, before any environment exists, from the inline
 // config alone (`command === "build" && !!config.build?.ssr`); oj passes no
@@ -293,6 +307,14 @@ const ojStartMode = initial.ojStartMode === true;
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
+// @stylexjs/unplugin in a Start build: the package's stand-in (oj_js
+// stand_ins) composes the package's real plugin, its hooks over the shared
+// rule store, with oj's compiler as the `transform`, through this host. An
+// app driving the plugin's hooks itself (two instances splitting one sheet
+// by file) then runs as under Vite; an instance a config lists as it is
+// goes back to oj's native path (nativeStylexStandIn).
+const stylexStandIns = new WeakSet();
+if (ojStartMode && command === "build") installStylexHost();
 // In start mode framework plugins oj reimplements natively (vite:*,
 // tanstack's compiler plugins) must not transform SSR modules or a native
 // Start bundle's — the Start pipeline does their work (server-fn rewrite,
@@ -629,7 +651,7 @@ function lightningcssTargets(esbuildTarget) {
 
 function withResolvedDefaults(config) {
   const c = config ?? {};
-  const merged = mergeConfigLite(
+  const merged = mergeWithDefaults(
     {
       command: env.command,
       mode: env.mode,
@@ -640,18 +662,19 @@ function withResolvedDefaults(config) {
       // custom `--mode staging` build is still a production build.
       isProduction: process.env.NODE_ENV === "production",
       experimental: {},
-      // Vite's resolved `build` carries defaults plugins read in configResolved
+      // Vite 8's resolved `build` defaults, which plugins read in configResolved
       // (e.g. UnoCSS resolves `config.build.outDir` and reads
-      // `config.build.rollupOptions.output`). User config overrides these.
+      // `config.build.rollupOptions.output`) and oj's own build reads back (the
+      // minifier, the target esbuild gets). User config overrides these.
       build: {
-        target: "modules",
+        target: BASELINE_WIDELY_AVAILABLE_TARGET,
         outDir: "dist",
         assetsDir: "assets",
         assetsInlineLimit: 4096,
         cssCodeSplit: true,
         sourcemap: false,
         rollupOptions: {},
-        minify: "esbuild",
+        minify: "oxc",
         reportCompressedSize: true,
         chunkSizeWarningLimit: 500,
       },
@@ -673,6 +696,8 @@ function withResolvedDefaults(config) {
     },
     c,
   );
+  // resolveBuildEnvironmentOptions: the named baseline is its browser list.
+  if (merged.build?.target === "baseline-widely-available") merged.build.target = [...BASELINE_WIDELY_AVAILABLE_TARGET];
   // resolveCSSOptions: the lightningcss transformer gets Vite's baseline
   // browser targets unless the user set their own.
   if (merged.css?.transformer === "lightningcss") {
@@ -927,6 +952,24 @@ async function appViteForResolve() {
     return null;
   }
 }
+// Whether this host runs without Start's `tanstack-start-core:config` plugin.
+const leavesOutStartConfig = () =>
+  startLeavesOutReimplemented && allPlugins.some((p) => p?.name === "tanstack-start-core:config");
+// Where Start's config hook puts an environment's build (its
+// getOutputDirectory): the directory the config declares for it, else
+// `client` or `server` under the top-level `build.outDir`.
+function startOutDir(config, name) {
+  const directory = name === "client" ? "client" : name === "ssr" ? "server" : null;
+  if (!directory) return null;
+  const declared = config?.environments?.[name]?.build?.outDir;
+  if (typeof declared === "string") return declared;
+  const rootOutDir = config?.build?.outDir;
+  return join(typeof rootOutDir === "string" ? rootOutDir : "dist", directory);
+}
+const startOutDirEnvironments = (config) => ({
+  client: { build: { outDir: startOutDir(config, "client") } },
+  ssr: { build: { outDir: startOutDir(config, "ssr") } },
+});
 // The recording resolve: the config hooks run once, on the host's own
 // instances, under Vite, each recorded for the host to replay.
 async function loadUserResolvedViteConfig() {
@@ -980,6 +1023,18 @@ async function loadUserResolvedViteConfig() {
     };
     own.add(fileBuildSsr);
     plugins.unshift(fileBuildSsr);
+  }
+  // Start's config plugin is one of those left out, and its config hook is
+  // where the environments' output directories come from: a plugin after it
+  // (@cloudflare/vite-plugin) keeps the directory it finds declared.
+  if (leavesOutStartConfig()) {
+    const startOutDirs = {
+      name: "oj:start-out-dirs",
+      enforce: "pre",
+      config: { order: "pre", handler: (config) => ({ environments: startOutDirEnvironments(config) }) },
+    };
+    own.add(startOutDirs);
+    plugins.unshift(startOutDirs);
   }
   const hooksDone = {
     name: "oj:config-hooks-done",
@@ -1725,6 +1780,8 @@ async function loadViteConfig(configPath) {
         { mode: env.mode, command: env.command, isSsrBuild: env.isSsrBuild, isPreview: env.isPreview },
         configPath,
         appRoot,
+        undefined,
+        quietNativeLoaderLogger(vite),
       ),
     );
     if (loaded && loaded.config) {
@@ -1759,6 +1816,23 @@ async function loadViteConfig(configPath) {
     mod = await import(pathToFileURL(configPath).href);
   }
   return typeof mod.default === "function" ? await mod.default(env) : mod.default;
+}
+
+// Vite's config loader warns, per incompatibility, that the config would not
+// load under `configLoader: "native"`: advice for a Vite the app is not
+// running (oj is the native-loader world), so it is dropped here, at the
+// logger. Not through VITE_CONFIG_NATIVE_IGNORE_WARNING in process.env: the
+// config reads that environment too (`loadEnv(mode, root, "")` gathers it
+// whole), and a Cloudflare Worker's wrangler.json carried the variable.
+function quietNativeLoaderLogger(vite) {
+  if (typeof vite.createLogger !== "function") return undefined;
+  const logger = vite.createLogger();
+  const warn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (typeof msg === "string" && msg.includes("configLoader: 'native'")) return;
+    warn(msg, options);
+  };
+  return logger;
 }
 
 let allPlugins = [];
@@ -1800,7 +1874,90 @@ function hostedPlugins(list, userConfig, c = main) {
       throw e;
     }
   });
-  return out.sort((a, b) => enforceRank(a) - enforceRank(b));
+  out.sort((a, b) => enforceRank(a) - enforceRank(b));
+  // Vite's build post plugins come after the user's own post plugins.
+  if (env.command === "build" && applyConfig.build?.minify === "esbuild") out.push(esbuildMinifyPlugin());
+  return out;
+}
+// Vite's vite:esbuild-transpile for `build.minify: "esbuild"`: every chunk
+// minified by esbuild's transform in renderChunk, after every other plugin's
+// (a worker bundle's too: Vite resolves its plugins the same way), with the
+// options resolveEsbuildTranspileOptions and transformWithEsbuild hand it: the
+// environment's `build.target`, the resolved `esbuild` options (utf8, no
+// legal comments), dynamic-import and import-meta supported, loader js, the
+// file name as sourcefile, `useDefineForClassFields: false`. rolldown's own
+// minifier stays off for such a build (the Rust side passes `minify: false`).
+function esbuildMinifyPlugin() {
+  let esbuild = null;
+  const load = async () => {
+    if (esbuild) return esbuild;
+    const root = initial.config?.root ?? process.cwd();
+    const req = createRequire(root + "/package.json");
+    let path;
+    try {
+      path = req.resolve("esbuild");
+    } catch {
+      // Vite 8 no longer depends on esbuild; an app that minifies with it has it.
+      path = req.resolve("esbuild", { paths: [dirname(req.resolve("vite/package.json"))] });
+    }
+    return (esbuild = await import(pathToFileURL(path).href));
+  };
+  return {
+    name: "vite:esbuild-transpile",
+    enforce: "post",
+    applyToEnvironment(environment) {
+      return environment.config?.esbuild !== false;
+    },
+    async renderChunk(code, chunk, opts) {
+      const config = this.environment?.config ?? {};
+      const rc = main.resolvedConfig ?? {};
+      if ((config.build?.minify ?? rc.build?.minify) !== "esbuild") return null;
+      const own = config.esbuild ?? rc.esbuild;
+      if (own === false) return null;
+      // Vite's resolved `esbuild` options (config.ts) under the user's.
+      const esbuildOptions = { charset: "utf8", legalComments: "none", ...own };
+      let target = config.build?.target ?? rc.build?.target;
+      if (target === "baseline-widely-available") target = [...BASELINE_WIDELY_AVAILABLE_TARGET];
+      const { include: _i, exclude: _e, jsxInject: _j, ...options } = esbuildOptions;
+      const raw = typeof options.tsconfigRaw === "object" && options.tsconfigRaw ? options.tsconfigRaw : {};
+      // Vite's resolveEsbuildTranspileOptions: `minify: false` with the three
+      // flags whenever one is set (esbuild ORs `minify` into each), and an ES
+      // library keeps its whitespace.
+      const format = opts?.format ?? "es";
+      const isEsLib = !!(config.build?.lib ?? rc.build?.lib) && format === "es";
+      const explicit =
+        options.minifyIdentifiers != null || options.minifySyntax != null || options.minifyWhitespace != null;
+      const minifyOptions =
+        explicit || isEsLib
+          ? {
+              minify: false,
+              minifyIdentifiers: options.minifyIdentifiers ?? true,
+              minifySyntax: options.minifySyntax ?? true,
+              minifyWhitespace: isEsLib ? false : (options.minifyWhitespace ?? true),
+              treeShaking: true,
+            }
+          : { minify: true, treeShaking: true };
+      // Vite defaults `useDefineForClassFields` to false only when the
+      // compiler options name neither it nor a target.
+      const compilerOptions = { ...raw.compilerOptions };
+      if (compilerOptions.useDefineForClassFields === undefined && compilerOptions.target === undefined) {
+        compilerOptions.useDefineForClassFields = false;
+      }
+      const { transform } = await load();
+      const result = await transform(code, {
+        sourcemap: true,
+        sourcefile: chunk.fileName,
+        ...options,
+        loader: "js",
+        target: target || undefined,
+        format: { es: "esm", cjs: "cjs" }[format],
+        supported: { "dynamic-import": true, "import-meta": true, ...esbuildOptions.supported },
+        ...minifyOptions,
+        tsconfigRaw: { ...raw, compilerOptions },
+      });
+      return { code: result.code, map: JSON.parse(result.map) };
+    },
+  };
 }
 // Whether oj does `p`'s work itself, so this host leaves it out: the
 // top-level list and what applyToEnvironment returns alike.
@@ -1843,7 +2000,7 @@ try {
     const mod = await import(pathToFileURL(pluginsPath).href);
     list = mod.default ?? mod.plugins;
   }
-  allPlugins = await flattenPlugins(list);
+  allPlugins = (await flattenPlugins(list)).map(nativeStylexStandIn);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   noteStartCompilerPosition(allPlugins);
@@ -2187,8 +2344,8 @@ function pluginContext(c) {
           const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
           // Outside a running bundle (no bundler to ask) oj's resolver answers.
           if (!r || !r.fallback) return r ?? null;
-          const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
-          return id == null ? null : { id };
+          const own = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
+          return coreResolved(own);
         })();
         if (core != null) return core;
         return chain("post");
@@ -2222,7 +2379,7 @@ function pluginContext(c) {
         id = await ctxRpc("resolve", args);
         if (id && id.scanPending) id = await ctxRpc("resolve", args.slice(0, 4));
       }
-      if (id != null) return { id };
+      if (id != null) return coreResolved(id);
       return chain("post");
     },
     emitFile(file) {
@@ -2239,6 +2396,9 @@ function pluginContext(c) {
           id: file.id,
           name: file.name ?? null,
           fileName: file.fileName ?? null,
+          // Rollup's per-chunk `preserveSignature` (`strict`, `allow-extension`,
+          // `exports-only`, false); the build's `preserveEntrySignatures` otherwise.
+          preserveSignature: file.preserveSignature ?? null,
         };
         const bucket = transformEmitStore.getStore();
         if (bucket) bucket.push(rec);
@@ -2247,9 +2407,29 @@ function pluginContext(c) {
       if (file.type && file.type !== "asset") {
         throw new Error("oj: this.emitFile supports { type: 'asset' | 'chunk' }");
       }
-      const fileName = file.fileName ?? `assets/${file.name ?? `asset-${emitCounter}`}`;
+      const source = String(file.source ?? "");
+      const live = c.liveBundle;
+      const fileName =
+        file.fileName ??
+        (live ? hashedAssetName(c, file.name, source) : `assets/${file.name ?? `asset-${emitCounter}`}`);
       const referenceId = `oj-ref-${emitCounter++}`;
-      c.emitted.push({ referenceId, fileName, source: String(file.source ?? "") });
+      // Emitted in generateBundle, the asset joins the bundle the hooks see,
+      // as rolldown's does (the StyleX plugin re-emits the sheet it appended
+      // to under a new hash and drops the old one); Rust takes it from the
+      // bundle, not from the emitted files.
+      if (live) {
+        live[fileName] = {
+          type: "asset",
+          fileName,
+          name: file.name ?? null,
+          names: file.name != null ? [file.name] : [],
+          originalFileName: file.originalFileName ?? null,
+          originalFileNames: file.originalFileName != null ? [file.originalFileName] : [],
+          source,
+          needsCodeReference: false,
+        };
+      }
+      c.emitted.push({ referenceId, fileName, source, inBundle: !!live, name: file.name ?? null });
       return referenceId;
     },
     getFileName(referenceId) {
@@ -2718,6 +2898,15 @@ initStage("config-hooks-done");
 // The plugins every environment resolves its own set from (the top-level
 // resolved plugins, before applyToEnvironment).
 main.topLevelPlugins = main.plugins;
+// A Start build writes a stylesheet per source and links them from the root
+// route itself, whatever `build.cssCodeSplit` says, so the option reads as
+// the build behaves. Start's manifest plugin, hosted in a build, takes
+// `false` to mean Vite wrote one `style.css` for it to link and fails the
+// build when the bundle has none.
+function splitsStartCss(config) {
+  if (!ojStartMode || command !== "build" || !config || config.build?.cssCodeSplit !== false) return;
+  config.build = { ...config.build, cssCodeSplit: true };
+}
 async function resolveEnvironment(c, name) {
   const { environment, resolvedConfig } = c;
   environment.name = name;
@@ -2726,6 +2915,7 @@ async function resolveEnvironment(c, name) {
   // The environment's own consumer: the client's config is the resolved
   // config itself, whose consumer every other environment would inherit.
   environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
+  splitsStartCss(environment.config);
   environment.logger = resolvedConfig.logger;
   environment.getTopLevelConfig = () => resolvedConfig;
   if (name !== "client") await reportEnvironmentResolve(name, own.resolve, environment.config.consumer);
@@ -2775,7 +2965,9 @@ function applyToEnvironmentOnce(p, environment) {
       (async () => {
         // A rejection nested in what it returned counts as its own throw.
         const applied = await p.applyToEnvironment(environment);
-        return applied && applied !== true ? flattenPlugins(applied) : applied;
+        return applied && applied !== true
+          ? flattenPlugins(applied).then((list) => list.map(nativeStylexStandIn))
+          : applied;
       })(),
     );
   }
@@ -3569,6 +3761,66 @@ function runnerStylex(p) {
       return await ctxRpc("stylexTransform", [id, code]);
     },
   };
+}
+// What the StyleX stand-in composes over the package's real plugin in a
+// Start build (see `stylexStandIns`): oj's compiler as the plugin's
+// `transform`, its rules written into the plugin's shared store as the real
+// transform writes them, so the plugin's own generateBundle (or an app's
+// over the store) assembles the sheet.
+function installStylexHost() {
+  const JS_LIKE_RE = /\.[cm]?[jt]sx?(\?|$)/;
+  const SVELTE_LIKE_RE = /\.svelte(\?|$)/;
+  const escapeReg = (src) => src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The plugin's containsStylexImport.
+  const importsStylex = (code, source) => {
+    const s = escapeReg(typeof source === "string" ? source : (source?.from ?? ""));
+    if (!s) return false;
+    const re = new RegExp(
+      `(?:from\\s*['"]${s}['"]|import\\s*\\(\\s*['"]${s}['"]\\s*\\)|require\\s*\\(\\s*['"]${s}['"]\\s*\\)|^\\s*import\\s*['"]${s}['"])`,
+      "m",
+    );
+    return re.test(code);
+  };
+  let failed = false;
+  globalThis.__ojStylexHost = {
+    created(plugin) {
+      stylexStandIns.add(plugin);
+    },
+    failed(e) {
+      if (failed) return;
+      failed = true;
+      process.stderr.write(
+        `${OJ} @stylexjs/unplugin could not be loaded from node_modules, so oj compiles StyleX natively: ${(e && e.stack) || e}\n`,
+      );
+    },
+    async transform(real, options, code, id) {
+      if (!JS_LIKE_RE.test(id) && !SVELTE_LIKE_RE.test(id)) return null;
+      const sources = options.importSources ?? ["stylex", "@stylexjs/stylex"];
+      if (!code || !sources.some((s) => importsStylex(code, s))) return null;
+      const out = await ctxRpc("stylexTransform", [id, code, options]);
+      if (!options.runtimeInjection) {
+        const shared = real.__stylexGetSharedStore?.();
+        if (shared) {
+          const rules = out?.rules ?? [];
+          if (rules.length > 0) {
+            shared.rulesById.set(id, rules);
+            shared.version++;
+          } else if (shared.rulesById.delete(id)) {
+            shared.version++;
+          }
+        }
+      }
+      return out ? { code: out.code, map: out.map ?? null } : null;
+    },
+  };
+}
+// A StyleX stand-in the config lists as the stand-in made it, back to the
+// hookless plugin oj's native path reads the options from; a plugin an app
+// made of one (spreading its hooks under a name of its own) keeps them, and
+// the environment's StyleX runs through this host (`stylexHostDriven`).
+function nativeStylexStandIn(p) {
+  if (!p || !stylexStandIns.has(p)) return p;
+  return { name: p.name, enforce: p.enforce, __ojStylexOptions: p.__ojStylexOptions };
 }
 // The app's Vite resolving the host's own plugins (an oj plugins file has no
 // vite.config to resolve), each hook answering what it returned in the host.
@@ -4868,8 +5120,8 @@ async function ssrFetchModule(vite, root, url, importer) {
     const viaPlugins = await resolveIdFull(c, url, importerFile, {});
     let resolved = viaPlugins?.id ?? null;
     if (resolved == null) {
-      const own = await ctxRpc("resolve", [url, importerFile ?? "", "ssr", "server"]);
-      if (typeof own === "string") resolved = own;
+      const own = coreResolved(await ctxRpc("resolve", [url, importerFile ?? "", "ssr", "server"]));
+      if (own) resolved = own.id;
     }
     if (resolved == null) {
       const err = new Error(`Cannot find module '${url}'${importer ? ` imported from '${importer}'` : ""}`);
@@ -5557,6 +5809,12 @@ function compilePhaseOf(p, rank) {
 }
 function inTransformPhase(p, rank, phase) {
   if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;
+  // A Start build's chain splits around vite:oxc's slot, which oj runs
+  // natively: the "pre" hooks after Start's compiler first, then the normal
+  // and post ones over the lowered module (their filters read it so).
+  if (phase === "after-compile-pre")
+    return compilePhaseOf(p, rank) === "after-compile" && cssPhaseOf(p, rank) === "pre";
+  if (phase === "normal-post") return cssPhaseOf(p, rank) !== "pre";
   return cssPhaseOf(p, rank) === phase;
 }
 
@@ -5601,8 +5859,15 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
     // Rollup's missing map: a plugin that returns code without `map` breaks
     // the chain (`map: null` does not). Only a bundle reads it.
     let mapBroken = null;
+    // Whether the vite:oxc strip lowered the module here: vite:oxc returns
+    // its output as `moduleType: "js"`, so rolldown's own TypeScript
+    // transform leaves the lowered code alone (run again on the `.tsx` id,
+    // it would drop an import the JSX no longer refers to, `React`'s).
+    let lowered = false;
     const transformOptions = { ssr: c.environment.name === "ssr" };
-    let stripped = !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(c, id);
+    // "normal-post" follows oj's own vite:oxc slot: the module is lowered.
+    let stripped =
+      phase === "normal-post" || !viteTransformWithOxc || !id || id.startsWith("\0") || !oxcStripMatches(c, id);
     // Vite sorts a hook's plugins by the hook's own `order` (pre, normal, post)
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
@@ -5625,6 +5890,7 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
             throw decoratePluginError(e, { name: "vite:oxc" }, id);
           }
           current = r.code;
+          lowered = true;
           if (r.map != null) {
             maps.push(typeof r.map === "string" ? r.map : JSON.stringify(r.map));
             mapPlugins.push("vite:oxc");
@@ -5670,9 +5936,10 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
         maps,
         mapPlugins,
         mapBroken,
+        moduleType: lowered ? "js" : null,
         emittedChunks: chunkBucket,
       });
-    if (phase && phase !== "post" && phase !== "after-compile") return result();
+    if (phase && phase !== "post" && phase !== "after-compile" && phase !== "normal-post") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,
@@ -5783,7 +6050,7 @@ async function openWorkerContainer(parent, bundleChain) {
       );
     }
   }
-  const raw = await flattenPlugins(typeof create === "function" ? create() : []);
+  const raw = (await flattenPlugins(typeof create === "function" ? create() : [])).map(nativeStylexStandIn);
   const workerPlugins = hostedPlugins(raw, userViteConfig, parent);
   const c = createContainer(nextContainerId++, { name: "client", mode: environment.mode }, null);
   c.leaveOut = parent.leaveOut;
@@ -6074,6 +6341,20 @@ function hookTransformMatches(hook, id, code, idOnly = false) {
 // each handed `{ attributes, custom, isEntry, ssr, scan }`, the first non-null
 // result winning with its object kept whole (id plus external / meta /
 // moduleSideEffects / syntheticNamedExports, as Vite's partial does).
+// oj's own resolver's answer as a resolved object: the id (a string, or an
+// object naming it with the module's `packageJsonPath`, which rolldown reads
+// the module's format off, as its own resolver's answers carry it).
+function coreResolved(answer) {
+  if (answer == null) return null;
+  if (typeof answer === "string") return { id: answer };
+  if (typeof answer === "object" && typeof answer.id === "string") {
+    const out = { id: answer.id };
+    if (typeof answer.packageJsonPath === "string") out.packageJsonPath = answer.packageJsonPath;
+    if (typeof answer.moduleSideEffects === "boolean") out.moduleSideEffects = answer.moduleSideEffects;
+    return out;
+  }
+  return null;
+}
 // `opts.skipCalls`: the chain's cumulative skip list (see ctx.resolve);
 // `opts.skip`: a single plugin to skip outright (legacy single-caller form,
 // kept for external callers of environment.resolveId).
@@ -6110,7 +6391,14 @@ async function resolveIdFull(c, source, importer, opts) {
     if (typeof r === "string") return { id: r };
     if (typeof r !== "object" || r.id == null) continue;
     const out = { id: r.id };
-    for (const k of ["external", "meta", "moduleSideEffects", "syntheticNamedExports", "attributes"]) {
+    for (const k of [
+      "external",
+      "meta",
+      "moduleSideEffects",
+      "syntheticNamedExports",
+      "attributes",
+      "packageJsonPath",
+    ]) {
       if (r[k] !== undefined) out[k] = r[k];
     }
     noteModuleOption(c, String(out.id), out);
@@ -6164,6 +6452,9 @@ async function resolveIdPhase(c, source, importer, phase, isEntry) {
   const out = { id: String(r.id) };
   if (r.external !== undefined && r.external !== false) out.external = r.external;
   if (typeof r.moduleSideEffects === "boolean") out.moduleSideEffects = r.moduleSideEffects;
+  // The module's package.json, where the chain knows it (a `this.resolve`
+  // answer passed on): rolldown reads the module's format off it.
+  if (typeof r.packageJsonPath === "string") out.packageJsonPath = r.packageJsonPath;
   return JSON.stringify(out);
 }
 
@@ -6205,7 +6496,29 @@ async function startFacts(c) {
   const chunkOptimization = { ...(top.experimental ?? {}), ...(own.experimental ?? {}) }.chunkOptimization;
   const external = own.external ?? cfg.build?.rolldownOptions?.external ?? cfg.build?.rollupOptions?.external;
   const names = c.rawPlugins.map((p) => p && p.name);
+  const fileNames = await outputFileNames(c, cfg, output);
   const facts = JSON.stringify({
+    entryFileNames: fileNames.entry === undefined ? null : factValue(fileNames.entry, fns),
+    chunkFileNames: fileNames.chunk === undefined ? null : factValue(fileNames.chunk, fns),
+    assetFileNames: fileNames.asset === undefined ? null : factValue(fileNames.asset, fns),
+    // `build.manifest` of this environment (its own before the top level's):
+    // true, a file name, or off.
+    manifest: self.build?.manifest ?? cfg.build?.manifest ?? null,
+    // `build.emitAssets` of this environment: Vite's default is on for the
+    // client and off for a server. The environment named `ssr` is special:
+    // resolveConfig overrides its value with `build.ssrEmitAssets || the
+    // top level's`, but Vite's builder (no `sharedConfigBuild`, Start's way)
+    // resolves each environment's config again on that environment's own
+    // build options, so for `ssr` the override reads the environment's own
+    // declared value: `ssrEmitAssets || what the plugins' config hooks or
+    // the config declared` (a Worker environment's hook declares true).
+    emitAssets:
+      c.environment.name === "ssr"
+        ? (cfg.build?.ssrEmitAssets ?? false) ||
+          (pluginConfigDelta?.environments?.ssr?.build?.emitAssets ??
+            userViteConfig?.environments?.ssr?.build?.emitAssets ??
+            false)
+        : (self.build?.emitAssets ?? c.environment.name === "client"),
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
     codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting, fns),
@@ -6216,6 +6529,43 @@ async function startFacts(c) {
     reactRefresh: names.includes("vite:react-refresh"),
     cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
     worker: workerFacts(cfg, fns),
+    preloadHelper: vitePreloadHelper(c),
+    // @stylexjs/unplugin's `cssInjectionTarget`, the predicate over the
+    // bundle's stylesheet names that picks the sheet its generateBundle
+    // appends the rules to (the plugin keeps it as a field of its own);
+    // oj, compiling StyleX natively, asks it the same question.
+    // The plugin here is oj's stand-in for the package (oj_js stand_ins),
+    // which records the options it was given; the real plugin keeps the
+    // target as a field. An app wrapping the plugin under a name of its own
+    // spreads either along, so the fields are the mark, not the name.
+    stylexCssInjectionTarget: factValue(
+      c.rawPlugins
+        .map((p) => p && (p.__ojStylexOptions?.cssInjectionTarget ?? p.__stylexCssInjectionTarget))
+        .find((t) => t != null) ?? null,
+      fns,
+    ),
+    // Whether the environment's StyleX runs through this host: a plugin the
+    // app made of the stand-in, hooks and all (see nativeStylexStandIn), so
+    // oj's native StyleX stands down for the bundle.
+    stylexHostDriven: c.rawPlugins.some((p) => p && p.__ojStylexOptions && typeof p.transform === "function"),
+    // vite:oxc's filters as the environment's `oxc` resolved them: the
+    // app's `include`/`exclude`, and the Fast Refresh include/exclude a
+    // plugin's config hook adds (plugin-react names every `.[tj]sx?`
+    // module), which a build's native transform takes a module by as well.
+    oxc: (() => {
+      const oxc = self.oxc ?? cfg.oxc;
+      if (oxc === false) return false;
+      const o = oxc && typeof oxc === "object" ? oxc : {};
+      return factValue(
+        {
+          include: o.include ?? null,
+          exclude: o.exclude ?? null,
+          jsxRefreshInclude: o.jsxRefreshInclude ?? null,
+          jsxRefreshExclude: o.jsxRefreshExclude ?? null,
+        },
+        fns,
+      );
+    })(),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
       (n, { p, rank }) => {
@@ -6227,6 +6577,28 @@ async function startFacts(c) {
   });
   c.startFns = fns;
   return facts;
+}
+// The `\0vite/preload-helper.js` module of this environment as the app's own
+// Vite composes it (getPreloadCode: `detectScriptRel`, `preload` and their
+// helpers stringified from Vite's dist, so a patched Vite's helper is the
+// patched one), read off the vite:build-import-analysis plugin Vite's
+// resolveConfig listed: a per-environment plugin whose instance is rolldown's
+// builtin, holding the code among its options. `null` where Vite's resolved
+// config is not at hand or the plugin changed shape; oj then writes its own
+// copy of the helper.
+function vitePreloadHelper(c) {
+  const rc = userResolvedViteConfig;
+  const plugin = rc?.plugins?.find?.((p) => p && p.name === "native:import-analysis-build");
+  if (!plugin || typeof plugin.applyToEnvironment !== "function") return null;
+  const name = c.environment.name;
+  const envConfig = { ...rc, ...(rc.environments?.[name] ?? rc.environments?.client ?? {}) };
+  try {
+    const instance = plugin.applyToEnvironment({ name, config: envConfig });
+    const code = instance?._options?.preloadCode;
+    return typeof code === "string" && code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
 }
 // The chunk policy of an `output`, as rolldown's bindingifyCodeSplitting
 // settles it from `codeSplitting`, the older `advancedChunks` and
@@ -6276,6 +6648,35 @@ function chunkPolicy(output, build) {
   }
   if (manualChunks != null) refuse(new TypeError("manualChunks is not a function"));
   return codeSplitting;
+}
+// A build's `output.entryFileNames` and `output.chunkFileNames` as rolldown
+// gets them under Vite: the environment's own (a string or a function of the
+// chunk) over Vite's `<assetsDir>/[name]-[hash].js`, then every plugin's
+// `outputOptions` hook in turn, each taking the options the last one
+// returned (a plugin wrapping `chunkFileNames` to place some chunks in a
+// directory of their own). Undefined where nothing names them: the bundle
+// keeps its own pattern.
+async function outputFileNames(c, cfg, output) {
+  if (command !== "build") return {};
+  const hooks = pluginsWithHook(c, "outputOptions");
+  if (
+    output.entryFileNames === undefined &&
+    output.chunkFileNames === undefined &&
+    output.assetFileNames === undefined &&
+    hooks.length === 0
+  )
+    return {};
+  const assetsDir = cfg.environments?.[c.environment.name]?.build?.assetsDir ?? cfg.build?.assetsDir ?? "assets";
+  const pattern = [assetsDir, "[name]-[hash].js"].filter(Boolean).join("/");
+  let options = { ...output };
+  options.entryFileNames ??= pattern;
+  options.chunkFileNames ??= pattern;
+  options.assetFileNames ??= [assetsDir, "[name]-[hash][extname]"].filter(Boolean).join("/");
+  for (const { p, fn } of hooks) {
+    const next = await fn.call(ctxFor(c, p), options);
+    if (next != null) options = next;
+  }
+  return { entry: options.entryFileNames, chunk: options.chunkFileNames, asset: options.assetFileNames };
 }
 const stringOr = (v) => (typeof v === "string" ? v : null);
 // Vite's resolved worker options: `format` (iife by default) and
@@ -6333,7 +6734,12 @@ async function cloudflareEnvironmentFacts(c, fns) {
     // the user's own config (`environments.<name>.build.outDir`, else
     // `<build.outDir>/<name>`), which a resolved base here already fills with
     // Vite's defaults; read the user's config as the plugin would.
-    outDir: stringOr(userViteConfig?.environments?.[name]?.build?.outDir),
+    // Start's config hook runs before the plugin's and declares its server
+    // environment's directory (`<build.outDir>/server`), which the plugin
+    // then keeps.
+    outDir:
+      stringOr(userViteConfig?.environments?.[name]?.build?.outDir) ??
+      (leavesOutStartConfig() ? startOutDir(userViteConfig, name) : null),
     rootOutDir: stringOr(userViteConfig?.build?.outDir),
   };
 }
@@ -6922,9 +7328,66 @@ async function gateOnBuildStart(c) {
   }
 }
 
+// A chunk's `viteMetadata` as Vite's css plugin sets it: `importedCss` and
+// `importedAssets` are Sets (they cross from the bundle as arrays).
+function reviveViteMetadata(bundle) {
+  for (const output of Object.values(bundle)) {
+    const metadata = output && output.viteMetadata;
+    if (!metadata) {
+      if (output && output.viteMetadata === null) delete output.viteMetadata;
+      continue;
+    }
+    metadata.importedCss = new Set(metadata.importedCss ?? []);
+    metadata.importedAssets = new Set(metadata.importedAssets ?? []);
+  }
+  return bundle;
+}
+
+// The output options a renderChunk, generateBundle or writeBundle hook gets:
+// rolldown's normalized output options as Vite's build passes them, the
+// bundle's directory resolved against the root (a plugin writing beside the
+// bundle joins `options.dir`), the format, the environment's source map
+// setting and the file name patterns (the config's, else Vite's defaults
+// under `build.assetsDir`). A function pattern stays a function.
+function normalizedOutputOptions(c) {
+  const build = c.environment?.config?.build ?? c.resolvedConfig?.build ?? {};
+  const root = c.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+  const ro = build.rolldownOptions ?? build.rollupOptions ?? {};
+  const output = (Array.isArray(ro.output) ? ro.output[0] : ro.output) ?? {};
+  const assetsDir = build.assetsDir ?? "assets";
+  return {
+    format: "es",
+    exports: "auto",
+    sourcemap: build.sourcemap ?? false,
+    entryFileNames: `${assetsDir}/[name]-[hash].js`,
+    chunkFileNames: `${assetsDir}/[name]-[hash].js`,
+    assetFileNames: `${assetsDir}/[name]-[hash][extname]`,
+    ...output,
+    dir: pathResolve(root, build.outDir ?? "dist"),
+  };
+}
+
 async function generateBundle(c, bundleJson, isWrite) {
-  const bundle = JSON.parse(bundleJson || "{}");
-  const outputOptions = c.environment.config?.build ?? {};
+  const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
+  // An asset a hook emitted before this one (in buildStart, a transform) is
+  // in rolldown's bundle under Vite; oj wrote it itself, so it joins the
+  // bundle the hooks see here, and rolldown's through the reply, which then
+  // writes it (see emittedFiles).
+  for (const e of c.emitted) {
+    if (e.inBundle || bundle[e.fileName]) continue;
+    bundle[e.fileName] = {
+      type: "asset",
+      fileName: e.fileName,
+      name: e.name ?? null,
+      names: e.name != null ? [e.name] : [],
+      originalFileName: null,
+      originalFileNames: [],
+      source: e.source,
+      needsCodeReference: false,
+    };
+    e.inBundle = true;
+  }
+  const outputOptions = normalizedOutputOptions(c);
   // Without `build.emitAssets` (the default off the client) vite:asset's
   // generateBundle deletes the bundle's assets, an ssr-manifest.json and JS
   // source maps aside. A core plugin with an unordered hook, it runs after
@@ -6942,22 +7405,139 @@ async function generateBundle(c, bundleJson, isWrite) {
     c.emitted.length = 0;
     c.emitted.push(...kept);
   };
-  for (const { p, fn, rank } of pluginsWithHook(c, "generateBundle")) {
-    if (rank > 0 || (rank === 0 && p.enforce !== "pre")) viteAsset();
-    await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
+  const lazy = installLazyOutputText(c, bundle);
+  // An asset a hook emits by name joins this bundle under rolldown's name
+  // for it (see emitFile).
+  c.liveBundle = bundle;
+  c.emitAssetFileNames ??= await assetFileNamesOf(c);
+  try {
+    for (const { p, fn, rank } of pluginsWithHook(c, "generateBundle")) {
+      if (rank > 0 || (rank === 0 && p.enforce !== "pre")) viteAsset();
+      await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
+    }
+    viteAsset();
+  } finally {
+    c.liveBundle = null;
   }
-  viteAsset();
-  return JSON.stringify(bundle);
+  // What goes back is the bundle as the hooks left it, with an entry's text
+  // only where a hook assigned one: oj reads a missing `code` or `source` as
+  // unchanged. An entry a hook added, or replaced, goes back whole.
+  const changed = {};
+  for (const [file, out] of Object.entries(bundle)) {
+    const state = lazy.get(file);
+    if (!out || typeof out !== "object" || !state || state.obj !== out) {
+      changed[file] = out;
+      continue;
+    }
+    const copy = {};
+    for (const key of Object.keys(out)) {
+      if (key !== state.key) copy[key] = out[key];
+    }
+    // A hook that assigned through the accessor, or that replaced it with a
+    // plain value (`delete chunk.code; chunk.code = x`, defineProperty).
+    const text = Object.getOwnPropertyDescriptor(out, state.key);
+    if (text && "value" in text) copy[state.key] = text.value;
+    else if (state.assigned) copy[state.key] = state.value;
+    changed[file] = copy;
+  }
+  return JSON.stringify(changed);
 }
 
-async function renderChunk(c, code, chunkJson) {
+// The bundle a generateBundle or writeBundle hook gets names its files and
+// carries their metadata; a chunk's `code` and an asset's `source` stay in oj
+// (the whole bundle's text is hundreds of MB on a large app, and a hook reads
+// a few files of it) and are read through `bundleOutputText` when a hook
+// first asks, as a module's `code` is (bundleModuleInfo). An entry that came
+// with its text (an older oj, a direct-drive test) keeps it. Returns each
+// lazy entry's state, by file: its object, the text key, and what a hook
+// assigned.
+function installLazyOutputText(c, bundle) {
+  const lazy = new Map();
+  for (const [file, out] of Object.entries(bundle)) {
+    if (!out || typeof out !== "object") continue;
+    const key = out.type === "chunk" ? "code" : "source";
+    if (Object.prototype.hasOwnProperty.call(out, key)) continue;
+    const state = { obj: out, key, value: undefined, fetched: false, assigned: false };
+    Object.defineProperty(out, key, {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        if (!state.fetched && !state.assigned) {
+          state.value = bundleRpc("bundleOutputText", [c.id, file]);
+          state.fetched = true;
+        }
+        return state.value;
+      },
+      set: (v) => {
+        state.value = v;
+        state.assigned = true;
+      },
+    });
+    lazy.set(file, state);
+  }
+  return lazy;
+}
+
+// The environment's `assetFileNames`, resolved as Vite's build does
+// (outputFileNames), else Vite's default under its `build.assetsDir`.
+async function assetFileNamesOf(c) {
+  const cfg = c.ojConfig ?? c.resolvedConfig ?? {};
+  const self = cfg.environments?.[c.environment.name] ?? {};
+  const top = cfg.build?.rolldownOptions ?? cfg.build?.rollupOptions ?? {};
+  const own = self.build?.rolldownOptions ?? {};
+  const firstOutput = (o) => (Array.isArray(o) ? o[0] : o) ?? {};
+  const output = { ...firstOutput(top.output), ...firstOutput(own.output) };
+  const assetsDir = self.build?.assetsDir ?? cfg.build?.assetsDir ?? "assets";
+  return (
+    (await outputFileNames(c, cfg, output)).asset ?? [assetsDir, "[name]-[hash][extname]"].filter(Boolean).join("/")
+  );
+}
+// The file name rolldown gives an asset a plugin emits by `name` while the
+// bundle is generated: `assetFileNames` over the content's hash (the first
+// 8 characters, or `[hash:N]`'s N).
+function hashedAssetName(c, name, source) {
+  const base = name ?? `asset-${emitCounter}`;
+  const dot = base.lastIndexOf(".");
+  const extname = dot > 0 ? base.slice(dot) : "";
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  let pattern = c.emitAssetFileNames ?? "assets/[name]-[hash][extname]";
+  if (typeof pattern === "function") {
+    pattern = pattern({
+      type: "asset",
+      name: base,
+      names: [base],
+      originalFileName: null,
+      originalFileNames: [],
+      source,
+    });
+  }
+  const hash = contentHash(source);
+  return String(pattern)
+    .replace(/\[hash(?::(\d+))?\]/g, (_, n) => hash.slice(0, n ? Math.min(Math.max(Number(n), 1), 21) : 8))
+    .replace(/\[name\]/g, stem)
+    .replace(/\[extname\]/g, extname)
+    .replace(/\[ext\]/g, extname.slice(1));
+}
+// rolldown's hash of an asset's bytes (xxh3-128 in url-safe base64), from
+// the engine; under plain `node` (the direct-drive tests) sha256 stands in.
+function contentHash(source) {
+  if (ojEngineRpc) {
+    try {
+      const raw = ojEngineRpc("contentHash", JSON.stringify([source]));
+      if (raw != null) return JSON.parse(raw);
+    } catch {}
+  }
+  return createHash("sha256").update(source).digest("base64url");
+}
+
+async function renderChunk(c, code, chunkJson, format) {
   const chunk = JSON.parse(chunkJson || "{}");
   // Rollup passes NormalizedOutputOptions as the 3rd arg; renderChunk hooks such
   // as UnoCSS's read `options.dir` (the resolved output dir) to key their
-  // vite:css-post lookup, so provide it resolved against the root.
-  const outDir = c.resolvedConfig?.build?.outDir ?? "dist";
-  const root = c.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
-  const options = { dir: pathResolve(root, outDir), format: "es" };
+  // vite:css-post lookup, and vite:esbuild-transpile reads `options.format`
+  // (a library build renders each format in turn).
+  const options = normalizedOutputOptions(c);
+  if (format) options.format = format;
   let current = code;
   const maps = [];
   const mapPlugins = [];
@@ -6980,8 +7560,9 @@ async function renderChunk(c, code, chunkJson) {
 }
 
 async function writeBundle(c, bundleJson, isWrite) {
-  const bundle = JSON.parse(bundleJson || "{}");
-  const outputOptions = c.environment.config?.build ?? {};
+  const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
+  installLazyOutputText(c, bundle);
+  const outputOptions = normalizedOutputOptions(c);
   for (const { p, fn } of pluginsWithHook(c, "writeBundle")) {
     await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
   }
@@ -7053,7 +7634,7 @@ async function run(hook, args, c) {
   if (hook === "watchChange") return watchChange(c, args[0], args[1]);
   if (hook === "importProtectionChanged") return importProtectionChanged(c, args[0]);
   if (hook === "getEmittedFiles") {
-    return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
+    return JSON.stringify(c.emitted.filter((e) => !e.inBundle).map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(c.pluginCss);
   if (hook === "assetsInlineLimit") return assetsInlineLimit(args[0], args[1]);
@@ -7160,7 +7741,7 @@ async function run(hook, args, c) {
   if (hook === "hasRenderChunk") {
     return String(pluginsWithHook(c, "renderChunk").length > 0);
   }
-  if (hook === "renderChunk") return renderChunk(c, args[0], args[1]);
+  if (hook === "renderChunk") return renderChunk(c, args[0], args[1], args[2]);
   if (hook === "hasWriteBundle") {
     return String(pluginsWithHook(c, "writeBundle").length > 0);
   }
@@ -7373,11 +7954,26 @@ function leavePlugin(outer) {
 // answers instantly, so no answer means the isolate is wedged in synchronous
 // JS or native code (the Rust side then declares the host gone). It answers
 // with the hooks in flight (see runningHooks).
+// It answers with how many hooks are in flight and the oldest few of them,
+// not the whole list: a build resolving a large graph has thousands in
+// flight, and a ping that described them all, asked by every call waiting
+// on one, kept the host busy with pings about itself.
 export function ojPing() {
   const now = Date.now();
-  return JSON.stringify(
-    [...runningHooks].map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
-  );
+  const oldest = [];
+  for (const r of runningHooks) {
+    if (oldest.length < 8) {
+      oldest.push(r);
+      oldest.sort((a, b) => a.since - b.since);
+    } else if (r.since < oldest[7].since) {
+      oldest[7] = r;
+      oldest.sort((a, b) => a.since - b.since);
+    }
+  }
+  return JSON.stringify({
+    total: runningHooks.size,
+    oldest: oldest.map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
+  });
 }
 
 // The configureServer hooks run here, after every top-level declaration of

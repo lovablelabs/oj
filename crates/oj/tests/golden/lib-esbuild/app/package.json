@@ -1,0 +1,5 @@
+{
+  "name": "golden-lib-esbuild",
+  "private": true,
+  "type": "module"
+}

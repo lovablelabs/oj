@@ -370,9 +370,46 @@ async fn advanced_chunks_groups_are_emitted() {
     );
 }
 
-/// A function-valued rollup option cannot cross the config's JSON boundary;
-/// it is warned about and ignored, and the build still succeeds, from an
-/// oj.config.mjs and from a vite.config.
+/// A group's `tags` reach rolldown: `$initial` with no `test` takes the
+/// modules the entry reaches by static imports (rolldown then folds so small
+/// a group into the entry chunk) and leaves the lazy ones in their own
+/// chunks. Dropped, the group takes every module.
+#[tokio::test]
+async fn an_initial_tagged_group_leaves_lazy_modules_out() {
+    let root = ssr_app("ssropts-initial-tags");
+    build_with(
+        &root,
+        "oj.config.json",
+        r#"{"build":{"rolldownOptions":{"output":{"advancedChunks":{"groups":[{"name":"boot","tags":["$initial"]}]}}}}}"#,
+    )
+    .await;
+    let chunks: Vec<(String, String)> = files_under(&root.join("dist/assets"))
+        .into_iter()
+        .filter(|(f, _)| f.ends_with(".js"))
+        .collect();
+    let holding = |marker: &str| -> Vec<&str> {
+        chunks
+            .iter()
+            .filter(|(_, code)| code.contains(marker))
+            .map(|(f, _)| f.as_str())
+            .collect()
+    };
+    let (eager, lazy) = (holding("UTIL_MARKER"), holding("LAZY_MARKER"));
+    assert!(
+        eager.len() == 1 && eager == holding("DEP_EXT_MARKER"),
+        "one chunk holds the entry's static imports: {eager:?}"
+    );
+    assert!(
+        lazy.len() == 1 && lazy != eager,
+        "the lazy module keeps its own chunk: {lazy:?} beside {eager:?}"
+    );
+}
+
+/// A function-valued rollup option in an oj.config.mjs cannot cross the
+/// config's JSON boundary: it is warned about and ignored, and the build
+/// still succeeds. In a vite.config the plugin host runs the function, as
+/// rolldown does under Vite, so a `manualChunks` function names its chunks
+/// and nothing is warned about.
 #[tokio::test]
 async fn function_valued_rollup_options_do_not_fail_the_build() {
     let root = ssr_app("ssropts-fn-oj-config");
@@ -409,10 +446,10 @@ async fn function_valued_rollup_options_do_not_fail_the_build() {
         "vite.config build still succeeds"
     );
     let warnings = crate::build::take_build_warnings();
+    // (A group taking every module, the entry included, leaves the entry
+    // chunk under its own name, as rolldown has it.)
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("output.manualChunks is a function")),
-        "vite.config warns about the manualChunks function: {warnings:?}"
+        !warnings.iter().any(|w| w.contains("is a function")),
+        "the host runs a vite.config's manualChunks function: {warnings:?}"
     );
 }

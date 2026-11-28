@@ -1,0 +1,1 @@
+import{t as r}from"./app-boot-HASH.js";import{t as o}from"./lazy-commons-HASH.js";import{t as m}from"./vendor-dates-HASH.js";function i(t){return r(`${t.settings}: ${o(["x"])} ${m()}`)}export{i as render};

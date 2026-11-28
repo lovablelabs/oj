@@ -45,6 +45,35 @@ pub(crate) struct Facts {
     pub react_refresh: bool,
     pub cloudflare: Option<CloudflareEnv>,
     pub worker: WorkerOptions,
+    /// A build's `output.entryFileNames` and `output.chunkFileNames` once
+    /// the plugins' `outputOptions` hooks ran: a pattern or a function
+    /// handle, `None` where neither the config nor a plugin names them.
+    pub entry_file_names: Option<Value>,
+    pub chunk_file_names: Option<Value>,
+    /// `output.assetFileNames`, the same way, for the sheets oj writes.
+    pub asset_file_names: Option<Value>,
+    /// The environment's `build.manifest`: the file to write, if any
+    /// (`true` is `.vite/manifest.json`).
+    pub manifest: Option<String>,
+    /// The environment's `build.emitAssets`: whether its bundle writes its
+    /// stylesheets and the files they reference (on for the client; a
+    /// Worker environment's is on, a Node server's off by default).
+    pub emit_assets: bool,
+    /// The `\0vite/preload-helper.js` module as the app's Vite composes it
+    /// (a patched Vite's included); `None` for oj's own copy.
+    pub preload_helper: Option<String>,
+    /// @stylexjs/unplugin's `cssInjectionTarget`: a function handle over a
+    /// stylesheet's file name, picking the sheet the StyleX rules join.
+    pub stylex_css_injection_target: Option<Value>,
+    /// Whether the environment's StyleX runs through the host: the app made
+    /// a plugin of its own from oj's stand-in for @stylexjs/unplugin, hooks
+    /// and all, so oj's native StyleX stands down for the bundle.
+    pub stylex_host_driven: bool,
+    /// vite:oxc's filters as the environment's `oxc` resolved them
+    /// (`include`, `exclude`, `jsxRefreshInclude`, `jsxRefreshExclude`, each
+    /// a pattern or list of patterns, a regex as `{ $regex, flags }`);
+    /// `false` with `oxc: false`, `None` when the host said nothing.
+    pub oxc_filters: Option<Value>,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -73,6 +102,32 @@ impl Facts {
                 .unwrap_or(false),
             cloudflare: v.get("cloudflare").and_then(CloudflareEnv::from_json),
             worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
+            entry_file_names: v.get("entryFileNames").filter(|e| !e.is_null()).cloned(),
+            chunk_file_names: v.get("chunkFileNames").filter(|e| !e.is_null()).cloned(),
+            asset_file_names: v.get("assetFileNames").filter(|e| !e.is_null()).cloned(),
+            manifest: match v.get("manifest") {
+                Some(Value::Bool(true)) => Some(".vite/manifest.json".to_string()),
+                Some(Value::String(name)) if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            },
+            emit_assets: v
+                .get("emitAssets")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            preload_helper: v
+                .get("preloadHelper")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            stylex_css_injection_target: v
+                .get("stylexCssInjectionTarget")
+                .filter(|e| !e.is_null())
+                .cloned(),
+            stylex_host_driven: v
+                .get("stylexHostDriven")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            oxc_filters: v.get("oxc").cloned(),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

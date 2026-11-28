@@ -71,15 +71,35 @@ async fn css_module_class_maps_are_vites() {
 
     for (file, _, expected) in SHEETS {
         let module = server.text(&format!("/src/{file}")).await;
+        // The map is Vite's dataToEsm text: `export const k = "v";` per legal
+        // key, then `export default {\n\tk: k,\n\t"other-key": "v"\n};`.
+        let consts: std::collections::HashMap<&str, &str> = module
+            .lines()
+            .filter_map(|line| line.strip_prefix("export const "))
+            .filter_map(|rest| rest.split_once(" = "))
+            .map(|(name, value)| (name, value.trim_end_matches(';').trim_matches('"')))
+            .collect();
         let map = module
-            .split_once("export default ")
-            .and_then(|(_, rest)| rest.split_once(";\n").map(|(json, _)| json))
+            .split_once("export default {\n")
+            .and_then(|(_, rest)| rest.split_once("\n};").map(|(rows, _)| rows))
             .unwrap_or_else(|| panic!("{file}: no default export:\n{module}"));
-        let map: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(map).unwrap_or_else(|e| panic!("{file}: {e}:\n{module}"));
         let mut got: Vec<(String, String)> = map
-            .into_iter()
-            .map(|(k, v)| (k, v.as_str().unwrap_or_default().to_string()))
+            .lines()
+            .map(|row| {
+                let (key, value) = row
+                    .trim_start_matches('\t')
+                    .trim_end_matches(',')
+                    .split_once(": ")
+                    .unwrap_or_else(|| panic!("{file}: a map row without a value: {row}"));
+                let value = match value.strip_prefix('"') {
+                    Some(quoted) => quoted.trim_end_matches('"').to_string(),
+                    None => consts
+                        .get(value)
+                        .unwrap_or_else(|| panic!("{file}: {value} is no const:\n{module}"))
+                        .to_string(),
+                };
+                (key.trim_matches('"').to_string(), value)
+            })
             .collect();
         got.sort();
         let want: Vec<(String, String)> = expected

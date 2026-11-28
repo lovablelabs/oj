@@ -19,9 +19,10 @@ mod targets;
 
 pub use chunk::{finalize_chunk_css, hoist_at_rules};
 pub use compile::{
-    compile_css, compile_css_dev, compile_css_rebased, compile_css_rebased_with_map,
-    compile_css_with, compile_css_with_scope_source, compile_scoped_css_dev,
-    compile_scoped_css_with, minify_css, scope_css_module, CssOutput,
+    compile_css, compile_css_dev, compile_css_for_build, compile_css_rebased,
+    compile_css_rebased_with_map, compile_css_with, compile_css_with_scope_source,
+    compile_scoped_css_dev, compile_scoped_css_for_build, compile_scoped_css_with, minify_css,
+    scope_css_module, CssOutput,
 };
 pub use imports::{
     inline_imports, inline_imports_collecting, inline_imports_with, resolve_css_import,
@@ -30,7 +31,7 @@ pub use imports::{
 pub use lightning::LightningOptions;
 pub use modules::{css_modules_esm, is_css_module};
 pub use path::{node_modules_load_paths, normalize};
-pub use rebase::rewrite_style_attribute_dev;
+pub use rebase::{rewrite_css_image_set, rewrite_style_attribute_dev};
 pub use resolve::{CssModulesOptions, CssResolve, CssResolveConfig};
 pub use sass::{
     compile_sass, compile_sass_collecting, compile_sass_opts, compile_sass_with, is_sass,

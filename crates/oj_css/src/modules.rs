@@ -1,15 +1,14 @@
 //! CSS modules: scoping options, `composes`, `localsConvention` and the JS
 //! module body, matching postcss-modules as Vite configures it.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use lightningcss::css_modules::{self, CssModuleExport, CssModuleExports, CssModuleReference};
 use regex::Regex;
 
-use crate::compile::{compile_css_depth, Mode};
+use crate::compile::{compile_css_parts, Mode};
 use crate::generic_names::GenericNames;
 use crate::path::{normalize, strip_query};
 use crate::resolve::CssResolve;
@@ -22,22 +21,50 @@ pub fn is_css_module(url: &str) -> bool {
         .is_some_and(|f| f.contains(".module."))
 }
 
-/// The JS module for a class map, shaped like Vite's `dataToEsm(map, {
-/// namedExports: true })`: the map is the default export and every legal
-/// identifier is also a named export.
+/// The JS module for a class map, as Vite's css-post writes it:
+/// `dataToEsm(map, { namedExports: true, preferConst: true })` of
+/// @rollup/pluginutils (Vite's copy), text for text. Every legal identifier
+/// is a `const` named export and the default map names it (`dialog: dialog`,
+/// so a minifier keeps the one string); a key that is an identifier name but
+/// no legal identifier (a reserved word, a global's name) is exported
+/// through an `_arbitraryN` const; the rest are in the default map alone,
+/// quoted. The map is tab-indented, one key a line. oj repeated each string
+/// in the default map, so a chunk holding a CSS module minified to
+/// different text from Vite's (`H={dialog:"…"}` for `H="…",W={dialog:H}`).
 pub fn css_modules_esm(exports: &[(String, String)]) -> String {
-    let mut out = String::new();
-    let mut map = serde_json::Map::new();
-    for (name, scoped) in exports {
+    let max_underbars = exports
+        .iter()
+        .map(|(key, _)| key.chars().take_while(|c| *c == '_').count())
+        .max()
+        .unwrap_or(0);
+    let arbitrary_prefix = format!("{}arbitrary", "_".repeat(max_underbars + 1));
+    let mut named = String::new();
+    let mut rows: Vec<String> = Vec::new();
+    let mut arbitrary: Vec<String> = Vec::new();
+    for (key, scoped) in exports {
         let value = serde_json::Value::String(scoped.clone());
-        if is_legal_identifier(name) {
-            out.push_str(&format!("export const {name} = {value};\n"));
+        if is_legal_identifier(key) {
+            rows.push(format!("{key}: {key}"));
+            named.push_str(&format!("export const {key} = {value};\n"));
+        } else {
+            rows.push(format!(
+                "{}: {value}",
+                serde_json::Value::String(key.clone())
+            ));
+            if key != "default" && is_identifier_name(key) {
+                let var = format!("{arbitrary_prefix}{}", arbitrary.len());
+                named.push_str(&format!("const {var} = {value};\n"));
+                arbitrary.push(format!("{var} as {key}"));
+            }
         }
-        map.insert(name.clone(), value);
+    }
+    let mut out = named;
+    if !arbitrary.is_empty() {
+        out.push_str(&format!("export {{\n\t{}\n}};\n", arbitrary.join(",\n\t")));
     }
     out.push_str(&format!(
-        "export default {};\n",
-        serde_json::Value::Object(map)
+        "export default {{\n\t{}\n}};\n",
+        rows.join(",\n\t")
     ));
     out
 }
@@ -68,6 +95,18 @@ fn is_legal_identifier(name: &str) -> bool {
     name.chars().next().is_some_and(|c| !c.is_ascii_digit())
         && name.chars().all(ident_char)
         && !FORBIDDEN.contains(name)
+}
+
+/// dataToEsm's `identifierNameRE`: an IdentifierName (`/^[$_\p{ID_Start}]
+/// [$‌‍\p{ID_Continue}]*$/u`), reserved words included.
+fn is_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '$' || c == '_' || c.is_alphabetic())
+        && chars.all(|c| {
+            c == '$' || c == '_' || c == '\u{200c}' || c == '\u{200d}' || c.is_alphanumeric()
+        })
 }
 
 /// Whether a `.module.css` file is scoped: not `scopeBehaviour: "global"` and
@@ -229,39 +268,60 @@ impl<'a> ScopedNames<'a> {
     }
 }
 
-/// The locals the printed (marked) sheet declares as a class, an id or a
-/// `@keyframes` name: what postcss-modules exports.
-pub(crate) fn declared_locals(text: &str) -> std::collections::HashSet<String> {
-    let mut found = std::collections::HashSet::new();
+/// The locals postcss-modules exports from the printed (marked) sheet, in
+/// its order. postcss-modules-scope walks the rules first, exporting each
+/// class and id as the selector names it and an animation's `:local(name)`
+/// reference (which local-by-default wraps whether or not the sheet declares
+/// the keyframes) at its declaration; then it walks the `@keyframes` rules,
+/// exporting the names not met yet. So `@keyframes spin {} .a { animation:
+/// spin 1s }` exports `a, spin`, and `.a {} @keyframes spin {} .b {}` exports
+/// `a, b, spin`. Another custom ident lightningcss marked (a `@counter-style`
+/// name) is not exported.
+pub(crate) fn export_order(text: &str) -> Vec<String> {
+    let mut rules: Vec<String> = Vec::new();
+    let mut keyframes: Vec<String> = Vec::new();
     let mut at = 0;
     while let Some(pos) = text[at..].find(DEFAULT_NAME_MARK) {
         let end = at + pos;
         let start = ident_start(&text[..end]);
-        if matches!(scope_of(&text[..start]), Some(Scope::Declared)) {
-            found.insert(css_unescape(&text[start..end]));
-        }
         at = end + DEFAULT_NAME_MARK.len();
+        let list = match scope_of(&text[..start]) {
+            Some(Scope::Local | Scope::Reference) => &mut rules,
+            Some(Scope::Keyframes) => &mut keyframes,
+            None => continue,
+        };
+        let local = css_unescape(&text[start..end]);
+        if !list.contains(&local) {
+            list.push(local);
+        }
     }
-    found
+    for name in keyframes {
+        if !rules.contains(&name) {
+            rules.push(name);
+        }
+    }
+    rules
 }
 
 #[derive(Debug, PartialEq)]
 enum Scope {
-    /// A class, an id or a `@keyframes` name.
-    Declared,
+    /// A class or an id in a selector.
+    Local,
+    /// A `@keyframes` name.
+    Keyframes,
     /// An `animation` or `animation-name` reference.
     Reference,
 }
 
 /// How postcss-modules treats an ident printed after `before`: scoped as a
-/// declaration or a reference, or (None) left global.
+/// selector's local, a keyframes name or a reference, or (None) left global.
 fn scope_of(before: &str) -> Option<Scope> {
     if before.ends_with('.') || before.ends_with('#') {
-        return Some(Scope::Declared);
+        return Some(Scope::Local);
     }
     let trimmed = before.trim_end();
     if trimmed.ends_with("@keyframes") || trimmed.ends_with("-keyframes") {
-        return Some(Scope::Declared);
+        return Some(Scope::Keyframes);
     }
     let decl = &before[before.rfind([';', '{']).map_or(0, |i| i + 1)..];
     let property = decl.split(':').next().unwrap_or("").trim();
@@ -423,62 +483,171 @@ fn dashes_camel_case(s: &str) -> String {
     out
 }
 
-/// `localsConvention` on an export map: `camelCase` / `dashes` add the
-/// converted key beside the original, the `*Only` forms replace it. A later
-/// key overwrites an earlier one, as postcss-modules assigns them.
+/// `localsConvention` on an export map, as postcss-modules'
+/// makeLocalsConventionReducer assigns the keys: per entry, in the map's
+/// order, the original key (not for the `*Only` forms) then the converted
+/// one; `all` adds both conversions. A key assigned again keeps its place
+/// and takes the new value, as a JS object's does.
 fn apply_locals_convention(
     pairs: Vec<(String, String)>,
     convention: Option<&str>,
 ) -> Vec<(String, String)> {
-    let (convert, only): (fn(&str) -> String, bool) = match convention {
-        Some("camelCase") => (camel_case, false),
-        Some("camelCaseOnly") => (camel_case, true),
-        Some("dashes") => (dashes_camel_case, false),
-        Some("dashesOnly") => (dashes_camel_case, true),
+    type Convert = fn(&str) -> String;
+    let (converters, keep): (&[Convert], bool) = match convention {
+        Some("all") => (&[camel_case, dashes_camel_case], true),
+        Some("camelCase") => (&[camel_case], true),
+        Some("camelCaseOnly") => (&[camel_case], false),
+        Some("dashes") => (&[dashes_camel_case], true),
+        Some("dashesOnly") => (&[dashes_camel_case], false),
         _ => return pairs,
     };
-    let mut out = BTreeMap::new();
-    for (name, value) in pairs {
-        let converted = convert(&name);
-        if !only {
-            out.insert(name, value.clone());
+    let mut out: Vec<(String, String)> = Vec::with_capacity(pairs.len());
+    let mut assign = |key: String, value: &str| match out.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, v)) => *v = value.to_string(),
+        None => out.push((key, value.to_string())),
+    };
+    for (name, value) in &pairs {
+        if keep {
+            assign(name.clone(), value);
         }
-        out.insert(converted, value);
+        for convert in converters {
+            assign(convert(name), value);
+        }
     }
-    out.into_iter().collect()
+    out
 }
 
-/// The export map with `composes` expanded as postcss-modules exports it: the
-/// scoped name, then every composed class (locals transitively, globals as
-/// written, `from "./other.css"` compiled from that file), sorted by name.
+/// A sheet postcss-modules' loader writes before a module's own: a file a
+/// `composes: … from` names, compiled, by its resolved path.
+pub(crate) type ComposedSheet = (PathBuf, String);
+
+/// The composed sheets as one, in order.
+pub(crate) fn composed_sheet(sheets: &[ComposedSheet]) -> String {
+    sheets.iter().map(|(_, css)| css.as_str()).collect()
+}
+
+/// The class map of a module from lightningcss's export `map` and `marked`,
+/// its printed sheet with the locals still marked, as postcss-modules
+/// exports it: the locals in its walk order ([`export_order`], which also
+/// drops what it would not export), each the scoped name then every
+/// composed class (locals transitively, globals as written, `from
+/// "./other.css"` compiled from that file); and the sheets of the `from`
+/// files, which postcss-modules prepends to the module's own, in the order
+/// its loader writes them: each file once, the files a file composes from
+/// before it, the module's imports in extract-imports' order.
 pub(crate) fn module_exports(
     map: CssModuleExports,
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Vec<(String, String)> {
+    marked: &str,
+) -> (Vec<(String, String)>, Vec<ComposedSheet>) {
+    let order = export_order(marked);
+    let exports: Vec<(&str, &CssModuleExport)> = order
+        .iter()
+        .filter_map(|name| map.get_key_value(name.as_str()))
+        .map(|(name, export)| (name.as_str(), export))
+        .collect();
+    let specifiers = import_order(exports.iter().map(|(_, export)| *export));
+    let deps: HashMap<&str, Option<ComposedModule>> = specifiers
+        .iter()
+        .map(|spec| (*spec, dependency_exports(spec, url, resolve, depth)))
+        .collect();
     let composer = Composer {
         by_scoped: map.values().map(|e| (e.name.as_str(), e)).collect(),
-        deps: RefCell::default(),
+        deps: &deps,
         url,
-        resolve,
-        depth,
     };
-    let mut pairs: Vec<(String, String)> = map
+    let pairs: Vec<(String, String)> = exports
         .iter()
-        .map(|(name, export)| (name.clone(), composer.value(export, &mut Vec::new())))
+        .map(|(name, export)| (name.to_string(), composer.value(export, &mut Vec::new())))
         .collect();
-    pairs.sort();
-    apply_locals_convention(pairs, resolve.modules.locals_convention.as_deref())
+    // FileSystemLoader.finalSource: the traced files sorted children first,
+    // each written once.
+    let mut sheets: Vec<ComposedSheet> = Vec::new();
+    let mut write_once = |path: &Path, css: &str| {
+        if !sheets.iter().any(|(p, _)| p == path) {
+            sheets.push((path.to_path_buf(), css.to_string()));
+        }
+    };
+    for module in specifiers.iter().filter_map(|spec| deps[spec].as_ref()) {
+        for (path, css) in &module.composed {
+            write_once(path, css);
+        }
+        write_once(&module.path, &module.css);
+    }
+    (
+        apply_locals_convention(pairs, resolve.modules.locals_convention.as_deref()),
+        sheets,
+    )
+}
+
+/// The `from "spec"` files of a module's `composes`, in the order
+/// postcss-modules-extract-imports lists its `:import`s (the order the
+/// loader fetches, and so writes, them): a topological sort of the
+/// specifiers in the order first named, each after the ones a rule names
+/// before it. `exports` stand for the rules, in walk order.
+fn import_order<'a>(exports: impl Iterator<Item = &'a CssModuleExport>) -> Vec<&'a str> {
+    let mut graph: Vec<(&str, Vec<&str>)> = Vec::new();
+    for export in exports {
+        let mut siblings: Vec<&str> = Vec::new();
+        for reference in &export.composes {
+            let CssModuleReference::Dependency { specifier, .. } = reference else {
+                continue;
+            };
+            let spec = specifier.as_str();
+            if siblings.contains(&spec) {
+                continue;
+            }
+            match graph.iter_mut().find(|(s, _)| *s == spec) {
+                Some((_, after)) => after.extend(siblings.iter().copied()),
+                None => graph.push((spec, siblings.clone())),
+            }
+            siblings.push(spec);
+        }
+    }
+    fn walk<'a>(
+        spec: &'a str,
+        graph: &[(&'a str, Vec<&'a str>)],
+        state: &mut HashMap<&'a str, bool>,
+        out: &mut Vec<&'a str>,
+    ) {
+        // Visited, done or (a cycle) in progress: nothing more to add.
+        if state.insert(spec, false).is_some() {
+            return;
+        }
+        if let Some((_, after)) = graph.iter().find(|(s, _)| *s == spec) {
+            for dep in after {
+                walk(dep, graph, state, out);
+            }
+        }
+        state.insert(spec, true);
+        out.push(spec);
+    }
+    let mut state = HashMap::new();
+    let mut out = Vec::new();
+    for (spec, _) in &graph {
+        walk(spec, &graph, &mut state, &mut out);
+    }
+    out
+}
+
+/// A `composes: … from "spec"` file as compiled.
+struct ComposedModule {
+    exports: HashMap<String, String>,
+    /// The file, resolved: the loader writes each file once.
+    path: PathBuf,
+    /// Its own scoped sheet.
+    css: String,
+    /// The sheets of the files it composes from, in their written order.
+    composed: Vec<ComposedSheet>,
 }
 
 struct Composer<'a> {
     by_scoped: HashMap<&'a str, &'a CssModuleExport>,
-    /// Export maps of `from "..."` files by specifier, each compiled once.
-    deps: RefCell<HashMap<&'a str, Option<HashMap<String, String>>>>,
+    /// The `from "..."` files by specifier, compiled.
+    deps: &'a HashMap<&'a str, Option<ComposedModule>>,
     url: &'a str,
-    resolve: &'a CssResolve<'a>,
-    depth: u8,
 }
 
 impl<'a> Composer<'a> {
@@ -499,11 +668,11 @@ impl<'a> Composer<'a> {
                 }
                 CssModuleReference::Global { name } => name.clone(),
                 CssModuleReference::Dependency { name, specifier } => {
-                    let mut deps = self.deps.borrow_mut();
-                    let exports = deps.entry(specifier).or_insert_with(|| {
-                        dependency_exports(specifier, self.url, self.resolve, self.depth)
-                    });
-                    match exports.as_ref().and_then(|e| e.get(name)) {
+                    let exports = self
+                        .deps
+                        .get(specifier.as_str())
+                        .and_then(|module| module.as_ref());
+                    match exports.and_then(|module| module.exports.get(name)) {
                         Some(v) => v.clone(),
                         None => {
                             eprintln!(
@@ -524,14 +693,15 @@ impl<'a> Composer<'a> {
     }
 }
 
-/// The export map of the module file a `composes: ... from "spec"` names
-/// (relative, root-absolute or aliased), compiled with the same settings.
+/// The module file a `composes: ... from "spec"` names (relative,
+/// root-absolute or aliased), compiled with the same settings: its export
+/// map, its own sheet and the sheets of its own `from` files.
 fn dependency_exports(
     spec: &str,
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Option<HashMap<String, String>> {
+) -> Option<ComposedModule> {
     if depth > 8 {
         return None;
     }
@@ -554,9 +724,14 @@ fn dependency_exports(
         Some(rel) => format!("/{}", rel.display()),
         None => dep.to_string_lossy().into_owned(),
     };
-    let out =
-        compile_css_depth(&dep_url, &source, None, Mode::default(), resolve, depth + 1).ok()?;
-    Some(out.exports?.into_iter().collect())
+    let (out, composed) =
+        compile_css_parts(&dep_url, &source, None, Mode::default(), resolve, depth + 1).ok()?;
+    Some(ComposedModule {
+        exports: out.exports?.into_iter().collect(),
+        path: dep,
+        css: out.css,
+        composed,
+    })
 }
 
 #[cfg(test)]
@@ -659,13 +834,19 @@ mod tests {
                 .map(|(k, _)| k)
                 .collect::<Vec<_>>()
         };
+        // makeLocalsConventionReducer assigns, per class in export order, the
+        // class then its conversion: the keys interleave in source order.
         assert_eq!(
             keys("camelCase"),
-            ["Plain", "fooBar", "foo_bar", "my-class", "myClass", "plain"]
+            ["my-class", "myClass", "foo_bar", "fooBar", "Plain", "plain"]
         );
-        assert_eq!(keys("camelCaseOnly"), ["fooBar", "myClass", "plain"]);
-        assert_eq!(keys("dashes"), ["Plain", "foo_bar", "my-class", "myClass"]);
-        assert_eq!(keys("dashesOnly"), ["Plain", "foo_bar", "myClass"]);
+        assert_eq!(keys("camelCaseOnly"), ["myClass", "fooBar", "plain"]);
+        assert_eq!(keys("dashes"), ["my-class", "myClass", "foo_bar", "Plain"]);
+        assert_eq!(keys("dashesOnly"), ["myClass", "foo_bar", "Plain"]);
+        assert_eq!(
+            keys("all"),
+            ["my-class", "myClass", "foo_bar", "fooBar", "Plain", "plain"]
+        );
         // Converted keys carry the same scoped value as the original.
         let cfg = with_modules(CssModulesOptions {
             locals_convention: Some("camelCase".into()),
@@ -827,11 +1008,15 @@ mod tests {
     // keyframes name is line 1 and `\r\n` counts as two lines.
     #[test]
     fn default_scoped_names_are_vites() {
+        // The map comes in source order (the goldens check that); the names
+        // are what this test is about, so both sides are sorted.
         let names = |url: &str, src: &str| {
-            compile_css(url, src, false)
+            let mut v = compile_css(url, src, false)
                 .unwrap()
                 .exports
-                .expect("module exports")
+                .expect("module exports");
+            v.sort();
+            v
         };
         let pairs = |list: &[(&str, &str)]| {
             let mut v: Vec<(String, String)> = list
@@ -1073,27 +1258,31 @@ mod tests {
             ("1st".to_string(), "m_1st_h".to_string()),
         ];
         let js = css_modules_esm(&exports);
-        assert!(js.contains("export const button = \"m_button_h\";"), "{js}");
-        assert!(
-            js.contains("export const _private = ") && js.contains("export const $x = "),
-            "{js}"
+        // dataToEsm(map, { namedExports: true, preferConst: true }), run
+        // on these keys under Vite 8.4.
+        assert_eq!(
+            js,
+            "export const button = \"m_button_h\";\n\
+             const __arbitrary0 = \"m_class_h\";\n\
+             const __arbitrary1 = \"m_Map_h\";\n\
+             export const _private = \"m__private_h\";\n\
+             export const $x = \"m_x_h\";\n\
+             export {\n\
+             \t__arbitrary0 as class,\n\
+             \t__arbitrary1 as Map\n\
+             };\n\
+             export default {\n\
+             \tbutton: button,\n\
+             \t\"my-class\": \"m_my-class_h\",\n\
+             \t\"default\": \"m_default_h\",\n\
+             \t\"class\": \"m_class_h\",\n\
+             \t\"Map\": \"m_Map_h\",\n\
+             \t_private: _private,\n\
+             \t$x: $x,\n\
+             \t\"1st\": \"m_1st_h\"\n\
+             };\n"
         );
-        for bad in ["my-class", "default", "class", "Map", "1st"] {
-            assert!(
-                !js.contains(&format!("export const {bad} ")),
-                "{bad} must not be a named export: {js}"
-            );
-        }
-        assert!(js.contains("export default {"), "{js}");
-        for key in [
-            "button", "my-class", "default", "class", "Map", "_private", "$x", "1st",
-        ] {
-            assert!(
-                js.contains(&format!("\"{key}\":\"m_")),
-                "{key} in the default map: {js}"
-            );
-        }
-        assert_eq!(css_modules_esm(&[]), "export default {};\n");
+        assert_eq!(css_modules_esm(&[]), "export default {\n\t\n};\n");
     }
 
     #[test]
@@ -1109,6 +1298,224 @@ mod tests {
                 ("foo-bar".into(), "a".into()),
                 ("fooBar".into(), "b".into())
             ]
+        );
+    }
+
+    /// makeLocalsConventionReducer reduces `Object.entries(exportTokens)` in
+    /// order, assigning `tokens[className]` then `tokens[camelCase(className)]`:
+    /// `foo-bar`, `baz` export `foo-bar, fooBar, baz`, and a key assigned
+    /// again keeps its place with the later value.
+    #[test]
+    fn locals_convention_keeps_the_export_order() {
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let base = pairs(&[("foo-bar", "a"), ("baz", "b")]);
+        assert_eq!(
+            apply_locals_convention(base.clone(), Some("camelCase")),
+            pairs(&[("foo-bar", "a"), ("fooBar", "a"), ("baz", "b")])
+        );
+        assert_eq!(
+            apply_locals_convention(base.clone(), Some("camelCaseOnly")),
+            pairs(&[("fooBar", "a"), ("baz", "b")])
+        );
+        assert_eq!(
+            apply_locals_convention(base.clone(), Some("dashes")),
+            pairs(&[("foo-bar", "a"), ("fooBar", "a"), ("baz", "b")])
+        );
+        assert_eq!(
+            apply_locals_convention(base, Some("dashesOnly")),
+            pairs(&[("fooBar", "a"), ("baz", "b")])
+        );
+        // `fooBar` is assigned by `foo-bar` first, then by its own entry.
+        assert_eq!(
+            apply_locals_convention(
+                pairs(&[("foo-bar", "a"), ("x", "c"), ("fooBar", "b")]),
+                Some("camelCase")
+            ),
+            pairs(&[("foo-bar", "a"), ("fooBar", "b"), ("x", "c")])
+        );
+    }
+
+    /// postcss-modules-scope exports in walk order: `root.walkRules` (the
+    /// selectors' classes and ids, and an animation's `:local()` reference
+    /// at its declaration), then `root.walkAtRules(/keyframes$/)` for the
+    /// names not exported yet.
+    #[test]
+    fn exports_follow_postcss_modules_walk_order() {
+        let keys = |src: &str| -> Vec<String> {
+            compile_css("/src/o.module.css", src, false)
+                .unwrap()
+                .exports
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect()
+        };
+        assert_eq!(
+            keys("@keyframes spin { to { opacity: 1 } } .a { animation: spin 1s; }"),
+            ["a", "spin"],
+            "a reference exports the keyframes at its declaration"
+        );
+        assert_eq!(
+            keys(".a { color: red } @keyframes spin { to { opacity: 1 } } .b { color: blue }"),
+            ["a", "b", "spin"],
+            "unreferenced keyframes come after every rule"
+        );
+        assert_eq!(
+            keys(".a { color: red } .b { animation-name: spin } .c { color: red } @keyframes spin { to { opacity: 1 } }"),
+            ["a", "b", "spin", "c"],
+        );
+        assert_eq!(
+            keys(".a { color: red } #m { color: red } .b .c { color: red } @media (width > 1px) { .d { color: red } } .e { color: red }"),
+            ["a", "m", "b", "c", "d", "e"],
+            "ids and classes interleave in document order, nested rules too"
+        );
+        assert_eq!(
+            keys(".b { color: red } .a { composes: b; color: red } .b:hover { color: blue }"),
+            ["b", "a"],
+            "a class is exported once, where first met"
+        );
+        // The same, minified and in two steps (dev and the build's normal
+        // slot).
+        let src =
+            "@keyframes spin { to { opacity: 1 } } .a { animation: spin 1s; } .b { color: red }";
+        let cfg = CssResolveConfig {
+            minify: true,
+            ..Default::default()
+        };
+        let order = |exports: Option<Vec<(String, String)>>| -> Vec<String> {
+            exports.unwrap().into_iter().map(|(k, _)| k).collect()
+        };
+        assert_eq!(
+            order(
+                compile_css_with("/src/o.module.css", src, &cfg.as_ref())
+                    .unwrap()
+                    .exports
+            ),
+            ["a", "spin", "b"]
+        );
+        assert_eq!(
+            order(
+                scope_css_module("/src/o.module.css", src, src, &cfg.as_ref())
+                    .unwrap()
+                    .exports
+            ),
+            ["a", "spin", "b"]
+        );
+    }
+
+    /// local-by-default wraps every animation name in `:local()`, declared
+    /// or not, and scope exports it: Vite's map for `.a { animation: fade
+    /// 1s }` has `a` and `fade`, and the sheet names `fade` like a declared
+    /// keyframes (line 1: no `.fade` in the sheet).
+    #[test]
+    fn an_animation_reference_without_keyframes_is_exported_too() {
+        let out = compile_css("/src/r.module.css", ".a { animation: fade 1s; }\n", false).unwrap();
+        let exports = out.exports.unwrap();
+        assert_eq!(
+            exports.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            ["a", "fade"]
+        );
+        let fade = &exports[1].1;
+        assert!(fade.starts_with("_fade_") && fade.ends_with("_1"), "{fade}");
+        assert!(out.css.contains(fade.as_str()), "{}", out.css);
+        assert!(!out.css.contains("fade 1s"), "{}", out.css);
+    }
+
+    /// FileSystemLoader.finalSource writes each composed file once, the files
+    /// it composes from first: `a` from `b` and `c`, both from `d`, prepends
+    /// `d, b, c` to `a`'s sheet, not `d, b, d, c`.
+    #[test]
+    fn composed_sheets_are_written_once_children_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("d.module.css"), ".d { padding: 1px }\n").unwrap();
+        std::fs::write(
+            src.join("b.module.css"),
+            ".b { composes: d from \"./d.module.css\"; color: blue }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("c.module.css"),
+            ".c { composes: d from \"./d.module.css\"; color: cyan }\n",
+        )
+        .unwrap();
+        let source = ".a { composes: b from \"./b.module.css\"; composes: c from \"./c.module.css\"; color: red }\n";
+        std::fs::write(src.join("a.module.css"), source).unwrap();
+        let cfg = CssResolveConfig {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let out = compile_css_with("/src/a.module.css", source, &cfg.as_ref()).unwrap();
+        let exports = out.exports.unwrap();
+        assert_eq!(exports.len(), 1);
+        let parts: Vec<&str> = exports[0].1.split(' ').collect();
+        // a, b, d (through b), c, d (through c): the values are joined as
+        // postcss-modules joins them, repeats included.
+        assert_eq!(parts.len(), 5, "{parts:?}");
+        let (a, b, d, c) = (parts[0], parts[1], parts[2], parts[3]);
+        assert_eq!(parts[4], d);
+        assert!(
+            b.starts_with("_b_") && c.starts_with("_c_") && d.starts_with("_d_"),
+            "{parts:?}"
+        );
+        let at = |name: &str| {
+            out.css
+                .find(&format!(".{name}"))
+                .unwrap_or_else(|| panic!("{name} in {}", out.css))
+        };
+        assert!(
+            at(d) < at(b) && at(b) < at(c) && at(c) < at(a),
+            "{}",
+            out.css
+        );
+        assert_eq!(out.css.matches(&format!(".{d}")).count(), 1, "{}", out.css);
+        // Through the build's two-step path as well.
+        let scoped = scope_css_module("/src/a.module.css", source, source, &cfg.as_ref()).unwrap();
+        assert_eq!(
+            scoped.css.matches(&format!(".{d}")).count(),
+            1,
+            "{}",
+            scoped.css
+        );
+    }
+
+    /// extract-imports orders the `:import`s topologically: a file named
+    /// after another in the same rule follows it, otherwise first named
+    /// first.
+    #[test]
+    fn import_order_follows_extract_imports() {
+        let export = |specs: &[&str]| CssModuleExport {
+            name: "x".into(),
+            composes: specs
+                .iter()
+                .map(|s| CssModuleReference::Dependency {
+                    name: "y".into(),
+                    specifier: s.to_string(),
+                })
+                .collect(),
+            is_referenced: false,
+        };
+        let rules = [export(&["./c.css"]), export(&["./b.css", "./c.css"])];
+        assert_eq!(import_order(rules.iter()), ["./b.css", "./c.css"]);
+        let rules = [
+            export(&["./b.css"]),
+            export(&["./a.css"]),
+            export(&["./b.css", "./a.css"]),
+        ];
+        assert_eq!(import_order(rules.iter()), ["./b.css", "./a.css"]);
+        let rules = [
+            export(&["./a.css", "./b.css"]),
+            export(&["./b.css", "./a.css"]),
+        ];
+        assert_eq!(
+            import_order(rules.iter()),
+            ["./b.css", "./a.css"],
+            "a cycle is not an error"
         );
     }
 }

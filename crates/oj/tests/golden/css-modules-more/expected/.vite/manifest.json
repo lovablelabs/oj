@@ -1,0 +1,37 @@
+{
+  "_strings-HASH.css": {
+    "file": "assets/i18n/strings-HASH.css",
+    "src": "_strings-HASH.css"
+  },
+  "_strings-HASH.js": {
+    "file": "assets/i18n/strings-HASH.js",
+    "name": "i18n/strings",
+    "css": [
+      "assets/i18n/strings-HASH.css"
+    ]
+  },
+  "index.html": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": [
+      "_strings-HASH.js"
+    ],
+    "dynamicImports": [
+      "src/widget.gen.js"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/widget.gen.js": {
+    "file": "assets/widget.gen-HASH.js",
+    "name": "widget.gen",
+    "src": "src/widget.gen.js",
+    "isDynamicEntry": true,
+    "css": [
+      "assets/widget-HASH.css"
+    ]
+  }
+}

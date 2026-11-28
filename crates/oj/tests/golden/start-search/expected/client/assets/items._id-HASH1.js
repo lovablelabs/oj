@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-HASH.js";var t=e(),n=()=>(0,t.jsx)(`p`,{children:`no such item`});export{n as notFoundComponent};

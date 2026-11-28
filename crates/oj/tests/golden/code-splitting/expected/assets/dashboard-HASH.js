@@ -1,0 +1,1 @@
+import{t}from"./app-boot-HASH.js";import{t as o}from"./lazy-commons-HASH.js";import{t as a}from"./vendor-charts-HASH.js";function i(r){return t(`${r.dashboard}: ${o(["a","b"])} ${a([1,2,3])}`)}export{i as render};

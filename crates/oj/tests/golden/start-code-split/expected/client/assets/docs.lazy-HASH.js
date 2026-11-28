@@ -1,0 +1,1 @@
+import{n as e}from"./fileRoute-HASH.js";import{t}from"./spinner-HASH.js";import{t as n}from"./jsx-runtime-HASH.js";var r=n(),i=e(`/docs`)({component:()=>(0,r.jsxs)(`p`,{children:[`docs: `,i.useLoaderData().pages]}),pendingComponent:t});export{i as Route};

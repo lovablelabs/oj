@@ -1,0 +1,1 @@
+export{t as default}from"./i18n-fn/fr-HASH.js";

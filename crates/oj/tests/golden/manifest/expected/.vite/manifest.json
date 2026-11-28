@@ -1,0 +1,26 @@
+{
+  "index.html": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/page.js"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/page.js": {
+    "file": "assets/page-HASH.js",
+    "name": "page",
+    "src": "src/page.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "index.html"
+    ],
+    "css": [
+      "assets/page-HASH.css"
+    ]
+  }
+}

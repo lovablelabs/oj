@@ -1,0 +1,1 @@
+function e(){return`late`}export{e as late};

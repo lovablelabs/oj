@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use oj_server::plugins::{ChunkPass, PluginHost};
 use rolldown_common::{
-    ChunkOptimizationOption, ChunkOptimizationOptions, ChunkingContext, CodeSplittingMode,
-    ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
-    PreserveEntrySignatures,
+    ChunkFilenamesOutputOption, ChunkOptimizationOption, ChunkOptimizationOptions, ChunkingContext,
+    CodeSplittingMode, ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
+    ModuleTag, PreserveEntrySignatures, RollupPreRenderedChunk,
 };
 use serde_json::Value;
 
@@ -134,10 +134,10 @@ fn manual(
             max_module_size: f64_of(g, "maxModuleSize"),
             entries_aware: g.get("entriesAware").and_then(Value::as_bool),
             entries_aware_merge_threshold: f64_of(g, "entriesAwareMergeThreshold"),
+            tags: group_tags(g),
             include_dependencies_recursively: g
                 .get("includeDependenciesRecursively")
                 .and_then(Value::as_bool),
-            ..Default::default()
         });
     }
     Ok(ManualCodeSplittingOptions {
@@ -152,6 +152,62 @@ fn manual(
             .and_then(Value::as_bool),
         ..Default::default()
     })
+}
+
+/// A group's `tags` (`["$initial"]`: only modules the entries reach by static
+/// imports), as rolldown's own options reader takes them. Without them a
+/// group with no `test` captures every module.
+pub(crate) fn group_tags(g: &Value) -> Option<Vec<ModuleTag>> {
+    let tags = g.get("tags")?.as_array()?;
+    Some(
+        tags.iter()
+            .filter_map(Value::as_str)
+            .map(|tag| ModuleTag::from(tag.to_string()))
+            .collect(),
+    )
+}
+
+/// `output.entryFileNames` / `output.chunkFileNames` for a client build:
+/// the app's pattern, or its function called in the plugin host with the
+/// chunk as rolldown describes it before rendering (Rollup's
+/// `PreRenderedChunk`), else `default`, the bundle's own pattern.
+pub(crate) fn file_names(
+    option: &'static str,
+    value: Option<&Value>,
+    host: Option<&Arc<PluginHost>>,
+    default: &str,
+) -> ChunkFilenamesOutputOption {
+    match (value, host) {
+        (Some(Value::String(pattern)), _) => pattern.clone().into(),
+        (Some(f), Some(host)) if fn_handle(f).is_some() => {
+            let handle = fn_handle(f).unwrap();
+            let host = Arc::clone(host);
+            ChunkFilenamesOutputOption::Fn(Arc::new(move |chunk: &RollupPreRenderedChunk| {
+                let host = Arc::clone(&host);
+                let chunk = serde_json::json!([{
+                    "type": "chunk",
+                    "name": chunk.name.as_str(),
+                    "isEntry": chunk.is_entry,
+                    "isDynamicEntry": chunk.is_dynamic_entry,
+                    "facadeModuleId": chunk.facade_module_id.as_ref().map(|id| id.as_str()),
+                    "moduleIds": chunk.module_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+                    "exports": chunk.exports.iter().map(|e| e.as_str()).collect::<Vec<_>>(),
+                }]);
+                Box::pin(async move {
+                    let pattern = host
+                        .call_start_fn(handle, &chunk)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("output.{option}: {e}"))?;
+                    pattern.as_str().map(str::to_string).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "output.{option} returned {pattern}, not a file name pattern"
+                        )
+                    })
+                })
+            }))
+        }
+        _ => default.to_string().into(),
+    }
 }
 
 /// A group's dev tolerance: the group steps aside, with one warning for a
@@ -482,7 +538,7 @@ fn test_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<TestFn>
 }
 
 /// JavaScript truthiness of a JSON value.
-fn truthy(v: &Value) -> bool {
+pub(crate) fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -492,10 +548,35 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
+/// `output.assetFileNames` for the sheets the Start build writes itself: the
+/// app's pattern, or its function on its host (called with the asset as
+/// Vite's `PreRenderedAsset` describes it); None for Vite's default.
+pub(crate) fn asset_namer(
+    value: Option<&Value>,
+    host: Option<&Arc<PluginHost>>,
+) -> Option<super::assets::AssetNamer> {
+    match (value, host) {
+        (Some(Value::String(pattern)), _) => {
+            Some(super::assets::AssetNamer::Pattern(pattern.clone()))
+        }
+        (Some(f), Some(host)) => {
+            fn_handle(f).map(|handle| super::assets::AssetNamer::Host(Arc::clone(host), handle))
+        }
+        _ => None,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_groups_tags_reach_rolldown() {
+        let group =
+            serde_json::json!({ "name": "app-boot", "tags": ["$initial"], "minShareCount": 1 });
+        assert_eq!(group_tags(&group), Some(vec![ModuleTag::Initial]));
+        assert_eq!(group_tags(&serde_json::json!({ "name": "vendor" })), None);
+    }
 
     #[test]
     fn javascript_truthiness() {

@@ -1,0 +1,1 @@
+var GoldenLib=(function(e){Object.defineProperty(e,Symbol.toStringTag,{value:`Module`});var t=e=>e+1;function n(e){return t(e)*2}return e.helper=t,e.lib=n,e})({});

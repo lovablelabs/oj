@@ -1,0 +1,1 @@
+import{t as e}from"./index-HASH.js";var t=e();function n({items:e}){return(0,t.jsx)(`ul`,{className:`settings`,children:e.map(e=>(0,t.jsx)(`li`,{children:e},e))})}export{n as default};

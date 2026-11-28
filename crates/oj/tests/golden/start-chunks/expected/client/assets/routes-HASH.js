@@ -1,0 +1,1 @@
+import{r as e}from"./vendor-router-HASH.js";import{n as t}from"./lazy-commons-HASH.js";import{n}from"./vendor-react-HASH.js";var r=n(),i=()=>(0,r.jsxs)(`nav`,{children:[(0,r.jsx)(e,{to:`/dashboard`,children:t(`dashboard`)}),(0,r.jsx)(e,{to:`/settings`,children:t(`settings`)})]});export{i as component};

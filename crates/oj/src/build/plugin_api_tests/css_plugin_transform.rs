@@ -108,7 +108,7 @@ const record = (name) => function (code, id) {
   if (!/\.(scss|css)(\?|$)/.test(id)) return null;
   const kind = code.includes("$c")
     ? "source"
-    : /export (default|const)|^$/.test(code) || code.startsWith("import")
+    : /export (default|const|\{\})|^$/.test(code) || code.startsWith("import")
       ? "js"
       : /\.m[\s{]/.test(code) || !id.includes(".module.")
         ? "css"

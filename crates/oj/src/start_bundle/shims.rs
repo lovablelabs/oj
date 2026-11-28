@@ -26,6 +26,10 @@ use rolldown_plugin::{
 };
 
 const PREFIX: &str = "\0oj-node-shim:";
+/// vite:resolve's id for a builtin in a browser build, every builtin the same.
+const BROWSER_EXTERNAL: &str = "__vite-browser-external";
+/// Vite's production stub.
+const EMPTY_STUB: &str = "module.exports = {};";
 
 /// Node's built-in module names without the `node:` scheme (its
 /// `builtinModules`, subpaths included, with the legacy aliases a runtime
@@ -121,6 +125,11 @@ const PUNYCODE: &str = "const id=(s)=>s;\
 module.exports={toUnicode:id,toASCII:id,encode:id,decode:id,ucs2:{decode:()=>[],encode:()=>\"\"}};";
 
 /// The stub source for a builtin (`name` without `node:`).
+/// Whether a builtin has a working stand-in rather than Vite's empty stub.
+fn has_stand_in(name: &str) -> bool {
+    matches!(name, "async_hooks" | "stream/web" | "stream" | "punycode")
+}
+
 pub(crate) fn shim_source(name: &str, production: bool) -> String {
     match name {
         "async_hooks" => return ALS.to_string(),
@@ -130,7 +139,7 @@ pub(crate) fn shim_source(name: &str, production: bool) -> String {
         _ => {}
     }
     if production {
-        return "module.exports = {};".to_string();
+        return EMPTY_STUB.to_string();
     }
     // The name reaches the source only as a JSON string literal: a hostile
     // `node:` tail cannot break out of (or into) the code.
@@ -185,21 +194,40 @@ impl Plugin for NodeBuiltinShims {
                         }),
                     )
                     .await?;
-                if let Ok(found) = found {
+                // A `browser` field mapping the builtin to `false` (node-forge's
+                // `crypto`) resolves to rolldown's empty module; Vite's
+                // resolver answers it with the same stub as an unresolved
+                // builtin, so it takes the stub below.
+                if let Ok(found) = found.ok().filter(|r| !r.id.is_empty_module()).ok_or(()) {
                     return Ok(Some(HookResolveIdOutput::from_resolved_id(found)));
                 }
                 spec
             }
             None => return Ok(None),
         };
-        // One module per builtin whatever the spelling: the async_hooks and
-        // stream stand-ins are stateful.
+        // A build's plain stubs are one module under Vite's id, as vite:resolve
+        // answers every builtin with `__vite-browser-external`: the chunk that
+        // forms when several chunks import it carries that name, and each
+        // importer links one stub instead of one per builtin. The stand-ins,
+        // and dev's warning Proxy naming its builtin, stay one module per
+        // builtin whatever the spelling: the async_hooks and stream ones are
+        // stateful.
+        if self.production && !has_stand_in(name) {
+            return Ok(Some(HookResolveIdOutput::from_id(BROWSER_EXTERNAL)));
+        }
         Ok(Some(HookResolveIdOutput::from_id(format!(
             "{PREFIX}{name}"
         ))))
     }
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
+        if args.id == BROWSER_EXTERNAL {
+            return Ok(Some(HookLoadOutput {
+                code: arcstr::ArcStr::from(EMPTY_STUB),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
+        }
         let Some(name) = args.id.strip_prefix(PREFIX) else {
             return Ok(None);
         };

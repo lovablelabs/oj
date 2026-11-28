@@ -103,6 +103,81 @@ pub fn expand_dynamic_import_vars_source(source: &str, path: &Path) -> String {
     })
 }
 
+/// Vite's dynamic-import-vars as `vite build` writes it (rolldown's native
+/// `builtin:vite-dynamic-import-vars`, which Vite 8 runs in a build): a
+/// variable import becomes
+/// `__variableDynamicImportRuntimeHelper(import.meta.glob(..), \`..\`, n)`
+/// and the helper's import ([`DYNAMIC_IMPORT_HELPER_ID`]) is prepended; the
+/// glob call is left for the import-glob expansion that runs after, and a
+/// template that matches no file is rewritten all the same (the helper
+/// rejects at run time). An import the plugin leaves as written (no `./` or
+/// `../` start, no file extension in the static part, a `*` in a literal, a
+/// `/* @vite-ignore */` comment, an `http:`/`https:`/`data:` URL) is left
+/// here too. The dev server keeps [`expand_dynamic_import_vars_source`]: it
+/// expands globs first and has no helper module to serve.
+pub fn expand_dynamic_import_vars_vite_source(source: &str, path: &Path) -> String {
+    expand_dynamic_import_vars_vite_source_aliased(source, path, &no_alias)
+}
+
+/// [`expand_dynamic_import_vars_vite_source`] with the app's `resolve.alias`:
+/// a template whose static part an alias rewrites to an absolute path
+/// (`import(\`@/pages/${n}.tsx\`)`) is expanded as the native plugin expands
+/// it through the resolver, relative to the importer.
+pub fn expand_dynamic_import_vars_vite_source_aliased(
+    source: &str,
+    path: &Path,
+    alias: GlobAlias,
+) -> String {
+    if !source.contains("import(") {
+        return source.to_string();
+    }
+    rewrite_source(source, path, |allocator, dir, program| {
+        let mut v = DynImportVars {
+            allocator,
+            dir,
+            vite: true,
+            alias,
+            source,
+            ignored: Vec::new(),
+            changed: false,
+        };
+        v.visit_program(program);
+        v.changed
+    })
+}
+
+/// The id of rolldown's dynamic import helper module, which Vite's
+/// dynamic-import-vars (native in a build) imports as
+/// `__variableDynamicImportRuntimeHelper`; see [`DYNAMIC_IMPORT_HELPER_JS`].
+pub const DYNAMIC_IMPORT_HELPER_ID: &str = "\0rolldown_dynamic_import_helper.js";
+
+/// rolldown's dynamic import helper (`dynamic-import-helper.js`, which the
+/// native plugin's `load` hook serves), text for text: given the glob's
+/// object, the path the variables resolved to and the pattern's segment
+/// count, the matching module's import, or a rejection naming the path.
+pub const DYNAMIC_IMPORT_HELPER_JS: &str = r#"export default (glob, path, segments) => {
+  const query = path.lastIndexOf('?');
+  const v = glob[query === -1 || query < path.lastIndexOf('/') ? path : path.slice(0, query)];
+  if (v) {
+    return typeof v === 'function' ? v() : Promise.resolve(v);
+  }
+  return new Promise((_, reject) => {
+    (typeof queueMicrotask === 'function' ? queueMicrotask : setTimeout)(
+      reject.bind(
+        null,
+        new Error(
+          'Unknown variable dynamic import: ' +
+            path +
+            (path.split('/').length !== segments
+              ? '. Note that variables only represent file names one level deep.'
+              : ''),
+        ),
+      ),
+    );
+  });
+};
+"#;
+
 /// Parses `source` as the file at `path`, applies `rewrite` with the file's
 /// directory, and prints the program when `rewrite` reports a change.
 /// Unparsable or unchanged input comes back as is.
@@ -261,41 +336,28 @@ impl GlobCall {
         GlobMatcher::new(self)
     }
 
-    /// The files the call expands to, absolute and lexically normalized,
-    /// sorted by path string as Vite sorts them: a walk from the patterns'
-    /// common scan base (Vite's getCommonBase), kept where the matcher
-    /// matches. Like tinyglobby with Vite's options, the walk enters neither
-    /// `node_modules` nor a dot-led directory unless the call is exhaustive
-    /// or a pattern spells a dot-led part.
+    /// The files the call expands to, absolute and lexically normalized, in
+    /// the order rolldown's native import-glob plugin (Vite 8's build) walks
+    /// them: a walk from the patterns' common scan base (the plugin's
+    /// `get_common_base`), each directory's entries sorted by file name and
+    /// a directory's files where the directory stands (so `about/index.tsx`
+    /// precedes `about.tsx`), kept where the matcher matches. Like the
+    /// plugin's `walk_files`, the walk skips every dot-led entry and every
+    /// `node_modules` below the base unless the call is exhaustive; the base
+    /// itself may be either.
     pub fn files(&self) -> Vec<PathBuf> {
         let matcher = self.matcher();
         let bases: Vec<String> = matcher.bases().map(str::to_string).collect();
         let Some(start) = common_base(&bases) else {
             return Vec::new();
         };
-        let enter_hidden = self.exhaustive
-            || matcher.affirmed.iter().any(|a| {
-                a.pattern
-                    .split('/')
-                    .any(|seg| seg.starts_with('.') && seg != "." && seg != "..")
-            });
         let mut found = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        walk_files(
-            Path::new(&start),
-            self.exhaustive,
-            enter_hidden,
-            &mut seen,
-            &mut found,
-        );
-        let mut files = std::collections::BTreeMap::new();
-        for file in found {
-            let key = slash(&file);
-            if matcher.is_match(&key) {
-                files.insert(key, file);
-            }
-        }
-        files.into_values().collect()
+        walk_files(Path::new(&start), self.exhaustive, &mut seen, &mut found);
+        found
+            .into_iter()
+            .filter(|file| matcher.is_match(&slash(file)))
+            .collect()
     }
 }
 
@@ -502,29 +564,35 @@ fn common_base(bases: &[String]) -> Option<String> {
     })
 }
 
+/// The native import-glob plugin's `walk_files`: `dir`'s entries by file
+/// name (walkdir's `sort_by(file_name)`), a directory walked where it
+/// stands, and below the walk's root neither a dot-led entry nor
+/// `node_modules` unless `exhaustive` (its `filter_entry`).
 fn walk_files(
     dir: &Path,
     exhaustive: bool,
-    enter_hidden: bool,
     seen: &mut std::collections::HashSet<PathBuf>,
     out: &mut Vec<PathBuf>,
 ) {
-    // A symlinked directory is followed once (tinyglobby follows links).
+    // A symlinked directory is followed once (the plugin opens a walk per
+    // linked directory and refuses one that walks in circles).
     if !seen.insert(std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let name = entry.file_name();
+        if !exhaustive && (name.as_encoded_bytes().first() == Some(&b'.') || name == "node_modules")
+        {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !exhaustive && (name == "node_modules" || (name.starts_with('.') && !enter_hidden)) {
-                continue;
-            }
-            walk_files(&path, exhaustive, enter_hidden, seen, out);
+            walk_files(&path, exhaustive, seen, out);
         } else if path.is_file() {
             out.push(path);
         }
@@ -710,10 +778,20 @@ pub fn to_absolute_glob(
     format!("{pre}{}", joined.to_string_lossy())
 }
 
+/// The native import-glob plugin's `needs_resolve`: a pattern that is not
+/// `/`, `**`, `./` or `../`-led goes through the resolver (here, the app's
+/// alias), and the call is left as written when that resolves nothing.
+pub(crate) fn glob_needs_resolve(glob: &str) -> bool {
+    !(glob.starts_with('/')
+        || glob.starts_with("**")
+        || glob.starts_with("./")
+        || glob.starts_with("../"))
+}
+
 /// A pattern the app's alias rewrites to an absolute path, with only that
 /// path's static part escaped: Vite's globSafeResolvedPath walks both strings
 /// back to their first difference and keeps the user's glob suffix as written.
-fn aliased_glob(pattern: &str, alias: GlobAlias) -> Option<String> {
+pub(crate) fn aliased_glob(pattern: &str, alias: GlobAlias) -> Option<String> {
     let resolved = alias(pattern)?;
     if !Path::new(&resolved).is_absolute() {
         return None;
@@ -861,7 +939,10 @@ pub fn expand_dynamic_import_vars<'a>(
     let mut v = DynImportVars {
         allocator,
         dir,
+        vite: false,
+        alias: &no_alias,
         source: source_text,
+        ignored: Vec::new(),
         changed: false,
     };
     v.visit_program(program);
@@ -1128,11 +1209,188 @@ impl<'a> VisitMut<'a> for NewUrlAsset<'a, '_, '_> {
     }
 }
 
+/// The dev server's form (`vite` unset) switches over the files the template
+/// matches, resolved here from `dir`, the importer's directory; the build's
+/// form (`vite` set) is rolldown's native plugin's.
 struct DynImportVars<'a, 'd, 's> {
     allocator: &'a Allocator,
     dir: &'d Path,
+    vite: bool,
+    alias: GlobAlias<'d>,
     source: &'s str,
+    /// The starts of the tokens a `/* @vite-ignore */` comment leads
+    /// (oxc's `Comment::attached_to`): a template so marked is left alone,
+    /// as the native plugin's `vite_ignored_starts` leaves it.
+    ignored: Vec<u32>,
     changed: bool,
+}
+
+/// rolldown's `dynamic_import_to_glob::should_ignore`: a URL is no file.
+fn dynamic_import_should_ignore(glob: &str) -> bool {
+    ["data:", "http:", "https:"]
+        .iter()
+        .any(|protocol| glob.starts_with(protocol))
+}
+
+/// rolldown's `has_special_query_param`: a query that asks for a string (or
+/// a worker constructor) rather than a module, whose glob entries import the
+/// namespace (`import: "*"`).
+fn has_special_query_param(query: &str) -> bool {
+    if query.len() < 2 {
+        return false;
+    }
+    query[1..]
+        .split('&')
+        .any(|param| ["raw", "sharedworker", "url", "worker"].contains(&param))
+}
+
+/// rolldown's `to_valid_glob`: the glob must start with `./` or `../` and
+/// its static part must carry a file extension (the plugin warns and leaves
+/// the import otherwise: `None`), and `?`, `[`, `]`, `{` and `}` are escaped
+/// as one-character classes (`[?]`).
+fn to_valid_dynamic_import_glob(glob: &str) -> Option<String> {
+    if !glob.starts_with("./") && !glob.starts_with("../") {
+        return None;
+    }
+    Path::new(glob).extension()?;
+    let mut escaped = String::with_capacity(glob.len());
+    for c in glob.chars() {
+        match c {
+            '?' | '[' | ']' | '{' | '}' => {
+                escaped.push('[');
+                escaped.push(c);
+                escaped.push(']');
+            }
+            c => escaped.push(c),
+        }
+    }
+    Some(escaped)
+}
+
+/// rolldown's `template_literal_to_glob` (ported from
+/// @rollup/plugin-dynamic-import-vars): the quasis' cooked text, each
+/// substitution as [`dynamic_import_expr_glob`] reads it. `None` where the
+/// plugin errors and leaves the import: an invalid escape, a `*` in a
+/// literal, a binary operator other than `+`.
+fn template_literal_to_glob(tpl: &TemplateLiteral, out: &mut String) -> Option<()> {
+    for (i, q) in tpl.quasis.iter().enumerate() {
+        let cooked = crate::lit_str(q.value.cooked?);
+        if cooked.contains('*') {
+            return None;
+        }
+        out.push_str(cooked);
+        if let Some(expr) = tpl.expressions.get(i) {
+            dynamic_import_expr_glob(expr, out)?;
+        }
+    }
+    Some(())
+}
+
+/// rolldown's `expr_to_glob`: a nested template, a `.concat(..)` call and a
+/// `+` concatenation are evaluated, a string literal is itself, and anything
+/// else is one `*`.
+fn dynamic_import_expr_glob(expr: &Expression, out: &mut String) -> Option<()> {
+    match expr {
+        Expression::TemplateLiteral(tpl) => template_literal_to_glob(tpl, out),
+        Expression::CallExpression(call) => {
+            if let Expression::StaticMemberExpression(member) = &call.callee {
+                if member.property.name == "concat" {
+                    dynamic_import_expr_glob(&member.object, out)?;
+                    for arg in &call.arguments {
+                        match arg.as_expression() {
+                            Some(arg) => dynamic_import_expr_glob(arg, out)?,
+                            None => out.push('*'),
+                        }
+                    }
+                    return Some(());
+                }
+            }
+            out.push('*');
+            Some(())
+        }
+        Expression::BinaryExpression(bin) => {
+            if bin.operator != oxc_ast::ast::BinaryOperator::Addition {
+                return None;
+            }
+            dynamic_import_expr_glob(&bin.left, out)?;
+            dynamic_import_expr_glob(&bin.right, out)
+        }
+        Expression::StringLiteral(s) => {
+            let s = crate::lit_str(s.value);
+            if s.contains('*') {
+                return None;
+            }
+            out.push_str(s);
+            Some(())
+        }
+        _ => {
+            out.push('*');
+            Some(())
+        }
+    }
+}
+
+/// rolldown's `to_string_literal`: `s` in double quotes, with `\n`, `\r`,
+/// `\` and `"` escaped.
+fn js_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\\' | '"' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// rolldown's `escape_string_for_template_literal`: `\`, `` ` `` and `$`
+/// escaped, a carriage return as `\r`.
+fn escape_for_template_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | '`' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// rolldown's `relative_path_as_js_specifier`: `target` relative to `base`
+/// as a JS specifier, both normalized lexically: `.` for `base` itself,
+/// `..`/`../x` above it, `./x` below it.
+fn relative_js_specifier(target: &Path, base: &Path) -> String {
+    let target = normalize(target);
+    let base = normalize(base);
+    let t: Vec<_> = target.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let common = t.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut parts: Vec<String> = vec!["..".to_string(); b.len() - common];
+    parts.extend(
+        t[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+    let slash = parts.join("/");
+    if slash == ".." || slash.starts_with("../") {
+        slash
+    } else {
+        format!("./{slash}")
+    }
 }
 
 impl<'a> DynImportVars<'a, '_, '_> {
@@ -1140,18 +1398,113 @@ impl<'a> DynImportVars<'a, '_, '_> {
         let Expression::TemplateLiteral(tpl) = &imp.source else {
             return None;
         };
+        // Respects @vite-ignore comment (e.g., import(/* @vite-ignore */ `..`))
+        if self.ignored.contains(&tpl.span.start) || tpl.expressions.is_empty() {
+            return None;
+        }
+        if self.vite {
+            return self.build_vite(tpl);
+        }
         let pattern = template_glob(tpl)?;
+        let arg = span_text(self.source, tpl.span)?;
         let matches = template_matches(self.dir, &pattern);
         if matches.is_empty() {
             return None;
         }
-        let arg = span_text(self.source, tpl.span)?;
         let cases: String = matches
             .iter()
             .map(|key| format!("case {key:?}: return import({key:?});"))
             .collect();
         Some(format!(
             "(function (p) {{ switch (p) {{ {cases}default: return Promise.reject(new Error(\"Unknown variable dynamic import: \" + p)); }} }})({arg})"
+        ))
+    }
+
+    /// The native plugin's `rewrite_variable_dynamic_import` and `rewrite`:
+    /// the template's glob (a `**` collapsed to `*`, a query after the last
+    /// `/` split off into the glob call's options), the runtime pattern (the
+    /// static prefix normalized against the importer's directory, the rest of
+    /// the template as written) and the glob's segment count. A relative glob
+    /// is taken as is; an aliased one (`@/pages/*.tsx`) is what the alias
+    /// makes of it, relative to the importer, as the plugin's resolver hands
+    /// it back. `None` leaves the import as written.
+    fn build_vite(&self, tpl: &TemplateLiteral<'a>) -> Option<String> {
+        let mut glob = String::new();
+        template_literal_to_glob(tpl, &mut glob)?;
+        if !glob.contains('*') || dynamic_import_should_ignore(&glob) {
+            return None;
+        }
+        let first_quasi = tpl.quasis.first()?;
+        // Oxc turns CRLF into LF in `raw`, so take the length from the span.
+        let first_quasi_len = (first_quasi.span.end - first_quasi.span.start) as usize;
+        let raw = span_text(
+            self.source,
+            Span::new(tpl.span.start + 1, tpl.span.end.checked_sub(1)?),
+        )?;
+        let (prefix, glob) = if glob.starts_with('.') || glob.starts_with('/') {
+            (crate::lit_str(first_quasi.value.cooked?).to_string(), glob)
+        } else {
+            let resolved = (self.alias)(&glob)?;
+            if !Path::new(&resolved).is_absolute() {
+                return None;
+            }
+            let id = relative_js_specifier(Path::new(&resolved), self.dir);
+            if id == "." {
+                return None;
+            }
+            let star = id.find('*')?;
+            (id[..star].to_string(), id)
+        };
+
+        let runtime_prefix = if prefix.is_empty() {
+            String::new()
+        } else {
+            // The final segment can be a partial filename, such as `..` in
+            // `..${name}.js`. Append a filename character so normalization
+            // preserves it, then remove that character.
+            let with_suffix = format!("{prefix}_");
+            let mut normalized = match with_suffix.strip_prefix('/') {
+                // A root-led prefix never passes `to_valid_glob`; the plugin
+                // resolves it against its root, which the glob check makes
+                // moot here.
+                Some(_) => return None,
+                None => relative_js_specifier(&self.dir.join(&with_suffix), self.dir),
+            };
+            normalized.truncate(normalized.len() - 1);
+            normalized
+        };
+        let runtime_pattern = format!(
+            "`{}{}`",
+            escape_for_template_literal(&runtime_prefix),
+            raw.get(first_quasi_len..)?
+        );
+
+        let glob = glob.replace("**", "*");
+        let (pattern, query) = {
+            let slash = glob.rfind('/').unwrap_or(0);
+            let index = glob[slash..].find('?').map_or(glob.len(), |i| i + slash);
+            glob.split_at(index)
+        };
+        let pattern = to_valid_dynamic_import_glob(pattern)?;
+        let params = if query.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {{ query: {}{} }}",
+                js_string_literal(query),
+                if has_special_query_param(query) {
+                    ", import: \"*\""
+                } else {
+                    ""
+                }
+            )
+        };
+
+        // __variableDynamicImportRuntimeHelper((import.meta.glob(pattern, params)), expr, segments)
+        let segments = pattern.split('/').count();
+        Some(format!(
+            "__variableDynamicImportRuntimeHelper(import.meta.glob({}{params}), {runtime_pattern}, {segments})",
+            js_string_literal(&pattern)
         ))
     }
 }
@@ -1166,6 +1519,27 @@ impl<'a> VisitMut<'a> for DynImportVars<'a, '_, '_> {
             }
         }
         walk_mut::walk_expression(self, expr);
+    }
+
+    fn visit_program(&mut self, program: &mut Program<'a>) {
+        self.ignored = program
+            .comments
+            .iter()
+            .filter(|comment| comment.is_vite())
+            .map(|comment| comment.attached_to)
+            .collect();
+        walk_mut::walk_program(self, program);
+        if self.changed && self.vite {
+            // The helper's import, as Vite prepends it.
+            prepend_hoisted(
+                self.allocator,
+                program,
+                &[format!(
+                    "import __variableDynamicImportRuntimeHelper from {};",
+                    serde_json::Value::String(DYNAMIC_IMPORT_HELPER_ID.to_string())
+                )],
+            );
+        }
     }
 }
 
@@ -1806,12 +2180,21 @@ mod tests {
         );
         assert!(out.contains(".hidden.json"), "{out}");
         assert!(out.contains("node_modules/dep/x.json"), "{out}");
-        // A dot-led segment spelled out in the pattern is not hidden.
+        // rolldown's native import-glob plugin (utils.rs `walk_files`,
+        // `filter_entry`) skips every dot-led entry below the walk's root
+        // unless exhaustive, a file the pattern spells out included; Vite's
+        // JS plugin (picomatch) matched it.
         let out = expand_source(
             &dir,
             "const m = import.meta.glob('./locales/.hidden.json');\n",
         );
-        assert!(out.contains(".hidden.json"), "{out}");
+        assert!(!out.contains(".hidden.json"), "{out}");
+        // The walk's root itself may be dot-led: its entries are at depth 1
+        // and pass.
+        std::fs::create_dir_all(dir.join(".config")).unwrap();
+        std::fs::write(dir.join(".config/a.json"), "{}").unwrap();
+        let out = expand_source(&dir, "const m = import.meta.glob('./.config/*.json');\n");
+        assert!(out.contains("./.config/a.json"), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2048,10 +2431,25 @@ mod tests {
         assert!(none.contains("const m = {}"), "no root, no matches: {none}");
     }
 
-    // Vite sorts the matched paths as strings: `-` (0x2d) sorts before `/`.
+    // rolldown's native import-glob plugin (utils.rs `walk_files`:
+    // `WalkDir::sort_by(file_name)`) walks each directory's entries by name
+    // and a directory's files where it stands, so `a/b.ts` precedes
+    // `a-b/x.ts` and `about/index.tsx` precedes `about.tsx`, where a sort of
+    // the whole paths (Vite's JS plugin) put them the other way round.
     #[test]
-    fn matches_sort_by_path_string_like_vite() {
-        let root = app("sort", &["src/main.ts", "src/a/b.ts", "src/a-b/x.ts"]);
+    fn matches_come_in_the_native_plugins_walk_order() {
+        let root = app(
+            "sort",
+            &[
+                "src/main.ts",
+                "src/a/b.ts",
+                "src/a-b/x.ts",
+                "src/routes/about.tsx",
+                "src/routes/about/index.tsx",
+                "src/routes/index.tsx",
+                "src/routes/Zeta.tsx",
+            ],
+        );
         let out = super::expand_source(
             "const m = import.meta.glob('/src/**/*.ts');\n",
             &root.join("src/main.ts"),
@@ -2059,7 +2457,32 @@ mod tests {
         );
         let dash = out.find("/src/a-b/x.ts").expect("a-b matched");
         let slash = out.find("/src/a/b.ts").expect("a/b matched");
-        assert!(dash < slash, "a-b/x before a/b: {out}");
+        assert!(slash < dash, "a/b before a-b/x: {out}");
+        let out = super::expand_source(
+            "const m = import.meta.glob('./routes/**/*.tsx');\n",
+            &root.join("src/main.ts"),
+            Some(&root),
+        );
+        let keys: Vec<&str> = [
+            "./routes/Zeta.tsx",
+            "./routes/about/index.tsx",
+            "./routes/about.tsx",
+            "./routes/index.tsx",
+        ]
+        .into_iter()
+        .collect();
+        let positions: Vec<usize> = keys
+            .iter()
+            .map(|k| {
+                out.find(&format!("{k:?}:"))
+                    .unwrap_or_else(|| panic!("{k} in {out}"))
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "bytewise names, directories where they stand: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Vite's toAbsoluteGlob hands `@/assets/*.png` to resolveId, where the
@@ -2149,6 +2572,206 @@ mod tests {
         assert_eq!(
             string_alias(&regex, "#views/*.ts").as_deref(),
             Some("/app/src/views/*.ts")
+        );
+    }
+
+    /// The build form's rewrite of `src` in `/app/src/main.js`.
+    fn vite_dyn(src: &str) -> String {
+        expand_dynamic_import_vars_vite_source(src, Path::new("/app/src/main.js"))
+    }
+
+    // rolldown's native dynamic-import-vars (ast_visit.rs `rewrite`): the
+    // glob call, the template with its static prefix normalized against the
+    // importer, the glob's `/`-separated segment count, and the helper's
+    // import first.
+    #[test]
+    fn a_variable_import_becomes_the_native_plugins_helper_call() {
+        let out = vite_dyn("const load = (l) => import(`./locales/${l}.js`);\n");
+        assert!(
+            out.starts_with(
+                "import __variableDynamicImportRuntimeHelper from \"\\0rolldown_dynamic_import_helper.js\";"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "__variableDynamicImportRuntimeHelper(import.meta.glob(\"./locales/*.js\"), `./locales/${l}.js`, 3)"
+            ),
+            "{out}"
+        );
+        // The prefix is normalized (`./a/../locales/` is `./locales/`), the
+        // rest of the template stays as written, and `segments` counts the
+        // glob's parts.
+        let out = vite_dyn("import(`./a/../locales/${l}.js`);\n");
+        assert!(
+            out.contains("import.meta.glob(\"./a/../locales/*.js\"), `./locales/${l}.js`, 5)"),
+            "{out}"
+        );
+        let out = vite_dyn("import(`../${dir}/${name}.js`);\n");
+        assert!(
+            out.contains("import.meta.glob(\"../*/*.js\"), `../${dir}/${name}.js`, 3)"),
+            "{out}"
+        );
+    }
+
+    // dynamic_import_to_glob.rs `to_valid_glob`: the static part must start
+    // with `./` or `../` and carry a file extension; `template_literal_to_glob`
+    // refuses a `*` in a literal. The plugin warns and leaves each as written.
+    #[test]
+    fn an_import_the_native_plugin_leaves_is_left() {
+        for src in [
+            "import(`./locales/${l}`);\n",
+            "import(`./pages/${p}/index`);\n",
+            "import(`locales/${l}.js`);\n",
+            "import(`/src/locales/${l}.js`);\n",
+            "import(`./*${l}.js`);\n",
+            "import(`https://cdn.example.com/${v}/index.js`);\n",
+            "import(`data:${x}`);\n",
+            "import(`./locales/en.js`);\n",
+            "import(/* @vite-ignore */ `./locales/${l}.js`);\n",
+            "import(\n  /* @vite-ignore */\n  `./locales/${l}.js`\n);\n",
+        ] {
+            let out = vite_dyn(src);
+            assert_eq!(out, src, "left as written");
+        }
+        // Another comment on the template is no ignore mark.
+        let out = vite_dyn("import(/* chunk */ `./locales/${l}.js`);\n");
+        assert!(
+            out.contains("__variableDynamicImportRuntimeHelper"),
+            "{out}"
+        );
+    }
+
+    // ast_visit.rs 146-163: a query after the last `/` is split off into the
+    // glob call's options, with `import: "*"` for `raw`, `url`, `worker` and
+    // `sharedworker` (dynamic_import_to_glob.rs `has_special_query_param`).
+    #[test]
+    fn a_query_on_a_variable_import_becomes_the_globs_query_option() {
+        // The codegen prints the options object over several lines.
+        let flat = |out: String| out.split_whitespace().collect::<Vec<_>>().join(" ");
+        let out = flat(vite_dyn("import(`./locales/${l}.js?raw`);\n"));
+        assert!(
+            out.contains(
+                "import.meta.glob(\"./locales/*.js\", { query: \"?raw\", import: \"*\" }), `./locales/${l}.js?raw`, 3)"
+            ),
+            "{out}"
+        );
+        let out = flat(vite_dyn("import(`./w/${n}.js?worker&inline`);\n"));
+        assert!(
+            out.contains("{ query: \"?worker&inline\", import: \"*\" }"),
+            "{out}"
+        );
+        let out = flat(vite_dyn("import(`./locales/${l}.js?lang=${l}`);\n"));
+        assert!(
+            out.contains(
+                "import.meta.glob(\"./locales/*.js\", { query: \"?lang=*\" }), `./locales/${l}.js?lang=${l}`, 3)"
+            ),
+            "{out}"
+        );
+        // A `?` before the last `/` is part of a name: escaped as a class.
+        let out = vite_dyn("import(`./a?b/${l}.js`);\n");
+        assert!(out.contains("import.meta.glob(\"./a[?]b/*.js\")"), "{out}");
+    }
+
+    // dynamic_import_to_glob.rs `expr_to_glob`: literals, `+` and `.concat`
+    // are evaluated into the glob, `**` collapses to `*` (ast_visit.rs 143),
+    // glob syntax in the static part is escaped (`to_valid_glob`), and the
+    // segment count is the glob's.
+    #[test]
+    fn the_glob_is_derived_as_the_native_plugin_derives_it() {
+        let out = vite_dyn("import(`./foo/${bar}${baz}/${x}${y}.js`);\n");
+        assert!(
+            out.contains(
+                "import.meta.glob(\"./foo/*/*.js\"), `./foo/${bar}${baz}/${x}${y}.js`, 4)"
+            ),
+            "{out}"
+        );
+        // (The codegen reprints the literal with double quotes.)
+        let out = vite_dyn("import(`${'./foo/'}${bar}.js`);\n");
+        assert!(
+            out.contains("import.meta.glob(\"./foo/*.js\"), `${\"./foo/\"}${bar}.js`, 3)"),
+            "{out}"
+        );
+        let out = vite_dyn("import(`./${'a/' + b + '.js'}`);\n");
+        assert!(out.contains("import.meta.glob(\"./a/*.js\")"), "{out}");
+        let out = vite_dyn("import(`./${'a/'.concat(b, '.js')}`);\n");
+        assert!(out.contains("import.meta.glob(\"./a/*.js\")"), "{out}");
+        let out = vite_dyn("import(`./${'a' - b}.js`);\n");
+        assert_eq!(out, "import(`./${'a' - b}.js`);\n", "`-` is not supported");
+        let out = vite_dyn("import(`./${foo}/[foo].js`);\n");
+        assert!(
+            out.contains("import.meta.glob(\"./*/[[]foo[]].js\")"),
+            "{out}"
+        );
+        let out = vite_dyn("import(`./${foo}/(foo).js`);\n");
+        assert!(out.contains("import.meta.glob(\"./*/(foo).js\")"), "{out}");
+        // A template whose substitution spells `**` is one `*`; the runtime
+        // pattern keeps its `/` count apart from the glob's.
+        let out = vite_dyn("import(`./${a}${b}.js`);\n");
+        assert!(
+            out.contains("import.meta.glob(\"./*.js\"), `./${a}${b}.js`, 2)"),
+            "{out}"
+        );
+    }
+
+    // lib.rs 88-110: a glob that starts with neither `.` nor `/` goes to the
+    // resolver; the id it returns, relative to the importer, is the glob and
+    // its text up to the first `*` the runtime prefix.
+    #[test]
+    fn an_aliased_variable_import_resolves_through_the_alias() {
+        let entries = vec![("@".to_string(), "/app/src".to_string())];
+        let alias = |id: &str| string_alias(&entries, id);
+        let out = expand_dynamic_import_vars_vite_source_aliased(
+            "import(`@/pages/${n}.tsx`);\n",
+            Path::new("/app/src/main.ts"),
+            &alias,
+        );
+        assert!(
+            out.contains(
+                "__variableDynamicImportRuntimeHelper(import.meta.glob(\"./pages/*.tsx\"), `./pages/${n}.tsx`, 3)"
+            ),
+            "{out}"
+        );
+        let out = expand_dynamic_import_vars_vite_source_aliased(
+            "import(`@/pages/${n}.tsx`);\n",
+            Path::new("/app/src/routes/index.ts"),
+            &alias,
+        );
+        assert!(
+            out.contains("import.meta.glob(\"../pages/*.tsx\"), `../pages/${n}.tsx`, 3)"),
+            "{out}"
+        );
+        // No alias takes it: left as written, as the plugin leaves a glob its
+        // resolver returns nothing for.
+        let src = "import(`@/pages/${n}.tsx`);\n";
+        assert_eq!(vite_dyn(src), src);
+    }
+
+    #[test]
+    fn the_helper_is_rolldowns_text() {
+        assert!(DYNAMIC_IMPORT_HELPER_JS.contains("        new Error(\n"));
+        assert!(!DYNAMIC_IMPORT_HELPER_JS.contains("@__PURE__"));
+        assert!(DYNAMIC_IMPORT_HELPER_JS.starts_with(
+            "export default (glob, path, segments) => {\n  const query = path.lastIndexOf('?');\n"
+        ));
+    }
+
+    #[test]
+    fn relative_js_specifiers_spell_like_rolldowns() {
+        let base = Path::new("/app/src");
+        assert_eq!(relative_js_specifier(Path::new("/app/src"), base), ".");
+        assert_eq!(relative_js_specifier(Path::new("/app"), base), "..");
+        assert_eq!(
+            relative_js_specifier(Path::new("/app/lib/x.js"), base),
+            "../lib/x.js"
+        );
+        assert_eq!(
+            relative_js_specifier(Path::new("/app/src/./a/../b/_"), base),
+            "./b/_"
+        );
+        assert_eq!(
+            relative_js_specifier(Path::new("/app/src/.._"), base),
+            "./.._"
         );
     }
 }

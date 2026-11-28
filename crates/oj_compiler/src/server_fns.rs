@@ -71,6 +71,8 @@ pub struct ServerFn {
     pub decl_start: usize,
     /// Byte offset just past the handler call's `(`.
     pub args_at: usize,
+    /// Byte offset of the handler call's closing `)`.
+    args_end: usize,
     /// The handler's first argument, as a span, when it has one.
     first_arg: Option<(usize, usize)>,
     /// `.validator(...)` / `.inputValidator(...)` links to delete on the
@@ -78,11 +80,17 @@ pub struct ServerFn {
     stripped_links: Vec<(usize, usize)>,
 }
 
-/// The id a server function is registered and called under:
-/// `base64url("<app-relative path>#<name>")`, Node's `Buffer` encoding.
+/// The id a server function is registered and called under in a build, as
+/// Start's compiler gives it (`generateFunctionId` in build mode, with no
+/// `serverFns.generateFunctionId` configured): the hex sha256 of
+/// `"<app-relative path>--<name>_createServerFn_handler"` (the handler's
+/// sibling name). An earlier Start encoded `"<path>#<name>"` as base64url,
+/// which oj kept, so a client built by one tool could not call a server
+/// built by the other.
 pub fn server_fn_id(rel: &str, name: &str) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{rel}#{name}").as_bytes())
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(format!("{rel}--{name}_createServerFn_handler").as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The id Start's own compiler gives the same function in Vite dev
@@ -394,6 +402,7 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
                 name: id.name.to_string(),
                 decl_start,
                 args_at,
+                args_end: call.span.end as usize - 1,
                 first_arg,
                 // The `.validator(..)` / `.inputValidator(..)` links the
                 // client drops, as spans from each link's object end to its
@@ -963,6 +972,148 @@ pub fn rewrite_server(code: &str, rel: &str, modules: &dyn Modules) -> Option<St
 /// A client rewrite that could not be applied: a server function whose
 /// handler call has no argument to replace would ship its handler to the
 /// browser, so this is fatal.
+/// Start's provider module (`<file>?tss-serverfn-split`, what the resolver
+/// imports): [`rewrite_server`]'s handler siblings, with the module's own
+/// exports made local as the compiler's safeRemoveExports makes them (an
+/// `export const`, `export function` or `export class` loses its `export`,
+/// an `export { a, b }` list goes, an `export default` of a named function
+/// or class keeps the declaration; `export enum`, `export namespace`,
+/// `export *` and `export * as ns` stay) and the siblings as the module's
+/// only exports. Each handler call's arguments become the sibling and the
+/// handler alone, as the compiler sets them (`[extractedFnIdentifier,
+/// serverFnNode]`). Lines stay where they were.
+pub fn rewrite_server_provider(code: &str, rel: &str, modules: &dyn Modules) -> Option<String> {
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind};
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(rel)).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let fns = find_in(&parsed.program, code, rel, modules);
+    if fns.is_empty() {
+        return None;
+    }
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut handlers: Vec<String> = Vec::new();
+    for ServerFn {
+        name,
+        decl_start,
+        args_at,
+        args_end,
+        first_arg,
+        ..
+    } in &fns
+    {
+        let id = server_fn_id(rel, name);
+        let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
+        let handler = format!("{name}_createServerFn_handler");
+        edits.push((
+            *decl_start,
+            *decl_start,
+            format!(
+                "const {handler} = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
+            ),
+        ));
+        // The handler is a deep clone in the compiler's output (new nodes),
+        // so nothing declared inside it is a dead-code candidate any more:
+        // the whole argument list is replaced, carrying nothing over.
+        let args = match first_arg {
+            Some((start, end)) => format!("{handler}, {}", &code[*start..*end]),
+            None => handler.clone(),
+        };
+        edits.push((*args_at, *args_end, args));
+        handlers.push(handler);
+    }
+    for stmt in &parsed.program.body {
+        match stmt {
+            Statement::ExportDeclaration(d)
+                if matches!(
+                    d.declaration,
+                    Declaration::VariableDeclaration(_)
+                        | Declaration::FunctionDeclaration(_)
+                        | Declaration::ClassDeclaration(_)
+                ) =>
+            {
+                edits.push((
+                    d.span.start as usize,
+                    d.declaration.span().start as usize,
+                    String::new(),
+                ))
+            }
+            Statement::ExportNamedDeclaration(d) => {
+                edits.push((d.span.start as usize, d.span.end as usize, String::new()));
+            }
+            Statement::ExportFromDeclaration(d) => {
+                edits.push((d.span.start as usize, d.span.end as usize, String::new()));
+            }
+            Statement::ExportDefaultDeclaration(d) => {
+                let named = match &d.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) if f.id.is_some() => {
+                        Some(f.span.start)
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) if c.id.is_some() => {
+                        Some(c.span.start)
+                    }
+                    _ => None,
+                };
+                if let Some(start) = named {
+                    edits.push((d.span.start as usize, start as usize, String::new()));
+                }
+            }
+            _ => {}
+        }
+    }
+    edits.push((
+        code.len(),
+        code.len(),
+        format!("\nexport {{ {} }};\n", handlers.join(", ")),
+    ));
+    // Front to back; at one position, an insertion before a deletion, so the
+    // sibling lands before the declaration the `export` left.
+    edits.sort_by_key(|(start, end, _)| (*start, *end));
+    let mut out = String::with_capacity(code.len() + 256);
+    let mut step = Vec::with_capacity(edits.len());
+    let mut last = 0;
+    for (start, end, text) in edits {
+        out.push_str(&code[last..start]);
+        let lines = code[start..end]
+            .matches('\n')
+            .count()
+            .saturating_sub(text.matches('\n').count());
+        out.push_str(&text);
+        out.push_str(&"\n".repeat(lines));
+        step.push(crate::dce::Replaced {
+            start,
+            end,
+            len: text.len() + lines,
+            moved: Vec::new(),
+        });
+        last = end;
+    }
+    out.push_str(&code[last..]);
+    let mut map = crate::dce::EditMap::default();
+    map.push(step);
+    // The compiler then runs its dead-code pass with the candidates it found
+    // before the edit (`findReferencedIdentifiers`): with the exports local,
+    // an exported declaration nothing reads goes (the route and its
+    // component, the imports only they used), as its export had it read;
+    // what nothing read before (`const unused = sideEffect();`), or was
+    // removable already (a self-recursive helper), is no candidate and
+    // stays. The siblings stay, exported.
+    let out = crate::dce::drop_dead_bindings(code, out, rel, &map);
+    let at = prologue_end(&parsed.program, code);
+    let sep = if at > 0 && !code[..at].ends_with('\n') {
+        " "
+    } else {
+        ""
+    };
+    Some(format!(
+        "{}{sep}import {{ createServerRpc }} from \"@tanstack/react-start/server-rpc\"; {}",
+        &out[..at],
+        &out[at..]
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientRewriteError(pub String);
 
@@ -988,6 +1139,54 @@ pub fn rewrite_client(
     code: &str,
     rel: &str,
     modules: &dyn Modules,
+) -> Result<Option<String>, ClientRewriteError> {
+    rewrite_callers(code, rel, modules, Caller::Client)
+}
+
+/// Start's build-time server module that is not the provider (its compiler's
+/// "ssr" caller): each handler becomes `createSsrRpc("<id>")`, a stub that
+/// reaches the handler through the resolver's `getServerFnById`, and the
+/// module imports it from `@tanstack/react-start/ssr-rpc`. The handler's
+/// body lives in the provider module alone ([`rewrite_server_provider`]), a
+/// chunk of its own that loads when first called; oj kept every handler in
+/// the module that declared it, so a server function's module was one
+/// chunk where `vite build` writes two. Validators stay (the compiler strips
+/// them for the client only).
+pub fn rewrite_ssr_caller(
+    code: &str,
+    rel: &str,
+    modules: &dyn Modules,
+) -> Result<Option<String>, ClientRewriteError> {
+    rewrite_callers(code, rel, modules, Caller::Ssr)
+}
+
+#[derive(Clone, Copy)]
+enum Caller {
+    Client,
+    Ssr,
+}
+
+impl Caller {
+    fn stub(self) -> &'static str {
+        match self {
+            Caller::Client => "createClientRpc",
+            Caller::Ssr => "createSsrRpc",
+        }
+    }
+
+    fn import(self) -> &'static str {
+        match self {
+            Caller::Client => "@tanstack/react-start/client-rpc",
+            Caller::Ssr => "@tanstack/react-start/ssr-rpc",
+        }
+    }
+}
+
+fn rewrite_callers(
+    code: &str,
+    rel: &str,
+    modules: &dyn Modules,
+    caller: Caller,
 ) -> Result<Option<String>, ClientRewriteError> {
     if !may_declare(code) {
         return Ok(None);
@@ -1018,10 +1217,12 @@ pub fn rewrite_client(
         edits.push((
             arg_start,
             arg_end,
-            format!("createClientRpc({:?})", server_fn_id(rel, &f.name)),
+            format!("{}({:?})", caller.stub(), server_fn_id(rel, &f.name)),
         ));
-        for &(start, end) in &f.stripped_links {
-            edits.push((start, end, String::new()));
+        if matches!(caller, Caller::Client) {
+            for &(start, end) in &f.stripped_links {
+                edits.push((start, end, String::new()));
+            }
         }
     }
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
@@ -1052,8 +1253,10 @@ pub fn rewrite_client(
         ""
     };
     Ok(Some(format!(
-        "{}{sep}import {{ createClientRpc }} from \"@tanstack/react-start/client-rpc\"; {}",
+        "{}{sep}import {{ {} }} from \"{}\"; {}",
         &out[..at],
+        caller.stub(),
+        caller.import(),
         &out[at..]
     )))
 }
@@ -1111,6 +1314,146 @@ mod tests {
         super::rewrite_server(code, rel, &())
     }
 
+    fn provider(code: &str, rel: &str) -> String {
+        super::rewrite_server_provider(code, rel, &()).expect("has a server fn")
+    }
+
+    fn ssr(code: &str, rel: &str) -> String {
+        super::rewrite_ssr_caller(code, rel, &())
+            .expect("rewrites")
+            .expect("has a server fn")
+    }
+
+    // Start's provider output for this module (`?tss-serverfn-split`): the
+    // exports go local (`safeRemoveExports` unwraps function, class and
+    // variable exports, drops export lists, keeps `export enum E` and
+    // `export * as ns`), the handler call's arguments become the sibling and
+    // the handler (`"extra"` and `"more"` gone), and its dead-code pass runs
+    // with the candidates found before the edit, so `Route`, `Comp` and
+    // `createFileRoute` go while `const unused = sideEffect();` and `selfRec`
+    // stay:
+    //   import { createServerRpc } from '@tanstack/react-start/server-rpc';
+    //   import { createServerFn } from "@tanstack/react-start";
+    //   const unused = sideEffect();
+    //   function selfRec() {
+    //     return selfRec();
+    //   }
+    //   export enum E {
+    //     A,
+    //   }
+    //   export * as ns from "./other";
+    //   const fn_createServerFn_handler = createServerRpc({
+    //     id: "..",
+    //     name: "fn",
+    //     filename: "src/provider.ts"
+    //   }, opts => fn.__executeServer(opts));
+    //   const fn = createServerFn().handler(fn_createServerFn_handler, async () => 1);
+    //   export { fn_createServerFn_handler };
+    #[test]
+    fn the_provider_keeps_what_start_keeps_and_passes_the_handler_alone() {
+        let code = "import { createServerFn } from \"@tanstack/react-start\";\nimport { createFileRoute } from \"@tanstack/react-router\";\nconst unused = sideEffect();\nfunction selfRec() { return selfRec(); }\nexport enum E { A }\nexport * as ns from \"./other\";\nexport { a, b } from \"./x\";\nexport default function Comp() { return 1 }\nexport const Route = createFileRoute(\"/\")({ component: Comp });\nexport const fn = createServerFn().handler(async () => 1, \"extra\",\n  \"more\");\n";
+        let rel = "src/provider.ts";
+        let out = provider(code, rel);
+        for kept in [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "const unused = sideEffect();",
+            "function selfRec() { return selfRec(); }",
+            "export enum E { A }",
+            "export * as ns from \"./other\";",
+            // The dropped `"more"` line's newline pads the call, keeping lines.
+            "const fn = createServerFn().handler(fn_createServerFn_handler, async () => 1\n);",
+        ] {
+            assert!(out.contains(kept), "{kept}:\n{out}");
+        }
+        for gone in [
+            "createFileRoute",
+            "Comp",
+            "Route",
+            "export { a, b }",
+            "\"extra\"",
+            "\"more\"",
+        ] {
+            assert!(!out.contains(gone), "{gone}:\n{out}");
+        }
+        assert!(
+            out.ends_with("\nexport { fn_createServerFn_handler };\n"),
+            "{out}"
+        );
+        assert_eq!(out.lines().count(), code.lines().count() + 2, "{out}");
+        parses(&out, rel);
+    }
+
+    /// Start's build splits a server module in two: the provider
+    /// (`?tss-serverfn-split`) keeps the handlers, exported under their
+    /// sibling names alone, and the caller the module's own exports with
+    /// `createSsrRpc(id)` where the handlers were.
+    #[test]
+    fn a_build_splits_a_server_module_into_provider_and_ssr_caller() {
+        let code = [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "export const helper = 1;",
+            "export const a = createServerFn().inputValidator((d: string) => d).handler(async () => \"a-secret\");",
+            "const b = createServerFn().handler(async () => \"b-secret\");",
+            "export { b };",
+            "export default function Page() { return a(); }",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/abc.ts";
+        let out = provider(&code, rel);
+        assert!(
+            out.starts_with(
+                "import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "
+            ),
+            "{out}"
+        );
+        assert!(
+            !out.contains("helper"),
+            "an export nothing reads goes with its export: {out}"
+        );
+        assert!(
+            out.contains("const a_createServerFn_handler = createServerRpc({ id: "),
+            "{out}"
+        );
+        assert!(out.contains("const a = createServerFn().inputValidator((d: string) => d).handler(a_createServerFn_handler, async () => \"a-secret\");"), "{out}");
+        assert!(
+            !out.contains("function Page"),
+            "a default export nothing reads goes: {out}"
+        );
+        assert!(!out.contains("export { b };"), "an export list goes: {out}");
+        assert!(
+            out.ends_with("\nexport { a_createServerFn_handler, b_createServerFn_handler };\n"),
+            "{out}"
+        );
+        parses(&out, rel);
+
+        let out = ssr(&code, rel);
+        assert!(
+            out.starts_with("import { createSsrRpc } from \"@tanstack/react-start/ssr-rpc\"; "),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                ".inputValidator((d: string) => d).handler(createSsrRpc({:?}));",
+                server_fn_id(rel, "a")
+            )),
+            "the validator stays, the handler is the stub: {out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "const b = createServerFn().handler(createSsrRpc({:?}));",
+                server_fn_id(rel, "b")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("secret"), "no handler body: {out}");
+        assert!(
+            out.contains("export const helper = 1;") && out.contains("export { b };"),
+            "the module's exports stay: {out}"
+        );
+        parses(&out, rel);
+    }
+
     const CLIENT_IMPORT: &str =
         "import { createClientRpc } from \"@tanstack/react-start/client-rpc\"; ";
 
@@ -1140,8 +1483,13 @@ mod tests {
     }
 
     #[test]
-    fn ids_match_node_buffer_base64url() {
-        assert_eq!(server_fn_id("src/a.ts", "fn"), "c3JjL2EudHMjZm4");
+    /// Start's build id, byte for byte: `crypto.createHash("sha256")
+    /// .update("src/a.ts--fn_createServerFn_handler").digest("hex")` in Node.
+    fn ids_match_starts_build_compiler() {
+        assert_eq!(
+            server_fn_id("src/a.ts", "fn"),
+            "4b207f3574b43104400e700f332ee8ee151a07a49b4beb52af08ada389b98aeb"
+        );
     }
 
     /// Start 1.171's dev id, byte for byte: `Buffer.from(JSON.stringify({ file:
@@ -1513,7 +1861,7 @@ mod tests {
         parses(&out, rel);
         let server = rewrite_server(&code, rel).unwrap();
         assert!(
-            server.contains("export const b_createServerFn_handler = createServerRpc({ id: \"c3JjL2FiYy50cyNi\", name: \"b\", filename: \"src/abc.ts\" }, (opts) => b.__executeServer(opts)); var b = createServerFn().handler(b_createServerFn_handler, async () => \"b-secret\");"),
+            server.contains("export const b_createServerFn_handler = createServerRpc({ id: \"8ad150d11648c88f59524e2900801270a15b00e264896493383d83ab8f5b4f92\", name: \"b\", filename: \"src/abc.ts\" }, (opts) => b.__executeServer(opts)); var b = createServerFn().handler(b_createServerFn_handler, async () => \"b-secret\");"),
             "{server}"
         );
         assert!(

@@ -1,0 +1,115 @@
+{
+  "_app-boot-HASH.js": {
+    "file": "assets/app-boot-HASH.js",
+    "name": "app-boot",
+    "imports": [
+      "_rolldown-runtime-HASH.js",
+      "_vendor-router-HASH.js",
+      "_vendor-react-HASH.js"
+    ]
+  },
+  "_en-HASH.js": {
+    "file": "assets/i18n-fn/en-HASH.js",
+    "name": "i18n-fn/en"
+  },
+  "_fr-HASH.js": {
+    "file": "assets/i18n-fn/fr-HASH.js",
+    "name": "i18n-fn/fr"
+  },
+  "_lazy-commons-HASH.js": {
+    "file": "assets/lazy-commons-HASH.js",
+    "name": "lazy-commons"
+  },
+  "_rolldown-runtime-HASH.js": {
+    "file": "assets/rolldown-runtime-HASH.js",
+    "name": "rolldown-runtime"
+  },
+  "_vendor-react-HASH.js": {
+    "file": "assets/vendor-react-HASH.js",
+    "name": "vendor-react",
+    "imports": [
+      "_rolldown-runtime-HASH.js"
+    ]
+  },
+  "_vendor-router-HASH.css": {
+    "file": "assets/vendor-router-HASH.css",
+    "src": "_vendor-router-HASH.css"
+  },
+  "_vendor-router-HASH.js": {
+    "file": "assets/vendor-router-HASH.js",
+    "name": "vendor-router",
+    "imports": [
+      "_rolldown-runtime-HASH.js",
+      "_vendor-react-HASH.js"
+    ],
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component",
+      "src/routes/dashboard.tsx?tsr-split=component",
+      "src/i18n/fr.ts",
+      "src/i18n/en.ts",
+      "src/routes/settings.tsx?tsr-split=component"
+    ],
+    "css": [
+      "assets/vendor-router-HASH.css"
+    ]
+  },
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "imports": [
+      "_app-boot-HASH.js"
+    ]
+  },
+  "src/i18n/en.ts": {
+    "file": "assets/en-HASH.js",
+    "name": "en",
+    "src": "src/i18n/en.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_en-HASH.js"
+    ]
+  },
+  "src/i18n/fr.ts": {
+    "file": "assets/fr-HASH.js",
+    "name": "fr",
+    "src": "src/i18n/fr.ts",
+    "isDynamicEntry": true,
+    "imports": [
+      "_fr-HASH.js"
+    ]
+  },
+  "src/routes/dashboard.tsx?tsr-split=component": {
+    "file": "assets/dashboard-HASH.js",
+    "name": "dashboard",
+    "src": "src/routes/dashboard.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "_lazy-commons-HASH.js",
+      "_vendor-router-HASH.js",
+      "_vendor-react-HASH.js"
+    ]
+  },
+  "src/routes/index.tsx?tsr-split=component": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "_vendor-router-HASH.js",
+      "_lazy-commons-HASH.js",
+      "_vendor-react-HASH.js"
+    ]
+  },
+  "src/routes/settings.tsx?tsr-split=component": {
+    "file": "assets/settings-HASH.js",
+    "name": "settings",
+    "src": "src/routes/settings.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "_lazy-commons-HASH.js",
+      "_vendor-react-HASH.js"
+    ]
+  }
+}

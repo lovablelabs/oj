@@ -1,0 +1,15 @@
+{
+  "name": "golden-start-code-split",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tanstack/react-router": "*",
+    "@tanstack/react-start": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "*",
+    "vite": "*"
+  }
+}

@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-HASH.js";var t=e();function n(){return(0,t.jsx)(`span`,{className:`spinner`,children:`loading`})}export{n as t};
