@@ -2470,11 +2470,9 @@ impl Plugin for StartAssetsPlugin {
         // map lists the asset's source.
         let path_str = path.to_string_lossy();
         let dev = matches!(self.mode, AssetMode::Dev { .. });
-        let empty_map = is_style_path(&path_str)
-            || matches!(
-                asset_tag(&self.root, id.trim_start_matches('\0'), dev),
-                Some(AssetTag::Worker { .. })
-            );
+        let tag = asset_tag(&self.root, id.trim_start_matches('\0'), dev);
+        let empty_map = (is_style_path(&path_str) && !matches!(tag, Some(AssetTag::Raw)))
+            || matches!(tag, Some(AssetTag::Worker { .. }));
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),

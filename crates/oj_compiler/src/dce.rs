@@ -811,7 +811,7 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
                 let gone = |span: Span| Edit {
                     start: span.start as usize,
                     end: span.end as usize,
-                    with: "",
+                    with: removed_import_text(code, &parsed.program.body, span),
                 };
                 if i.import_kind.is_type() {
                     edits.push(gone(i.span));
@@ -875,6 +875,63 @@ fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> 
 
 /// `code` with `edits` applied (an edit inside an earlier one is skipped),
 /// each padded with the newlines it removed, and what each one did.
+/// What a removed import leaves in `body`: nothing when the statements
+/// around it stay apart without it (none before it, or one ending in `;` or
+/// `}`, or an import or export after it, which no expression continues
+/// into, so ASI ends the one before), else `;`, as any removed statement
+/// leaves (`foo()` and `[1].forEach()` must not meet). Babel's printer
+/// writes the semicolons itself; oj splices the text as written.
+fn removed_import_text(
+    code: &str,
+    body: &[oxc_ast::ast::Statement<'_>],
+    span: Span,
+) -> &'static str {
+    use oxc_ast::ast::Statement;
+    let Some(at) = body.iter().position(|s| s.span() == span) else {
+        return ";";
+    };
+    let next_safe = body.get(at + 1).is_none_or(|s| {
+        matches!(
+            s,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+        )
+    });
+    // A `}` ends the statement before only when that statement is a
+    // declaration or a block (`const f = function () {}` is an expression
+    // `(g)()` would continue).
+    let prev_safe = at == 0 || {
+        let prev = &body[at - 1];
+        let text = code[..prev.span().end as usize].trim_end();
+        text.ends_with(';')
+            || (text.ends_with('}')
+                && matches!(
+                    prev,
+                    Statement::FunctionDeclaration(_)
+                        | Statement::ClassDeclaration(_)
+                        | Statement::BlockStatement(_)
+                        | Statement::IfStatement(_)
+                        | Statement::ForStatement(_)
+                        | Statement::ForInStatement(_)
+                        | Statement::ForOfStatement(_)
+                        | Statement::WhileStatement(_)
+                        | Statement::TryStatement(_)
+                        | Statement::SwitchStatement(_)
+                        | Statement::ExportNamedDeclaration(_)
+                        | Statement::ExportDefaultDeclaration(_)
+                        | Statement::TSEnumDeclaration(_)
+                        | Statement::TSInterfaceDeclaration(_)
+                ))
+    };
+    if next_safe || prev_safe {
+        ""
+    } else {
+        ";"
+    }
+}
+
 fn apply_edits(code: &str, mut edits: Vec<Edit>) -> (String, Vec<Applied>) {
     edits.sort_by_key(|e| (e.start, std::cmp::Reverse(e.end)));
     let mut out = String::with_capacity(code.len());
@@ -1098,7 +1155,8 @@ impl Removals<'_, '_, '_> {
     }
 
     fn remove_import(&mut self, span: Span) {
-        self.remove_statement_with(span, "");
+        let with = removed_import_text(self.a.code, &self.a.program.body, span);
+        self.remove_statement_with(span, with);
     }
 
     fn remove_statement_with(&mut self, span: Span, plain: &'static str) {

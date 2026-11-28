@@ -153,6 +153,10 @@ pub struct CssConfig {
     /// Vite's `css.lightningcss`, as JSON (its build minify spreads it into
     /// lightningcss; see oj_css's `LightningOptions`).
     pub lightningcss: Option<serde_json::Value>,
+    /// Vite's `css.transformer`: `"postcss"` (its default) or
+    /// `"lightningcss"`, which has its compile pass lower every sheet to the
+    /// baseline browsers.
+    pub transformer: Option<String>,
 }
 
 /// Vite's `css.modules` as it crosses the config boundary: functions arrive

@@ -1,1 +1,1 @@
-export default {};
+export default { build: { manifest: true } };

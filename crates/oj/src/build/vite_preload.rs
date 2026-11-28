@@ -139,14 +139,9 @@ impl Plugin for BuildImportAnalysisPlugin {
     }
 
     /// The modern flag set, as Vite's build import analysis sets it in its
-    /// renderChunk: `true` under es output, and with source maps on a
-    /// magic-string map of the edit (hires "boundary"), which rolldown
-    /// composes with the chunk's map and then the minifier's. The
-    /// composition through that map shapes Vite's final map (a segment per
-    /// word start and per other character), so oj makes the same one; it
-    /// used to pad the flag to its own length and return no map, which kept
-    /// the chunk's positions but composed the minifier's map directly, with
-    /// other segments than Vite's in every chunk holding the helper.
+    /// renderChunk: `true` under es output, padded to the flag's length so
+    /// the chunk's mappings hold, and `map: null`, which adds nothing to the
+    /// chunk's sourcemap chain (importAnalysisBuild.ts, `isModernWithPadding`).
     async fn render_chunk(
         &self,
         _ctx: &PluginContext,
@@ -160,29 +155,13 @@ impl Plugin for BuildImportAnalysisPlugin {
         } else {
             "false"
         };
-        if !args.options.is_sourcemap_enabled() {
-            return Ok(Some(HookRenderChunkOutput {
-                code: args.code.replace(IS_MODERN_FLAG, modern),
-                map: HookTransformOutputMap::Null,
-            }));
-        }
-        let mut s = string_wizard::MagicString::new(args.code.as_str());
-        let mut at = 0;
-        while let Some(found) = args.code[at..].find(IS_MODERN_FLAG) {
-            let start = at + found;
-            let end = start + IS_MODERN_FLAG.len();
-            s.update(start as u32, end as u32, modern)
-                .map_err(|e| anyhow::anyhow!("import analysis: {e}"))?;
-            at = end;
-        }
-        let map = s.source_map(string_wizard::SourceMapOptions {
-            include_content: false,
-            source: "".into(),
-            hires: string_wizard::Hires::Boundary,
-        });
+        let padded = format!(
+            "{modern}{}",
+            " ".repeat(IS_MODERN_FLAG.len() - modern.len())
+        );
         Ok(Some(HookRenderChunkOutput {
-            code: s.to_string(),
-            map: map.into(),
+            code: args.code.replace(IS_MODERN_FLAG, &padded),
+            map: HookTransformOutputMap::Null,
         }))
     }
 }

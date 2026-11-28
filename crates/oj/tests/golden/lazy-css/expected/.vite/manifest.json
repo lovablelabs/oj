@@ -1,0 +1,38 @@
+{
+  "index.html": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/styles-only.js",
+      "src/widget.js"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/styles-only.js": {
+    "file": "assets/styles-only-HASH.js",
+    "name": "styles-only",
+    "src": "src/styles-only.js",
+    "isDynamicEntry": true,
+    "css": [
+      "assets/styles-only-HASH.css",
+      "assets/theme-HASH.css"
+    ]
+  },
+  "src/theme.css": {
+    "file": "assets/theme-HASH.css",
+    "src": "src/theme.css"
+  },
+  "src/widget.js": {
+    "file": "assets/widget-HASH.js",
+    "name": "widget",
+    "src": "src/widget.js",
+    "isDynamicEntry": true,
+    "css": [
+      "assets/widget-HASH.css"
+    ]
+  }
+}

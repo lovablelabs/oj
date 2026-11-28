@@ -81,10 +81,10 @@ pub fn compile_css_with_scope_source(
 }
 
 /// [`compile_css_with`] for a build, `lowered` saying whether Vite's compile
-/// pass runs lightningcss on this sheet: it does with no PostCSS config for
-/// a CSS module, a sheet with an `@import` or one with a `url()`, lowering
-/// to its `css.lightningcss.targets` (the baseline browsers by default), and
-/// leaves every other sheet as written or as PostCSS printed it. The chunk's
+/// pass runs lightningcss on this sheet: it does under `css.transformer:
+/// "lightningcss"`, lowering to its `css.lightningcss.targets` (the baseline
+/// browsers by default); under its default transformer, PostCSS, it leaves
+/// every sheet as written or as PostCSS printed it. The chunk's
 /// final minify ([`crate::finalize_chunk_css`]) lowers to `build.cssTarget`
 /// either way, so a sheet Vite lowers once is lowered once here too: a
 /// lowering adds to a sheet (a vendor-prefixed copy of a declaration beside
@@ -120,6 +120,12 @@ pub fn compile_scoped_css_for_build(
     resolve: &CssResolve<'_>,
     lowered: bool,
 ) -> Result<CssOutput, String> {
+    if !resolve.minify && !lowered {
+        return Ok(CssOutput {
+            css: source.to_string(),
+            exports: None,
+        });
+    }
     let mode = Mode {
         minify: resolve.minify,
         scoped: true,
