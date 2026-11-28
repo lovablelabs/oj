@@ -490,16 +490,22 @@ fn apply_locals_convention(
 
 /// The export map with `composes` expanded as postcss-modules exports it: the
 /// scoped name, then every composed class (locals transitively, globals as
-/// written, `from "./other.css"` compiled from that file), sorted by name.
+/// written, `from "./other.css"` compiled from that file), in the order the
+/// `source` declares the locals (a name the source does not declare as a
+/// class, a keyframes name say, after those, by name); and the sheets of the
+/// `from` files, in the order they were first named, which postcss-modules
+/// prepends to the module's own sheet.
 pub(crate) fn module_exports(
     map: CssModuleExports,
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Vec<(String, String)> {
+    source: &str,
+) -> (Vec<(String, String)>, String) {
     let composer = Composer {
         by_scoped: map.values().map(|e| (e.name.as_str(), e)).collect(),
         deps: RefCell::default(),
+        dep_order: RefCell::default(),
         url,
         resolve,
         depth,
@@ -508,14 +514,62 @@ pub(crate) fn module_exports(
         .iter()
         .map(|(name, export)| (name.clone(), composer.value(export, &mut Vec::new())))
         .collect();
-    pairs.sort();
-    apply_locals_convention(pairs, resolve.modules.locals_convention.as_deref())
+    pairs.sort_by_cached_key(|(name, _)| (class_position(source, name), name.clone()));
+    let deps = composer.deps.borrow();
+    let prepended: String = composer
+        .dep_order
+        .borrow()
+        .iter()
+        .filter_map(|spec| {
+            deps.get(spec)
+                .and_then(|d| d.as_ref())
+                .map(|(_, css)| css.as_str())
+        })
+        .collect();
+    (
+        apply_locals_convention(pairs, resolve.modules.locals_convention.as_deref()),
+        prepended,
+    )
+}
+
+/// Where `source` first declares `name` as a local (a class `.name`, an id
+/// `#name` or a `@keyframes name`, the name followed by a character no
+/// identifier continues), else past the end: postcss-modules exports the
+/// locals in the order its walk meets them.
+fn class_position(source: &str, name: &str) -> usize {
+    [
+        format!(".{name}"),
+        format!("#{name}"),
+        format!("@keyframes {name}"),
+    ]
+    .iter()
+    .filter_map(|needle| {
+        let mut from = 0;
+        while let Some(found) = source[from..].find(needle.as_str()) {
+            let at = from + found;
+            let end = at + needle.len();
+            let continues = source[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '\\');
+            if !continues {
+                return Some(at);
+            }
+            from = end;
+        }
+        None
+    })
+    .min()
+    .unwrap_or(usize::MAX)
 }
 
 struct Composer<'a> {
     by_scoped: HashMap<&'a str, &'a CssModuleExport>,
-    /// Export maps of `from "..."` files by specifier, each compiled once.
-    deps: RefCell<HashMap<&'a str, Option<HashMap<String, String>>>>,
+    /// Export maps and sheets of `from "..."` files by specifier, each
+    /// compiled once.
+    deps: RefCell<HashMap<&'a str, Option<(HashMap<String, String>, String)>>>,
+    /// The specifiers in the order first named.
+    dep_order: RefCell<Vec<&'a str>>,
     url: &'a str,
     resolve: &'a CssResolve<'a>,
     depth: u8,
@@ -541,9 +595,10 @@ impl<'a> Composer<'a> {
                 CssModuleReference::Dependency { name, specifier } => {
                     let mut deps = self.deps.borrow_mut();
                     let exports = deps.entry(specifier).or_insert_with(|| {
+                        self.dep_order.borrow_mut().push(specifier);
                         dependency_exports(specifier, self.url, self.resolve, self.depth)
                     });
-                    match exports.as_ref().and_then(|e| e.get(name)) {
+                    match exports.as_ref().and_then(|(e, _)| e.get(name)) {
                         Some(v) => v.clone(),
                         None => {
                             eprintln!(
@@ -564,14 +619,15 @@ impl<'a> Composer<'a> {
     }
 }
 
-/// The export map of the module file a `composes: ... from "spec"` names
-/// (relative, root-absolute or aliased), compiled with the same settings.
+/// The export map and the sheet of the module file a `composes: ... from
+/// "spec"` names (relative, root-absolute or aliased), compiled with the
+/// same settings.
 fn dependency_exports(
     spec: &str,
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Option<HashMap<String, String>> {
+) -> Option<(HashMap<String, String>, String)> {
     if depth > 8 {
         return None;
     }
@@ -596,7 +652,7 @@ fn dependency_exports(
     };
     let out =
         compile_css_depth(&dep_url, &source, None, Mode::default(), resolve, depth + 1).ok()?;
-    Some(out.exports?.into_iter().collect())
+    Some((out.exports?.into_iter().collect(), out.css))
 }
 
 #[cfg(test)]
@@ -867,11 +923,15 @@ mod tests {
     // keyframes name is line 1 and `\r\n` counts as two lines.
     #[test]
     fn default_scoped_names_are_vites() {
+        // The map comes in source order (the goldens check that); the names
+        // are what this test is about, so both sides are sorted.
         let names = |url: &str, src: &str| {
-            compile_css(url, src, false)
+            let mut v = compile_css(url, src, false)
                 .unwrap()
                 .exports
-                .expect("module exports")
+                .expect("module exports");
+            v.sort();
+            v
         };
         let pairs = |list: &[(&str, &str)]| {
             let mut v: Vec<(String, String)> = list

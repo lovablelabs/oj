@@ -324,6 +324,16 @@ impl Plugin for StartCodePlugin {
             }
         }
 
+        // Vite's dynamic-import-vars runs ahead of import-glob: a variable
+        // `import(\`./x/${name}.ts\`)` becomes a call of rolldown's helper
+        // over the `import.meta.glob` of the files it can name, which the
+        // block below expands (the plugin's exclude is node_modules).
+        if app && code.contains("import(") {
+            let out = oj_compiler::glob::expand_dynamic_import_vars_vite_source(&code, &file);
+            if out != code {
+                code = Cow::Owned(out);
+            }
+        }
         // App code always expands its globs; a dependency only the ones a URL
         // rewrite produced (Vite runs the glob plugin on every module, and a
         // dependency's own globs come prebuilt).

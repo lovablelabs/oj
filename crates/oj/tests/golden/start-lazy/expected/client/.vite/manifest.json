@@ -1,0 +1,74 @@
+{
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component---loader",
+      "src/routes/index.tsx?tsr-split=errorComponent---notFoundComponent---pendingComponent"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/components/chart.tsx": {
+    "file": "assets/chart-HASH.js",
+    "name": "chart",
+    "src": "src/components/chart.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ],
+    "css": [
+      "assets/chart-HASH.css"
+    ]
+  },
+  "src/locales/en.ts": {
+    "file": "assets/en-HASH.js",
+    "name": "en",
+    "src": "src/locales/en.ts",
+    "isDynamicEntry": true
+  },
+  "src/locales/fr.ts": {
+    "file": "assets/fr-HASH.js",
+    "name": "fr",
+    "src": "src/locales/fr.ts",
+    "isDynamicEntry": true
+  },
+  "src/routes/index.tsx?tsr-split=component---loader": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component---loader",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ],
+    "dynamicImports": [
+      "src/components/chart.tsx",
+      "src/locales/en.ts",
+      "src/locales/fr.ts"
+    ]
+  },
+  "src/routes/index.tsx?tsr-split=errorComponent---notFoundComponent---pendingComponent": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=errorComponent---notFoundComponent---pendingComponent",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx"
+    ]
+  },
+  "src/themes/dark.css": {
+    "file": "assets/dark-HASH.css",
+    "src": "src/themes/dark.css"
+  },
+  "src/themes/high-HASH.css": {
+    "file": "assets/high-contrast-HASH.css",
+    "src": "src/themes/high-HASH.css"
+  },
+  "src/themes/light.css": {
+    "file": "assets/light-HASH.css",
+    "src": "src/themes/light.css"
+  }
+}

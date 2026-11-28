@@ -1,0 +1,1 @@
+import{a as e,i as t,r as n}from"./index-HASH.js";import{f as r}from"./preload-helper-HASH.js";var i=r();function a(){let{side:r,secret:a}=n.useLoaderData();return(0,i.jsxs)(`main`,{children:[(0,i.jsx)(`p`,{children:r}),(0,i.jsx)(`p`,{children:a}),(0,i.jsx)(`button`,{onClick:()=>console.log(e(),t()),children:`measure`})]})}export{a as component};

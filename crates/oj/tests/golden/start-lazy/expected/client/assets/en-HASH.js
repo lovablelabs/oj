@@ -1,0 +1,1 @@
+var e={hello:`hello`};export{e as default};

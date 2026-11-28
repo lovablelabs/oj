@@ -1,0 +1,67 @@
+{
+  "_jsx-runtime-HASH.js": {
+    "file": "assets/jsx-runtime-HASH.js",
+    "name": "jsx-runtime"
+  },
+  "_preload-helper-HASH.js": {
+    "file": "assets/preload-helper-HASH.js",
+    "name": "preload-helper",
+    "imports": [
+      "_jsx-runtime-HASH.js"
+    ]
+  },
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "imports": [
+      "_preload-helper-HASH.js",
+      "_jsx-runtime-HASH.js"
+    ],
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component",
+      "src/routes/old.tsx?tsr-split=component",
+      "src/routes/items.$id.tsx?tsr-split=component",
+      "src/routes/items.$id.tsx?tsr-split=notFoundComponent"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/routes/index.tsx?tsr-split=component": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx",
+      "_jsx-runtime-HASH.js"
+    ]
+  },
+  "src/routes/items.$id.tsx?tsr-split=component": {
+    "file": "assets/items._id-HASH.js",
+    "name": "items._id",
+    "src": "src/routes/items.$id.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx",
+      "_jsx-runtime-HASH.js"
+    ]
+  },
+  "src/routes/items.$id.tsx?tsr-split=notFoundComponent": {
+    "file": "assets/items._id-HASH.js",
+    "name": "items._id",
+    "src": "src/routes/items.$id.tsx?tsr-split=notFoundComponent",
+    "isDynamicEntry": true,
+    "imports": [
+      "_jsx-runtime-HASH.js"
+    ]
+  },
+  "src/routes/old.tsx?tsr-split=component": {
+    "file": "assets/old-HASH.js",
+    "name": "old",
+    "src": "src/routes/old.tsx?tsr-split=component",
+    "isDynamicEntry": true
+  }
+}

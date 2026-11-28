@@ -84,6 +84,13 @@ const CASES: &[&str] = &[
     "start-chunks",
     "start-plugins",
     "start-sourcemap",
+    "start-isomorphic",
+    "start-search",
+    "start-tailwind",
+    "start-svgr",
+    "start-lazy",
+    "start-esbuild",
+    "start-css-no-split",
 ];
 
 /// The part of a case's output that is compared, when not all of it: oj's
@@ -464,6 +471,12 @@ golden! {
     start_defines_per_environment_and_env => "start-env",
     start_client_chunk_groups_and_name_functions => "start-chunks",
     start_app_plugins_on_the_client_environment => "start-plugins",
+    start_isomorphic_server_only_and_client_only_fns => "start-isomorphic",
+    start_search_params_redirects_typed_params_and_head_scripts => "start-search",
+    start_tailwind_a_css_module_and_a_sass_sheet => "start-tailwind",
+    start_svgr_base_path_and_public_assets => "start-svgr",
+    start_react_lazy_dynamic_sheets_and_variable_imports => "start-lazy",
+    start_esbuild_minify_and_an_older_target => "start-esbuild",
 }
 
 /// A TanStack Start app's client bundle. The HTML, the manifest and every
@@ -514,6 +527,18 @@ fn asset_url_and_worker_url_from_import_meta_url() {
 #[ignore = "a few segments of the maps differ: a worker's new URL(…, import.meta.url) tokens, a route's import expression's column"]
 fn start_client_sourcemaps_name_assets_but_no_raw_file_or_sheet() {
     check("start-sourcemap");
+}
+
+/// A Start app under `build.cssCodeSplit: false`: Vite's css-post gathers
+/// every chunk's CSS into one `style-<hash>.css` (the entries' chunks, their
+/// static imports, then the dynamic ones), with a manifest row of its own
+/// keyed `style.css` and none on the chunks, and Start's manifest plugin
+/// links that one sheet at the root route. oj's Start build still writes a
+/// sheet per chunk and lists it on the entry's row. A known gap.
+#[test]
+#[ignore = "oj's Start build splits the client's CSS per chunk under cssCodeSplit: false, where Vite writes one style.css"]
+fn start_one_stylesheet_for_the_client() {
+    check("start-css-no-split");
 }
 
 #[test]

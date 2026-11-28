@@ -165,19 +165,19 @@ pub fn scope_css_module(
     let result = stylesheet
         .to_css(PrinterOptions::default())
         .map_err(|err| format!("css print error in {url}: {err}"))?;
-    let exports = match result.exports {
+    let (exports, composed) = match result.exports {
         Some(map) => {
             let map = match scoped {
                 true => keep_declared(map, &declared_locals(&result.code)),
                 false => map,
             };
-            module_exports(map, url, resolve, 0)
+            module_exports(map, url, resolve, 0, source)
         }
-        None => Vec::new(),
+        None => (Vec::new(), String::new()),
     };
     Ok(named_by_default(
         CssOutput {
-            css: result.code,
+            css: format!("{composed}{}", result.code),
             exports: Some(exports),
         },
         scoped.then(|| ScopedNames::new(scope_source, url, resolve)),
@@ -412,8 +412,8 @@ pub(crate) fn compile_css_depth(
     }
 
     let exports = match result.exports {
-        Some(map) => Some(
-            module_exports(
+        Some(map) => {
+            let (pairs, composed) = module_exports(
                 match &declared {
                     Some(declared) => keep_declared(map, declared),
                     None => map,
@@ -421,14 +421,21 @@ pub(crate) fn compile_css_depth(
                 url,
                 resolve,
                 depth,
+                source,
+            );
+            if !composed.is_empty() {
+                css = format!("{composed}{css}");
+            }
+            Some(
+                pairs
+                    .into_iter()
+                    .map(|(name, value)| match &names {
+                        Some(names) => (name, names.rename_value(&value)),
+                        None => (name, value),
+                    })
+                    .collect(),
             )
-            .into_iter()
-            .map(|(name, value)| match &names {
-                Some(names) => (name, names.rename_value(&value)),
-                None => (name, value),
-            })
-            .collect(),
-        ),
+        }
         // A module compiled in global mode still exports an (empty) map.
         None if is_module_file => Some(Vec::new()),
         None => None,

@@ -1,0 +1,8 @@
+.title {
+  font-family: var(--font-display);
+  composes: tight from "./tight.module.css";
+}
+
+.muted {
+  color: color-mix(in oklch, var(--color-brand) 40%, white);
+}

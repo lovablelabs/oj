@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use rolldown_common::ModuleType;
 use rolldown_plugin::{
-    HookLoadArgs, HookLoadOutput, HookLoadReturn, Plugin, SharedLoadPluginContext,
+    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput,
+    HookResolveIdReturn, Plugin, PluginContext, SharedLoadPluginContext,
 };
 
 use super::StartConfig;
@@ -1444,8 +1445,9 @@ impl Emitter {
             };
             let css = self.styles.tailwind(path, css).await?;
             let css = oj_server::style_slot(slots, css, "normal").await?;
+            let owner = link.then(|| path.to_string_lossy().into_owned());
             let css = self
-                .rewrite_urls(&css, path.parent().unwrap_or(path))
+                .rewrite_urls(&css, path.parent().unwrap_or(path), owner.as_deref())
                 .await?;
             let css = if self.minify {
                 format!("{}\n", self.styles.minify(path, &css)?)
@@ -1607,7 +1609,7 @@ impl Emitter {
         let css = self.styles.tailwind(path, css).await?;
         let css = oj_server::style_slot(slots, css, "normal").await?;
         let css = self
-            .rewrite_urls(&css, path.parent().unwrap_or(path))
+            .rewrite_urls(&css, path.parent().unwrap_or(path), None)
             .await?;
         let minify = if server {
             self.styles.minify_ssr
@@ -1623,8 +1625,16 @@ impl Emitter {
 
     /// Every relative `url(...)` of a sheet in `dir` emitted and pointed at
     /// its URL; `data:`, `http(s):`, `//`, `#` and root-absolute ones, and
-    /// missing files, stay as written.
-    async fn rewrite_urls(&self, css: &str, dir: &Path) -> Result<String, String> {
+    /// missing files, stay as written. A file emitted is an asset of the
+    /// module `owner` (a linked sheet's), as vite:css-post adds a chunk
+    /// sheet's url() files to the chunk's `importedAssets`, which the
+    /// manifest lists under `assets`.
+    async fn rewrite_urls(
+        &self,
+        css: &str,
+        dir: &Path,
+        owner: Option<&str>,
+    ) -> Result<String, String> {
         let mut out = String::with_capacity(css.len());
         let mut last = 0;
         for site in css_urls(css) {
@@ -1645,6 +1655,9 @@ impl Emitter {
             }
             let suffix = &target[clean.len()..];
             let url = self.asset_url(&normalize(&abs), target).await?;
+            if let Some(owner) = owner {
+                self.note_module_asset(owner, &url);
+            }
             out.push_str(&format!(
                 "url({})",
                 serde_json::Value::String(format!("{url}{suffix}"))
@@ -2058,6 +2071,10 @@ pub(crate) struct StartAssetsPlugin {
     root: PathBuf,
     styles: Arc<Styles>,
     mode: AssetMode,
+    /// The app's `public` directory, whose files an import by root-absolute
+    /// URL (`/robots.txt?url`, `/logo.png`) names, as vite:asset serves
+    /// them: never bundled, their URL under the base.
+    public_dir: Option<PathBuf>,
     /// The bundle's plugin host, whose "pre" and "normal" transforms a
     /// stylesheet runs through as it compiles ("post" ones run on the module
     /// this loads, as rolldown transforms it).
@@ -2076,6 +2093,7 @@ impl StartAssetsPlugin {
             root: root.to_path_buf(),
             styles,
             mode,
+            public_dir: None,
             plugins: None,
         }
     }
@@ -2083,6 +2101,52 @@ impl StartAssetsPlugin {
     pub fn with_plugins(mut self, host: Option<Arc<oj_server::plugins::PluginHost>>) -> Self {
         self.plugins = host;
         self
+    }
+
+    pub fn with_public_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.public_dir = dir;
+        self
+    }
+
+    /// vite:asset's checkPublicFile for a root-absolute import: a file under
+    /// `public` that no file under the root answers, imported as an asset
+    /// (`?url`, an asset extension, `assetsInclude`), is its own module.
+    fn public_asset_id(&self, spec: &str) -> Option<String> {
+        let public_dir = self.public_dir.as_ref()?;
+        let rest = spec.strip_prefix('/')?;
+        if rest.starts_with('/') {
+            return None;
+        }
+        let (path, query) = match rest.split_once('?') {
+            Some((p, q)) => (p, Some(q)),
+            None => (rest, None),
+        };
+        if path.is_empty() || self.root.join(path).exists() {
+            return None;
+        }
+        let params: Vec<&str> = query.map_or(vec![], |q| q.split('&').collect());
+        if params
+            .iter()
+            .any(|p| *p == "worker" || *p == "sharedworker")
+        {
+            return None;
+        }
+        let asset = params.contains(&"url")
+            || Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(oj_compiler::assets::is_asset_ext)
+            || oj_compiler::assets::is_included_asset(
+                &self.root,
+                &self.root.join(path).to_string_lossy(),
+            );
+        if !asset || crate::build::public_file(public_dir, path).is_none() {
+            return None;
+        }
+        Some(match query {
+            Some(q) => format!("{}{path}?{q}", crate::build::PUBLIC_FILE_ID),
+            None => format!("{}{path}", crate::build::PUBLIC_FILE_ID),
+        })
     }
 
     async fn url_for(&self, path: &Path) -> Result<String, String> {
@@ -2391,10 +2455,28 @@ impl Plugin for StartAssetsPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::Load
+        rolldown_plugin::HookUsage::ResolveId
+            | rolldown_plugin::HookUsage::Load
             | rolldown_plugin::HookUsage::RenderChunk
             | rolldown_plugin::HookUsage::AugmentChunkHash
             | rolldown_plugin::HookUsage::GenerateBundle
+    }
+
+    /// A public file's URL import, and rolldown's dynamic-import helper (the
+    /// module a variable `import()` expands to imports).
+    async fn resolve_id(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        if args.specifier == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID {
+            return Ok(Some(HookResolveIdOutput::from_id(
+                oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID,
+            )));
+        }
+        Ok(self
+            .public_asset_id(args.specifier)
+            .map(HookResolveIdOutput::from_id))
     }
 
     /// vite:css-post's renderChunk for a client chunk: its stylesheet,
@@ -2441,6 +2523,29 @@ impl Plugin for StartAssetsPlugin {
 
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
         let id = args.id;
+        if id == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID {
+            return Ok(Some(HookLoadOutput {
+                code: arcstr::ArcStr::from(oj_compiler::glob::DYNAMIC_IMPORT_HELPER_JS),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
+        }
+        // A public file's module: its URL under the base (vite:asset's
+        // publicFileToBuiltUrl), with no map, as that plugin returns none.
+        if let Some(rest) = id.strip_prefix(crate::build::PUBLIC_FILE_ID) {
+            let base = match &self.mode {
+                AssetMode::Build { emitter, .. } => emitter.base.clone(),
+                AssetMode::Dev { url_base, .. } => url_base.clone(),
+            };
+            let public_dir = self.public_dir.clone().unwrap_or_default();
+            let code = crate::build::public_file_module(&public_dir, rest, &base, false)
+                .map_err(|e| oj_server::load_error::load_failed(self.name(), id, e))?;
+            return Ok(Some(HookLoadOutput {
+                code: arcstr::ArcStr::from(code),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
+        }
         let path = Path::new(id.split('?').next().unwrap_or(id));
         // A `?url` sheet's compile, done by its `?url` module: what remains is
         // the module the "post" plugins see, empty as vite:css-post leaves it.

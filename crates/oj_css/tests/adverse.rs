@@ -154,7 +154,7 @@ fn css_module_class_names_are_scoped_even_when_they_collide() {
 }
 
 #[test]
-fn css_module_exports_are_sorted_and_complete() {
+fn css_module_exports_follow_the_source_and_are_complete() {
     let out = compile_css(
         "/src/A.module.css",
         ".z { color: red } .a { color: red } .m { color: red } \
@@ -164,8 +164,14 @@ fn css_module_exports_are_sorted_and_complete() {
     .unwrap();
     let exports = out.exports.expect("module exports");
     let names: Vec<&str> = exports.iter().map(|(k, _)| k.as_str()).collect();
-    // Ids are scoped and exported too, as the CSS Modules spec requires.
-    assert_eq!(names, ["a", "id", "m", "with-dash", "z"], "sorted, deduped");
+    // Ids are scoped and exported too, as the CSS Modules spec requires; the
+    // map lists each local once, where the sheet first declares it, as
+    // postcss-modules exports them.
+    assert_eq!(
+        names,
+        ["z", "a", "m", "id", "with-dash"],
+        "source order, deduped"
+    );
     for (name, scoped) in &exports {
         assert_ne!(name, scoped, "{name} not scoped");
     }

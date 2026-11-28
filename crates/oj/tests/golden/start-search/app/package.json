@@ -1,0 +1,16 @@
+{
+  "name": "golden-start-search",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tanstack/react-router": "*",
+    "@tanstack/react-start": "*",
+    "react": "*",
+    "react-dom": "*",
+    "zod": "*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "*",
+    "vite": "*"
+  }
+}

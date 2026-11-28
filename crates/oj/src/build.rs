@@ -908,10 +908,10 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// The id prefix of a public-dir file a JS module imports by its URL.
-const PUBLIC_FILE_ID: &str = "\0oj-public:/";
+pub(crate) const PUBLIC_FILE_ID: &str = "\0oj-public:/";
 
 /// `rest` (a root-absolute URL minus its `/`) as a file in the public dir.
-fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
+pub(crate) fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
     if public_dir.as_os_str().is_empty() {
         return None;
     }
@@ -925,7 +925,7 @@ fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
 /// is root-absolute, as Vite resolves a
 /// relative base to `/` for an SSR build. `?raw` is the file's text and
 /// `?inline` its data URL, read from the public dir (vite:asset's load).
-fn public_file_module(
+pub(crate) fn public_file_module(
     public_dir: &Path,
     id: &str,
     base: &str,

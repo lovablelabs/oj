@@ -1,0 +1,14 @@
+$gap: 12px;
+
+.about {
+  display: grid;
+  gap: $gap;
+
+  &__title {
+    font-size: 1.5rem;
+  }
+
+  @media (min-width: 600px) {
+    gap: $gap * 2;
+  }
+}

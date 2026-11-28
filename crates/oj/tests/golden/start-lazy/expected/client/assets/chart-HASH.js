@@ -1,0 +1,1 @@
+import{r as e}from"./index-HASH.js";var t=e();function n({points:e}){return(0,t.jsx)(`svg`,{className:`chart`,children:e.map((e,n)=>(0,t.jsx)(`rect`,{x:n*10,height:e,width:8},n))})}export{n as default};

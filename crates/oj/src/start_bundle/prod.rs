@@ -301,6 +301,7 @@ fn client_plugins(
                 worker_chain,
             },
         )
+        .with_public_dir(oj_config::public_dir(&start.config, &start.root))
         .with_plugins(host.map(|h| Arc::clone(&h.host))),
     ));
     plugins.push(Pluginable::new_shared(NodeBuiltinShims {
@@ -868,6 +869,7 @@ pub(crate) async fn build(
                         worker_chain: Vec::new(),
                     },
                 )
+                .with_public_dir(oj_config::public_dir(&start.config, &start.root))
                 .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
             ));
             plugins.push(Pluginable::new_shared(
