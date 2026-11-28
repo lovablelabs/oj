@@ -78,6 +78,6 @@ jobs:
       # app's own install.
       - name: the store binary builds the Start fixture
         run: |
-          npm ci --prefix e2e/fixtures/start-app --no-audit --no-fund
+          npm ci --prefix e2e/fixtures/start-app --no-audit --no-fund --legacy-peer-deps
           ./result/bin/oj build e2e/fixtures/start-app
           test -s e2e/fixtures/start-app/dist/server.mjs

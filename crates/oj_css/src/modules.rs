@@ -563,11 +563,14 @@ fn class_position(source: &str, name: &str) -> usize {
     .unwrap_or(usize::MAX)
 }
 
+/// A `composes: … from "spec"` file as compiled: its export map and its
+/// scoped sheet.
+type ComposedModule = (HashMap<String, String>, String);
+
 struct Composer<'a> {
     by_scoped: HashMap<&'a str, &'a CssModuleExport>,
-    /// Export maps and sheets of `from "..."` files by specifier, each
-    /// compiled once.
-    deps: RefCell<HashMap<&'a str, Option<(HashMap<String, String>, String)>>>,
+    /// The `from "..."` files by specifier, each compiled once.
+    deps: RefCell<HashMap<&'a str, Option<ComposedModule>>>,
     /// The specifiers in the order first named.
     dep_order: RefCell<Vec<&'a str>>,
     url: &'a str,
@@ -627,7 +630,7 @@ fn dependency_exports(
     url: &str,
     resolve: &CssResolve<'_>,
     depth: u8,
-) -> Option<(HashMap<String, String>, String)> {
+) -> Option<ComposedModule> {
     if depth > 8 {
         return None;
     }

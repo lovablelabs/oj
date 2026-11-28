@@ -65,7 +65,7 @@ jobs:
       # differently and rebuilt v8, which then could not find the rusty_v8
       # archive in the restored cache.
       - name: install start-app fixture (vite for the config and Start tests)
-        run: npm ci --prefix e2e/fixtures/start-app
+        run: npm ci --prefix e2e/fixtures/start-app --legacy-peer-deps
       # The Cloudflare plugin the Start preseed and StyleX tests install beside their apps.
       - name: install cloudflare-deps fixture
         run: npm ci --prefix e2e/fixtures/cloudflare-deps
@@ -137,7 +137,7 @@ jobs:
       # The Start-app scripts (start-define-mode, start-ssr-external,
       # start-build-options) skip themselves when the fixture is not installed.
       - name: install start-app fixture
-        run: npm ci --prefix e2e/fixtures/start-app
+        run: npm ci --prefix e2e/fixtures/start-app --legacy-peer-deps
       - run: npx --prefix e2e playwright install --with-deps chromium
       - name: install wasm-pack + www deps (wasm playground e2e)
         # A version-pinned release tarball, not `curl | sh` of whatever the
