@@ -1,0 +1,1 @@
+import{n as e,t}from"./lazy-commons-HASH.js";import{n}from"./vendor-react-HASH.js";var r=n(),i=()=>(0,r.jsx)(`pre`,{children:e(`settings`)+t([`x`,`y`])});export{i as component};

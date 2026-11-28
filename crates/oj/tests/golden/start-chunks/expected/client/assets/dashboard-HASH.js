@@ -1,0 +1,1 @@
+import{n as e,t}from"./lazy-commons-HASH.js";import{n}from"./vendor-router-HASH.js";import{n as r}from"./vendor-react-HASH.js";var i=r(),a=()=>(0,i.jsx)(`pre`,{children:e(n.useLoaderData().title)+t([`a`])});export{a as component};

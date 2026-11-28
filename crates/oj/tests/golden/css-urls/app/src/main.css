@@ -1,0 +1,22 @@
+@import "./base.css";
+
+@font-face {
+  font-family: "Golden";
+  src: url("./fonts/golden.woff2") format("woff2");
+}
+
+.hero {
+  background: url("./img/large.svg") no-repeat center / cover;
+}
+
+.icon {
+  background-image: url("./img/small.svg");
+}
+
+.logo {
+  background-image: url(/brand.svg);
+}
+
+.photo {
+  background-image: image-set(url("./img/small.svg") 1x, url("./img/large.svg") 2x);
+}

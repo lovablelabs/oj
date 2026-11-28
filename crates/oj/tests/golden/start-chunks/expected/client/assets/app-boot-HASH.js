@@ -1,0 +1,1 @@
+import{n as e}from"./rolldown-runtime-HASH.js";import{t}from"./vendor-router-HASH.js";import{n,r,t as i}from"./vendor-react-HASH.js";var a=e(r(),1),o=i(),s=n();(0,a.startTransition)(()=>{(0,o.hydrateRoot)(document,(0,s.jsx)(a.StrictMode,{children:(0,s.jsx)(t,{})}))});

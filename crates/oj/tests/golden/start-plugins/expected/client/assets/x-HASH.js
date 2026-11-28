@@ -1,0 +1,1 @@
+import{n as e}from"./index-HASH.js";var t=e(),n=()=>(0,t.jsx)(`p`,{className:`tracking`,children:`events`});export{n as component};

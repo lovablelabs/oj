@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>%VITE_TITLE%</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="./src/page.css" />
+  </head>
+  <body>
+    <img src="./src/hero.svg" alt="" width="40" />
+    <a href="/admin/">admin</a>
+    <script type="module" src="/src/main.js"></script>
+    <script type="module">
+      import { greet } from "./src/greet.js";
+      document.title = greet(document.title);
+    </script>
+  </body>
+</html>

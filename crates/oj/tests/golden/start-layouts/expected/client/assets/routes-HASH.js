@@ -1,0 +1,1 @@
+import{t as e}from"./link-HASH.js";import{o as t}from"./useStore-HASH.js";var n=t(),r=()=>(0,n.jsxs)(`nav`,{children:[(0,n.jsx)(e,{to:`/projects`,children:`projects`}),(0,n.jsx)(e,{to:`/blog/$slug`,params:{slug:`hello`},children:`blog`})]});export{r as component};

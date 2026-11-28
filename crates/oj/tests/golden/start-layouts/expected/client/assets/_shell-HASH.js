@@ -1,0 +1,1 @@
+import{r as e}from"./index-HASH.js";import{o as t}from"./useStore-HASH.js";var n=t(),r=()=>(0,n.jsxs)(`div`,{className:`shell`,children:[(0,n.jsx)(`aside`,{children:`menu`}),(0,n.jsx)(e,{})]});export{r as component};

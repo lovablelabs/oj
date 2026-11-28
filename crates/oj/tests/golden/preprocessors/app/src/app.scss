@@ -1,0 +1,10 @@
+@use "./tokens";
+
+.app {
+  color: $accent;
+  @include tokens.rounded;
+
+  &__title {
+    font-weight: 700;
+  }
+}

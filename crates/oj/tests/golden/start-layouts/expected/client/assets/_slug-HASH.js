@@ -1,0 +1,1 @@
+import{n as e}from"./index-HASH.js";import{o as t}from"./useStore-HASH.js";var n=t(),r=()=>(0,n.jsx)(`article`,{children:e.useParams().slug});export{r as component};

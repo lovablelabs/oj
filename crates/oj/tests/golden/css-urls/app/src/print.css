@@ -1,0 +1,5 @@
+@media print {
+  .hero {
+    display: none;
+  }
+}

@@ -1,0 +1,1 @@
+function e(){return`widget`}export{e as widget};

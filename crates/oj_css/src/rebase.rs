@@ -190,7 +190,7 @@ fn rewrite_image_set_strings(css: &str, rebase: &Rebase<'_>) -> String {
 /// Vite's `rewriteCssImageSet` (its url-rewrite PostCSS plugin): each
 /// candidate of `image-set()` through `rebase`, a bare string one wrapped in
 /// `url()`, gradients and other images left alone, the list re-joined.
-pub(crate) fn rewrite_css_image_set(css: &str, rebase: &Rebase<'_>) -> String {
+pub fn rewrite_css_image_set(css: &str, rebase: &Rebase<'_>) -> String {
     static NOT_PROCESSED_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?:gradient|element|cross-fade|image)\(").unwrap());
     replace_matches(css, &IMAGE_SET_RE, |m, _| {

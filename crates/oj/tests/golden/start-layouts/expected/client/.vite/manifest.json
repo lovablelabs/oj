@@ -1,0 +1,101 @@
+{
+  "_link-HASH.js": {
+    "file": "assets/link-HASH.js",
+    "name": "link",
+    "imports": [
+      "_useStore-HASH.js"
+    ]
+  },
+  "_matchContext-HASH.js": {
+    "file": "assets/matchContext-HASH.js",
+    "name": "matchContext",
+    "imports": [
+      "_useStore-HASH.js"
+    ]
+  },
+  "_preload-helper-HASH.js": {
+    "file": "assets/preload-helper-HASH.js",
+    "name": "preload-helper",
+    "imports": [
+      "_useStore-HASH.js",
+      "_link-HASH.js",
+      "_matchContext-HASH.js"
+    ]
+  },
+  "_useStore-HASH.js": {
+    "file": "assets/useStore-HASH.js",
+    "name": "useStore"
+  },
+  "src/client.tsx": {
+    "file": "assets/index-HASH.js",
+    "name": "index",
+    "src": "src/client.tsx",
+    "isEntry": true,
+    "imports": [
+      "_link-HASH.js",
+      "_preload-helper-HASH.js",
+      "_matchContext-HASH.js",
+      "_useStore-HASH.js"
+    ],
+    "dynamicImports": [
+      "src/routes/index.tsx?tsr-split=component",
+      "src/routes/_shell.tsx?tsr-split=component",
+      "src/routes/blog/$slug.tsx?tsr-split=component",
+      "src/routes/_shell/projects/index.tsx?tsr-split=component",
+      "src/routes/_shell/projects/$projectId.tsx?tsr-split=component"
+    ],
+    "css": [
+      "assets/index-HASH.css"
+    ]
+  },
+  "src/routes/_shell.tsx?tsr-split=component": {
+    "file": "assets/_shell-HASH.js",
+    "name": "_shell",
+    "src": "src/routes/_shell.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx",
+      "_useStore-HASH.js"
+    ]
+  },
+  "src/routes/_shell/projects/$projectId.tsx?tsr-split=component": {
+    "file": "assets/_projectId-HASH.js",
+    "name": "_projectId",
+    "src": "src/routes/_shell/projects/$projectId.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx",
+      "_useStore-HASH.js"
+    ]
+  },
+  "src/routes/_shell/projects/index.tsx?tsr-split=component": {
+    "file": "assets/projects-HASH.js",
+    "name": "projects",
+    "src": "src/routes/_shell/projects/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "_link-HASH.js",
+      "_useStore-HASH.js"
+    ]
+  },
+  "src/routes/blog/$slug.tsx?tsr-split=component": {
+    "file": "assets/_slug-HASH.js",
+    "name": "_slug",
+    "src": "src/routes/blog/$slug.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "src/client.tsx",
+      "_useStore-HASH.js"
+    ]
+  },
+  "src/routes/index.tsx?tsr-split=component": {
+    "file": "assets/routes-HASH.js",
+    "name": "routes",
+    "src": "src/routes/index.tsx?tsr-split=component",
+    "isDynamicEntry": true,
+    "imports": [
+      "_link-HASH.js",
+      "_useStore-HASH.js"
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+import{n as e,t}from"./index-HASH.js";var n=e();function r(){let e=t.useLoaderData();return(0,n.jsx)(`pre`,{children:JSON.stringify(e)})}export{r as component};

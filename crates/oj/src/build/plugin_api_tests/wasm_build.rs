@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! The build half of the `?init` wasm check: `oj build` emits the module as a
-//! `.wasm` asset, and in the preview the init function instantiates it so its
-//! exports run in a real browser with no page errors.
+//! `.wasm` asset (the inline limit is off here; under Vite's default a module
+//! this small is inlined as a data URL), and in the preview the init function
+//! instantiates it so its exports run in a real browser with no page errors.
 
 use std::time::Duration;
 
@@ -28,6 +29,7 @@ async fn wasm_init_import_emits_asset_and_instantiates_in_preview() {
         &root,
         &[
             ("package.json", r#"{"name":"wasm-app","version":"1.0.0"}"#),
+            ("oj.config.json", r#"{"build":{"assetsInlineLimit":0}}"#),
             ("src/main.js", MAIN),
             (
                 "index.html",

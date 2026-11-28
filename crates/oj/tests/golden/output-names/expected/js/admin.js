@@ -1,0 +1,1 @@
+import{t as e}from"./chunks/shared-HASH.js";console.log(e(`admin`));

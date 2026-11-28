@@ -1,0 +1,8 @@
+:root {
+  --space: 8px;
+}
+
+body {
+  font-family: "Golden", system-ui;
+  margin: var(--space);
+}

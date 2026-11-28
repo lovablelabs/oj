@@ -1,0 +1,5 @@
+$radius: 6px;
+
+@mixin rounded {
+  border-radius: $radius;
+}

@@ -64,6 +64,25 @@ const CASES: &[&str] = &[
     "plugins-bundle-assets",
     "sourcemap-esbuild",
     "start-app",
+    "css-urls",
+    "preprocessors",
+    "css-no-split",
+    "lazy-css",
+    "html-page",
+    "cjs-interop",
+    "wasm",
+    "output-names",
+    "externals",
+    "drop-console",
+    "no-minify",
+    "target-lowering",
+    "start-server-fns",
+    "start-code-split",
+    "start-layouts",
+    "start-assets",
+    "start-env",
+    "start-chunks",
+    "start-plugins",
 ];
 
 /// The part of a case's output that is compared, when not all of it: oj's
@@ -71,10 +90,7 @@ const CASES: &[&str] = &[
 /// own (`server.mjs`, `worker.mjs` and their chunks), where `vite build`
 /// writes Start's `server/server.js`, so a Start case compares the client.
 fn compared_scope(case: &str) -> Option<&'static str> {
-    match case {
-        "start-app" => Some("client/"),
-        _ => None,
-    }
+    case.starts_with("start-").then_some("client/")
 }
 
 /// `tree` cut to the case's [`compared_scope`].
@@ -428,6 +444,25 @@ golden! {
     import_meta_glob_forms => "glob-variants",
     chunk_groups_and_the_build_block_of_a_large_app => "code-splitting",
     an_apps_own_plugins_hooks => "plugins",
+    css_urls_fonts_imports_and_sheet_queries => "css-urls",
+    scss_less_and_stylus => "preprocessors",
+    one_stylesheet_for_the_build => "css-no-split",
+    lazily_imported_stylesheets => "lazy-css",
+    a_pages_own_assets_inline_module_and_env => "html-page",
+    a_commonjs_dependency => "cjs-interop",
+    webassembly_init_and_url => "wasm",
+    object_input_and_output_name_patterns => "output-names",
+    external_imports_kept_as_written => "externals",
+    esbuild_drops_console_and_legal_comments => "drop-console",
+    unminified_build => "no-minify",
+    syntax_lowered_for_an_older_target => "target-lowering",
+    start_server_functions_and_middleware => "start-server-fns",
+    start_route_code_splitting_and_lazy_routes => "start-code-split",
+    start_nested_and_pathless_layouts_with_params => "start-layouts",
+    start_route_assets_glob_json_and_a_worker => "start-assets",
+    start_defines_per_environment_and_env => "start-env",
+    start_client_chunk_groups_and_name_functions => "start-chunks",
+    start_app_plugins_on_the_client_environment => "start-plugins",
 }
 
 /// A TanStack Start app's client bundle. The HTML, the manifest and every

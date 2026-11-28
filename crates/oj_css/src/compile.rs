@@ -88,13 +88,22 @@ pub fn compile_css_with_scope_source(
 /// final minify ([`crate::finalize_chunk_css`]) lowers to `build.cssTarget`
 /// either way, so a sheet Vite lowers once is lowered once here too: a
 /// lowering adds to a sheet (a vendor-prefixed copy of a declaration beside
-/// the one the sheet carries), and a second one adds another.
+/// the one the sheet carries), and a second one adds another. With
+/// `build.cssMinify` off, a sheet Vite's compile leaves alone is emitted as
+/// written (or as PostCSS printed it), comments, zero units and all: no
+/// lightningcss pass touches it; a lowered one is printed by lightningcss.
 pub fn compile_css_for_build(
     url: &str,
     source: &str,
     resolve: &CssResolve<'_>,
     lowered: bool,
 ) -> Result<CssOutput, String> {
+    if !resolve.minify && !lowered {
+        return Ok(CssOutput {
+            css: source.to_string(),
+            exports: None,
+        });
+    }
     let mode = Mode {
         minify: resolve.minify,
         skip_lowering: resolve.minify && !lowered,

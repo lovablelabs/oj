@@ -116,19 +116,45 @@ fn ro_output_str(ro: Option<&serde_json::Value>, key: &str) -> Option<String> {
     v.as_str().map(String::from)
 }
 
-fn ro_external(ro: Option<&serde_json::Value>) -> Vec<String> {
-    match ro.and_then(|v| v.get("external")) {
-        Some(serde_json::Value::String(s)) if s == FN_MARKER => {
-            warn_fn_option("external", "List the external specifiers as strings.");
-            Vec::new()
+/// `rollupOptions.external`: specifiers as strings and RegExps (a RegExp
+/// literal arrives as `{ __oj_regex__ }`); a function cannot cross the
+/// config's JSON boundary and is warned about.
+fn ro_external(
+    ro: Option<&serde_json::Value>,
+) -> Vec<rolldown_utils::pattern_filter::StringOrRegex> {
+    use rolldown_utils::pattern_filter::StringOrRegex;
+    let one = |v: &serde_json::Value| -> Option<StringOrRegex> {
+        match v {
+            serde_json::Value::String(s) if s == FN_MARKER => {
+                warn_fn_option(
+                    "external",
+                    "List the external specifiers as strings or RegExps.",
+                );
+                None
+            }
+            serde_json::Value::String(s) => Some(StringOrRegex::String(s.clone())),
+            serde_json::Value::Object(o) => o
+                .get("__oj_regex__")
+                .and_then(|r| r.as_str())
+                .and_then(|src| rolldown_utils::js_regex::HybridRegex::new(src).ok())
+                .map(StringOrRegex::Regex),
+            _ => None,
         }
-        Some(serde_json::Value::String(s)) => vec![s.clone()],
-        Some(serde_json::Value::Array(a)) => a
-            .iter()
-            .filter_map(|x| x.as_str().map(String::from))
-            .collect(),
-        _ => Vec::new(),
+    };
+    match ro.and_then(|v| v.get("external")) {
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(one).collect(),
+        Some(v) => one(v).into_iter().collect(),
+        None => Vec::new(),
     }
+}
+
+/// Vite's `isExternalUrl`: an import by URL (`https://`, `//cdn`) stays an
+/// import, as its resolve plugin leaves one external.
+fn is_external_url(spec: &str) -> bool {
+    spec.starts_with("//")
+        || spec
+            .find("://")
+            .is_some_and(|at| at > 0 && spec[..at].chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 /// The `rollupOptions.output` settings Vite spreads into rolldown's output
@@ -1646,6 +1672,42 @@ impl Plugin for ViteOxcSlot {
     }
 }
 
+/// Vite's wasm helper module (`vite:wasm-helper`), which a `?init` module
+/// imports: the compile options, a fetch that streams when the server says
+/// `application/wasm`, a compile that reads a data URL, and `initWasm`.
+const WASM_HELPER_ID: &str = "\0vite/wasm-helper.js";
+
+/// The helper's text, as Vite 8.4 writes it (its functions' `toString()`).
+const WASM_HELPER_JS: &str = r#"
+const wasmCompileOptions = {"builtins":["js-string"],"importedStringConstants":"wasm:js/string-constants"}
+const compileFromUrl = async (url) => {
+	const response = await fetch(url);
+	const contentType = response.headers.get("Content-Type") || "";
+	if ("compileStreaming" in WebAssembly && contentType.startsWith("application/wasm")) return WebAssembly.compileStreaming(response, wasmCompileOptions);
+	else {
+		const buffer = await response.arrayBuffer();
+		return WebAssembly.compile(buffer, wasmCompileOptions);
+	}
+}
+export const compileWasm = async (url) => {
+	if (url.startsWith("data:")) {
+		const urlContent = url.replace(/^data:.*?base64,/, "");
+		let bytes;
+		if (typeof Buffer === "function" && typeof Buffer.from === "function") bytes = Buffer.from(urlContent, "base64");
+		else if (typeof atob === "function") {
+			const binaryString = atob(urlContent);
+			bytes = new Uint8Array(binaryString.length);
+			for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+		} else throw new Error("Failed to decode base64-encoded data URL, Buffer and atob are not supported");
+		return WebAssembly.compile(bytes, wasmCompileOptions);
+	}
+	return compileFromUrl(url);
+}
+export const initWasm = async (url, opts = {}) => {
+	return WebAssembly.instantiate(await compileWasm(url), opts);
+}
+"#;
+
 /// A worker bundle's rolldown minify, as Vite's bundleWorkerEntry sets it:
 /// rolldown's own under `"oxc"`, `'dce-only'` under `false`, and nothing
 /// under `"esbuild"`, which rolldown takes as `'dce-only'` too. Under esbuild
@@ -2057,6 +2119,7 @@ impl Plugin for OjCssPlugin {
         let is_polyfill = args.specifier == MODULEPRELOAD_POLYFILL_SPEC;
         let is_dynamic_import_helper =
             args.specifier == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID;
+        let is_wasm_helper = args.specifier == WASM_HELPER_ID;
         let is_routes = args.specifier == "virtual:oj-routes";
         let routes_id = self
             .root
@@ -2093,6 +2156,9 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(HookResolveIdOutput::from_id(
                     oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID,
                 )));
+            }
+            if is_wasm_helper {
+                return Ok(Some(HookResolveIdOutput::from_id(WASM_HELPER_ID)));
             }
             if is_polyfill {
                 return Ok(Some(HookResolveIdOutput::from_id(
@@ -2221,6 +2287,9 @@ impl Plugin for OjCssPlugin {
             }
             if id == oj_compiler::glob::DYNAMIC_IMPORT_HELPER_ID {
                 return js(oj_compiler::glob::DYNAMIC_IMPORT_HELPER_JS.to_string());
+            }
+            if id == WASM_HELPER_ID {
+                return js(WASM_HELPER_JS.to_string());
             }
             if id == MODULEPRELOAD_POLYFILL_ID {
                 // Vite's polyfill module comes with an empty map: a chunk's
@@ -2392,27 +2461,41 @@ impl Plugin for OjCssPlugin {
                 }));
             }
             if let Some(file) = id.strip_suffix("?init") {
+                // Vite's wasm plugin: the module imports `initWasm` from the
+                // helper and calls it with the file's URL (a data URL when
+                // the file is small enough to inline, as any asset).
                 let bytes =
                     std::fs::read(file).map_err(|e| anyhow::anyhow!("cannot read {file}: {e}"))?;
-                let name = std::path::Path::new(file)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("asset")
-                    .to_string();
-                let reference = ctx
-                    .emit_file(
-                        rolldown_common::EmittedAsset {
-                            name: Some(name),
-                            source: rolldown_common::StrOrBytes::Bytes(bytes),
-                            ..Default::default()
-                        },
-                        None,
-                        None,
-                    )
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                let url_expr = if (bytes.len() as u64) < inline_limit {
+                    serde_json::Value::String(format!(
+                        "data:{};base64,{}",
+                        asset_mime("wasm"),
+                        b64(&bytes)
+                    ))
+                    .to_string()
+                } else {
+                    let name = std::path::Path::new(file)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("asset")
+                        .to_string();
+                    let reference = ctx
+                        .emit_file(
+                            rolldown_common::EmittedAsset {
+                                name: Some(name),
+                                source: rolldown_common::StrOrBytes::Bytes(bytes),
+                                ..Default::default()
+                            },
+                            None,
+                            None,
+                        )
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    format!("import.meta.ROLLUP_FILE_URL_{reference}")
+                };
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(format!(
-                        "const u = import.meta.ROLLUP_FILE_URL_{reference};\nexport default (imports = {{}}) => {{ const inst = (r) => r.instance; const fb = () => fetch(u).then((r) => r.arrayBuffer()).then((b) => WebAssembly.instantiate(b, imports)).then(inst); return WebAssembly.instantiateStreaming ? WebAssembly.instantiateStreaming(fetch(u), imports).then(inst).catch(fb) : fb(); }};"
+                        "\n  import {{ initWasm }} from {}\n  export default opts => initWasm({url_expr}, opts)\n  ",
+                        serde_json::Value::String(WASM_HELPER_ID.to_string())
                     )),
                     module_type: Some(rolldown_common::ModuleType::Js),
                     ..Default::default()
@@ -2447,10 +2530,28 @@ impl Plugin for OjCssPlugin {
                         emit,
                     )
                     .await?;
+                    // Vite's url rewrite runs on an inline sheet too: a small
+                    // `url()` asset becomes a data URL, a large one a file.
+                    let css = match &url_sheets {
+                        Some((out_dir, asset_names)) => rebase_css_urls(
+                            &out.css,
+                            std::path::Path::new(file).parent().unwrap_or(&root),
+                            out_dir,
+                            &base,
+                            CssAssetOpts {
+                                inline_limit,
+                                asset_names: Some(asset_names.as_str()),
+                                resolve: css_resolve.as_ref(),
+                            },
+                            &mut Vec::new(),
+                            &mut std::collections::HashMap::new(),
+                        ),
+                        None => out.css,
+                    };
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
                             "export default {}",
-                            serde_json::Value::String(out.css)
+                            serde_json::Value::String(css)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
                         map: vite_asset_map(),
@@ -5357,8 +5458,20 @@ pub async fn build(
             )),
             asset_filenames: Some(asset_names_pattern.clone().into()),
             external: {
-                let ext = ro_external(ro_opts);
-                (!ext.is_empty()).then(|| rolldown::IsExternal::from(ext))
+                // The config's externals, and every URL import, which
+                // Vite's resolver leaves external.
+                let patterns = ro_external(ro_opts);
+                Some(rolldown::IsExternal::Fn(Some(Arc::new(
+                    move |spec: &str, _importer: Option<&str>, _resolved: bool| {
+                        use rolldown_utils::pattern_filter::StringOrRegex;
+                        let hit = is_external_url(spec)
+                            || patterns.iter().any(|p| match p {
+                                StringOrRegex::String(s) => s == spec,
+                                StringOrRegex::Regex(r) => r.matches(spec),
+                            });
+                        Box::pin(async move { Ok(hit) })
+                    },
+                ))))
             },
             // Under `build.minify: "esbuild"` Vite hands rolldown `minify:
             // false` and the host's vite:esbuild-transpile minifies each chunk
@@ -5383,7 +5496,7 @@ pub async fn build(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match on_rolldown(rolldown, bundler.write()).await {
+    let mut output = match on_rolldown(rolldown, bundler.write()).await {
         Ok(output) => output,
         Err(errs) => {
             let detail = errs
@@ -5605,7 +5718,7 @@ pub async fn build(
     // Split CSS is emitted once for the whole bundle; each page then links the
     // stylesheets of its own entry chunks (a page-relative href when the base is
     // relative).
-    let chunk_css: Vec<(String, String)> = if css_split {
+    let mut chunk_css: Vec<(String, String)> = if css_split {
         emit_split_css_files(
             &output,
             &collected_css,
@@ -5621,6 +5734,15 @@ pub async fn build(
     } else {
         Vec::new()
     };
+    let removed_pure = drop_pure_css_chunks(
+        &mut output,
+        &out_dir,
+        &mut imports_map,
+        &mut chunk_css,
+        &mut manifest_entries,
+    )?;
+    emitted.retain(|(name, _)| !removed_pure.contains_key(name));
+    manifest_entries.retain(|e| !removed_pure.contains_key(&e.file));
     write_stylex_fallback(&out_dir, stylex_css, &mut emitted)?;
     let mut all_sync_chunks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(name) = oj_config::ssr_manifest_name(&config) {
@@ -5913,7 +6035,7 @@ pub async fn build(
             &base,
             &imports_map,
             &chunk_css,
-            &std::collections::HashMap::new(),
+            &removed_pure,
             oj_config::module_preload_links(&config),
         )?;
     }
@@ -8179,6 +8301,135 @@ fn rebase_css_urls(
         rest = &after[close + 1..];
     }
     out.push_str(rest);
+    // lightningcss prints an `image-set()` candidate as a bare string, and
+    // Vite's url rewrite (its cssImageSetRE) takes those as it takes `url()`.
+    if out.contains("image-set(") {
+        let state = std::cell::RefCell::new((emitted, seen));
+        out = oj_css::rewrite_css_image_set(&out, &|url: &str| {
+            let mut state = state.borrow_mut();
+            let (emitted, seen) = &mut *state;
+            emit_css_url(url, css_dir, out_dir, base, opts, emitted, seen)
+        });
+    }
+    out
+}
+
+/// Vite's css-post generateBundle for the pure CSS chunks: a chunk of
+/// nothing but stylesheets (no exports, every module a sheet, not an entry)
+/// leaves the output and the disk; the chunks that imported it lose the
+/// import (the statement becomes a `/* empty css */` comment of its length,
+/// so their maps hold) and take over its sheets, in their `css` and their
+/// manifest rows; a dynamic import of it answers with its sheets alone (see
+/// [`apply_preload_helper`]). Returns the dropped chunks' files with their
+/// sheets, as Vite's removedPureCssFilesCache records them.
+fn drop_pure_css_chunks(
+    output: &mut rolldown::BundleOutput,
+    out_dir: &Path,
+    imports_map: &mut std::collections::HashMap<String, Vec<String>>,
+    chunk_css: &mut Vec<(String, String)>,
+    manifest_entries: &mut [ManifestEntry],
+) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+    use rolldown_common::Output;
+    let pure: std::collections::HashSet<String> = output
+        .assets
+        .iter()
+        .filter_map(|out| match out {
+            Output::Chunk(c)
+                if !c.is_entry
+                    && c.exports.is_empty()
+                    && !c.modules.keys.is_empty()
+                    && c.modules.keys.iter().all(|m| {
+                        let m: &str = m.as_ref();
+                        is_stylesheet_path(m.split(['?', '#']).next().unwrap_or(m))
+                    }) =>
+            {
+                Some(c.filename.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut removed: std::collections::HashMap<String, Vec<String>> = Default::default();
+    if pure.is_empty() {
+        return Ok(removed);
+    }
+    for file in &pure {
+        let sheets: Vec<String> = chunk_css
+            .iter()
+            .filter(|(chunk, _)| chunk == file)
+            .map(|(_, css)| css.clone())
+            .collect();
+        removed.insert(file.clone(), sheets);
+    }
+    for out in output.assets.iter_mut() {
+        let Output::Chunk(chunk) = out else { continue };
+        let imported: Vec<String> = chunk
+            .imports
+            .iter()
+            .filter(|i| pure.contains(i.as_str()))
+            .map(|i| i.to_string())
+            .collect();
+        if imported.is_empty() {
+            continue;
+        }
+        let chunk = Arc::make_mut(chunk);
+        chunk.code = blank_pure_css_imports(&chunk.code, chunk.filename.as_str(), &imported);
+        chunk.imports.retain(|i| !pure.contains(i.as_str()));
+        fs::write(out_dir.join(chunk.filename.as_str()), &chunk.code)?;
+        let file = chunk.filename.to_string();
+        if let Some(list) = imports_map.get_mut(&file) {
+            list.retain(|i| !pure.contains(i));
+        }
+        for taken in &imported {
+            for css in removed.get(taken).into_iter().flatten() {
+                if !chunk_css.iter().any(|(c, s)| *c == file && s == css) {
+                    chunk_css.push((file.clone(), css.clone()));
+                }
+                if let Some(entry) = manifest_entries.iter_mut().find(|e| e.file == file) {
+                    if !entry.css.contains(css) {
+                        entry.css.push(css.clone());
+                    }
+                }
+            }
+        }
+    }
+    for file in &pure {
+        let _ = fs::remove_file(out_dir.join(file));
+        let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
+        imports_map.remove(file);
+    }
+    output
+        .assets
+        .retain(|out| !matches!(out, Output::Chunk(c) if pure.contains(c.filename.as_str())));
+    chunk_css.retain(|(chunk, _)| !pure.contains(chunk));
+    Ok(removed)
+}
+
+/// Vite's getEmptyChunkReplacer for es output: each `import "<chunk>";` of
+/// a dropped pure CSS chunk, by its path relative to the importing chunk
+/// (with or without `./`), becomes `/* empty css ... */` of the same length.
+fn blank_pure_css_imports(code: &str, chunk_file: &str, pure: &[String]) -> String {
+    let mut out = code.to_string();
+    for file in pure {
+        let rel = relative_to_chunk(chunk_file, file);
+        let mut specs = vec![rel.clone()];
+        if !rel.starts_with("../") {
+            specs.push(format!("./{rel}"));
+        }
+        for spec in specs {
+            for quote in ['"', '\''] {
+                for gap in ["", " "] {
+                    let needle = format!("import{gap}{quote}{spec}{quote};");
+                    while let Some(at) = out.find(&needle) {
+                        let comment = format!(
+                            "/* empty css {}*/",
+                            " ".repeat(needle.len().saturating_sub(15))
+                        );
+                        out.replace_range(at..at + needle.len(), &comment);
+                    }
+                }
+            }
+        }
+    }
     out
 }
 
